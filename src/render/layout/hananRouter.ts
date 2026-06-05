@@ -44,7 +44,7 @@ const DIAG_CROSS_PENALTY_K = 2.0;
 // the goal. Applied at every step; biggest impact at start nodes where the
 // "leave direction" matters most. Weighted by edge length so longer wrong-way
 // edges are penalized more.
-const DIRECTION_DISAGREEMENT_K = 0.8;
+const DIRECTION_DISAGREEMENT_K = 2.0;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {

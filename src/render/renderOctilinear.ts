@@ -94,13 +94,10 @@ export interface RenderRibbonsArgs {
   showLabels: boolean;
   water?: WaterCollection;
   transfers?: TransferPair[];
-  /** Pairs of (ghost a, ghost b) sharing one original station — drawn as a
-   *  thin grey "this is one station" bar behind the line ribbons. */
-  ghostConnectors?: Array<{ fromPos: Pixel; toPos: Pixel }>;
-  /** originalStationId → ghost ids. When supplied, sibling-ghost stop-marks
-   *  and labels are merged into a single pill so the cluster visually reads
-   *  as one interchange, while the routing still benefits from the split. */
-  ghostGroups?: Map<string, string[]>;
+  /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
+   *  labels for these — the ghost is invisible by design (lines pass through
+   *  it but no circle is drawn). */
+  ghostNodeIds?: Set<string>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -224,34 +221,19 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     );
   }
 
-  // Merge sibling-ghost stop marks into a single pill so the cluster reads as
-  // one interchange. We keep the routing-level split but unify the visual
-  // marker: all ghosts' stops are collected under the FIRST ghost id, and the
-  // remaining sibling entries are dropped from the stops map so renderStops
-  // draws one rounded rect spanning every sibling lane.
-  if (args.ghostGroups) {
-    for (const [, ghostIds] of args.ghostGroups) {
-      if (ghostIds.length < 2) continue;
-      const primary = ghostIds[0];
-      let merged = stopsByNode.get(primary);
-      if (!merged) {
-        merged = [];
-        stopsByNode.set(primary, merged);
-      }
-      for (let i = 1; i < ghostIds.length; i++) {
-        const sibStops = stopsByNode.get(ghostIds[i]);
-        if (sibStops) {
-          for (const s of sibStops) merged.push(s);
-          stopsByNode.delete(ghostIds[i]);
-        }
-      }
-    }
+  // Ghost nodes are invisible: drop any accidentally-attached stop marks
+  // (none should be there if the splitter put stops on bundle edges
+  // correctly, but a defensive sweep keeps the contract local).
+  if (args.ghostNodeIds) {
+    for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
 
   const stopParts = renderStops(stopsByNode, dark);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
+    // Ghost nodes are invisible — no marker, no label.
+    if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
     const anchor = nodePx.get(n.id);
     if (!placement || !anchor) continue;
@@ -299,30 +281,10 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     );
   }
 
-  // Ghost-sibling connectors: solid grey bar between ghosts of the same
-  // original station. Drawn behind line ribbons (so ribbons sit on top of the
-  // bar at the pill) but above water.
-  let ghostPart = '';
-  if (args.ghostConnectors && args.ghostConnectors.length > 0) {
-    const stroke = dark ? '#52525b' : '#9ca3af';
-    const w = LINE_WIDTH * 1.6;
-    const parts: string[] = [];
-    for (const c of args.ghostConnectors) {
-      parts.push(
-        '<line x1="' + c.fromPos[0].toFixed(1) + '" y1="' + c.fromPos[1].toFixed(1) +
-          '" x2="' + c.toPos[0].toFixed(1) + '" y2="' + c.toPos[1].toFixed(1) +
-          '" stroke="' + stroke + '" stroke-width="' + w.toFixed(1) +
-          '" stroke-linecap="round"/>',
-      );
-    }
-    ghostPart = '<g class="ghost-bars">' + parts.join('') + '</g>';
-  }
-
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '">\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
-    (ghostPart ? ghostPart + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     (transferPart ? transferPart + '\n' : '') +
     '<g class="stops">\n' + stopParts.join('\n') +

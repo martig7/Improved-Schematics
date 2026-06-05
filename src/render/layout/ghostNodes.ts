@@ -1,15 +1,21 @@
-// Ghost-node splitting for high-route station groups.
+// Ghost-node splitting for high-degree station groups.
 //
-// Inspired by Bast/Brosi/Storandt section 2 (node splitting for high-degree
-// nodes). When a station group has too many routes passing through it, the
-// canonical-offset bundler fans them all into one wide pill. We split such
-// nodes into multiple "ghost" station groups, each carrying a subset of the
-// routes, positioned in a small cluster perpendicular to the dominant route
-// direction. Each ghost gets its own narrower pill and the lanes fan across
-// multiple pills instead of cramping into one.
+// Inspired by Bast/Brosi/Storandt §2 (node splitting). When a station has
+// more than `maxDirections` incident edges, those edges enter the station
+// from too many directions to render cleanly. We collapse them into at most
+// `maxDirections` (= 4) cardinal entry buckets (E, S, W, N) by closest
+// direction. Each bucket containing ≥2 edges gets a single ghost node
+// positioned `ghostDistance` away from the station along the bucket
+// direction. All bucket members terminate at the ghost; a single shared
+// "bundle" edge connects the ghost back to the station.
 //
-// Pure transformation: builds a new TransitGraph from the input one. Downstream
-// routing/bundling/rendering proceed unchanged.
+// The downstream `computeCanonicalOffsets` then fans the bundled lines
+// into parallel ribbons along the (ghost → station) corridor, producing a
+// clean single-direction entry into the station. The ghost itself MUST NOT
+// render: no marker, no label. It's a routing-only construct that visually
+// disappears — see the paper figure: lines pass through it but no circle
+// remains. The renderer is responsible for treating ids in `ghostNodeIds`
+// as invisible.
 
 import type {
   TransitGraph,
@@ -18,199 +24,296 @@ import type {
   LineRef,
   EdgeStop,
   TraversalStep,
-  Pixel,
 } from './types';
 
 export interface GhostNodeOptions {
-  /** Maximum number of distinct routes one ghost may carry. */
-  maxRoutesPerGhost: number;
-  /** Spacing between adjacent ghosts of the same original station, in pixels. */
-  ghostSpacing: number;
+  /** Maximum number of distinct entry directions per station (typically 4 —
+   *  the four cardinal directions). Stations with at most this many incident
+   *  edges are never split. */
+  maxDirections: number;
+  /** Distance from the original station to the ghost, in pixels. Should be
+   *  "somewhat far away" so the lines visibly fan into a single corridor
+   *  before reaching the station. A typical value is on the order of the
+   *  median edge length. */
+  ghostDistance: number;
 }
 
 export interface GhostNodeResult {
   graph: TransitGraph;
-  /** Pairs of (ghost a, ghost b) that share an original station — for the
-   *  caller to draw thin "this is one station" connector bars. */
-  ghostConnectors: Array<{ from: string; to: string; fromPos: Pixel; toPos: Pixel }>;
-  /** originalStationId -> [ghost ids], in cluster order. Lets the caller
-   *  merge sibling stop-marks/labels into a single pill so the cluster reads
-   *  as one interchange visually. */
-  ghostGroups: Map<string, string[]>;
+  /** Ids of all ghost nodes inserted. Renderer MUST NOT draw markers or
+   *  labels at these positions — the ghost is a routing construct only. */
+  ghostNodeIds: Set<string>;
 }
 
-/** Count distinct route IDs through each node (union over incident edges). */
-function nodeRouteCounts(graph: TransitGraph): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  for (const e of graph.edges) {
-    for (const nodeId of [e.from, e.to] as const) {
-      let s = out.get(nodeId);
-      if (!s) {
-        s = new Set<string>();
-        out.set(nodeId, s);
-      }
-      for (const l of e.lines) s.add(l.id);
+/** The 4 cardinal-bucket directions, in SVG y-down coords. The label is just
+ *  used to derive a stable ghost-id suffix for debugging. */
+const CARDINALS: ReadonlyArray<{ dir: [number, number]; name: string }> = [
+  { dir: [1, 0], name: 'E' },
+  { dir: [0, 1], name: 'S' },
+  { dir: [-1, 0], name: 'W' },
+  { dir: [0, -1], name: 'N' },
+];
+
+/** Index (0..3) of the cardinal bucket whose direction is closest to (vx,vy). */
+function bucketFor(vx: number, vy: number): number {
+  const len = Math.hypot(vx, vy) || 1;
+  const ux = vx / len;
+  const uy = vy / len;
+  let best = 0;
+  let bestDot = -Infinity;
+  for (let i = 0; i < CARDINALS.length; i++) {
+    const [cx, cy] = CARDINALS[i].dir;
+    const dot = ux * cx + uy * cy;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = i;
     }
   }
-  return out;
-}
-
-/** Average outgoing direction from a node toward its neighbours (unit vector). */
-function dominantDirection(graph: TransitGraph, nodeId: string): [number, number] {
-  let dx = 0;
-  let dy = 0;
-  const node = graph.nodes.get(nodeId);
-  if (!node) return [1, 0];
-  for (const e of graph.edges) {
-    if (e.from !== nodeId && e.to !== nodeId) continue;
-    const otherId = e.from === nodeId ? e.to : e.from;
-    const other = graph.nodes.get(otherId);
-    if (!other) continue;
-    const vx = other.pos[0] - node.pos[0];
-    const vy = other.pos[1] - node.pos[1];
-    const len = Math.hypot(vx, vy) || 1;
-    dx += vx / len;
-    dy += vy / len;
-  }
-  const len = Math.hypot(dx, dy) || 1;
-  return [dx / len, dy / len];
+  return best;
 }
 
 export function splitHighRouteNodes(
   graph: TransitGraph,
   opts: GhostNodeOptions,
 ): GhostNodeResult {
-  const counts = nodeRouteCounts(graph);
+  const { maxDirections, ghostDistance } = opts;
 
-  // 1. Decide which nodes to split, and how their routes map to ghosts.
-  const splitMap = new Map<string, GraphNode[]>();
-  const lineToGhost = new Map<string, Map<string, string>>(); // oldNodeId → (lineId → ghostId)
-  const ghostConnectors: GhostNodeResult['ghostConnectors'] = [];
-
-  for (const [nodeId, routes] of counts) {
-    if (routes.size <= opts.maxRoutesPerGhost) continue;
-    const node = graph.nodes.get(nodeId);
-    if (!node) continue;
-
-    const k = Math.ceil(routes.size / opts.maxRoutesPerGhost);
-    const sortedRoutes = [...routes].sort();
-
-    // Spread the ghosts perpendicular to the dominant route direction.
-    const [dx, dy] = dominantDirection(graph, nodeId);
-    const px = -dy; // perpendicular
-    const py = dx;
-
-    const ghosts: GraphNode[] = [];
-    const myMap = new Map<string, string>();
-    const chunkSize = Math.ceil(sortedRoutes.length / k);
-    for (let i = 0; i < k; i++) {
-      const off = (i - (k - 1) / 2) * opts.ghostSpacing;
-      const ghost: GraphNode = {
-        id: nodeId + '__g' + i,
-        // Only the first ghost shows the label to avoid duplicates next to each other.
-        label: i === 0 ? node.label : '',
-        pos: [node.pos[0] + px * off, node.pos[1] + py * off] as Pixel,
-        lngLat: node.lngLat,
-      };
-      ghosts.push(ghost);
-      for (const r of sortedRoutes.slice(i * chunkSize, (i + 1) * chunkSize)) {
-        myMap.set(r, ghost.id);
+  // 1. Index incident edges per node.
+  const incidence = new Map<string, GraphEdge[]>();
+  for (const e of graph.edges) {
+    for (const nid of [e.from, e.to] as const) {
+      let list = incidence.get(nid);
+      if (!list) {
+        list = [];
+        incidence.set(nid, list);
       }
+      list.push(e);
     }
-    splitMap.set(nodeId, ghosts);
-    lineToGhost.set(nodeId, myMap);
+  }
 
-    // Record connectors between sibling ghosts so the caller can draw them.
-    for (let i = 0; i < ghosts.length - 1; i++) {
-      ghostConnectors.push({
-        from: ghosts[i].id,
-        to: ghosts[i + 1].id,
-        fromPos: ghosts[i].pos,
-        toPos: ghosts[i + 1].pos,
+  // 2. For each station with too many incident edges, bucket edges into
+  //    cardinals and pick which buckets get a ghost (those with ≥2 members).
+  const bucketOfEdgeEnd = new Map<string, number>(); // key = sid + '|' + edgeId
+  const ghostForEdgeEnd = new Map<string, string>(); // key = sid + '|' + edgeId → ghost id
+  const ghostByStationBucket = new Map<string, Map<number, string>>();
+
+  for (const [sid, incEdges] of incidence) {
+    if (incEdges.length <= maxDirections) continue;
+    const station = graph.nodes.get(sid);
+    if (!station) continue;
+
+    // Assign each incident edge to a cardinal bucket.
+    const buckets = new Map<number, GraphEdge[]>();
+    for (const e of incEdges) {
+      const otherId = e.from === sid ? e.to : e.from;
+      const other = graph.nodes.get(otherId);
+      if (!other) continue;
+      const b = bucketFor(other.pos[0] - station.pos[0], other.pos[1] - station.pos[1]);
+      bucketOfEdgeEnd.set(sid + '|' + e.id, b);
+      let list = buckets.get(b);
+      if (!list) {
+        list = [];
+        buckets.set(b, list);
+      }
+      list.push(e);
+    }
+
+    // Create ghosts only for buckets with multiple members; single-member
+    // buckets stay attached directly to the station (no point in a ghost).
+    const ghostsForStation = new Map<number, string>();
+    for (const [b, members] of buckets) {
+      if (members.length < 2) continue;
+      const ghostId = sid + '__ghost_' + CARDINALS[b].name;
+      ghostsForStation.set(b, ghostId);
+      for (const m of members) ghostForEdgeEnd.set(sid + '|' + m.id, ghostId);
+    }
+    if (ghostsForStation.size > 0) ghostByStationBucket.set(sid, ghostsForStation);
+  }
+
+  // No splitting needed — pass through.
+  if (ghostByStationBucket.size === 0) {
+    return { graph, ghostNodeIds: new Set() };
+  }
+
+  // 3. Build the new node map: every original node, plus one ghost per
+  //    (station, ghost-bucket).
+  const newNodes = new Map<string, GraphNode>(graph.nodes);
+  const ghostNodeIds = new Set<string>();
+  for (const [sid, ghosts] of ghostByStationBucket) {
+    const station = graph.nodes.get(sid)!;
+    for (const [b, gid] of ghosts) {
+      const [cx, cy] = CARDINALS[b].dir;
+      newNodes.set(gid, {
+        id: gid,
+        label: '', // empty — renderer suppresses ghost labels anyway, but keep
+        // the field defined for any code that reads it raw.
+        pos: [station.pos[0] + cx * ghostDistance, station.pos[1] + cy * ghostDistance],
+        lngLat: station.lngLat,
+      });
+      ghostNodeIds.add(gid);
+    }
+  }
+
+  // 4. Build new edges.
+  //
+  //    For each original edge e = (u, v):
+  //      gu = ghost at u-end of e, if u is a split station AND e is in a
+  //           multi-member bucket at u; else undefined.
+  //      gv = ghost at v-end of e, same logic for v.
+  //    Replacement edges along the "forward" (u → v) direction:
+  //      [pre]   bundle_u  = (u → ghost_u)        — only if gu defined
+  //              outer    = (gu ?? u) → (gv ?? v) — always present
+  //      [post]  bundle_v  = (ghost_v → v)        — only if gv defined
+  //                          (canonical form is (v, ghost_v); traversed reversed
+  //                           for forward direction)
+  //
+  //    Bundle edges are SHARED across every member of the same (station,
+  //    bucket): one bundle per ghost, carrying the union of lines that pass
+  //    through it.
+
+  interface BundleData {
+    id: string;
+    station: string;
+    ghost: string;
+    lines: Map<string, LineRef>;
+    stopAtStation: Map<string, boolean>;
+  }
+  const bundles = new Map<string, BundleData>(); // key = sid + '|' + bucket
+  const bundleKey = (sid: string, b: number) => sid + '|' + b;
+
+  let edgeCounter = 0;
+  const newEdgeId = (suffix: string) => 'e' + edgeCounter++ + '_' + suffix;
+
+  for (const [sid, ghosts] of ghostByStationBucket) {
+    for (const [b, gid] of ghosts) {
+      bundles.set(bundleKey(sid, b), {
+        id: newEdgeId('bundle'),
+        station: sid,
+        ghost: gid,
+        lines: new Map(),
+        stopAtStation: new Map(),
       });
     }
   }
 
-  // Short-circuit: nothing to split → return the input graph unchanged.
-  if (splitMap.size === 0) return { graph, ghostConnectors: [], ghostGroups: new Map() };
-
-  // Build the original-station → ghost-ids index now that splitting is decided.
-  const ghostGroups = new Map<string, string[]>();
-  for (const [origId, ghosts] of splitMap) {
-    ghostGroups.set(origId, ghosts.map((g) => g.id));
+  interface EdgePart {
+    newId: string;
+    /** Direction relative to the new edge's canonical (from, to) when walking
+     *  the ORIGINAL edge in its native (e.from → e.to) direction. */
+    reversed: boolean;
   }
-
-  // 2. Build the new node map.
-  const newNodes = new Map<string, GraphNode>();
-  for (const [id, n] of graph.nodes) {
-    if (splitMap.has(id)) continue;
-    newNodes.set(id, n);
-  }
-  for (const ghosts of splitMap.values()) {
-    for (const g of ghosts) newNodes.set(g.id, g);
-  }
-
-  // 3. Split each edge incident to a split node into one edge per (ghostFrom, ghostTo) group.
-  //    edgeLineMap[oldEdgeId][lineId] = newEdgeId — so we can remap line traversals.
+  const edgeSequenceForward = new Map<string, EdgePart[]>();
   const newEdges: GraphEdge[] = [];
-  const edgeLineMap = new Map<string, Map<string, string>>();
-  let edgeCounter = 0;
 
   for (const e of graph.edges) {
-    const fromSplit = splitMap.has(e.from);
-    const toSplit = splitMap.has(e.to);
-    if (!fromSplit && !toSplit) {
+    const gu = ghostForEdgeEnd.get(e.from + '|' + e.id);
+    const gv = ghostForEdgeEnd.get(e.to + '|' + e.id);
+
+    // Fast path: edge unaffected — keep it as-is and map its traversal 1:1.
+    if (!gu && !gv) {
       newEdges.push(e);
+      edgeSequenceForward.set(e.id, [{ newId: e.id, reversed: false }]);
       continue;
     }
-    interface Group {
-      from: string;
-      to: string;
-      lines: LineRef[];
-      stops: Map<string, EdgeStop>;
-    }
-    const groups = new Map<string, Group>();
-    for (const l of e.lines) {
-      const newFrom = fromSplit ? lineToGhost.get(e.from)!.get(l.id) ?? e.from : e.from;
-      const newTo = toSplit ? lineToGhost.get(e.to)!.get(l.id) ?? e.to : e.to;
-      const gk = newFrom + '|' + newTo;
-      let g = groups.get(gk);
-      if (!g) {
-        g = { from: newFrom, to: newTo, lines: [], stops: new Map() };
-        groups.set(gk, g);
+
+    const seq: EdgePart[] = [];
+
+    // Pre-bundle at u (canonical from=u, to=ghost_u). Walking u→ghost_u is
+    // forward (not reversed) relative to canonical.
+    if (gu) {
+      const bk = bundleKey(e.from, bucketOfEdgeEnd.get(e.from + '|' + e.id)!);
+      const bundle = bundles.get(bk)!;
+      for (const l of e.lines) {
+        if (!bundle.lines.has(l.id)) bundle.lines.set(l.id, l);
+        const orig = e.stops.get(l.id);
+        if (orig?.atFrom) bundle.stopAtStation.set(l.id, true);
+        else if (!bundle.stopAtStation.has(l.id)) bundle.stopAtStation.set(l.id, false);
       }
-      g.lines.push(l);
-      const stop = e.stops.get(l.id);
-      if (stop) g.stops.set(l.id, stop);
+      seq.push({ newId: bundle.id, reversed: false });
     }
-    const map = new Map<string, string>();
-    for (const g of groups.values()) {
-      const newE: GraphEdge = {
-        id: 'e' + edgeCounter++ + '_s',
-        from: g.from,
-        to: g.to,
-        lines: g.lines,
-        stops: g.stops,
-      };
-      newEdges.push(newE);
-      for (const l of g.lines) map.set(l.id, newE.id);
+
+    // Outer edge: carries this single original edge's lines.
+    const outerFrom = gu ?? e.from;
+    const outerTo = gv ?? e.to;
+    const outerStops = new Map<string, EdgeStop>();
+    for (const l of e.lines) {
+      const orig = e.stops.get(l.id);
+      if (!orig) continue;
+      // Stops at the *station* end are moved to the bundle (above); the outer
+      // only keeps stops at non-split endpoints.
+      const atFrom = orig.atFrom && !gu;
+      const atTo = orig.atTo && !gv;
+      if (atFrom || atTo) outerStops.set(l.id, { atFrom, atTo });
     }
-    edgeLineMap.set(e.id, map);
+    const outerEdge: GraphEdge = {
+      id: newEdgeId('outer'),
+      from: outerFrom,
+      to: outerTo,
+      lines: e.lines,
+      stops: outerStops,
+    };
+    newEdges.push(outerEdge);
+    seq.push({ newId: outerEdge.id, reversed: false });
+
+    // Post-bundle at v. Canonical bundle is (v, ghost_v); walking ghost_v→v
+    // is the REVERSE of canonical.
+    if (gv) {
+      const bk = bundleKey(e.to, bucketOfEdgeEnd.get(e.to + '|' + e.id)!);
+      const bundle = bundles.get(bk)!;
+      for (const l of e.lines) {
+        if (!bundle.lines.has(l.id)) bundle.lines.set(l.id, l);
+        const orig = e.stops.get(l.id);
+        if (orig?.atTo) bundle.stopAtStation.set(l.id, true);
+        else if (!bundle.stopAtStation.has(l.id)) bundle.stopAtStation.set(l.id, false);
+      }
+      seq.push({ newId: bundle.id, reversed: true });
+    }
+
+    edgeSequenceForward.set(e.id, seq);
   }
 
-  // 4. Remap line traversals to point to the right split edge for each line.
+  // Emit bundle edges last (after lines & stops are populated).
+  for (const bd of bundles.values()) {
+    const linesArr = [...bd.lines.values()];
+    const stopsMap = new Map<string, EdgeStop>();
+    for (const [lid, atStation] of bd.stopAtStation) {
+      // Canonical bundle: from = station, to = ghost. The station-end stop is
+      // therefore `atFrom`. The ghost-end never has a stop.
+      if (atStation) stopsMap.set(lid, { atFrom: true, atTo: false });
+    }
+    newEdges.push({
+      id: bd.id,
+      from: bd.station,
+      to: bd.ghost,
+      lines: linesArr,
+      stops: stopsMap,
+    });
+  }
+
+  // 5. Remap line traversals. A single step on a split edge becomes 2 or 3
+  //    steps. If the original step was reversed, the sequence is reversed
+  //    AND each item's reversed bit is flipped.
   const newLineTraversals = new Map<string, TraversalStep[]>();
   for (const [lineId, steps] of graph.lineTraversals) {
     const out: TraversalStep[] = [];
     for (const step of steps) {
-      const remap = edgeLineMap.get(step.edgeId);
-      const newId = remap ? remap.get(lineId) ?? step.edgeId : step.edgeId;
-      out.push({ edgeId: newId, reversed: step.reversed });
+      const seq = edgeSequenceForward.get(step.edgeId);
+      if (!seq) {
+        out.push(step);
+        continue;
+      }
+      const ordered = step.reversed ? [...seq].reverse() : seq;
+      for (const part of ordered) {
+        out.push({
+          edgeId: part.newId,
+          reversed: step.reversed ? !part.reversed : part.reversed,
+        });
+      }
     }
     newLineTraversals.set(lineId, out);
   }
 
-  // 5. Rebuild adjacency.
+  // 6. Rebuild adjacency.
   const newAdj = new Map<string, string[]>();
   for (const id of newNodes.keys()) newAdj.set(id, []);
   for (const e of newEdges) {
@@ -225,7 +328,6 @@ export function splitHighRouteNodes(
       adj: newAdj,
       lineTraversals: newLineTraversals,
     },
-    ghostConnectors,
-    ghostGroups,
+    ghostNodeIds,
   };
 }

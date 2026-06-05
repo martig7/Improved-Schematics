@@ -227,11 +227,13 @@ export function renderGeographic(input: GeoInput): string {
  *  station displacement; larger → finer grid, more work, less displacement. */
 const HANAN_SNAP_DIVISOR = 4;
 
-/** Split a station group into ghosts when it carries more than this many distinct routes. */
-const MAX_ROUTES_PER_GHOST = 4;
-/** Spacing between sibling ghosts as a fraction of the median edge length.
- *  Kept tight so the pills overlap and read as one interchange visually. */
-const GHOST_SPACING_RATIO = 0.05;
+/** Limit each station to at most this many distinct entry directions. Edges
+ *  beyond this get bucketed into the 4 cardinals and bundled through ghosts. */
+const MAX_ENTRY_DIRECTIONS = 4;
+/** How far the (invisible) ghost sits from its station, as a fraction of the
+ *  median edge length. "Somewhat far away" — far enough for the lines to
+ *  visibly fan into a single corridor before reaching the station. */
+const GHOST_DISTANCE_RATIO = 0.45;
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
@@ -261,14 +263,15 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   lengths.sort((p, q) => p - q);
   const medianEdge = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 100;
 
-  // Ghost-node splitting: stations carrying many routes get split into a
-  // cluster of smaller ghost groups so the canonical-offset bundler fans the
-  // lanes across multiple narrower pills instead of one wide one (paper §2).
-  // The renderer then merges sibling-ghost stop-marks back into a single pill
-  // so the cluster reads as one interchange — split for routing, unified visually.
-  const { graph, ghostConnectors, ghostGroups } = splitHighRouteNodes(baseGraph, {
-    maxRoutesPerGhost: MAX_ROUTES_PER_GHOST,
-    ghostSpacing: medianEdge * GHOST_SPACING_RATIO,
+  // Ghost-node splitting (paper §2): stations with more than 4 incident edges
+  // get their entries bucketed into 4 cardinal directions; each crowded bucket
+  // gets a single invisible ghost positioned `ghostDistance` away from the
+  // station. All bucket members terminate at the ghost, and a shared bundle
+  // edge carries them into the station from one direction. The ghost itself
+  // renders nothing — lines pass through it but no marker remains.
+  const { graph, ghostNodeIds } = splitHighRouteNodes(baseGraph, {
+    maxDirections: MAX_ENTRY_DIRECTIONS,
+    ghostDistance: medianEdge * GHOST_DISTANCE_RATIO,
   });
 
   // Real (projected) positions are the *input* to the router; the router snaps
@@ -337,11 +340,6 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const transfers = findTransferPairs(routedGroupsOnly(groups, baseGraph), DEFAULT_TRANSFER_METERS);
 
 
-  // Ghost connector bars are deliberately NOT rendered: a station that's been
-  // split into multiple ghosts should still LOOK like one interchange. The
-  // tight ghost spacing keeps sibling pills close enough that they read as one.
-  void ghostConnectors;
-
   return renderRibbons({
     layout,
     nodePx,
@@ -352,7 +350,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     water: input.water,
     transfers,
-    ghostGroups,
+    ghostNodeIds,
   });
 }
 
