@@ -628,3 +628,26 @@ export function buildSupportGraph(
 
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
+
+export interface TopoOptions {
+  /** theme.lineWidth in SVG units. */
+  lineWidth: number;
+}
+
+export function topo(
+  g: TransitGraph,
+  groups: StationGroup[],
+  opts: TopoOptions,
+): SupportGraph {
+  let maxLines = 2;
+  for (const e of g.edges) maxLines = Math.max(maxLines, e.lines.length);
+  const dHat = 2.5 * opts.lineWidth * maxLines;
+  const params: TopoParams = {
+    dHat,
+    step: Math.max(2, dHat / 4),
+    convergenceEpsilon: 0.002,
+    maxRounds: 8,
+    stationCandidateRadius: 2 * dHat,
+  };
+  return buildSupportGraph(g, groups, params);
+}

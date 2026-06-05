@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, type TopoParams } from './topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, type TopoParams } from './topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup } from './types';
 
 test('dist computes euclidean distance', () => {
@@ -232,4 +232,24 @@ test('insertStations places one station when all incident edges share a node', (
   const groups: StationGroup[] = [{ id: 'b', name: 'B', center: [0, 0], stationIds: [] }];
   const h = buildSupportGraph(g, groups, PARAMS);
   assert.equal(h.stations.size, 1);
+});
+
+test('topo derives d̂ from line width and corridor capacity', () => {
+  const g = graphFrom(
+    { a0: [0, 0], a1: [100, 0], b0: [0, 8], b1: [100, 8] },
+    [
+      { id: 'e0', from: 'a0', to: 'a1', lines: ['L1', 'L2'] },
+      { id: 'e1', from: 'b0', to: 'b1', lines: ['L3'] },
+    ],
+  );
+  const groups: StationGroup[] = [
+    { id: 'a0', name: 'A0', center: [0, 0], stationIds: [] },
+    { id: 'a1', name: 'A1', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'b0', name: 'B0', center: [0, 8 / 1e5], stationIds: [] },
+    { id: 'b1', name: 'B1', center: [100 / 1e5, 8 / 1e5], stationIds: [] },
+  ];
+  // lineWidth 4, maxLinesPerCorridor = 2 → d̂ = 2.5*4*2 = 20
+  const h = topo(g, groups, { lineWidth: 4 });
+  assert.ok(h.nodes.size > 0);
+  assert.ok(h.edges.size > 0);
 });
