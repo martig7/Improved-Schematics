@@ -2,62 +2,80 @@
  * SchematicPanel — the in-game floating panel that renders the improved
  * schematic from live game state.
  *
- * Follows the game's own SchematicMapMenu pattern: generate an SVG string with
- * useMemo, then inject it via innerHTML into a container ref.
+ * Generates an SVG string with useMemo (following the game's own
+ * SchematicMapMenu pattern), then injects it via innerHTML into a container ref.
+ * A mode selector switches between the geographic, smoothed, and octilinear
+ * (schematic) renderers; labels and station markers are toggleable.
  *
- * Water is currently an optional input. Runtime water generation from the
- * city's ocean_depth_index is the next milestone; until then the panel renders
- * route lines on the land background.
+ * Water is currently an optional input. Runtime water generation from the city's
+ * ocean_depth_index is a separate milestone; until then modes render without it.
  */
 
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { generateSchematicSVG } from '../render/schematic';
-import type { WaterCollection } from '../render/types';
+import type { RenderMode, WaterCollection } from '../render/types';
 
 const api = window.SubwayBuilderAPI;
 
+const MODES: { id: RenderMode; label: string }[] = [
+  { id: 'geographic', label: 'Geographic' },
+  { id: 'smoothed', label: 'Smoothed' },
+  { id: 'schematic', label: 'Schematic' },
+];
+
 export function SchematicPanel() {
+  const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Water for the current city. Populated by the runtime generator (TODO);
-  // undefined for now → lines render on the land background.
+  // undefined for now → modes render without a water layer.
   const water: WaterCollection | undefined = undefined;
 
   const svg = useMemo(() => {
     const routes = api.gameState.getRoutes();
     const tracks = api.gameState.getTracks();
-    const stations = api.gameState.getStations().map((s) => ({
-      id: s.id,
-      name: s.name,
-      coords: s.coords,
-    }));
-
-    if (routes.length === 0) {
-      return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800"><rect width="800" height="800" fill="#f2eadb"/><text x="400" y="400" text-anchor="middle" font-family="sans-serif" font-size="18" fill="#888">Build at least one route to see a schematic.</text></svg>';
-    }
+    const stations = api.gameState.getStations();
+    const dark = api.ui.getResolvedTheme() === 'dark';
 
     return generateSchematicSVG({
       routes,
       tracks,
       stations,
       water,
-      options: { width: 800, height: 800, showStations, showLabels: false },
+      options: { mode, width: 900, height: 900, showStations, showLabels, dark },
     });
-  }, [showStations, water]);
+  }, [mode, showStations, showLabels, water]);
 
   useEffect(() => {
     if (containerRef.current) containerRef.current.innerHTML = svg;
   }, [svg]);
 
+  const toggleStyle = (active: boolean) => ({
+    fontSize: 12,
+    padding: '2px 8px',
+    cursor: 'pointer',
+    fontWeight: active ? 600 : 400,
+    opacity: active ? 1 : 0.7,
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button
-          onClick={() => setShowStations((v) => !v)}
-          style={{ fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}
-        >
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {MODES.map((m) => (
+            <button key={m.id} onClick={() => setMode(m.id)} style={toggleStyle(mode === m.id)}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <span style={{ opacity: 0.4 }}>|</span>
+        <button onClick={() => setShowStations((v) => !v)} style={toggleStyle(showStations)}>
           {showStations ? '✓ Stations' : 'Stations'}
+        </button>
+        <button onClick={() => setShowLabels((v) => !v)} style={toggleStyle(showLabels)}>
+          {showLabels ? '✓ Labels' : 'Labels'}
         </button>
       </div>
       <div
