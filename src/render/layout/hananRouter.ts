@@ -54,11 +54,18 @@ const DIAG_CROSS_PENALTY_K = 2.0;
 // "leave direction" matters most. Weighted by edge length so longer wrong-way
 // edges are penalized more.
 const DIRECTION_DISAGREEMENT_K = 2.0;
-// Strong (but finite) penalty for first/last grid segments whose direction
+// Moderate (finite) penalty for first/last grid segments whose direction
 // doesn't match the edge's requested cardinal entry direction. Lets us steer
 // the router into ≤4 cardinal-aligned entry corridors at high-degree stations
 // without graph-level ghost nodes.
-const CARDINAL_MISMATCH_K = 8.0;
+//
+// Calibration: with this K, a diagonal final segment costs about (1 + K)·√2·snap;
+// a detour to enter cardinally costs roughly (D+1)·snap for D extra grid edges.
+// They break even at D ≈ K·√2 + (√2 − 1). For K=2.5 → break-even at ~4 extra
+// edges. Big enough to enforce cardinal entry when the natural direction is
+// already near a cardinal (1-3 edge bend cost); small enough that exactly-
+// diagonal naturals don't loop the long way around the station.
+const CARDINAL_MISMATCH_K = 2.5;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {
