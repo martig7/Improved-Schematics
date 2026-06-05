@@ -56,3 +56,48 @@ test('NodeIndex.move keeps lookups consistent after a node snaps', () => {
   assert.equal(idx.nearest([19, 0], 5), 'a');
   assert.equal(idx.nearest([1, 0], 5), null);
 });
+
+import { HBuilder } from './topo';
+
+test('HBuilder.addOrUnionEdge unions line ids on a repeated node pair', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([10, 0]);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(a, b, new Set(['L2']));
+  const edges = h.edgeList();
+  assert.equal(edges.length, 1);
+  assert.deepEqual([...edges[0].lineIds].sort(), ['L1', 'L2']);
+});
+
+test('HBuilder.snap averages a node toward a sample', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  h.snap(a, [10, 0]);
+  assert.deepEqual(h.nodePos(a), [5, 0]);
+});
+
+test('contractDegree2WithMatchingLines collapses a straight matching run', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([10, 0]);
+  const c = h.addNode([20, 0]);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L1']));
+  h.contractDegree2WithMatchingLines();
+  const edges = h.edgeList();
+  assert.equal(edges.length, 1);
+  // merged polyline keeps the through point b
+  assert.equal(edges[0].points.length, 3);
+});
+
+test('contractDegree2 does NOT collapse when line sets differ', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([10, 0]);
+  const c = h.addNode([20, 0]);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L2']));
+  h.contractDegree2WithMatchingLines();
+  assert.equal(h.edgeList().length, 2);
+});

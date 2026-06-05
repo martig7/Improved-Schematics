@@ -111,3 +111,147 @@ export class NodeIndex {
     return best;
   }
 }
+
+interface HEdge {
+  id: string;
+  a: string;
+  b: string;
+  points: Pixel[];          // a.pos … b.pos
+  lineIds: Set<string>;
+}
+
+const setsEqual = (x: Set<string>, y: Set<string>): boolean => {
+  if (x.size !== y.size) return false;
+  for (const v of x) if (!y.has(v)) return false;
+  return true;
+};
+
+/** Mutable working support graph used during the merge rounds. */
+export class HBuilder {
+  private nodes = new Map<string, Pixel>();
+  private edges = new Map<string, HEdge>();
+  private adj = new Map<string, Set<string>>(); // nodeId -> edgeIds
+  private index: NodeIndex;
+  private nId = 0;
+  private eId = 0;
+
+  constructor(indexCell: number) {
+    this.index = new NodeIndex(indexCell);
+  }
+
+  addNode(p: Pixel): string {
+    const id = 'h' + this.nId++;
+    const pos = p.slice() as Pixel;
+    this.nodes.set(id, pos);
+    this.adj.set(id, new Set());
+    this.index.insert(id, pos);
+    return id;
+  }
+
+  nodePos(id: string): Pixel {
+    return this.nodes.get(id)!;
+  }
+
+  nearestNode(p: Pixel, radius: number): string | null {
+    return this.index.nearest(p, radius);
+  }
+
+  /** Move a node toward `sample`, averaging 50/50 (paper's running average). */
+  snap(id: string, sample: Pixel): void {
+    const cur = this.nodes.get(id)!;
+    const next: Pixel = [(cur[0] + sample[0]) / 2, (cur[1] + sample[1]) / 2];
+    this.index.move(id, cur, next);
+    this.nodes.set(id, next);
+  }
+
+  private edgeKey(a: string, b: string): string {
+    return a < b ? a + '|' + b : b + '|' + a;
+  }
+
+  addOrUnionEdge(a: string, b: string, lines: Set<string>): void {
+    if (a === b) return;
+    for (const eid of this.adj.get(a)!) {
+      const e = this.edges.get(eid)!;
+      if ((e.a === a && e.b === b) || (e.a === b && e.b === a)) {
+        for (const l of lines) e.lineIds.add(l);
+        return;
+      }
+    }
+    const id = 'he' + this.eId++;
+    const e: HEdge = {
+      id,
+      a,
+      b,
+      points: [this.nodes.get(a)!, this.nodes.get(b)!],
+      lineIds: new Set(lines),
+    };
+    this.edges.set(id, e);
+    this.adj.get(a)!.add(id);
+    this.adj.get(b)!.add(id);
+  }
+
+  edgeList(): HEdge[] {
+    return [...this.edges.values()];
+  }
+
+  totalLength(): number {
+    let total = 0;
+    for (const e of this.edges.values()) total += polylineLength(e.points);
+    return total;
+  }
+
+  /** Collapse every degree-2 node whose two edges carry identical line sets,
+   *  joining their polylines through the node. */
+  contractDegree2WithMatchingLines(): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [nid, eids] of this.adj) {
+        if (eids.size !== 2) continue;
+        const [e1, e2] = [...eids].map((id) => this.edges.get(id)!);
+        if (!setsEqual(e1.lineIds, e2.lineIds)) continue;
+        const other1 = e1.a === nid ? e1.b : e1.a;
+        const other2 = e2.a === nid ? e2.b : e2.a;
+        if (other1 === other2) continue; // would create a self-loop
+        // Build the joined polyline other1 … nid … other2.
+        const p1 = e1.a === nid ? [...e1.points].reverse() : e1.points;
+        const p2 = e2.a === nid ? e2.points : [...e2.points].reverse();
+        const joined = [...p1, ...p2.slice(1)];
+        // Remove the two edges and the node.
+        this.detach(e1);
+        this.detach(e2);
+        this.nodes.delete(nid);
+        this.adj.delete(nid);
+        const id = 'he' + this.eId++;
+        const merged: HEdge = {
+          id,
+          a: other1,
+          b: other2,
+          points: joined,
+          lineIds: new Set(e1.lineIds),
+        };
+        this.edges.set(id, merged);
+        this.adj.get(other1)!.add(id);
+        this.adj.get(other2)!.add(id);
+        changed = true;
+        break; // restart iteration; adj mutated
+      }
+    }
+  }
+
+  private detach(e: HEdge): void {
+    this.edges.delete(e.id);
+    this.adj.get(e.a)?.delete(e.id);
+    this.adj.get(e.b)?.delete(e.id);
+  }
+
+  /** Snapshot the current nodes/edges/adjacency (used between rounds and for
+   *  intersection smoothing). */
+  snapshot(): { nodes: Map<string, Pixel>; edges: HEdge[]; adj: Map<string, Set<string>> } {
+    return {
+      nodes: new Map([...this.nodes].map(([k, v]) => [k, v.slice() as Pixel])),
+      edges: this.edgeList().map((e) => ({ ...e, points: e.points.map((p) => p.slice() as Pixel), lineIds: new Set(e.lineIds) })),
+      adj: new Map([...this.adj].map(([k, v]) => [k, new Set(v)])),
+    };
+  }
+}
