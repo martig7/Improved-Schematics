@@ -17,6 +17,7 @@ import {
   findTransferPairs,
   renderTransferConnectors,
   edgeKeysFromGraph,
+  routedGroupsOnly,
   DEFAULT_TRANSFER_METERS,
 } from './transfers';
 import { renderRibbons } from './renderOctilinear';
@@ -194,7 +195,7 @@ export function renderGeographic(input: GeoInput): string {
     for (const n of graph.nodes.values()) nodePx.set(n.id, proj.toSVG(n.lngLat));
 
     // Transfer connectors between nearby station groups not already joined by a route edge.
-    const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
+    const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
     const excludeKeys = edgeKeysFromGraph(graph.edges);
     const connector = renderTransferConnectors(
       transfers,
@@ -273,7 +274,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   };
   orderLines(layout);
 
-  const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
+  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
   return renderRibbons({
     layout,

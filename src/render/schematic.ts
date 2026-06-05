@@ -18,7 +18,7 @@ import { octilinearLayout } from './layout/octilinear';
 import { simplifyLayout } from './layout/simplify';
 import { orderLines } from './layout/lineOrder';
 import type { Station } from '../types/game-state';
-import { findTransferPairs, DEFAULT_TRANSFER_METERS } from './transfers';
+import { findTransferPairs, routedGroupsOnly, DEFAULT_TRANSFER_METERS } from './transfers';
 
 export interface SchematicInput {
   routes: Route[];
@@ -61,7 +61,7 @@ export function generateSchematicSVG(input: SchematicInput): string {
     let layout = octilinearLayout(graph);
     layout = simplifyLayout(layout, graph);
     orderLines(layout);
-    const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
+    const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
     return renderOctilinear(layout, {
       dark: opts.dark,
       showLabels: opts.showLabels,

@@ -4,7 +4,7 @@
 // a visual cue, so we use a tighter default threshold.
 
 import type { Coordinate } from '../types/core';
-import type { StationGroup } from './layout/types';
+import type { StationGroup, TransitGraph } from './layout/types';
 
 /**
  * Pairs of station groups within `maxMeters` of each other (by their center
@@ -22,6 +22,15 @@ export interface TransferPair {
 
 /** Default visual-transfer threshold; a couple of NYC blocks. */
 export const DEFAULT_TRANSFER_METERS = 400;
+
+/**
+ * Filter station groups to only those that appear as nodes in the transit
+ * graph (i.e., have at least one route through them). Stations not on any
+ * route should never participate in transfer connectors.
+ */
+export function routedGroupsOnly(groups: StationGroup[], graph: TransitGraph): StationGroup[] {
+  return groups.filter((g) => graph.nodes.has(g.id));
+}
 
 /** Approximate metres between two lng/lat points (cosine-corrected). */
 function metresBetween(a: Coordinate, b: Coordinate): number {
