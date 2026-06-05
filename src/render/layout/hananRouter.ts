@@ -11,7 +11,6 @@
 import type { Pixel } from './types';
 import { buildHananGrid, type HananGrid } from './hananGrid';
 import { dijkstra } from './dijkstra';
-import { octilinearPath } from './octilinearPath';
 
 export interface RouteableEdge {
   id: string;
@@ -55,11 +54,20 @@ function dirOfEdge(grid: HananGrid, u: string, v: string): number {
   return e ? e.dir : -1;
 }
 
+export interface HananRoutingResult {
+  /** edgeId -> routed pixel polyline */
+  paths: Map<string, Pixel[]>;
+  /** station id -> snapped grid-node pixel position. The caller should render
+   *  station markers and labels at these positions so they sit exactly where
+   *  the routed paths start/end (otherwise the marker and path are offset). */
+  snappedPositions: Map<string, Pixel>;
+}
+
 export function routeAllEdgesViaHanan(
   stationPositions: Map<string, Pixel>,
   edges: RouteableEdge[],
   opts: HananRouterOptions,
-): Map<string, Pixel[]> {
+): HananRoutingResult {
   const grid = buildHananGrid(stationPositions, {
     snapCell: opts.snapCell,
     padding: opts.padding,
@@ -89,20 +97,31 @@ export function routeAllEdgesViaHanan(
   // Set of grid-node keys that ARE stations (pass-through penalty applies to others).
   const stationGridKeys = new Set(grid.stationNodeKeys.values());
 
+  // Snapped grid positions per station — what the caller renders markers at.
+  const snappedPositions = new Map<string, Pixel>();
+  for (const [sid, gk] of grid.stationNodeKeys) {
+    const p = grid.positions.get(gk);
+    if (p) snappedPositions.set(sid, p);
+  }
+
   const out = new Map<string, Pixel[]>();
 
   for (const tEdge of orderedEdges) {
     const startKey = grid.stationNodeKeys.get(tEdge.from);
     const goalKey = grid.stationNodeKeys.get(tEdge.to);
-    const realFrom = stationPositions.get(tEdge.from)!;
-    const realTo = stationPositions.get(tEdge.to)!;
+    const startSnap = startKey ? grid.positions.get(startKey) : undefined;
+    const endSnap = goalKey ? grid.positions.get(goalKey) : undefined;
 
-    if (!startKey || !goalKey) {
-      out.set(tEdge.id, octilinearPath(realFrom, realTo, 2));
+    if (!startKey || !goalKey || !startSnap || !endSnap) {
+      // Grid construction lost this station — extremely unlikely; fall back
+      // to real positions for a direct segment so the line is still continuous.
+      const rf = stationPositions.get(tEdge.from)!;
+      const rt = stationPositions.get(tEdge.to)!;
+      out.set(tEdge.id, [rf, rt]);
       continue;
     }
     if (startKey === goalKey) {
-      out.set(tEdge.id, [realFrom, realTo]);
+      out.set(tEdge.id, [startSnap, endSnap]);
       continue;
     }
 
@@ -166,7 +185,9 @@ export function routeAllEdgesViaHanan(
     const res = dijkstra(startKey, goalKey, neighbors, heuristic, budget);
 
     if (!res || res.path.length < 2) {
-      out.set(tEdge.id, octilinearPath(realFrom, realTo, 2));
+      // Dijkstra failed — draw a straight segment between snapped positions
+      // (still octilinear-friendly since both endpoints are on the grid).
+      out.set(tEdge.id, [startSnap, endSnap]);
       continue;
     }
 
@@ -194,25 +215,13 @@ export function routeAllEdgesViaHanan(
       }
     }
 
-    // Build the routed polyline. The interior consists of grid node positions
-    // (octilinear-aligned by construction). To honour "stations at real
-    // positions" without introducing non-octilinear segments at the ends, we
-    // bridge realFrom -> first grid node and last grid node -> realTo with an
-    // octilinearPath. That gives an octilinear staircase across the snap gap
-    // (at most snapCell/√2 wide), guaranteeing every segment stays on the 8
-    // directions.
-    const gridPath: Pixel[] = res.path.map((k) => grid.positions.get(k)!);
-    const startGrid = gridPath[0];
-    const endGrid = gridPath[gridPath.length - 1];
-    const bridgeStart = octilinearPath(realFrom, startGrid, 1);
-    const bridgeEnd = octilinearPath(endGrid, realTo, 1);
-    // Combine: bridgeStart (ends at startGrid) + grid interior + bridgeEnd
-    // (starts at endGrid). slice(1, -1) skips the duplicate endpoints; if the
-    // path has only 2 grid nodes the interior is empty.
-    const interior = gridPath.length > 2 ? gridPath.slice(1, -1) : [];
-    const pixels: Pixel[] = [...bridgeStart, ...interior, ...bridgeEnd];
+    // The routed polyline is exactly the sequence of grid-node positions.
+    // Stations are rendered at the snapped grid positions (the caller uses
+    // `snappedPositions`), so paths and markers line up and every segment is
+    // octilinear by construction — no bridge artefacts.
+    const pixels: Pixel[] = res.path.map((k) => grid.positions.get(k)!);
     out.set(tEdge.id, pixels);
   }
 
-  return out;
+  return { paths: out, snappedPositions };
 }

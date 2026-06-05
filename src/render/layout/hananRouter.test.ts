@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { routeAllEdgesViaHanan } from './hananRouter';
 import type { Pixel } from './types';
 
-test('routed paths begin and end at real station positions', () => {
+test('routed paths begin and end at SNAPPED station positions', () => {
+  // Stations off-grid at (3,7) and (203,7); snapCell=50 -> snap to (0,0) and (200,0).
   const positions = new Map<string, Pixel>([
-    ['A', [3, 7]], // not aligned to a 50-cell base grid
+    ['A', [3, 7]],
     ['B', [203, 7]],
   ]);
   const edges = [{ id: 'e', from: 'A', to: 'B', lineIds: new Set(['L']) }];
@@ -14,13 +15,15 @@ test('routed paths begin and end at real station positions', () => {
     padding: 50,
     medianEdgeLength: 200,
   });
-  const path = out.get('e')!;
-  assert.deepEqual(path[0], [3, 7]);
-  assert.deepEqual(path[path.length - 1], [203, 7]);
+  const path = out.paths.get('e')!;
+  // First and last points must equal the snapped positions reported back.
+  const snapA = out.snappedPositions.get('A')!;
+  const snapB = out.snappedPositions.get('B')!;
+  assert.deepEqual(path[0], snapA);
+  assert.deepEqual(path[path.length - 1], snapB);
 });
 
 test('two edges sharing a vertical corridor share interior grid edges', () => {
-  // Three stations on a vertical line: A → B → C.
   const positions = new Map<string, Pixel>([
     ['A', [100, 0]],
     ['B', [100, 100]],
@@ -35,32 +38,46 @@ test('two edges sharing a vertical corridor share interior grid edges', () => {
     padding: 50,
     medianEdgeLength: 100,
   });
-  const ab = out.get('eAB')!;
-  const bc = out.get('eBC')!;
+  const ab = out.paths.get('eAB')!;
+  const bc = out.paths.get('eBC')!;
   // Both paths should be straight vertical (start.x === end.x for each).
   assert.ok(Math.abs(ab[0][0] - ab[ab.length - 1][0]) < 1e-6);
   assert.ok(Math.abs(bc[0][0] - bc[ab.length - 1][0]) < 1e-6);
-  // Their shared midpoint (station B) should match.
-  assert.deepEqual(ab[ab.length - 1], [100, 100]);
-  assert.deepEqual(bc[0], [100, 100]);
+  // A's snap and B's snap should align since both are at x=100, which is on the grid.
+  assert.deepEqual(out.snappedPositions.get('A')!, [100, 0]);
+  assert.deepEqual(out.snappedPositions.get('B')!, [100, 100]);
 });
 
-test('an edge that has no Hanan path falls back to octilinearPath', () => {
-  // Construct a degenerate case: two stations and request an impossibly tiny
-  // expansion budget by making the grid very dense. Easier: just verify the
-  // function returns a polyline for every edge even with bad input.
+test('every segment in every routed path is octilinear', () => {
   const positions = new Map<string, Pixel>([
     ['A', [0, 0]],
-    ['B', [157, 84]], // offset, exercises real-position re-stitching
+    ['B', [157, 84]],
+    ['C', [89, 200]],
   ]);
-  const edges = [{ id: 'e', from: 'A', to: 'B', lineIds: new Set(['L']) }];
+  const edges = [
+    { id: 'eAB', from: 'A', to: 'B', lineIds: new Set(['L']) },
+    { id: 'eBC', from: 'B', to: 'C', lineIds: new Set(['L']) },
+  ];
   const out = routeAllEdgesViaHanan(positions, edges, {
     snapCell: 50,
     padding: 50,
     medianEdgeLength: 180,
   });
-  const p = out.get('e')!;
-  assert.deepEqual(p[0], [0, 0]);
-  assert.deepEqual(p[p.length - 1], [157, 84]);
-  assert.ok(p.length >= 2);
+  for (const p of out.paths.values()) {
+    for (let i = 1; i < p.length; i++) {
+      const dx = p[i][0] - p[i - 1][0];
+      const dy = p[i][1] - p[i - 1][1];
+      const len = Math.hypot(dx, dy);
+      if (len < 0.5) continue;
+      const ux = dx / len;
+      const uy = dy / len;
+      const oct: [number, number][] = [
+        [1, 0], [Math.SQRT1_2, Math.SQRT1_2], [0, 1], [-Math.SQRT1_2, Math.SQRT1_2],
+        [-1, 0], [-Math.SQRT1_2, -Math.SQRT1_2], [0, -1], [Math.SQRT1_2, -Math.SQRT1_2],
+      ];
+      let best = Infinity;
+      for (const [a, b] of oct) best = Math.min(best, 1 - (ux * a + uy * b));
+      assert.ok(best < 1e-6, `non-octilinear segment ${i - 1}->${i}: (${dx}, ${dy})`);
+    }
+  }
 });

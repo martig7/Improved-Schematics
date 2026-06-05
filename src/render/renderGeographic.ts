@@ -229,8 +229,9 @@ const HANAN_SNAP_DIVISOR = 4;
 
 /** Split a station group into ghosts when it carries more than this many distinct routes. */
 const MAX_ROUTES_PER_GHOST = 4;
-/** Spacing between sibling ghosts as a fraction of the median edge length. */
-const GHOST_SPACING_RATIO = 0.18;
+/** Spacing between sibling ghosts as a fraction of the median edge length.
+ *  Kept tight so the pills overlap and read as one interchange visually. */
+const GHOST_SPACING_RATIO = 0.05;
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
@@ -268,16 +269,16 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     ghostSpacing: medianEdge * GHOST_SPACING_RATIO,
   });
 
-  // Build the node-pixel map AFTER splitting; ghosts have their own positions.
-  const nodePx = new Map<string, Pixel>();
-  for (const n of graph.nodes.values()) nodePx.set(n.id, n.pos);
+  // Real (projected) positions are the *input* to the router; the router snaps
+  // each station onto its Hanan grid node and returns those snapped positions.
+  // Stations render AT the snapped positions so paths and markers line up
+  // perfectly and every segment stays octilinear (no bridge artefacts, no
+  // loops at endpoints).
+  const realPx = new Map<string, Pixel>();
+  for (const n of graph.nodes.values()) realPx.set(n.id, n.pos);
 
-  // Route every transit edge as a Dijkstra shortest path through a SHARED
-  // octilinear Hanan grid built from the real station positions. Edges that
-  // share a corridor naturally share grid edges → cleaner parallel ribbons
-  // than the previous per-edge octilinear staircase.
   const routed = routeAllEdgesViaHanan(
-    nodePx,
+    realPx,
     graph.edges.map((e) => ({
       id: e.id,
       from: e.from,
@@ -291,20 +292,26 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     },
   );
 
-  // Synthesise a Layout: each node "cell" is its real projected pixel; each
-  // edge's "path" is the routed polyline. The schematic ribbon renderer then
-  // bundles parallel lines and draws pills at the multi-route nodes.
+  // Use snapped positions for everything that ends up in the rendered SVG.
+  const nodePx = new Map<string, Pixel>();
+  for (const [id, p] of routed.snappedPositions) nodePx.set(id, p);
+  // (Fallback for any node the router didn't return, shouldn't happen.)
+  for (const n of graph.nodes.values()) if (!nodePx.has(n.id)) nodePx.set(n.id, n.pos);
+
+  // Synthesise a Layout: each node's "cell" is its snapped pixel; each edge's
+  // "path" is the routed polyline starting/ending at snapped positions.
   const layoutNodes = new Map<string, LayoutNode>();
   for (const n of graph.nodes.values()) {
+    const p = nodePx.get(n.id)!;
     layoutNodes.set(n.id, {
       id: n.id,
-      cell: [n.pos[0], n.pos[1]] as Cell,
+      cell: [p[0], p[1]] as Cell,
       label: n.label,
       lngLat: n.lngLat,
     });
   }
   const layoutEdges: LayoutEdge[] = graph.edges.map((e) => {
-    const path = (routed.get(e.id) ?? [nodePx.get(e.from)!, nodePx.get(e.to)!]).map(
+    const path = (routed.paths.get(e.id) ?? [nodePx.get(e.from)!, nodePx.get(e.to)!]).map(
       (p) => [p[0], p[1]] as Cell,
     );
     return {
@@ -328,6 +335,11 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const transfers = findTransferPairs(routedGroupsOnly(groups, baseGraph), DEFAULT_TRANSFER_METERS);
 
 
+  // Ghost connector bars are deliberately NOT rendered: a station that's been
+  // split into multiple ghosts should still LOOK like one interchange. The
+  // tight ghost spacing keeps sibling pills close enough that they read as one.
+  void ghostConnectors;
+
   return renderRibbons({
     layout,
     nodePx,
@@ -338,7 +350,6 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     water: input.water,
     transfers,
-    ghostConnectors: ghostConnectors.map((c) => ({ fromPos: c.fromPos, toPos: c.toPos })),
   });
 }
 
