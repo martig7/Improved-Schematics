@@ -112,6 +112,41 @@ test('the first edge leaves the start in a direction that advances toward the go
   assert.ok(dot > 0, `exit edge should advance toward goal; dot=${dot}`);
 });
 
+test('a line passing straight through a station continues without a kink', () => {
+  // Three collinear stations on the same horizontal line. The line traversal
+  // visits them in order; both edges should be pure-east, and the arrival
+  // direction at S must match the departure direction.
+  const positions = new Map<string, Pixel>([
+    ['A', [0, 0]],
+    ['S', [100, 0]],
+    ['B', [200, 0]],
+  ]);
+  const edges = [
+    { id: 'eAS', from: 'A', to: 'S', lineIds: new Set(['L']) },
+    { id: 'eSB', from: 'S', to: 'B', lineIds: new Set(['L']) },
+  ];
+  const out = routeAllEdgesViaHanan(
+    positions,
+    edges,
+    { snapCell: 50, padding: 50, medianEdgeLength: 100 },
+    new Map([['L', ['eAS', 'eSB']]]),
+  );
+  const pAS = out.paths.get('eAS')!;
+  const pSB = out.paths.get('eSB')!;
+  const arr = [
+    pAS[pAS.length - 1][0] - pAS[pAS.length - 2][0],
+    pAS[pAS.length - 1][1] - pAS[pAS.length - 2][1],
+  ];
+  const dep = [pSB[1][0] - pSB[0][0], pSB[1][1] - pSB[0][1]];
+  const la = Math.hypot(arr[0], arr[1]) || 1;
+  const ld = Math.hypot(dep[0], dep[1]) || 1;
+  const dot = (arr[0] / la) * (dep[0] / ld) + (arr[1] / la) * (dep[1] / ld);
+  assert.ok(
+    dot > 0.99,
+    `straight-line pass-through must not kink at S; dot=${dot}`,
+  );
+});
+
 test('a 90° bend is avoided at the first node after the start when possible', () => {
   // Start (0,0), goal (200, 50). Two octilinear paths exist:
   //   (0,0) → (0, 50) → (200, 50):  90° bend at (0,50), one step from start

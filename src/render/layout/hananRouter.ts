@@ -59,6 +59,14 @@ const DIRECTION_DISAGREEMENT_K = 2.0;
 // toward the goal; an exit edge that goes sideways or backwards is much more
 // disruptive to read than a mid-path detour, so it pays more.
 const EXIT_DIRECTION_K = 4.0;
+// Cost penalty when the first/last grid segment of the routed path doesn't
+// match the direction recorded by a previously-routed edge of the same line
+// at the shared station. Each transit edge is routed independently, so
+// without this term the two edges of a line meeting at a pass-through
+// station can leave that station in different directions, creating a
+// visible kink. Routing line edges in traversal order and applying this
+// cost makes consecutive edges agree on direction at shared stations.
+const LINE_CONTINUITY_K = 5.0;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {
@@ -89,6 +97,13 @@ export function routeAllEdgesViaHanan(
   stationPositions: Map<string, Pixel>,
   edges: RouteableEdge[],
   opts: HananRouterOptions,
+  /** lineId → ordered edgeIds along that line's traversal. When supplied,
+   *  edges are routed line-by-line in traversal order; the direction each
+   *  edge ends up using at each station is recorded and applied as a soft
+   *  preference to the next edge of the same line at the shared station.
+   *  Result: consecutive edges of a line agree on direction at intermediate
+   *  stations, eliminating spurious kinks at pass-through points. */
+  lineEdgeOrder?: Map<string, string[]>,
 ): HananRoutingResult {
   const grid = buildHananGrid(stationPositions, {
     snapCell: opts.snapCell,
@@ -102,8 +117,35 @@ export function routeAllEdgesViaHanan(
   // Per grid-node: which diagonal axes have been routed (axis 0 = dirs 1/5; axis 1 = dirs 3/7).
   const diagAxesAtNode = new Map<string, Set<number>>();
 
-  // Order edges by importance: descending line count, then descending geographic length.
-  const orderedEdges = [...edges].sort((a, b) => {
+  // Order edges so that consecutive edges of the same line are routed back-
+  // to-back. The first edge of each line has no continuity constraint; every
+  // subsequent edge of the line inherits the previous edge's direction at
+  // the shared station as a preference. Lines with the most edges are
+  // processed first so they "claim" directions at busy stations before
+  // shorter lines.
+  const edgeById = new Map(edges.map((e) => [e.id, e]));
+  const orderedEdges: RouteableEdge[] = [];
+  const seenEdgeIds = new Set<string>();
+  if (lineEdgeOrder) {
+    const lineIds = [...lineEdgeOrder.keys()].sort((a, b) => {
+      const la = lineEdgeOrder.get(a)?.length ?? 0;
+      const lb = lineEdgeOrder.get(b)?.length ?? 0;
+      return lb - la;
+    });
+    for (const lid of lineIds) {
+      for (const eid of lineEdgeOrder.get(lid) ?? []) {
+        if (seenEdgeIds.has(eid)) continue;
+        const e = edgeById.get(eid);
+        if (!e) continue;
+        orderedEdges.push(e);
+        seenEdgeIds.add(eid);
+      }
+    }
+  }
+  // Append any edges not covered by lineEdgeOrder, in the original importance
+  // order (line count desc, length desc).
+  const leftover = edges.filter((e) => !seenEdgeIds.has(e.id));
+  leftover.sort((a, b) => {
     const dl = b.lineIds.size - a.lineIds.size;
     if (dl !== 0) return dl;
     const pa1 = stationPositions.get(a.from)!;
@@ -115,6 +157,14 @@ export function routeAllEdgesViaHanan(
       Math.hypot(pa1[0] - pa2[0], pa1[1] - pa2[1])
     );
   });
+  orderedEdges.push(...leftover);
+
+  // Per-(line, station) direction state. After each edge is routed, we record
+  // the direction OF its first grid segment at the from-end, and the direction
+  // OF its last grid segment at the to-end, under every line on the edge.
+  // The next edge of the same line at that station can then look up the
+  // direction and prefer to leave/arrive in the same direction (continuity).
+  const lineDirAtStation = new Map<string, number>(); // 'lineId|stationId' -> dir
 
   // Set of grid-node keys that ARE stations (pass-through penalty applies to others).
   const stationGridKeys = new Set(grid.stationNodeKeys.values());
@@ -145,6 +195,24 @@ export function routeAllEdgesViaHanan(
     if (startKey === goalKey) {
       out.set(tEdge.id, [startSnap, endSnap]);
       continue;
+    }
+
+    // Line-continuity lookups: take the FIRST recorded direction across this
+    // edge's lines at each station endpoint. Multiple lines can share a
+    // station with different preferred directions; we use one (the first
+    // available) as a soft preference, which is enough to nudge the router
+    // when the alternative is similar-cost.
+    let preferredFirstDir: number | undefined;
+    let preferredLastDir: number | undefined;
+    for (const lid of tEdge.lineIds) {
+      if (preferredFirstDir === undefined) {
+        const d = lineDirAtStation.get(lid + '|' + tEdge.from);
+        if (d !== undefined) preferredFirstDir = d;
+      }
+      if (preferredLastDir === undefined) {
+        const d = lineDirAtStation.get(lid + '|' + tEdge.to);
+        if (d !== undefined) preferredLastDir = d;
+      }
     }
 
     const goalPos = grid.positions.get(goalKey)!;
@@ -241,6 +309,16 @@ export function routeAllEdgesViaHanan(
           }
         }
 
+        // Line-continuity preference: penalize first/last edge directions
+        // that don't match the direction recorded by a previously-routed edge
+        // of the same line at the shared station.
+        if (prev === null && preferredFirstDir !== undefined && e.dir !== preferredFirstDir) {
+          w += LINE_CONTINUITY_K * e.len;
+        }
+        if (e.to === goalKey && preferredLastDir !== undefined && e.dir !== preferredLastDir) {
+          w += LINE_CONTINUITY_K * e.len;
+        }
+
         if (w < 0.01) w = 0.01;
         result.push({ to: e.to, w });
       }
@@ -277,6 +355,24 @@ export function routeAllEdgesViaHanan(
           diagAxesAtNode.set(v, axes);
         }
         axes.add(axis);
+      }
+    }
+
+    // Record per-(line, station) direction state from this edge for the
+    // next edge of the same line to inherit. We only set the entry if not
+    // already present — earlier-routed edges of the line claimed it first.
+    const firstDir = dirOfEdge(grid, res.path[0], res.path[1]);
+    const lastDir = dirOfEdge(grid, res.path[res.path.length - 2], res.path[res.path.length - 1]);
+    if (firstDir >= 0) {
+      for (const lid of tEdge.lineIds) {
+        const k = lid + '|' + tEdge.from;
+        if (!lineDirAtStation.has(k)) lineDirAtStation.set(k, firstDir);
+      }
+    }
+    if (lastDir >= 0) {
+      for (const lid of tEdge.lineIds) {
+        const k = lid + '|' + tEdge.to;
+        if (!lineDirAtStation.has(k)) lineDirAtStation.set(k, lastDir);
       }
     }
 

@@ -266,6 +266,18 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const realPx = new Map<string, Pixel>();
   for (const n of graph.nodes.values()) realPx.set(n.id, n.pos);
 
+  // Build lineEdgeOrder for the router: for each line, the ordered list of
+  // edge ids along its traversal. The router routes a line's edges back to
+  // back, propagating direction state at intermediate stations so a line
+  // continues in the same direction at each pass-through.
+  const lineEdgeOrder = new Map<string, string[]>();
+  for (const [lineId, traversal] of graph.lineTraversals) {
+    lineEdgeOrder.set(
+      lineId,
+      traversal.map((step) => step.edgeId),
+    );
+  }
+
   const routed = routeAllEdgesViaHanan(
     realPx,
     graph.edges.map((e) => ({
@@ -279,6 +291,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
       padding: medianEdge,
       medianEdgeLength: medianEdge,
     },
+    lineEdgeOrder,
   );
 
   // Use snapped positions for everything that ends up in the rendered SVG.
