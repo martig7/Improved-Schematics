@@ -49,7 +49,7 @@ export function SchematicPanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const strokeNodes = useRef<Scaled[]>([]);
-  const fontNodes = useRef<Scaled[]>([]);
+  const labelGroups = useRef<Element[]>([]);
   const viewRef = useRef<View | null>(null);
 
   // Water for the current city, loaded from its ocean_depth_index on first open.
@@ -93,7 +93,9 @@ export function SchematicPanel() {
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
-      for (const n of fontNodes.current) n.el.setAttribute('font-size', String(n.base * inv));
+      // Labels are pinned to their dot; counter-scale keeps text + offset constant size.
+      const lblTransform = `scale(${inv})`;
+      for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
     }
   }, []);
 
@@ -127,10 +129,7 @@ export function SchematicPanel() {
         el,
         base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
       }));
-      fontNodes.current = [...svgEl.querySelectorAll('[font-size]')].map((el) => ({
-        el,
-        base: parseFloat(el.getAttribute('font-size') || '11') || 11,
-      }));
+      labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
     }
     if (!viewRef.current) fit();
     else applyToDom(true);

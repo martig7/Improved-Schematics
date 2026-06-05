@@ -155,14 +155,31 @@ export function placeLabels(
   return result;
 }
 
-export function renderLabel(node: GraphNode | { id: string; label: string }, placement: Placement, hasStops: boolean, dark: boolean): string {
+/**
+ * A label pinned to its dot. The outer group translates to the dot (so it moves
+ * with the map under viewBox zoom); the inner `imp-lbl-s` group is counter-scaled
+ * by the panel (transform=scale(1/zoom)) so the text AND its offset stay a
+ * constant on-screen size — no drift as you zoom. `anchor` is the dot's pixel
+ * position; the placement offset is emitted relative to it.
+ */
+export function renderLabel(
+  node: GraphNode | { id: string; label: string },
+  placement: Placement,
+  anchor: Pixel,
+  hasStops: boolean,
+  dark: boolean,
+): string {
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
+  const dx = placement.x - anchor[0];
+  const dy = placement.y - anchor[1];
   return (
-    '<g data-station-id="' + escapeXml(node.id) + '">\n' +
-    '<text x="' + placement.x.toFixed(1) + '" y="' + placement.y.toFixed(1) +
+    '<g class="imp-lbl" data-station-id="' + escapeXml(node.id) +
+    '" transform="translate(' + anchor[0].toFixed(1) + ',' + anchor[1].toFixed(1) + ')">' +
+    '<g class="imp-lbl-s">' +
+    '<text x="' + dx.toFixed(1) + '" y="' + dy.toFixed(1) +
     '" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +
     LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="medium">' +
-    escapeXml(node.label) + '</text>\n</g>'
+    escapeXml(node.label) + '</text></g></g>'
   );
 }

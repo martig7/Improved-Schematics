@@ -222,8 +222,9 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
     const placement = placements.get(n.id);
-    if (!placement) continue;
-    labelParts.push(renderLabel(n, placement, stopsByNode.has(n.id), dark));
+    const anchor = nodePx.get(n.id);
+    if (!placement || !anchor) continue;
+    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark));
   }
 
   const waterPart = opts.water ? waterBackdrop(layout, nodePx, opts.water, dark) : '';

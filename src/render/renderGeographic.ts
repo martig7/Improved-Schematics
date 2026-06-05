@@ -1,11 +1,13 @@
 // Geographic renderer: route lines over land/water in true geographic positions
 // (Geographic mode), or octilinear-leaning straight segments anchored to those
-// positions (Smoothed mode). Both share water + label drawing.
+// positions (Smoothed mode). Both render dots + labels from station GROUPS (the
+// same interchange-collapsed nodes the schematic uses) so the map isn't buried
+// under every individual platform.
 
 import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
-import type { Pixel, StopMark } from './layout/types';
+import type { Pixel, StopMark, TransitGraph } from './layout/types';
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
@@ -22,6 +24,9 @@ export interface GeoInput {
   /** When true, relax lines toward octilinear while staying near geography. */
   smooth?: boolean;
 }
+
+const STATION_R = 3; // dot radius (interchanges a touch larger)
+const INTERCHANGE_R = 4.2;
 
 const r = (n: number): number => Math.round(n * 10) / 10;
 
@@ -51,23 +56,63 @@ function waterGroup(water: WaterCollection, proj: Projection, fill: string): str
   return `<g fill="${fill}" fill-rule="evenodd" stroke="none">${paths}</g>`;
 }
 
-/** Labels over projected station pixels, avoiding markers and line segments. */
-function labelGroup(
-  nodes: Map<string, { id: string; label: string }>,
-  nodePx: Map<string, Pixel>,
-  segments: Segment[],
-  dark: boolean,
-): string {
-  const stops = new Map<string, StopMark[]>();
-  for (const [id, px] of nodePx) stops.set(id, [{ lineId: '', color: '#000', pos: px }]);
-  const placements = placeLabels({ nodes }, nodePx, stops, segments);
-  const parts: string[] = [];
-  for (const node of nodes.values()) {
-    const p = placements.get(node.id);
-    if (!p) continue;
-    parts.push(renderLabel(node, p, true, dark));
+/** Map each node to the distinct line colors passing through it. */
+function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const e of graph.edges) {
+    for (const nid of [e.from, e.to]) {
+      const arr = m.get(nid) ?? [];
+      for (const l of e.lines) if (!arr.includes(l.color)) arr.push(l.color);
+      m.set(nid, arr);
+    }
   }
-  return parts.join('');
+  return m;
+}
+
+/**
+ * Station dots (white fill + colored/neutral ring, like the schematic) and
+ * collision-placed labels, both from the grouped graph nodes.
+ */
+function renderNodes(
+  graph: TransitGraph,
+  nodePx: Map<string, Pixel>,
+  opts: SchematicOptions,
+  dark: boolean,
+  segments: Segment[],
+): string {
+  let out = '';
+  const fill = dark ? '#18181b' : '#ffffff';
+
+  if (opts.showStations) {
+    const colors = nodeRingColors(graph);
+    let dots = '';
+    for (const node of graph.nodes.values()) {
+      const px = nodePx.get(node.id);
+      if (!px) continue;
+      const cs = colors.get(node.id) ?? [];
+      const ring = cs.length === 1 ? cs[0] : dark ? '#e4e4e7' : '#111111';
+      const rad = cs.length > 1 ? INTERCHANGE_R : STATION_R;
+      dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${rad}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+    }
+    out += `<g class="stations-dots">${dots}</g>`;
+  }
+
+  if (opts.showLabels) {
+    const labelNodes = new Map<string, { id: string; label: string }>();
+    for (const n of graph.nodes.values()) labelNodes.set(n.id, { id: n.id, label: n.label });
+    const stops = new Map<string, StopMark[]>();
+    for (const [id, px] of nodePx) stops.set(id, [{ lineId: '', color: '#000', pos: px }]);
+    const placements = placeLabels({ nodes: labelNodes }, nodePx, stops, segments);
+    let labels = '';
+    for (const node of labelNodes.values()) {
+      const p = placements.get(node.id);
+      const anchor = nodePx.get(node.id);
+      if (p && anchor) labels += renderLabel(node, p, anchor, true, dark);
+    }
+    out += `<g class="stations">${labels}</g>`;
+  }
+
+  return out;
 }
 
 export function renderGeographic(input: GeoInput): string {
@@ -104,29 +149,20 @@ export function renderGeographic(input: GeoInput): string {
       `<path d="${lineToPath(px)}" fill="none" stroke="${line.color}" ` +
       `stroke-width="${theme.lineWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
     if (opts.showLabels) {
-      // decimate segments for label avoidance
       const step = Math.max(1, Math.floor(px.length / 40));
       for (let i = step; i < px.length; i += step) segments.push({ p1: px[i - step], p2: px[i] });
     }
   }
   parts.push(`<g>${linePaths}</g>`);
 
-  const nodePx = new Map<string, Pixel>();
-  const labelNodes = new Map<string, { id: string; label: string }>();
-  for (const s of input.stations) {
-    nodePx.set(s.id, proj.toSVG(s.coords));
-    labelNodes.set(s.id, { id: s.id, label: s.name });
+  // Dots + labels from grouped nodes, projected with the same projection.
+  const groups = buildStationGroups(input.stations as never);
+  const graph = buildTransitGraph(input.stations as never, input.routes, groups);
+  if (graph.nodes.size > 0) {
+    const nodePx = new Map<string, Pixel>();
+    for (const n of graph.nodes.values()) nodePx.set(n.id, proj.toSVG(n.lngLat));
+    parts.push(renderNodes(graph, nodePx, opts, dark, segments));
   }
-
-  if (opts.showStations) {
-    let markers = '';
-    for (const px of nodePx.values()) {
-      markers += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${theme.stationRadius}"/>`;
-    }
-    parts.push(`<g fill="${theme.stationFill}" stroke="${theme.stationStroke}" stroke-width="0.6">${markers}</g>`);
-  }
-
-  if (opts.showLabels) parts.push(`<g class="stations">${labelGroup(labelNodes, nodePx, segments, dark)}</g>`);
 
   return svgWrap(parts, width, height);
 }
@@ -142,12 +178,9 @@ function renderSmoothed(
   const groups = buildStationGroups(input.stations as never);
   const graph = buildTransitGraph(input.stations as never, input.routes, groups);
   if (graph.edges.length === 0) {
-    // nothing to smooth — fall back to plain geographic
     return renderGeographic({ ...input, smooth: false });
   }
 
-  // frame on node geography, project, then relax toward octilinear (reusing
-  // smoothGeographic by feeding it projected pixels as node positions).
   const bounds = (() => {
     const b = computeBounds([...graph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
@@ -188,18 +221,7 @@ function renderSmoothed(
   }
   parts.push(`<g>${linePaths}</g>`);
 
-  const labelNodes = new Map<string, { id: string; label: string }>();
-  for (const n of graph.nodes.values()) labelNodes.set(n.id, { id: n.id, label: n.label });
-
-  if (opts.showStations) {
-    let markers = '';
-    for (const px of relaxed.values()) {
-      markers += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${theme.stationRadius}"/>`;
-    }
-    parts.push(`<g fill="${theme.stationFill}" stroke="${theme.stationStroke}" stroke-width="0.6">${markers}</g>`);
-  }
-
-  if (opts.showLabels) parts.push(`<g class="stations">${labelGroup(labelNodes, relaxed, segments, dark)}</g>`);
+  parts.push(renderNodes(graph, relaxed, opts, dark, segments));
 
   return svgWrap(parts, width, height);
 }
@@ -210,4 +232,3 @@ function svgWrap(parts: string[], width: number, height: number): string {
     `width="${width}" height="${height}">${parts.join('')}</svg>`
   );
 }
-
