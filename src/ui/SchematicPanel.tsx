@@ -49,6 +49,7 @@ export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
   const [dragging, setDragging] = useState(false);
 
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -100,9 +101,9 @@ export function SchematicPanel() {
       stations,
       stationGroups,
       water,
-      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
+      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, showGrid, dark },
     });
-  }, [mode, showStations, showLabels, water]);
+  }, [mode, showStations, showLabels, showGrid, water]);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
@@ -232,6 +233,15 @@ export function SchematicPanel() {
         <button onClick={() => setShowLabels((v) => !v)} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
+        {mode === 'smoothed' && (
+          <button
+            onClick={() => setShowGrid((v) => !v)}
+            style={toggleStyle(showGrid)}
+            title="Overlay the Hanan routing grid (diagnostic)"
+          >
+            {showGrid ? '✓ Grid' : 'Grid'}
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit

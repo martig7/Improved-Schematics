@@ -62,6 +62,9 @@ export interface SchematicOptions {
   bounds?: BoundingBox;
   showStations: boolean;
   showLabels: boolean;
+  /** Diagnostic: overlay the Hanan routing grid underneath the routes
+   *  (Smoothed mode only — that's the only renderer that uses one). */
+  showGrid?: boolean;
   /** Which render mode to use. Defaults to 'geographic'. */
   mode: RenderMode;
   /** Render with a dark background/palette. */

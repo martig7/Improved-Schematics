@@ -91,6 +91,9 @@ export interface HananRoutingResult {
    *  station markers and labels at these positions so they sit exactly where
    *  the routed paths start/end (otherwise the marker and path are offset). */
   snappedPositions: Map<string, Pixel>;
+  /** The Hanan grid the routing was performed on. Exposed for diagnostic
+   *  overlays (showGrid option). */
+  grid: HananGrid;
 }
 
 export function routeAllEdgesViaHanan(
@@ -384,5 +387,5 @@ export function routeAllEdgesViaHanan(
     out.set(tEdge.id, pixels);
   }
 
-  return { paths: out, snappedPositions };
+  return { paths: out, snappedPositions, grid };
 }

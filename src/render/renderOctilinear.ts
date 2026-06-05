@@ -98,6 +98,10 @@ export interface RenderRibbonsArgs {
    *  labels for these — the ghost is invisible by design (lines pass through
    *  it but no circle is drawn). */
   ghostNodeIds?: Set<string>;
+  /** Optional pre-rendered SVG snippet (a single `<g>...</g>`) drawn between
+   *  the water layer and the route ribbons. Used to overlay the Hanan grid
+   *  for diagnostic purposes (showGrid option). */
+  gridOverlay?: string;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -273,6 +277,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '">\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
+    (args.gridOverlay ? args.gridOverlay + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     (transferPart ? transferPart + '\n' : '') +
     '<g class="stops">\n' + stopParts.join('\n') +

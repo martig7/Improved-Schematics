@@ -336,6 +336,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, baseGraph), DEFAULT_TRANSFER_METERS);
 
+  const gridOverlay = opts.showGrid ? buildGridSvg(routed.grid, dark) : '';
 
   return renderRibbons({
     layout,
@@ -347,7 +348,43 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     water: input.water,
     transfers,
+    gridOverlay,
   });
+}
+
+/** Diagnostic overlay: every Hanan grid edge drawn as a thin line, every grid
+ *  node as a tiny dot. Each undirected edge is emitted once (key on the
+ *  ordered node-id pair). Drawn between water and routes so the routes sit on
+ *  top but the grid is clearly visible underneath. */
+function buildGridSvg(grid: import('./layout/hananGrid').HananGrid, dark: boolean): string {
+  const stroke = dark ? '#3a4150' : '#cdd3dc';
+  const dotFill = dark ? '#525a6a' : '#a3acbb';
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const [u, adj] of grid.adj) {
+    const pu = grid.positions.get(u);
+    if (!pu) continue;
+    for (const e of adj) {
+      const key = u < e.to ? u + '|' + e.to : e.to + '|' + u;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const pv = grid.positions.get(e.to);
+      if (!pv) continue;
+      lines.push(
+        '<line x1="' + pu[0].toFixed(1) + '" y1="' + pu[1].toFixed(1) +
+          '" x2="' + pv[0].toFixed(1) + '" y2="' + pv[1].toFixed(1) +
+          '" stroke="' + stroke + '" stroke-width="0.4" opacity="0.55"/>',
+      );
+    }
+  }
+  const dots: string[] = [];
+  for (const p of grid.positions.values()) {
+    dots.push(
+      '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) +
+        '" r="0.9" fill="' + dotFill + '" opacity="0.85"/>',
+    );
+  }
+  return '<g class="hanan-grid">' + lines.join('') + dots.join('') + '</g>';
 }
 
 function svgWrap(parts: string[], width: number, height: number): string {
