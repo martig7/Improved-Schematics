@@ -2,7 +2,7 @@
 // (dev/reference/placeLabels.js, renderLabel.js, estimateTextWidth.js,
 // boxesOverlap.js, segmentIntersectsBox.js). Shared by both renderers.
 
-import type { TransitGraph, GraphNode, StopMark, Pixel } from './layout/types';
+import type { GraphNode, StopMark, Pixel } from './layout/types';
 import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET } from './constants';
 import { escapeXml } from './escape';
 
@@ -72,8 +72,14 @@ interface Candidate {
  * 8 candidate placements against already-placed labels, station markers, and
  * line segments.
  */
+/** Minimal node shape placeLabels needs (satisfied by GraphNode and LayoutNode). */
+export interface LabelNode {
+  id: string;
+  label: string;
+}
+
 export function placeLabels(
-  graph: TransitGraph,
+  graph: { nodes: Map<string, LabelNode> },
   nodePx: Map<string, Pixel>,
   stopsByNode: Map<string, StopMark[]>,
   segments: Segment[],
