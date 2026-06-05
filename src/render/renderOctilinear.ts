@@ -94,6 +94,9 @@ export interface RenderRibbonsArgs {
   showLabels: boolean;
   water?: WaterCollection;
   transfers?: TransferPair[];
+  /** Pairs of (ghost a, ghost b) sharing one original station — drawn as a
+   *  thin grey "this is one station" bar behind the line ribbons. */
+  ghostConnectors?: Array<{ fromPos: Pixel; toPos: Pixel }>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -268,10 +271,30 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     );
   }
 
+  // Ghost-sibling connectors: solid grey bar between ghosts of the same
+  // original station. Drawn behind line ribbons (so ribbons sit on top of the
+  // bar at the pill) but above water.
+  let ghostPart = '';
+  if (args.ghostConnectors && args.ghostConnectors.length > 0) {
+    const stroke = dark ? '#52525b' : '#9ca3af';
+    const w = LINE_WIDTH * 1.6;
+    const parts: string[] = [];
+    for (const c of args.ghostConnectors) {
+      parts.push(
+        '<line x1="' + c.fromPos[0].toFixed(1) + '" y1="' + c.fromPos[1].toFixed(1) +
+          '" x2="' + c.toPos[0].toFixed(1) + '" y2="' + c.toPos[1].toFixed(1) +
+          '" stroke="' + stroke + '" stroke-width="' + w.toFixed(1) +
+          '" stroke-linecap="round"/>',
+      );
+    }
+    ghostPart = '<g class="ghost-bars">' + parts.join('') + '</g>';
+  }
+
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '">\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
+    (ghostPart ? ghostPart + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     (transferPart ? transferPart + '\n' : '') +
     '<g class="stops">\n' + stopParts.join('\n') +

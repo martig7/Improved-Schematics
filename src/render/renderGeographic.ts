@@ -22,6 +22,7 @@ import {
 } from './transfers';
 import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
+import { splitHighRouteNodes } from './layout/ghostNodes';
 
 export interface GeoInput {
   routes: Route[];
@@ -226,37 +227,50 @@ export function renderGeographic(input: GeoInput): string {
  *  station displacement; larger → finer grid, more work, less displacement. */
 const HANAN_SNAP_DIVISOR = 4;
 
+/** Split a station group into ghosts when it carries more than this many distinct routes. */
+const MAX_ROUTES_PER_GHOST = 4;
+/** Spacing between sibling ghosts as a fraction of the median edge length. */
+const GHOST_SPACING_RATIO = 0.18;
+
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const graph = buildTransitGraph(input.stations as never, input.routes, groups);
-  if (graph.edges.length === 0) {
+  const baseGraph = buildTransitGraph(input.stations as never, input.routes, groups);
+  if (baseGraph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });
   }
 
   // Frame on real station-group geography; project each node once. Stations
   // stay at their actual locations — no relaxation, no grid snap.
   const bounds = (() => {
-    const b = computeBounds([...graph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
+    const b = computeBounds([...baseGraph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
   const proj = createProjection(bounds, width, height, padding);
-  const nodePx = new Map<string, Pixel>();
-  for (const n of graph.nodes.values()) {
-    const p = proj.toSVG(n.lngLat);
-    n.pos = p;
-    nodePx.set(n.id, p);
-  }
+  for (const n of baseGraph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
 
-  // Compute median edge length for Hanan-grid sizing & cost scaling.
+  // Compute median edge length up front; we need it for both Hanan grid sizing
+  // AND the ghost-node spacing.
   const lengths: number[] = [];
-  for (const e of graph.edges) {
-    const a = nodePx.get(e.from)!;
-    const b = nodePx.get(e.to)!;
+  for (const e of baseGraph.edges) {
+    const a = baseGraph.nodes.get(e.from)!.pos;
+    const b = baseGraph.nodes.get(e.to)!.pos;
     lengths.push(Math.hypot(a[0] - b[0], a[1] - b[1]));
   }
   lengths.sort((p, q) => p - q);
   const medianEdge = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 100;
+
+  // Ghost-node splitting: stations carrying many routes get split into a
+  // cluster of smaller ghost groups so the canonical-offset bundler fans the
+  // lanes across multiple narrower pills instead of one wide one (paper §2).
+  const { graph, ghostConnectors } = splitHighRouteNodes(baseGraph, {
+    maxRoutesPerGhost: MAX_ROUTES_PER_GHOST,
+    ghostSpacing: medianEdge * GHOST_SPACING_RATIO,
+  });
+
+  // Build the node-pixel map AFTER splitting; ghosts have their own positions.
+  const nodePx = new Map<string, Pixel>();
+  for (const n of graph.nodes.values()) nodePx.set(n.id, n.pos);
 
   // Route every transit edge as a Dijkstra shortest path through a SHARED
   // octilinear Hanan grid built from the real station positions. Edges that
@@ -311,7 +325,8 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   };
   orderLines(layout);
 
-  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
+  const transfers = findTransferPairs(routedGroupsOnly(groups, baseGraph), DEFAULT_TRANSFER_METERS);
+
 
   return renderRibbons({
     layout,
@@ -323,6 +338,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     water: input.water,
     transfers,
+    ghostConnectors: ghostConnectors.map((c) => ({ fromPos: c.fromPos, toPos: c.toPos })),
   });
 }
 
