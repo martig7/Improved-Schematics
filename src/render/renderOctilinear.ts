@@ -232,18 +232,39 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   let transferPart = '';
   if (args.transfers && args.transfers.length > 0) {
     const excludeKeys = edgeKeysFromGraph(layout.edges);
+    const dotR = LINE_WIDTH * 0.7;
+    // Resolve each node's *drawn* dot: a single stop is a circle at its mark; an
+    // interchange is the bounding box of its marks. Fall back to the node pixel.
+    const dotOf = (id: string): { center: Pixel; radius: number } | null => {
+      const marks = stopsByNode.get(id);
+      if (!marks || marks.length === 0) {
+        const p = nodePx.get(id);
+        return p ? { center: p, radius: dotR } : null;
+      }
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const m of marks) {
+        if (m.pos[0] < minX) minX = m.pos[0];
+        if (m.pos[0] > maxX) maxX = m.pos[0];
+        if (m.pos[1] < minY) minY = m.pos[1];
+        if (m.pos[1] > maxY) maxY = m.pos[1];
+      }
+      const center: Pixel = [(minX + maxX) / 2, (minY + maxY) / 2];
+      const radius = Math.hypot(maxX - minX, maxY - minY) / 2 + dotR;
+      return { center, radius };
+    };
     transferPart = renderTransferConnectors(
       args.transfers,
-      (lngLat) => {
-        // Each transfer pair carries lng/lat — for ribbons we need the
-        // projected node pixels. Look up by matching center; fall back to
-        // identity (transfers without resolvable nodes are skipped above).
-        const px = lngLatToNodePx(lngLat, layout, nodePx);
-        return px ?? [0, 0];
+      (p) => {
+        const a = dotOf(p.fromId);
+        const b = dotOf(p.toId);
+        if (!a || !b) return null;
+        return { from: a.center, to: b.center, radius: Math.max(a.radius, b.radius) };
       },
       excludeKeys,
-      dark,
-      LINE_WIDTH * 0.6,
+      { dark, strokeWidth: LINE_WIDTH * 0.6 },
     );
   }
 
@@ -256,16 +277,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     '<g class="stops">\n' + stopParts.join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
   );
-}
-
-/** Find a node whose lng/lat matches `c` and return its pixel; null if absent. */
-function lngLatToNodePx(c: [number, number], layout: Layout, nodePx: Map<string, Pixel>): Pixel | null {
-  for (const n of layout.nodes.values()) {
-    if (Math.abs(n.lngLat[0] - c[0]) < 1e-9 && Math.abs(n.lngLat[1] - c[1]) < 1e-9) {
-      return nodePx.get(n.id) ?? null;
-    }
-  }
-  return null;
 }
 
 export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string {

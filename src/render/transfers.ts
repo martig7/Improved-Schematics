@@ -1,4 +1,4 @@
-// Transfer connectors: short lines drawn between distinct station groups that
+// Transfer connectors: short U-brackets drawn between distinct station groups that
 // are close enough to walk between (NYC-map-style). The game's
 // MAX_TRANSFER_WALKING_TIME / WALKING_SPEED gives ~900m which is too loose for
 // a visual cue, so we use a tighter default threshold.
@@ -10,7 +10,7 @@ import type { StationGroup, TransitGraph } from './layout/types';
  * Pairs of station groups within `maxMeters` of each other (by their center
  * lng/lat). Symmetric pairs are returned once. Pairs that already share an
  * edge in the transit graph should be filtered by the caller (those are
- * normal connected stops, not visual transfers).
+ * normal connected stops, not transfers).
  */
 export interface TransferPair {
   fromId: string;
@@ -22,6 +22,11 @@ export interface TransferPair {
 
 /** Default visual-transfer threshold; a couple of NYC blocks. */
 export const DEFAULT_TRANSFER_METERS = 400;
+
+/** How far (px) the staple crossbar sits beyond the dot edge so it hugs without touching. */
+export const BRACKET_LEG_EXTRA = 2;
+
+type Pixel = [number, number];
 
 /**
  * Filter station groups to only those that appear as nodes in the transit
@@ -65,31 +70,104 @@ export function findTransferPairs(
 }
 
 /**
- * Render transfer connector lines in projected pixel space. Skips pairs whose
+ * Build an orthogonal staple path between two nearby station dots. The path runs
+ * from one dot center, straight out along a horizontal/vertical axis, across to
+ * the other leg, then into the other dot center. Endpoints sit at the centers so
+ * the dots (drawn on top) hide the segments running through them; the crossbar is
+ * pushed `radius + legExtra` past the dots so it stays clearly visible even when
+ * the dots overlap.
+ */
+export function bracketTransferPath(
+  from: Pixel,
+  to: Pixel,
+  radius: number,
+  legExtra: number = BRACKET_LEG_EXTRA,
+): Pixel[] {
+  const [ax, ay] = from;
+  const [bx, by] = to;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const depth = radius + legExtra;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    // Side-by-side dots → staple opens vertically (legs run up/down).
+    const dir = dy >= 0 ? 1 : -1;
+    const edge = dir > 0 ? Math.max(ay, by) : Math.min(ay, by);
+    const yCross = edge + dir * depth;
+    return [
+      [ax, ay],
+      [ax, yCross],
+      [bx, yCross],
+      [bx, by],
+    ];
+  }
+
+  // Stacked dots → staple opens horizontally (legs run left/right).
+  const dir = dx >= 0 ? 1 : -1;
+  const edge = dir > 0 ? Math.max(ax, bx) : Math.min(ax, bx);
+  const xCross = edge + dir * depth;
+  return [
+    [ax, ay],
+    [xCross, ay],
+    [xCross, by],
+    [bx, by],
+  ];
+}
+
+export interface TransferRenderOptions {
+  dark: boolean;
+  strokeWidth: number;
+  legExtra?: number;
+}
+
+/** Resolved pixel geometry for a transfer pair's two dots. */
+export interface ResolvedTransfer {
+  from: Pixel;
+  to: Pixel;
+  /** Visible dot radius to clear; the larger of the two dots. */
+  radius: number;
+}
+
+/**
+ * Render transfer connector staples in projected pixel space. Skips pairs whose
  * groups are already joined by a direct route edge (those are not transfers).
+ * `resolvePx` returns the actual drawn dot centers + radius so the staple hugs
+ * what the viewer sees rather than the underlying graph node.
  */
 export function renderTransferConnectors(
   pairs: TransferPair[],
-  toPx: (coord: Coordinate) => [number, number],
+  resolvePx: (pair: TransferPair) => ResolvedTransfer | null,
   excludeKeys: Set<string>,
-  dark: boolean,
-  strokeWidth: number,
+  opts: TransferRenderOptions,
 ): string {
-  const stroke = dark ? '#9ca3af' : '#374151';
-  const lines: string[] = [];
+  const stroke = opts.dark ? '#9ca3af' : '#374151';
+  const { strokeWidth } = opts;
+  const legExtra = opts.legExtra ?? BRACKET_LEG_EXTRA;
+  const dashOn = (strokeWidth * 1.5).toFixed(1);
+  const dashOff = (strokeWidth * 1.2).toFixed(1);
+  const paths: string[] = [];
+
   for (const p of pairs) {
     const k1 = p.fromId + '|' + p.toId;
     const k2 = p.toId + '|' + p.fromId;
     if (excludeKeys.has(k1) || excludeKeys.has(k2)) continue;
-    const [x1, y1] = toPx(p.fromCenter);
-    const [x2, y2] = toPx(p.toCenter);
-    lines.push(
-      `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" ` +
-        `stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${(strokeWidth * 1.5).toFixed(1)},${(strokeWidth * 1.2).toFixed(1)}" opacity="0.7"/>`,
+
+    const px = resolvePx(p);
+    if (!px) continue;
+
+    const pts = bracketTransferPath(px.from, px.to, px.radius, legExtra);
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 1; i < pts.length; i++) {
+      d += `L${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)}`;
+    }
+    paths.push(
+      `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" ` +
+        `stroke-linecap="butt" stroke-linejoin="miter" stroke-dasharray="${dashOn},${dashOff}" opacity="0.7"/>`,
     );
   }
-  if (lines.length === 0) return '';
-  return `<g class="transfers">${lines.join('')}</g>`;
+
+  if (paths.length === 0) return '';
+  return `<g class="transfers">${paths.join('')}</g>`;
 }
 
 /** Build a set of `from|to` keys for direct graph edges, used to exclude them. */

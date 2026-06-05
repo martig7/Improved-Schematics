@@ -197,12 +197,21 @@ export function renderGeographic(input: GeoInput): string {
     // Transfer connectors between nearby station groups not already joined by a route edge.
     const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
     const excludeKeys = edgeKeysFromGraph(graph.edges);
+    const routeCounts = nodeRouteCount(graph);
+    // Match the dot/pill sizing in renderGeoNodes so the staple hugs the marker.
+    const dotRadius = (id: string): number => {
+      const routeN = routeCounts.get(id) ?? 1;
+      return routeN > 1 ? INTERCHANGE_R + Math.min(routeN - 1, 4) * 1.6 : STATION_R;
+    };
     const connector = renderTransferConnectors(
       transfers,
-      (c) => proj.toSVG(c),
+      (p) => ({
+        from: proj.toSVG(p.fromCenter),
+        to: proj.toSVG(p.toCenter),
+        radius: Math.max(dotRadius(p.fromId), dotRadius(p.toId)),
+      }),
       excludeKeys,
-      dark,
-      theme.lineWidth * 0.7,
+      { dark, strokeWidth: theme.lineWidth * 0.7 },
     );
     if (connector) parts.push(connector);
 
