@@ -143,7 +143,7 @@ const FUNCS = [
   'nearestOctilinearUnit', 'simplifyLayout',
   'orderLines',
   'renderSvg', 'computeCanonicalOffsets', 'offsetPolyline', 'renderStops', 'placeLabels', 'renderLabel',
-  'gridToPx',
+  'gridToPx', 'unit', 'perp', 'estimateTextWidth', 'boxesOverlap', 'segmentIntersectsBox',
 ];
 
 // Arrow / expression consts: `const NAME = <expr up to the ; at depth 0>`
