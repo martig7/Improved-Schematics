@@ -1,0 +1,10 @@
+{
+  "id": "com.darkdiamond.improvedschematics",
+  "name": "Improved Schematics",
+  "description": "Generates a geographic schematic map of your transit system with simplified land and water context, like a real subway map.",
+  "version": "0.1.0",
+  "author": {
+    "name": "darkdiamond"
+  },
+  "main": "index.js"
+}
