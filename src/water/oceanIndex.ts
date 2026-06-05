@@ -1,6 +1,11 @@
-// Runtime loader: fetch + gunzip the city's ocean_depth_index and generate the
-// water layer, cached per city code. Browser/Electron only (uses fetch +
-// DecompressionStream); the pure core lives in generate.ts for tests/harness.
+// Runtime loader: load the city's ocean_depth_index via the modding API and
+// generate the water layer, cached per city code. The pure core lives in
+// generate.ts for tests/harness.
+//
+// Must use api.utils.loadCityData() (which resolves through the game's local
+// data server) — a plain fetch() of "/data/..." fails in the Electron renderer.
+// getCityDataFiles() returns undefined for built-in cities, so we mirror the
+// game's own path: "/data/<city>/ocean_depth_index.json".
 
 import type { OceanIndex } from './types';
 import type { WaterCollection } from '../render/types';
@@ -8,24 +13,17 @@ import { generateWaterFromIndex } from './generate';
 
 const api = window.SubwayBuilderAPI;
 const cache = new Map<string, WaterCollection | null>();
+const TAG = '[ImprovedSchematics] water:';
 
 async function fetchOceanIndex(cityCode: string): Promise<OceanIndex | null> {
   const files = api.cities.getCityDataFiles(cityCode);
-  const url = files?.oceanDepthIndex;
-  if (!url) return null;
+  const path = files?.oceanDepthIndex ?? `/data/${cityCode}/ocean_depth_index.json`;
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    let text: string;
-    if (url.endsWith('.gz') && res.body) {
-      const stream = res.body.pipeThrough(new DecompressionStream('gzip'));
-      text = await new Response(stream).text();
-    } else {
-      text = await res.text();
-    }
-    return JSON.parse(text) as OceanIndex;
+    const raw = await api.utils.loadCityData(path);
+    const index = (typeof raw === 'string' ? JSON.parse(raw) : raw) as OceanIndex | null;
+    return index?.cells ? index : null;
   } catch (err) {
-    console.warn('[ImprovedSchematics] ocean index load failed:', err);
+    console.warn(`${TAG} load failed for ${path}:`, err);
     return null;
   }
 }

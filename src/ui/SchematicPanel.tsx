@@ -35,7 +35,7 @@ export function SchematicPanel() {
   // open and cached. Undefined until it resolves (or if the city has none).
   const [water, setWater] = useState<WaterCollection | undefined>(undefined);
   useEffect(() => {
-    const city = modState.cityCode;
+    const city = modState.cityCode ?? api.utils.getCityCode?.();
     if (!city) return;
     let alive = true;
     generateWater(city).then((wc) => {
