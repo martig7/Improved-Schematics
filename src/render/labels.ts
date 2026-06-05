@@ -4,6 +4,7 @@
 
 import type { TransitGraph, GraphNode, StopMark, Pixel } from './layout/types';
 import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET } from './constants';
+import { escapeXml } from './escape';
 
 export interface Box {
   x: number;
@@ -146,12 +147,6 @@ export function placeLabels(
   }
 
   return result;
-}
-
-function escapeXml(s: string): string {
-  return s.replace(/[<>&'"]/g, (c) =>
-    c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '&' ? '&amp;' : c === "'" ? '&apos;' : '&quot;',
-  );
 }
 
 export function renderLabel(node: GraphNode | { id: string; label: string }, placement: Placement, hasStops: boolean, dark: boolean): string {
