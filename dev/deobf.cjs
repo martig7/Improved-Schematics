@@ -121,7 +121,7 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 const FUNCS = [
   'buildTransitGraph', 'walkRouteVisits', 'normalizeColor', 'edgeKey$1', 'projectFactory',
   'octilinearDistance', 'findFreeCell', 'snapStations', 'rebuildLayoutFromCells', 'octilinearLayout',
-  'orderEdgesByImportance', 'routeEdge',
+  'orderEdgesByImportance', 'routeEdge', 'preferredDirIdx',
   'nearestOctilinearUnit', 'simplifyLayout',
   'orderLines',
   'renderSvg', 'computeCanonicalOffsets', 'offsetPolyline', 'renderStops', 'placeLabels', 'renderLabel',
