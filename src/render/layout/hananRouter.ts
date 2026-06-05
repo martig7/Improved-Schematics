@@ -194,11 +194,23 @@ export function routeAllEdgesViaHanan(
       }
     }
 
-    // Convert grid-node keys to pixels, then replace endpoints with the REAL
-    // (unsnapped) station positions to honour "stations stay at real locations".
-    const pixels: Pixel[] = res.path.map((k) => grid.positions.get(k)!);
-    pixels[0] = realFrom;
-    pixels[pixels.length - 1] = realTo;
+    // Build the routed polyline. The interior consists of grid node positions
+    // (octilinear-aligned by construction). To honour "stations at real
+    // positions" without introducing non-octilinear segments at the ends, we
+    // bridge realFrom -> first grid node and last grid node -> realTo with an
+    // octilinearPath. That gives an octilinear staircase across the snap gap
+    // (at most snapCell/√2 wide), guaranteeing every segment stays on the 8
+    // directions.
+    const gridPath: Pixel[] = res.path.map((k) => grid.positions.get(k)!);
+    const startGrid = gridPath[0];
+    const endGrid = gridPath[gridPath.length - 1];
+    const bridgeStart = octilinearPath(realFrom, startGrid, 1);
+    const bridgeEnd = octilinearPath(endGrid, realTo, 1);
+    // Combine: bridgeStart (ends at startGrid) + grid interior + bridgeEnd
+    // (starts at endGrid). slice(1, -1) skips the duplicate endpoints; if the
+    // path has only 2 grid nodes the interior is empty.
+    const interior = gridPath.length > 2 ? gridPath.slice(1, -1) : [];
+    const pixels: Pixel[] = [...bridgeStart, ...interior, ...bridgeEnd];
     out.set(tEdge.id, pixels);
   }
 
