@@ -38,6 +38,9 @@ export interface WaterCollection {
   features: WaterFeature[];
 }
 
+/** Which layout/render mode the panel is showing. */
+export type RenderMode = 'geographic' | 'smoothed' | 'schematic';
+
 /** Color and sizing options for a rendered schematic. */
 export interface SchematicTheme {
   land: string;
@@ -59,6 +62,10 @@ export interface SchematicOptions {
   bounds?: BoundingBox;
   showStations: boolean;
   showLabels: boolean;
+  /** Which render mode to use. Defaults to 'geographic'. */
+  mode: RenderMode;
+  /** Render with a dark background/palette. */
+  dark: boolean;
   theme: SchematicTheme;
 }
 
@@ -77,5 +84,7 @@ export const DEFAULT_OPTIONS: SchematicOptions = {
   padding: 0.06,
   showStations: true,
   showLabels: false,
+  mode: 'geographic',
+  dark: false,
   theme: DEFAULT_THEME,
 };
