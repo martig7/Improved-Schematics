@@ -17,6 +17,15 @@ export interface RouteableEdge {
   from: string;
   to: string;
   lineIds: Set<string>;
+  /** Cardinal grid direction (0=E, 2=+y, 4=W, 6=-y) the path's FIRST grid
+   *  segment must leave the start in. Used when the start station is high-
+   *  degree and we want its outgoing edges bucketed into ≤4 entry corridors.
+   *  Soft constraint: a finite-cost penalty pushes the router toward this
+   *  direction; the path still terminates if no cardinal route exists. */
+  fromCardinalDir?: number;
+  /** Cardinal grid direction the path's LAST grid segment must approach the
+   *  goal from. Same semantics, applied at the goal end. */
+  toCardinalDir?: number;
 }
 
 export interface HananRouterOptions {
@@ -45,6 +54,11 @@ const DIAG_CROSS_PENALTY_K = 2.0;
 // "leave direction" matters most. Weighted by edge length so longer wrong-way
 // edges are penalized more.
 const DIRECTION_DISAGREEMENT_K = 2.0;
+// Strong (but finite) penalty for first/last grid segments whose direction
+// doesn't match the edge's requested cardinal entry direction. Lets us steer
+// the router into ≤4 cardinal-aligned entry corridors at high-degree stations
+// without graph-level ghost nodes.
+const CARDINAL_MISMATCH_K = 8.0;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {
@@ -213,6 +227,17 @@ export function routeAllEdgesViaHanan(
           if (usedAxes && usedAxes.has(otherAxis)) {
             w += DIAG_CROSS_PENALTY_K * e.len;
           }
+        }
+
+        // Cardinal-entry constraint at the start: first edge leaving the
+        // start node must match `fromCardinalDir` if specified.
+        if (prev === null && tEdge.fromCardinalDir !== undefined && e.dir !== tEdge.fromCardinalDir) {
+          w += CARDINAL_MISMATCH_K * e.len;
+        }
+        // Cardinal-entry constraint at the goal: last edge arriving at the
+        // goal must match `toCardinalDir` if specified.
+        if (e.to === goalKey && tEdge.toCardinalDir !== undefined && e.dir !== tEdge.toCardinalDir) {
+          w += CARDINAL_MISMATCH_K * e.len;
         }
 
         if (w < 0.01) w = 0.01;

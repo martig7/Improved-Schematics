@@ -81,3 +81,67 @@ test('every segment in every routed path is octilinear', () => {
     }
   }
 });
+
+test('toCardinalDir forces the final segment to that cardinal direction', () => {
+  // Goal at (200, 100). Forcing dir 2 (encoded "larger y", i.e. +y pixel) means
+  // the last grid segment must approach the goal vertically from above (smaller
+  // y). Without this, the natural shortest path would arrive diagonally.
+  const positions = new Map<string, Pixel>([
+    ['A', [0, 0]],
+    ['B', [200, 100]],
+  ]);
+  const edges = [
+    {
+      id: 'e',
+      from: 'A',
+      to: 'B',
+      lineIds: new Set(['L']),
+      toCardinalDir: 2,
+    },
+  ];
+  const out = routeAllEdgesViaHanan(positions, edges, {
+    snapCell: 50,
+    padding: 50,
+    medianEdgeLength: 200,
+  });
+  const path = out.paths.get('e')!;
+  assert.ok(path.length >= 2);
+  const prev = path[path.length - 2];
+  const last = path[path.length - 1];
+  const dx = last[0] - prev[0];
+  const dy = last[1] - prev[1];
+  // dir 2 = vertical, larger y (+y pixel). dx must be zero, dy must be > 0.
+  assert.ok(Math.abs(dx) < 1e-6, `last segment should be vertical; dx=${dx}`);
+  assert.ok(dy > 0, `last segment should travel in +y; dy=${dy}`);
+});
+
+test('fromCardinalDir forces the first segment to leave the start in that cardinal', () => {
+  // Start at (0, 0), goal at (200, 100). Force dir 0 (E, +x) for the first
+  // segment — so the path must initially travel purely east, not diagonal.
+  const positions = new Map<string, Pixel>([
+    ['A', [0, 0]],
+    ['B', [200, 100]],
+  ]);
+  const edges = [
+    {
+      id: 'e',
+      from: 'A',
+      to: 'B',
+      lineIds: new Set(['L']),
+      fromCardinalDir: 0,
+    },
+  ];
+  const out = routeAllEdgesViaHanan(positions, edges, {
+    snapCell: 50,
+    padding: 50,
+    medianEdgeLength: 200,
+  });
+  const path = out.paths.get('e')!;
+  assert.ok(path.length >= 2);
+  const first = path[0];
+  const next = path[1];
+  const dx = next[0] - first[0];
+  const dy = next[1] - first[1];
+  assert.ok(Math.abs(dy) < 1e-6, `first segment should be horizontal; dy=${dy}`);
+  assert.ok(dx > 0, `first segment should travel in +x; dx=${dx}`);
+});
