@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, type TopoParams } from './topo';
-import type { Pixel, TransitGraph, GraphEdge, LineRef } from './types';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, type TopoParams } from './topo';
+import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup } from './types';
 
 test('dist computes euclidean distance', () => {
   assert.equal(dist([0, 0], [3, 4]), 5);
@@ -192,4 +192,44 @@ test('intersectionSmoothing recentres a node toward its cropped neighbours', () 
   const p = h.nodePos(c);
   assert.ok(Math.abs(p[0]) < 1, 'x stays centred');
   assert.ok(p[1] > 0 && p[1] < 2, 'y nudged toward the offset neighbour');
+});
+
+test('buildSupportGraph reconstructs a single line traversal over merged edges', () => {
+  const g = graphFrom(
+    { a: [0, 0], b: [100, 0], c: [200, 0] },
+    [
+      { id: 'e0', from: 'a', to: 'b', lines: ['L1'] },
+      { id: 'e1', from: 'b', to: 'c', lines: ['L1'] },
+    ],
+  );
+  g.lineTraversals.set('L1', [
+    { edgeId: 'e0', reversed: false },
+    { edgeId: 'e1', reversed: false },
+  ]);
+  const groups: StationGroup[] = [
+    { id: 'a', name: 'A', center: [0, 0], stationIds: [] },
+    { id: 'b', name: 'B', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'c', name: 'C', center: [200 / 1e5, 0], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  assert.ok(h.lineTraversals.has('L1'));
+  // L1 covers the whole corridor; its traversal touches every support edge.
+  const used = new Set(h.lineTraversals.get('L1')!.map((s) => s.edgeId));
+  assert.equal(used.size, h.edges.size);
+});
+
+test('insertStations places one station when all incident edges share a node', () => {
+  // Star: 4 lines meeting at b. One support node should serve all of them.
+  const g = graphFrom(
+    { b: [0, 0], n: [0, 100], s: [0, -100], e: [100, 0], w: [-100, 0] },
+    [
+      { id: 'e0', from: 'b', to: 'n', lines: ['L1'] },
+      { id: 'e1', from: 'b', to: 's', lines: ['L2'] },
+      { id: 'e2', from: 'b', to: 'e', lines: ['L3'] },
+      { id: 'e3', from: 'b', to: 'w', lines: ['L4'] },
+    ],
+  );
+  const groups: StationGroup[] = [{ id: 'b', name: 'B', center: [0, 0], stationIds: [] }];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  assert.equal(h.stations.size, 1);
 });

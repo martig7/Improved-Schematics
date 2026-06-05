@@ -3,7 +3,18 @@
 // ids, then re-insert stations at the best-scoring support nodes.
 // Reference: Brosi & Bast 2024, "Network Topology Extraction".
 
-import type { Pixel, TransitGraph, GraphEdge } from './types';
+import type {
+  Pixel,
+  TransitGraph,
+  GraphEdge,
+  StationGroup,
+  SupportGraph,
+  SupportNode,
+  SupportEdge,
+  SupportStation,
+  LineRef,
+  TraversalStep,
+} from './types';
 
 /** sin(pi/4): the paper's line-creep angle factor. */
 export const ALPHA = Math.SQRT1_2; // 0.70710678…
@@ -389,10 +400,17 @@ function onePass(input: MergeInput, params: TopoParams): HBuilder {
       let v = h.nearestNode(pk, dHat, blocking);
       const prev = k > 0 ? samples[k - 1] : null;
       const next = k + 1 < samples.length ? samples[k + 1] : null;
+      // A sample coincident with an existing node is the identity merge that
+      // preserves connectivity at shared/junction nodes (lines chain through
+      // common stops). The creep/lateral guards below only reject *spurious*
+      // merges; they must never reject a node sitting exactly on the sample
+      // (both degenerate to a false-negative at zero offset).
+      const coincident = v !== null && dist(h.nodePos(v), pk) < 1e-6;
       if (
         v !== null &&
-        !creepBlocked(h.nodePos(v), pk, samples) &&
-        lateralToTravel(prev, pk, next, h.nodePos(v))
+        (coincident ||
+          (!creepBlocked(h.nodePos(v), pk, samples) &&
+            lateralToTravel(prev, pk, next, h.nodePos(v))))
       ) {
         h.snap(v, pk);
       } else {
@@ -425,4 +443,188 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
     prevLen = len;
   }
   return h!;
+}
+
+/** Project a station group's [lng,lat] centre into the same pixel space the
+ *  graph nodes use. We reuse the graph's own node positions: the projection is
+ *  already baked into GraphNode.pos, so we re-derive each group's pixel from the
+ *  matching graph node when present, else fall back to a scaled lng/lat. */
+function groupPixel(group: StationGroup, g: TransitGraph): Pixel {
+  const n = g.nodes.get(group.id);
+  if (n) return n.pos;
+  return [group.center[0] * 1e5, group.center[1] * 1e5];
+}
+
+function freezeBuilder(h: HBuilder, g: TransitGraph): {
+  nodes: Map<string, SupportNode>;
+  edges: Map<string, SupportEdge>;
+  adj: Map<string, string[]>;
+  index: NodeIndex;
+} {
+  const snap = h.snapshot();
+  const nodes = new Map<string, SupportNode>();
+  const index = new NodeIndex(50);
+  for (const [id, pos] of snap.nodes) {
+    nodes.set(id, { id, pos });
+    index.insert(id, pos);
+  }
+  const edges = new Map<string, SupportEdge>();
+  const adj = new Map<string, string[]>();
+  for (const id of nodes.keys()) adj.set(id, []);
+  for (const e of snap.edges) {
+    edges.set(e.id, { id: e.id, from: e.a, to: e.b, points: e.points, lineIds: e.lineIds });
+    adj.get(e.a)!.push(e.id);
+    adj.get(e.b)!.push(e.id);
+  }
+  return { nodes, edges, adj, index };
+}
+
+/** BFS through support edges whose lineIds include `lineId`, from `src` to
+ *  `dst`. Returns the ordered support-edge steps, or null if unreachable. */
+function bfsLinePath(
+  src: string,
+  dst: string,
+  lineId: string,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+): TraversalStep[] | null {
+  if (src === dst) return [];
+  const prev = new Map<string, { node: string; edgeId: string }>();
+  const seen = new Set<string>([src]);
+  const queue = [src];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const eid of adj.get(cur) ?? []) {
+      const e = edges.get(eid)!;
+      if (!e.lineIds.has(lineId)) continue;
+      const nxt = e.from === cur ? e.to : e.from;
+      if (seen.has(nxt)) continue;
+      seen.add(nxt);
+      prev.set(nxt, { node: cur, edgeId: eid });
+      if (nxt === dst) {
+        const steps: TraversalStep[] = [];
+        let at = dst;
+        while (at !== src) {
+          const back = prev.get(at)!;
+          const e = edges.get(back.edgeId)!;
+          steps.push({ edgeId: back.edgeId, reversed: e.from !== back.node });
+          at = back.node;
+        }
+        steps.reverse();
+        return steps;
+      }
+      queue.push(nxt);
+    }
+  }
+  return null;
+}
+
+export function buildSupportGraph(
+  g: TransitGraph,
+  groups: StationGroup[],
+  params: TopoParams,
+): SupportGraph {
+  const builder = runMergeRounds(g, params);
+  builder.intersectionSmoothing(params.dHat);
+  const { nodes, edges, adj, index } = freezeBuilder(builder, g);
+
+  const lineRefs = new Map<string, LineRef>();
+  for (const e of g.edges) for (const l of e.lines) if (!lineRefs.has(l.id)) lineRefs.set(l.id, l);
+
+  // Reconstruct line traversals over the merged edges.
+  const lineTraversals = new Map<string, TraversalStep[]>();
+  for (const [lineId, origSteps] of g.lineTraversals) {
+    // Ordered original node ids along the line.
+    const seq: string[] = [];
+    for (const step of origSteps) {
+      const e = g.edges.find((x) => x.id === step.edgeId);
+      if (!e) continue;
+      const from = step.reversed ? e.to : e.from;
+      const to = step.reversed ? e.from : e.to;
+      if (seq.length === 0) seq.push(from);
+      if (seq[seq.length - 1] !== to) seq.push(to);
+    }
+    // Map each original node to its nearest support node, collapse dups.
+    const supportSeq: string[] = [];
+    for (const nid of seq) {
+      const gp = g.nodes.get(nid);
+      if (!gp) continue;
+      const sn = index.nearest(gp.pos, params.dHat * 2) ?? index.nearest(gp.pos, Infinity);
+      if (sn && supportSeq[supportSeq.length - 1] !== sn) supportSeq.push(sn);
+    }
+    const steps: TraversalStep[] = [];
+    for (let i = 0; i < supportSeq.length - 1; i++) {
+      const seg = bfsLinePath(supportSeq[i], supportSeq[i + 1], lineId, edges, adj);
+      if (seg) steps.push(...seg);
+    }
+    if (steps.length > 0) lineTraversals.set(lineId, steps);
+  }
+
+  // Stop flags: a line stops at a support node if it stopped at the original
+  // node nearest to it.
+  const stopAt = new Set<string>();
+  for (const e of g.edges) {
+    for (const [lineId, flags] of e.stops) {
+      const place = (origNodeId: string, stops: boolean) => {
+        if (!stops) return;
+        const gp = g.nodes.get(origNodeId);
+        if (!gp) return;
+        const sn = index.nearest(gp.pos, params.dHat * 2);
+        if (sn) stopAt.add(lineId + '|' + sn);
+      };
+      place(e.from, flags.atFrom);
+      place(e.to, flags.atTo);
+    }
+  }
+
+  // Insert stations.
+  const stations = new Map<string, SupportStation>();
+  const origIncident = new Map<string, GraphEdge[]>();
+  for (const e of g.edges) {
+    for (const nid of [e.from, e.to]) {
+      const arr = origIncident.get(nid) ?? [];
+      arr.push(e);
+      origIncident.set(nid, arr);
+    }
+  }
+
+  for (const group of groups) {
+    const incident = origIncident.get(group.id);
+    if (!incident || incident.length === 0) continue;
+    const wantLines = new Set<string>();
+    for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
+
+    const centroid = groupPixel(group, g);
+    // Candidate support nodes within radius, scored by served-line count.
+    const candidates: Array<{ id: string; served: Set<string> }> = [];
+    for (const [nid, node] of nodes) {
+      if (dist(node.pos, centroid) > params.stationCandidateRadius) continue;
+      const served = new Set<string>();
+      for (const eid of adj.get(nid) ?? []) {
+        for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served.add(l);
+      }
+      if (served.size > 0) candidates.push({ id: nid, served });
+    }
+    if (candidates.length === 0) continue;
+    candidates.sort((a, b) => b.served.size - a.served.size);
+
+    const used = new Set<string>();
+    let idx = 0;
+    for (const cand of candidates) {
+      const adds = [...cand.served].filter((l) => !used.has(l));
+      if (adds.length === 0) continue;
+      for (const l of adds) used.add(l);
+      const stationId = idx === 0 ? group.id : group.id + '__alt' + idx;
+      stations.set(stationId, {
+        id: stationId,
+        label: group.name,
+        lngLat: group.center,
+        nodeId: cand.id,
+      });
+      idx++;
+      if (used.size >= wantLines.size) break;
+    }
+  }
+
+  return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
