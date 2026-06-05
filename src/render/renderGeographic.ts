@@ -11,7 +11,7 @@ import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
-import { octilinearPath } from './layout/octilinearPath';
+import { routeAllEdgesViaHanan } from './layout/hananRouter';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -221,8 +221,10 @@ export function renderGeographic(input: GeoInput): string {
   return svgWrap(parts, width, height);
 }
 
-/** How many alternating u1+u2 cycles to use when stepping between two stations. */
-const SMOOTHED_OCTI_SEGMENTS = 2;
+/** Snap divisor used to derive the Hanan grid's base-cell size from the
+ *  median transit-edge length. Smaller divisor → coarser grid, less work, more
+ *  station displacement; larger → finer grid, more work, less displacement. */
+const HANAN_SNAP_DIVISOR = 4;
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
@@ -246,10 +248,38 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     nodePx.set(n.id, p);
   }
 
+  // Compute median edge length for Hanan-grid sizing & cost scaling.
+  const lengths: number[] = [];
+  for (const e of graph.edges) {
+    const a = nodePx.get(e.from)!;
+    const b = nodePx.get(e.to)!;
+    lengths.push(Math.hypot(a[0] - b[0], a[1] - b[1]));
+  }
+  lengths.sort((p, q) => p - q);
+  const medianEdge = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 100;
+
+  // Route every transit edge as a Dijkstra shortest path through a SHARED
+  // octilinear Hanan grid built from the real station positions. Edges that
+  // share a corridor naturally share grid edges → cleaner parallel ribbons
+  // than the previous per-edge octilinear staircase.
+  const routed = routeAllEdgesViaHanan(
+    nodePx,
+    graph.edges.map((e) => ({
+      id: e.id,
+      from: e.from,
+      to: e.to,
+      lineIds: new Set(e.lines.map((l) => l.id)),
+    })),
+    {
+      snapCell: medianEdge / HANAN_SNAP_DIVISOR,
+      padding: medianEdge,
+      medianEdgeLength: medianEdge,
+    },
+  );
+
   // Synthesise a Layout: each node "cell" is its real projected pixel; each
-  // edge's "path" is an octilinear staircase that lands exactly on the next
-  // station. The schematic ribbon renderer then bundles parallel lines and
-  // draws pills at the multi-route nodes.
+  // edge's "path" is the routed polyline. The schematic ribbon renderer then
+  // bundles parallel lines and draws pills at the multi-route nodes.
   const layoutNodes = new Map<string, LayoutNode>();
   for (const n of graph.nodes.values()) {
     layoutNodes.set(n.id, {
@@ -260,9 +290,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     });
   }
   const layoutEdges: LayoutEdge[] = graph.edges.map((e) => {
-    const from = nodePx.get(e.from)!;
-    const to = nodePx.get(e.to)!;
-    const path = octilinearPath(from, to, SMOOTHED_OCTI_SEGMENTS).map(
+    const path = (routed.get(e.id) ?? [nodePx.get(e.from)!, nodePx.get(e.to)!]).map(
       (p) => [p[0], p[1]] as Cell,
     );
     return {
