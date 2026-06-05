@@ -11,7 +11,7 @@ import type { Pixel, StopMark, TransitGraph } from './layout/types';
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
-import { buildStationGroups, buildTransitGraph } from './layout/graph';
+import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { smoothGeographic } from './layout/simplify';
 import { placeLabels, renderLabel, type Segment } from './labels';
 
@@ -19,6 +19,8 @@ export interface GeoInput {
   routes: Route[];
   tracks: Track[];
   stations: { id: string; name: string; coords: Coordinate }[];
+  /** Raw game stationGroups; see SchematicInput. */
+  stationGroups?: unknown[];
   water?: WaterCollection;
   options?: Partial<SchematicOptions>;
   /** When true, relax lines toward octilinear while staying near geography. */
@@ -156,7 +158,7 @@ export function renderGeographic(input: GeoInput): string {
   parts.push(`<g>${linePaths}</g>`);
 
   // Dots + labels from grouped nodes, projected with the same projection.
-  const groups = buildStationGroups(input.stations as never);
+  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
   const graph = buildTransitGraph(input.stations as never, input.routes, groups);
   if (graph.nodes.size > 0) {
     const nodePx = new Map<string, Pixel>();
@@ -175,7 +177,7 @@ function renderSmoothed(
   water: string,
 ): string {
   const { width, height, padding, dark } = opts;
-  const groups = buildStationGroups(input.stations as never);
+  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
   const graph = buildTransitGraph(input.stations as never, input.routes, groups);
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });

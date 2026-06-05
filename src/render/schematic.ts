@@ -13,7 +13,7 @@ import type { WaterCollection, SchematicOptions } from './types';
 import { DEFAULT_OPTIONS } from './types';
 import { renderGeographic } from './renderGeographic';
 import { renderOctilinear } from './renderOctilinear';
-import { buildStationGroups, buildTransitGraph } from './layout/graph';
+import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { octilinearLayout } from './layout/octilinear';
 import { simplifyLayout } from './layout/simplify';
 import { orderLines } from './layout/lineOrder';
@@ -23,6 +23,13 @@ export interface SchematicInput {
   routes: Route[];
   tracks: Track[];
   stations: { id: string; name: string; coords: Coordinate }[];
+  /**
+   * The game's `state.stationGroups` (via `api.gameState.getStationGroups()`).
+   * Preferred over deriving groups from `Station.trackGroupId`, since the game
+   * merges overlapping platforms by spatial proximity — what shows as an
+   * interchange in the UI. Omit or pass empty to fall back to derived groups.
+   */
+  stationGroups?: unknown[];
   water?: WaterCollection;
   options?: Partial<SchematicOptions>;
 }
@@ -45,7 +52,7 @@ export function generateSchematicSVG(input: SchematicInput): string {
   }
 
   if (opts.mode === 'schematic') {
-    const groups = buildStationGroups(input.stations as Station[]);
+    const groups = getOrBuildStationGroups(input.stations as Station[], input.stationGroups);
     const graph = buildTransitGraph(input.stations as Station[], input.routes, groups);
     if (graph.edges.length === 0) {
       return emptyStateSvg(opts.width, opts.height, land);

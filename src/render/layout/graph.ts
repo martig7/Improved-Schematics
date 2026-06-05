@@ -16,7 +16,7 @@ import type {
   TraversalStep,
 } from './types';
 
-/** Group constructed stations into interchange nodes by trackGroupId. */
+/** Group constructed stations into interchange nodes by trackGroupId (fallback). */
 export function buildStationGroups(stations: Station[]): StationGroup[] {
   const byGroup = new Map<string, Station[]>();
   for (const s of stations) {
@@ -41,6 +41,66 @@ export function buildStationGroups(stations: Station[]): StationGroup[] {
     });
   }
   return groups;
+}
+
+/**
+ * Get the game's real `stationGroups` from the store — the same data the
+ * in-game SchematicMapMenu uses (spatial proximity merges overlapping platforms,
+ * not just shared trackGroupId). Normalizes each group's shape into our
+ * StationGroup interface; computes `center` from member stations when absent.
+ * Falls back to `buildStationGroups(stations)` if the API method isn't exposed
+ * or returns nothing usable.
+ */
+export function getOrBuildStationGroups(
+  stations: Station[],
+  apiGroups: unknown[] | undefined | null,
+): StationGroup[] {
+  if (!Array.isArray(apiGroups) || apiGroups.length === 0) {
+    return buildStationGroups(stations);
+  }
+
+  const stationById = new Map<string, Station>();
+  for (const s of stations) stationById.set(s.id, s);
+
+  const groups: StationGroup[] = [];
+  for (const raw of apiGroups) {
+    if (!raw || typeof raw !== 'object') continue;
+    const g = raw as Record<string, unknown>;
+    const id = typeof g.id === 'string' ? g.id : undefined;
+    const stationIds: string[] = Array.isArray(g.stationIds)
+      ? (g.stationIds as unknown[]).filter((x): x is string => typeof x === 'string')
+      : [];
+    if (!id || stationIds.length === 0) continue;
+
+    let center: [number, number] | undefined;
+    if (Array.isArray(g.center) && g.center.length >= 2 && typeof g.center[0] === 'number' && typeof g.center[1] === 'number') {
+      center = [g.center[0] as number, g.center[1] as number];
+    } else {
+      let lng = 0;
+      let lat = 0;
+      let n = 0;
+      for (const sid of stationIds) {
+        const s = stationById.get(sid);
+        if (!s) continue;
+        lng += s.coords[0];
+        lat += s.coords[1];
+        n++;
+      }
+      if (n === 0) continue;
+      center = [lng / n, lat / n];
+    }
+
+    const firstStation = stationById.get(stationIds[0]);
+    const name =
+      (typeof g.name === 'string' && g.name) ||
+      (typeof g.stationGroupName === 'string' && g.stationGroupName) ||
+      firstStation?.name ||
+      id;
+
+    groups.push({ id, name, center, stationIds });
+  }
+
+  return groups.length > 0 ? groups : buildStationGroups(stations);
 }
 
 function normalizeColor(c: string | undefined): string {

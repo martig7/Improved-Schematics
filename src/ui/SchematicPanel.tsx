@@ -76,11 +76,27 @@ export function SchematicPanel() {
     const routes = api.gameState.getRoutes();
     const tracks = api.gameState.getTracks();
     const stations = api.gameState.getStations();
+    // The game exposes its real station groups (spatial-proximity-merged
+    // platforms, used by the in-game SchematicMapMenu) via an undocumented
+    // method. Falls back to trackGroupId grouping if absent or empty.
+    const gs = (api.gameState as unknown as { getStationGroups?: () => unknown[] }).getStationGroups;
+    const stationGroups = typeof gs === 'function' ? gs.call(api.gameState) : undefined;
+    if (stationGroups) {
+      // Diagnostic: once per render, log group count + a sample shape.
+      const sample = (stationGroups as unknown[])[0];
+      console.log(
+        '[ImprovedSchematics] stationGroups:',
+        (stationGroups as unknown[]).length,
+        'sample:',
+        sample ? Object.keys(sample as object) : '(empty)',
+      );
+    }
     const dark = api.ui.getResolvedTheme() === 'dark';
     return generateSchematicSVG({
       routes,
       tracks,
       stations,
+      stationGroups,
       water,
       options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
     });
