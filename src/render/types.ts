@@ -78,6 +78,15 @@ export const DEFAULT_THEME: SchematicTheme = {
   stationRadius: 2.5,
 };
 
+/** Dark-theme palette: land is distinctly lighter than the panel so the map area reads. */
+export const DARK_THEME: SchematicTheme = {
+  ...DEFAULT_THEME,
+  land: '#2a2d34',
+  water: '#24506b',
+  stationFill: '#1b1b1f',
+  stationStroke: '#cccccc',
+};
+
 export const DEFAULT_OPTIONS: SchematicOptions = {
   width: 800,
   height: 800,

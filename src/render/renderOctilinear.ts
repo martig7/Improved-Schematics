@@ -5,6 +5,7 @@
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH } from './constants';
+import { DARK_THEME, DEFAULT_THEME } from './types';
 import { computeCanonicalOffsets, offsetPolyline } from './layout/offsets';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
@@ -65,7 +66,7 @@ function waterBackdrop(layout: Layout, nodePx: Map<string, Pixel>, water: WaterC
     if (d) paths += '<path d="' + d.trim() + '"/>';
   }
   if (!paths) return '';
-  const fill = dark ? '#1e3a4a' : '#a8d4e6';
+  const fill = dark ? DARK_THEME.water : DEFAULT_THEME.water;
   return '<g class="water" fill="' + fill + '" fill-rule="evenodd" stroke="none">' + paths + '</g>';
 }
 
@@ -93,7 +94,7 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
   const toPx = (c: Cell): Pixel => gridToPx([c[0] + offX, c[1] + offY], maxRow);
   const width = (maxX - minX) * CELL_PX + PAD * 2;
   const height = (maxY - minY) * CELL_PX + PAD * 2;
-  const bg = dark ? '#18181b' : '#ffffff';
+  const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
   const offsets = computeCanonicalOffsets(layout);
 

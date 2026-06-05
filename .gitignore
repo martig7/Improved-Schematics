@@ -7,3 +7,4 @@ debug/
 # dev render artifacts
 dev/out*.svg
 dev/out*.png
+dev/water-out.geojson

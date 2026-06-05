@@ -6,7 +6,7 @@ import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
 import type { Pixel, StopMark } from './layout/types';
-import { DEFAULT_OPTIONS } from './types';
+import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { buildStationGroups, buildTransitGraph } from './layout/graph';
@@ -74,8 +74,8 @@ export function renderGeographic(input: GeoInput): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const { width, height, padding, dark } = opts;
-  const land = dark ? '#18181b' : theme.land;
-  const water = dark ? '#1e3a4a' : theme.water;
+  const land = dark ? DARK_THEME.land : theme.land;
+  const water = dark ? DARK_THEME.water : theme.water;
 
   const parts: string[] = [`<rect x="0" y="0" width="${width}" height="${height}" fill="${land}"/>`];
 
