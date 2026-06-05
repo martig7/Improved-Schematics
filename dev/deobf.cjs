@@ -96,12 +96,30 @@ vm.createContext(sandbox);
 vm.runInContext(bootstrap + '\nthis.__dec = {' + GROUPS.map(g => g.dec + ':' + g.dec).join(',') + '};', sandbox);
 const decoders = sandbox.__dec;
 
-// --- alias -> decoder map: `const _0xAAAA = _0xDECODER` (also bare decoder calls) ---
-const aliasMap = {};
-for (const g of GROUPS) aliasMap[g.dec] = g.dec;
-const aliasRe = new RegExp('(_0x[0-9a-f]{4,8})\\s*=\\s*(' + GROUPS.map(g => g.dec).join('|') + ')\\b', 'g');
+// --- alias -> decoder map, resolved transitively ---
+// Capture every `const _0xAAAA = _0xBBBB` (BBBB a decoder OR another alias),
+// then follow chains until each lands on a real decoder.
+const decoderSet = new Set(GROUPS.map(g => g.dec));
+const rawAssign = {};
+const assignRe = /(_0x[0-9a-f]{4,8})\s*=\s*(_0x[0-9a-f]{4,8})\b/g;
 let m;
-while ((m = aliasRe.exec(src))) aliasMap[m[1]] = m[2];
+while ((m = assignRe.exec(src))) {
+  if (decoderSet.has(m[2]) || rawAssign[m[2]] !== undefined || true) rawAssign[m[1]] = m[2];
+}
+const aliasMap = {};
+for (const d of decoderSet) aliasMap[d] = d;
+function resolveAlias(name, seen = new Set()) {
+  if (decoderSet.has(name)) return name;
+  if (aliasMap[name]) return aliasMap[name];
+  if (seen.has(name)) return null;
+  seen.add(name);
+  const rhs = rawAssign[name];
+  if (!rhs) return null;
+  const dec = resolveAlias(rhs, seen);
+  if (dec) aliasMap[name] = dec;
+  return dec;
+}
+for (const name of Object.keys(rawAssign)) resolveAlias(name);
 
 function resolveCalls(code) {
   // replace alias(idx) and alias(idx, key) with the decoded string literal

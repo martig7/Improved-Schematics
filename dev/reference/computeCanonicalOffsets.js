@@ -10,8 +10,8 @@ function computeCanonicalOffsets(_0x521bac) {
   for (const [_0x46ab02, _0x4dc505] of _0x3ea081) {
     const _0xd3a877 = [..._0x4dc505]["sort"]((_0x4a48d6, _0x1ddce0) => {
       const _0x871917 = _0x44beb4;
-      if (_0x1ddce0[_0x871917(171)][_0x871917(231)] !== _0x4a48d6["lineOrder"][_0x871917(231)]) return _0x1ddce0[_0x871917(171)][_0x871917(231)] - _0x4a48d6[_0x871917(171)][_0x871917(231)];
-      return _0x4a48d6["id"][_0x871917(230)](_0x1ddce0["id"]);
+      if (_0x1ddce0["lineOrder"]["length"] !== _0x4a48d6["lineOrder"]["length"]) return _0x1ddce0["lineOrder"]["length"] - _0x4a48d6["lineOrder"]["length"];
+      return _0x4a48d6["id"]["localeCompare"](_0x1ddce0["id"]);
     })[0], _0x1be659 = _0xd3a877["lineOrder"]["indexOf"](_0x46ab02), _0xd156f6 = (_0xd3a877["lineOrder"]["length"] - 1) / 2;
     _0x16a7cd["set"](_0x46ab02, (_0x1be659 - _0xd156f6) * _0x1e2294);
   }

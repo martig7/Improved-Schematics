@@ -60,9 +60,9 @@ function simplifyLayout(_0x4d4493, _0x4bf3ec) {
     }
   }
   const _0x11e70e = [..._0x2c7f76]["sort"]((_0x34cfd4, _0x2dc0f2) => {
-    const _0x4d14c9 = _0x15463c, _0x430218 = _0x4bf3ec[_0x4d14c9(482)][_0x4d14c9(493)](_0x34cfd4)?.[_0x4d14c9(502)] ?? 0, _0x430369 = _0x4bf3ec[_0x4d14c9(482)][_0x4d14c9(493)](_0x2dc0f2)?.[_0x4d14c9(502)] ?? 0;
+    const _0x4d14c9 = _0x15463c, _0x430218 = _0x4bf3ec["adj"]["get"](_0x34cfd4)?.["length"] ?? 0, _0x430369 = _0x4bf3ec["adj"]["get"](_0x2dc0f2)?.["length"] ?? 0;
     if (_0x430369 !== _0x430218) return _0x430369 - _0x430218;
-    return _0x34cfd4[_0x4d14c9(479)](_0x2dc0f2);
+    return _0x34cfd4["localeCompare"](_0x2dc0f2);
   }), _0x58b36d = /* @__PURE__ */ new Map(), _0x2fbf36 = /* @__PURE__ */ new Map();
   for (const _0x855b61 of _0x11e70e) {
     const _0x3f3623 = _0x1a8210["get"](_0x855b61), _0x1d5c90 = [Math["round"](_0x3f3623[0]), Math["round"](_0x3f3623[1])];
