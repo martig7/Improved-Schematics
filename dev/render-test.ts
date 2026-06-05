@@ -49,7 +49,7 @@ for (const { mode, out } of modes) {
     tracks,
     water,
     stations,
-    options: { mode, width: 900, height: 900, showStations: true, showLabels: true },
+    options: { mode, width: 2700, height: 2700, showStations: true, showLabels: true },
   });
   writeFileSync(out, svg);
   console.log(`${mode.padEnd(11)} → ${out} (${(svg.length / 1024).toFixed(0)}KB)`);

@@ -18,8 +18,9 @@ import { modState } from '../state';
 
 const api = window.SubwayBuilderAPI;
 
-const SVG_SIZE = 900; // intrinsic content coordinate space (0..SVG_SIZE)
-const MIN_SCALE = 0.1; // screen px per content unit
+const GEO_SIZE = 2700; // canvas size for geo/smoothed — matches schematic's typical
+                       // pixel scale so line widths/labels look proportional.
+const MIN_SCALE = 0.01; // screen px per content unit
 const MAX_SCALE = 12;
 
 const MODES: { id: RenderMode; label: string }[] = [
@@ -37,6 +38,10 @@ interface Scaled {
   el: Element;
   base: number;
 }
+interface SvgBox {
+  w: number;
+  h: number;
+}
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -51,6 +56,7 @@ export function SchematicPanel() {
   const strokeNodes = useRef<Scaled[]>([]);
   const labelGroups = useRef<Element[]>([]);
   const viewRef = useRef<View | null>(null);
+  const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
 
   // Water for the current city, loaded from its ocean_depth_index on first open.
   const [water, setWater] = useState<WaterCollection | undefined>(undefined);
@@ -76,7 +82,7 @@ export function SchematicPanel() {
       tracks,
       stations,
       water,
-      options: { mode, width: SVG_SIZE, height: SVG_SIZE, showStations, showLabels, dark },
+      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
     });
   }, [mode, showStations, showLabels, water]);
 
@@ -105,11 +111,12 @@ export function SchematicPanel() {
     const VPW = vp.clientWidth;
     const VPH = vp.clientHeight;
     if (!VPW || !VPH) return;
-    const scale = Math.min(VPW / SVG_SIZE, VPH / SVG_SIZE) || 1;
+    const { w: SW, h: SH } = svgBoxRef.current;
+    const scale = Math.min(VPW / SW, VPH / SH) || 1;
     viewRef.current = {
       scale,
-      vx: SVG_SIZE / 2 - VPW / (2 * scale),
-      vy: SVG_SIZE / 2 - VPH / (2 * scale),
+      vx: SW / 2 - VPW / (2 * scale),
+      vy: SH / 2 - VPH / (2 * scale),
     };
     applyToDom(true);
   }, [applyToDom]);
@@ -122,6 +129,11 @@ export function SchematicPanel() {
     const svgEl = vp.querySelector('svg');
     svgRef.current = svgEl;
     if (svgEl) {
+      // Capture intrinsic SVG bounds BEFORE we overwrite viewBox.
+      const vb = svgEl.getAttribute('viewBox')?.split(/\s+/).map(Number);
+      const w = vb && vb.length === 4 ? vb[2] : parseFloat(svgEl.getAttribute('width') || '') || GEO_SIZE;
+      const h = vb && vb.length === 4 ? vb[3] : parseFloat(svgEl.getAttribute('height') || '') || GEO_SIZE;
+      svgBoxRef.current = { w, h };
       svgEl.setAttribute('width', '100%');
       svgEl.setAttribute('height', '100%');
       svgEl.style.display = 'block';
@@ -131,8 +143,8 @@ export function SchematicPanel() {
       }));
       labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
     }
-    if (!viewRef.current) fit();
-    else applyToDom(true);
+    // Always re-fit when the SVG (and therefore its bounds) changes.
+    fit();
   }, [svg, fit, applyToDom]);
 
   // Re-fit on mode switch (different layout shape).
