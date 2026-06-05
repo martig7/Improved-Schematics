@@ -1,6 +1,7 @@
-// Octilinear renderer: SVG output for a laid-out, simplified, line-ordered graph.
-// Ported from the game (dev/reference/renderSvg.js, gridToPx.js) with an added
-// geographic water backdrop (loosely affine-fit behind the schematic).
+// Octilinear renderer + reusable ribbon renderer. The ribbon core
+// (renderRibbons) takes pre-projected node pixels and is also used by the
+// smoothed renderer; renderOctilinear is the grid-cell variant the schematic
+// mode uses (ported from dev/reference/renderSvg.js + gridToPx.js).
 
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
@@ -10,11 +11,14 @@ import { computeCanonicalOffsets, offsetPolyline } from './layout/offsets';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
+import type { TransferPair } from './transfers';
+import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
 
 export interface OctiOptions {
   dark?: boolean;
   showLabels?: boolean;
   water?: WaterCollection;
+  transfers?: TransferPair[];
 }
 
 function gridToPx(cell: Cell, maxRow: number): Pixel {
@@ -49,7 +53,7 @@ function waterBackdrop(layout: Layout, nodePx: Map<string, Pixel>, water: WaterC
   const ph = maxY - minY || 1;
   const map = ([lng, lat]: [number, number]): Pixel => [
     minX + ((lng - minLng) / gw) * pw,
-    minY + ((maxLat - lat) / gh) * ph, // Y flip: north at top
+    minY + ((maxLat - lat) / gh) * ph,
   ];
 
   let paths = '';
@@ -70,36 +74,33 @@ function waterBackdrop(layout: Layout, nodePx: Map<string, Pixel>, water: WaterC
   return '<g class="water" fill="' + fill + '" fill-rule="evenodd" stroke="none">' + paths + '</g>';
 }
 
-export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string {
-  const showLabels = opts.showLabels !== false;
-  const dark = opts.dark === true;
+/**
+ * Core ribbon renderer: bundles parallel co-running lines, draws stops as
+ * pills, and places labels. Operates in caller-chosen pixel space — both
+ * grid-octilinear (renderOctilinear) and smoothed-graph (renderSmoothedRibbons)
+ * use this.
+ *
+ * `edgePolyline(edge)` returns the edge's path already in pixel space (callers
+ * pre-project from cells or graph-pixel positions). `nodePx` is the projected
+ * position of each node; `width`/`height` are the SVG canvas dimensions.
+ */
+export interface RenderRibbonsArgs {
+  layout: Layout;
+  nodePx: Map<string, Pixel>;
+  edgePolyline: (edge: Layout['edges'][number]) => Pixel[];
+  width: number;
+  height: number;
+  dark: boolean;
+  showLabels: boolean;
+  water?: WaterCollection;
+  transfers?: TransferPair[];
+}
 
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  const grow = (c: Cell) => {
-    if (c[0] < minX) minX = c[0];
-    if (c[0] > maxX) maxX = c[0];
-    if (c[1] < minY) minY = c[1];
-    if (c[1] > maxY) maxY = c[1];
-  };
-  for (const n of layout.nodes.values()) grow(n.cell);
-  for (const e of layout.edges) for (const c of e.path) grow(c);
-  if (!isFinite(minX)) return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>';
-
-  const offX = -minX;
-  const offY = -minY;
-  const maxRow = maxY + offY;
-  const toPx = (c: Cell): Pixel => gridToPx([c[0] + offX, c[1] + offY], maxRow);
-  const width = (maxX - minX) * CELL_PX + PAD * 2;
-  const height = (maxY - minY) * CELL_PX + PAD * 2;
+export function renderRibbons(args: RenderRibbonsArgs): string {
+  const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
   const offsets = computeCanonicalOffsets(layout);
-
-  const nodePx = new Map<string, Pixel>();
-  for (const n of layout.nodes.values()) nodePx.set(n.id, toPx(n.cell));
 
   const stopsByNode = new Map<string, StopMark[]>();
   const stopSeen = new Set<string>();
@@ -114,13 +115,12 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
     const cached = offsetCache.get(key);
     if (cached) return cached;
     const off = offsets.get(lineId) ?? 0;
-    const px = edge.path.map(toPx);
+    const px = edgePolyline(edge);
     const result = off === 0 ? px : offsetPolyline(px, off);
     offsetCache.set(key, result);
     return result;
   };
 
-  // direction at an edge end, for detecting turns between consecutive edges
   const endDir = (path: Pixel[], reversed: boolean): [number, number] => {
     const a = reversed ? 0 : path.length - 1;
     const b = reversed ? 1 : path.length - 2;
@@ -143,8 +143,8 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
       const ea = edgeById.get(traversal[i].edgeId);
       const eb = edgeById.get(traversal[i + 1].edgeId);
       if (!ea || !eb || ea.path.length < 2 || eb.path.length < 2) continue;
-      const da = endDir(ea.path.map(toPx), traversal[i].reversed);
-      const db = startDir(eb.path.map(toPx), traversal[i + 1].reversed);
+      const da = endDir(edgePolyline(ea), traversal[i].reversed);
+      const db = startDir(edgePolyline(eb), traversal[i + 1].reversed);
       if (da[0] !== db[0] || da[1] !== db[1]) turns[i] = true;
     }
 
@@ -209,11 +209,11 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
     const dStr = d.join(' ');
     edgeParts.push(
       '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
-      '" stroke-linecap="round" stroke-linejoin="round"/>',
+        '" stroke-linecap="round" stroke-linejoin="round"/>',
     );
     edgeParts.push(
       '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
-      LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
+        LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
     );
   }
 
@@ -227,13 +227,84 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
     labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark));
   }
 
-  const waterPart = opts.water ? waterBackdrop(layout, nodePx, opts.water, dark) : '';
+  const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
+
+  let transferPart = '';
+  if (args.transfers && args.transfers.length > 0) {
+    const excludeKeys = edgeKeysFromGraph(layout.edges);
+    transferPart = renderTransferConnectors(
+      args.transfers,
+      (lngLat) => {
+        // Each transfer pair carries lng/lat — for ribbons we need the
+        // projected node pixels. Look up by matching center; fall back to
+        // identity (transfers without resolvable nodes are skipped above).
+        const px = lngLatToNodePx(lngLat, layout, nodePx);
+        return px ?? [0, 0];
+      },
+      excludeKeys,
+      dark,
+      LINE_WIDTH * 0.6,
+    );
+  }
 
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '">\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
-    '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n<g class="stops">\n' + stopParts.join('\n') +
+    '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
+    (transferPart ? transferPart + '\n' : '') +
+    '<g class="stops">\n' + stopParts.join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
   );
+}
+
+/** Find a node whose lng/lat matches `c` and return its pixel; null if absent. */
+function lngLatToNodePx(c: [number, number], layout: Layout, nodePx: Map<string, Pixel>): Pixel | null {
+  for (const n of layout.nodes.values()) {
+    if (Math.abs(n.lngLat[0] - c[0]) < 1e-9 && Math.abs(n.lngLat[1] - c[1]) < 1e-9) {
+      return nodePx.get(n.id) ?? null;
+    }
+  }
+  return null;
+}
+
+export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string {
+  const showLabels = opts.showLabels !== false;
+  const dark = opts.dark === true;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const grow = (c: Cell) => {
+    if (c[0] < minX) minX = c[0];
+    if (c[0] > maxX) maxX = c[0];
+    if (c[1] < minY) minY = c[1];
+    if (c[1] > maxY) maxY = c[1];
+  };
+  for (const n of layout.nodes.values()) grow(n.cell);
+  for (const e of layout.edges) for (const c of e.path) grow(c);
+  if (!isFinite(minX)) return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>';
+
+  const offX = -minX;
+  const offY = -minY;
+  const maxRow = maxY + offY;
+  const toPx = (c: Cell): Pixel => gridToPx([c[0] + offX, c[1] + offY], maxRow);
+  const width = (maxX - minX) * CELL_PX + PAD * 2;
+  const height = (maxY - minY) * CELL_PX + PAD * 2;
+
+  const nodePx = new Map<string, Pixel>();
+  for (const n of layout.nodes.values()) nodePx.set(n.id, toPx(n.cell));
+
+  return renderRibbons({
+    layout,
+    nodePx,
+    edgePolyline: (e) => e.path.map(toPx),
+    width,
+    height,
+    dark,
+    showLabels,
+    water: opts.water,
+    transfers: opts.transfers,
+  });
 }

@@ -1,19 +1,26 @@
 // Geographic renderer: route lines over land/water in true geographic positions
 // (Geographic mode), or octilinear-leaning straight segments anchored to those
-// positions (Smoothed mode). Both render dots + labels from station GROUPS (the
-// same interchange-collapsed nodes the schematic uses) so the map isn't buried
-// under every individual platform.
+// positions (Smoothed mode). Smoothed reuses the schematic's ribbon renderer so
+// lines bundle into parallel ribbons and multi-route stops become pills.
 
 import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
-import type { Pixel, StopMark, TransitGraph } from './layout/types';
+import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cell } from './layout/types';
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { smoothGeographic } from './layout/simplify';
 import { placeLabels, renderLabel, type Segment } from './labels';
+import {
+  findTransferPairs,
+  renderTransferConnectors,
+  edgeKeysFromGraph,
+  DEFAULT_TRANSFER_METERS,
+} from './transfers';
+import { renderRibbons } from './renderOctilinear';
+import { orderLines } from './layout/lineOrder';
 
 export interface GeoInput {
   routes: Route[];
@@ -27,7 +34,7 @@ export interface GeoInput {
   smooth?: boolean;
 }
 
-const STATION_R = 3; // dot radius (interchanges a touch larger)
+const STATION_R = 3;
 const INTERCHANGE_R = 4.2;
 
 const r = (n: number): number => Math.round(n * 10) / 10;
@@ -58,7 +65,6 @@ function waterGroup(water: WaterCollection, proj: Projection, fill: string): str
   return `<g fill="${fill}" fill-rule="evenodd" stroke="none">${paths}</g>`;
 }
 
-/** Map each node to the distinct line colors passing through it. */
 function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
   const m = new Map<string, string[]>();
   for (const e of graph.edges) {
@@ -71,11 +77,27 @@ function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
   return m;
 }
 
+/** How many distinct routes pass through each node. */
+function nodeRouteCount(graph: TransitGraph): Map<string, number> {
+  const seen = new Map<string, Set<string>>();
+  for (const e of graph.edges) {
+    for (const nid of [e.from, e.to]) {
+      const set = seen.get(nid) ?? new Set<string>();
+      for (const l of e.lines) set.add(l.id);
+      seen.set(nid, set);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [id, set] of seen) out.set(id, set.size);
+  return out;
+}
+
 /**
- * Station dots (white fill + colored/neutral ring, like the schematic) and
- * collision-placed labels, both from the grouped graph nodes.
+ * Dots + labels for the geographic renderer. Multi-route nodes get an oval
+ * "pill" hint instead of a circle, signalling an interchange even though we
+ * don't lane-bundle the lines in geographic mode.
  */
-function renderNodes(
+function renderGeoNodes(
   graph: TransitGraph,
   nodePx: Map<string, Pixel>,
   opts: SchematicOptions,
@@ -87,14 +109,21 @@ function renderNodes(
 
   if (opts.showStations) {
     const colors = nodeRingColors(graph);
+    const routeCounts = nodeRouteCount(graph);
     let dots = '';
     for (const node of graph.nodes.values()) {
       const px = nodePx.get(node.id);
       if (!px) continue;
       const cs = colors.get(node.id) ?? [];
       const ring = cs.length === 1 ? cs[0] : dark ? '#e4e4e7' : '#111111';
-      const rad = cs.length > 1 ? INTERCHANGE_R : STATION_R;
-      dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${rad}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+      const routeN = routeCounts.get(node.id) ?? 1;
+      if (routeN > 1) {
+        // pill scaled by route count, capped so it stays readable
+        const halfW = INTERCHANGE_R + Math.min(routeN - 1, 4) * 1.6;
+        dots += `<rect x="${r(px[0] - halfW)}" y="${r(px[1] - INTERCHANGE_R)}" width="${r(halfW * 2)}" height="${r(INTERCHANGE_R * 2)}" rx="${INTERCHANGE_R}" ry="${INTERCHANGE_R}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+      } else {
+        dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${STATION_R}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+      }
     }
     out += `<g class="stations-dots">${dots}</g>`;
   }
@@ -127,10 +156,9 @@ export function renderGeographic(input: GeoInput): string {
   const parts: string[] = [`<rect x="0" y="0" width="${width}" height="${height}" fill="${land}"/>`];
 
   if (input.smooth) {
-    return renderSmoothed(input, opts, theme, parts, water);
+    return renderSmoothed(input, opts);
   }
 
-  // --- Geographic mode: dense route geometry in true positions ---
   const lines = extractRouteLines(input.routes, input.tracks);
   const bounds = (() => {
     const b = computeBounds(lines);
@@ -157,25 +185,33 @@ export function renderGeographic(input: GeoInput): string {
   }
   parts.push(`<g>${linePaths}</g>`);
 
-  // Dots + labels from grouped nodes, projected with the same projection.
+  // Build the station-group graph (real proximity-merged groups when available)
+  // for nodes, transfer pairs, and labels.
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
   const graph = buildTransitGraph(input.stations as never, input.routes, groups);
   if (graph.nodes.size > 0) {
     const nodePx = new Map<string, Pixel>();
     for (const n of graph.nodes.values()) nodePx.set(n.id, proj.toSVG(n.lngLat));
-    parts.push(renderNodes(graph, nodePx, opts, dark, segments));
+
+    // Transfer connectors between nearby station groups not already joined by a route edge.
+    const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
+    const excludeKeys = edgeKeysFromGraph(graph.edges);
+    const connector = renderTransferConnectors(
+      transfers,
+      (c) => proj.toSVG(c),
+      excludeKeys,
+      dark,
+      theme.lineWidth * 0.7,
+    );
+    if (connector) parts.push(connector);
+
+    parts.push(renderGeoNodes(graph, nodePx, opts, dark, segments));
   }
 
   return svgWrap(parts, width, height);
 }
 
-function renderSmoothed(
-  input: GeoInput,
-  opts: SchematicOptions,
-  theme: SchematicOptions['theme'],
-  parts: string[],
-  water: string,
-): string {
+function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
   const graph = buildTransitGraph(input.stations as never, input.routes, groups);
@@ -191,41 +227,58 @@ function renderSmoothed(
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
   const relaxed = smoothGeographic(graph);
 
-  if (input.water) {
-    const g = waterGroup(input.water, proj, water);
-    if (g) parts.push(g);
+  // Synthesise a Layout where each node's "cell" is its smoothed pixel position
+  // and each edge's "path" is the straight pair [from_pixel, to_pixel]. This
+  // lets the schematic-style ribbon renderer bundle lines + draw pills.
+  const layoutNodes = new Map<string, LayoutNode>();
+  for (const n of graph.nodes.values()) {
+    const px = relaxed.get(n.id) ?? n.pos;
+    layoutNodes.set(n.id, {
+      id: n.id,
+      cell: [px[0], px[1]] as Cell,
+      label: n.label,
+      lngLat: n.lngLat,
+    });
   }
+  const layoutEdges: LayoutEdge[] = graph.edges.map((e) => ({
+    id: e.id,
+    from: e.from,
+    to: e.to,
+    path: [
+      (relaxed.get(e.from) ?? graph.nodes.get(e.from)!.pos) as Cell,
+      (relaxed.get(e.to) ?? graph.nodes.get(e.to)!.pos) as Cell,
+    ],
+    lines: e.lines,
+    lineOrder: e.lines.map((l) => l.id).sort(),
+    stops: e.stops,
+  }));
+  const layout: Layout = {
+    cellSize: 1,
+    nodes: layoutNodes,
+    edges: layoutEdges,
+    lineTraversals: graph.lineTraversals,
+  };
 
-  const edgeById = new Map(graph.edges.map((e) => [e.id, e]));
-  const lineById = new Map<string, { id: string; color: string }>();
-  for (const e of graph.edges) for (const l of e.lines) if (!lineById.has(l.id)) lineById.set(l.id, l);
+  // Order parallel lines on shared edges so canonical offsets stay stable.
+  orderLines(layout);
 
-  const segments: Segment[] = [];
-  let linePaths = '';
-  for (const [lineId, traversal] of graph.lineTraversals) {
-    const line = lineById.get(lineId);
-    if (!line) continue;
-    const seq: string[] = [];
-    for (const step of traversal) {
-      const e = edgeById.get(step.edgeId);
-      if (!e) continue;
-      const a = step.reversed ? e.to : e.from;
-      const b = step.reversed ? e.from : e.to;
-      if (seq.length === 0 || seq[seq.length - 1] !== a) seq.push(a);
-      seq.push(b);
-    }
-    const px = seq.map((id) => relaxed.get(id)!).filter(Boolean);
-    if (px.length < 2) continue;
-    linePaths +=
-      `<path d="${lineToPath(px)}" fill="none" stroke="${line.color}" ` +
-      `stroke-width="${theme.lineWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
-    for (let i = 1; i < px.length; i++) segments.push({ p1: px[i - 1], p2: px[i] });
-  }
-  parts.push(`<g>${linePaths}</g>`);
+  // Pre-projected node pixels and identity edge-polyline for renderRibbons.
+  const nodePx = new Map<string, Pixel>();
+  for (const n of layoutNodes.values()) nodePx.set(n.id, [n.cell[0], n.cell[1]]);
 
-  parts.push(renderNodes(graph, relaxed, opts, dark, segments));
+  const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
 
-  return svgWrap(parts, width, height);
+  return renderRibbons({
+    layout,
+    nodePx,
+    edgePolyline: (e) => e.path.map((c) => [c[0], c[1]]),
+    width,
+    height,
+    dark,
+    showLabels: opts.showLabels,
+    water: input.water,
+    transfers,
+  });
 }
 
 function svgWrap(parts: string[], width: number, height: number): string {
