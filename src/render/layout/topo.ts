@@ -55,3 +55,59 @@ export function creepBlocked(vPos: Pixel, pk: Pixel, samples: Pixel[]): boolean 
   const dv = dist(pk, vPos);
   return ALPHA * dist(pk, p1) <= dv || ALPHA * dist(pk, pl) <= dv;
 }
+
+/** Uniform grid hash keyed by cell = floor(coord / cellSize). Queries scan the
+ *  3×3 neighbourhood of the query cell, which is sufficient when cellSize >= the
+ *  query radius. */
+export class NodeIndex {
+  private cell: number;
+  private buckets = new Map<string, Set<string>>();
+  private pos = new Map<string, Pixel>();
+
+  constructor(cellSize: number) {
+    this.cell = Math.max(1e-6, cellSize);
+  }
+
+  private key(p: Pixel): string {
+    return Math.floor(p[0] / this.cell) + ',' + Math.floor(p[1] / this.cell);
+  }
+
+  insert(id: string, p: Pixel): void {
+    this.pos.set(id, p);
+    const k = this.key(p);
+    let b = this.buckets.get(k);
+    if (!b) {
+      b = new Set();
+      this.buckets.set(k, b);
+    }
+    b.add(id);
+  }
+
+  move(id: string, from: Pixel, to: Pixel): void {
+    const k = this.key(from);
+    this.buckets.get(k)?.delete(id);
+    this.insert(id, to);
+  }
+
+  nearest(p: Pixel, radius: number): string | null {
+    const cx = Math.floor(p[0] / this.cell);
+    const cy = Math.floor(p[1] / this.cell);
+    let best: string | null = null;
+    let bestD = radius;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const b = this.buckets.get(cx + dx + ',' + (cy + dy));
+        if (!b) continue;
+        for (const id of b) {
+          const q = this.pos.get(id)!;
+          const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          if (d <= bestD) {
+            bestD = d;
+            best = id;
+          }
+        }
+      }
+    }
+    return best;
+  }
+}

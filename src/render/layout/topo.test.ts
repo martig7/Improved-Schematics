@@ -36,3 +36,23 @@ test('creepBlocked rejects a candidate that interlaces an obtuse meeting', () =>
   // dist(pk, far)=15 ; alpha*dist(pk,p1)=14.1 <= 15 -> blocked
   assert.equal(creepBlocked([20, 15], pk, samples), true);
 });
+
+import { NodeIndex } from './topo';
+
+test('NodeIndex returns the nearest node within radius, or null beyond it', () => {
+  const idx = new NodeIndex(5);
+  idx.insert('a', [0, 0]);
+  idx.insert('b', [3, 0]);
+  idx.insert('c', [100, 100]);
+  assert.equal(idx.nearest([1, 0], 5), 'a');
+  assert.equal(idx.nearest([2.6, 0], 5), 'b');
+  assert.equal(idx.nearest([50, 50], 5), null);
+});
+
+test('NodeIndex.move keeps lookups consistent after a node snaps', () => {
+  const idx = new NodeIndex(5);
+  idx.insert('a', [0, 0]);
+  idx.move('a', [0, 0], [20, 0]);
+  assert.equal(idx.nearest([19, 0], 5), 'a');
+  assert.equal(idx.nearest([1, 0], 5), null);
+});
