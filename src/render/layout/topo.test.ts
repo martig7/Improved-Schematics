@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked } from './topo';
-import type { Pixel } from './types';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, type TopoParams } from './topo';
+import type { Pixel, TransitGraph, GraphEdge, LineRef } from './types';
 
 test('dist computes euclidean distance', () => {
   assert.equal(dist([0, 0], [3, 4]), 5);
@@ -100,4 +100,81 @@ test('contractDegree2 does NOT collapse when line sets differ', () => {
   h.addOrUnionEdge(b, c, new Set(['L2']));
   h.contractDegree2WithMatchingLines();
   assert.equal(h.edgeList().length, 2);
+});
+
+function graphFrom(
+  nodes: Record<string, [number, number]>,
+  edges: Array<{ id: string; from: string; to: string; lines: string[] }>,
+): TransitGraph {
+  const nodeMap = new Map(
+    Object.entries(nodes).map(([id, pos]) => [
+      id,
+      { id, label: id, pos: pos as [number, number], lngLat: [pos[0] / 1e5, pos[1] / 1e5] as [number, number] },
+    ]),
+  );
+  const ref = (id: string): LineRef => ({ id, label: id, color: '#000' });
+  const gEdges: GraphEdge[] = edges.map((e) => ({
+    id: e.id,
+    from: e.from,
+    to: e.to,
+    lines: e.lines.map(ref),
+    stops: new Map(),
+  }));
+  const adj = new Map<string, string[]>();
+  for (const id of nodeMap.keys()) adj.set(id, []);
+  for (const e of gEdges) {
+    adj.get(e.from)!.push(e.id);
+    adj.get(e.to)!.push(e.id);
+  }
+  return { nodes: nodeMap, edges: gEdges, adj, lineTraversals: new Map() };
+}
+
+const PARAMS: TopoParams = {
+  dHat: 20,
+  step: 5,
+  convergenceEpsilon: 0.002,
+  maxRounds: 8,
+  stationCandidateRadius: 40,
+};
+
+test('two near-parallel edges within d̂ merge to a single corridor edge', () => {
+  // Two horizontal edges 8px apart (< d̂=20), same span.
+  const g = graphFrom(
+    { a0: [0, 0], a1: [100, 0], b0: [0, 8], b1: [100, 8] },
+    [
+      { id: 'e0', from: 'a0', to: 'a1', lines: ['L1'] },
+      { id: 'e1', from: 'b0', to: 'b1', lines: ['L2'] },
+    ],
+  );
+  const h = runMergeRounds(g, PARAMS);
+  const edges = h.edgeList();
+  // The two runs collapse into one corridor carrying both lines.
+  const carriers = edges.filter((e) => e.lineIds.has('L1') && e.lineIds.has('L2'));
+  assert.ok(carriers.length >= 1, 'expected a shared corridor edge');
+});
+
+test('two parallel edges farther than d̂ stay separate', () => {
+  const g = graphFrom(
+    { a0: [0, 0], a1: [100, 0], b0: [0, 80], b1: [100, 80] },
+    [
+      { id: 'e0', from: 'a0', to: 'a1', lines: ['L1'] },
+      { id: 'e1', from: 'b0', to: 'b1', lines: ['L2'] },
+    ],
+  );
+  const h = runMergeRounds(g, PARAMS);
+  const shared = h.edgeList().filter((e) => e.lineIds.has('L1') && e.lineIds.has('L2'));
+  assert.equal(shared.length, 0, 'far edges must not merge');
+});
+
+test('a ~90° crossing does not merge (creep blocker prevents interlace)', () => {
+  const g = graphFrom(
+    { a0: [-100, 0], a1: [100, 0], b0: [0, -100], b1: [0, 100] },
+    [
+      { id: 'e0', from: 'a0', to: 'a1', lines: ['L1'] },
+      { id: 'e1', from: 'b0', to: 'b1', lines: ['L2'] },
+    ],
+  );
+  const h = runMergeRounds(g, PARAMS);
+  const shared = h.edgeList().filter((e) => e.lineIds.has('L1') && e.lineIds.has('L2'));
+  assert.equal(shared.length, 0, 'crossing edges must not interlace into a shared run');
 });

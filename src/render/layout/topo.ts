@@ -3,7 +3,7 @@
 // ids, then re-insert stations at the best-scoring support nodes.
 // Reference: Brosi & Bast 2024, "Network Topology Extraction".
 
-import type { Pixel } from './types';
+import type { Pixel, TransitGraph, GraphEdge } from './types';
 
 /** sin(pi/4): the paper's line-creep angle factor. */
 export const ALPHA = Math.SQRT1_2; // 0.70710678…
@@ -89,7 +89,7 @@ export class NodeIndex {
     this.insert(id, to);
   }
 
-  nearest(p: Pixel, radius: number): string | null {
+  nearest(p: Pixel, radius: number, exclude?: ReadonlySet<string>): string | null {
     const cx = Math.floor(p[0] / this.cell);
     const cy = Math.floor(p[1] / this.cell);
     let best: string | null = null;
@@ -99,6 +99,7 @@ export class NodeIndex {
         const b = this.buckets.get(cx + dx + ',' + (cy + dy));
         if (!b) continue;
         for (const id of b) {
+          if (exclude?.has(id)) continue;
           const q = this.pos.get(id)!;
           const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
           if (d <= bestD) {
@@ -152,8 +153,8 @@ export class HBuilder {
     return this.nodes.get(id)!;
   }
 
-  nearestNode(p: Pixel, radius: number): string | null {
-    return this.index.nearest(p, radius);
+  nearestNode(p: Pixel, radius: number, exclude?: ReadonlySet<string>): string | null {
+    return this.index.nearest(p, radius, exclude);
   }
 
   /** Move a node toward `sample`, averaging 50/50 (paper's running average). */
@@ -254,4 +255,121 @@ export class HBuilder {
       adj: new Map([...this.adj].map(([k, v]) => [k, new Set(v)])),
     };
   }
+}
+
+export interface TopoParams {
+  dHat: number;                  // merge distance threshold (px)
+  step: number;                  // densification step (px)
+  convergenceEpsilon: number;    // edge-length-gap stop (0.002 = 0.2%)
+  maxRounds: number;             // hard cap on the outer loop
+  stationCandidateRadius: number;// station-insertion search radius (px)
+}
+
+interface MergeInput {
+  edges: Array<{ a: Pixel; b: Pixel; points: Pixel[]; lineIds: Set<string> }>;
+}
+
+function inputFromGraph(g: TransitGraph): MergeInput {
+  const edges = g.edges.map((e: GraphEdge) => {
+    const a = g.nodes.get(e.from)!.pos;
+    const b = g.nodes.get(e.to)!.pos;
+    return { a, b, points: [a, b] as Pixel[], lineIds: new Set(e.lines.map((l) => l.id)) };
+  });
+  return { edges };
+}
+
+function inputFromBuilder(h: HBuilder): MergeInput {
+  return {
+    edges: h.edgeList().map((e) => ({
+      a: e.points[0],
+      b: e.points[e.points.length - 1],
+      points: e.points,
+      lineIds: e.lineIds,
+    })),
+  };
+}
+
+/** True when the candidate node `vPos` sits predominantly *beside* the edge's
+ *  local travel direction at sample `pk` (lateral offset >= along-track
+ *  offset). Parallel corridors are offset sideways and pass; a transversal
+ *  crossing's nodes sit ahead/behind along the travel direction and fail, so
+ *  they can only ever share a single node — never interlace into a shared run.
+ */
+function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos: Pixel): boolean {
+  const ax = next ? next[0] - pk[0] : 0;
+  const ay = next ? next[1] - pk[1] : 0;
+  const bx = prev ? pk[0] - prev[0] : 0;
+  const by = prev ? pk[1] - prev[1] : 0;
+  let tx = ax + bx;
+  let ty = ay + by;
+  const tl = Math.hypot(tx, ty);
+  if (tl < 1e-9) return true; // no travel direction → no creep to fear
+  tx /= tl;
+  ty /= tl;
+  const ox = vPos[0] - pk[0];
+  const oy = vPos[1] - pk[1];
+  const along = Math.abs(ox * tx + oy * ty);
+  const perp = Math.abs(ox * ty - oy * tx); // 2D cross magnitude
+  return perp > along;
+}
+
+/** One merge pass: walk every input edge's densified samples, snapping each to
+ *  a nearby existing H node or creating a new one, honouring the creep blocker
+ *  and a ring buffer that prevents an edge from snapping back onto a node it
+ *  just used. */
+function onePass(input: MergeInput, params: TopoParams): HBuilder {
+  const { dHat, step } = params;
+  const h = new HBuilder(dHat);
+  // Shortest edges first → most stable merges (paper).
+  const sorted = [...input.edges].sort(
+    (x, y) => polylineLength(x.points) - polylineLength(y.points),
+  );
+  const ringSize = Math.max(1, Math.ceil(dHat / step));
+  for (const e of sorted) {
+    const samples = densify(e.points, step);
+    const ring: string[] = [];        // recently-used node ids (FIFO)
+    const blocking = new Set<string>(); // same contents, for O(1) exclusion
+    let vPrev: string | null = null;
+    for (let k = 0; k < samples.length; k++) {
+      const pk = samples[k];
+      // Nearest existing node that this edge has NOT just used (ring buffer).
+      let v = h.nearestNode(pk, dHat, blocking);
+      const prev = k > 0 ? samples[k - 1] : null;
+      const next = k + 1 < samples.length ? samples[k + 1] : null;
+      if (
+        v !== null &&
+        !creepBlocked(h.nodePos(v), pk, samples) &&
+        lateralToTravel(prev, pk, next, h.nodePos(v))
+      ) {
+        h.snap(v, pk);
+      } else {
+        v = h.addNode(pk);
+      }
+      if (vPrev !== null) h.addOrUnionEdge(vPrev, v, e.lineIds);
+      ring.push(v);
+      blocking.add(v);
+      if (ring.length > ringSize) {
+        const old = ring.shift()!;
+        if (!ring.includes(old)) blocking.delete(old);
+      }
+      vPrev = v;
+    }
+  }
+  h.contractDegree2WithMatchingLines();
+  return h;
+}
+
+export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
+  let h: HBuilder | null = null;
+  let prevLen = Infinity;
+  for (let round = 1; round <= params.maxRounds; round++) {
+    const input = h === null ? inputFromGraph(g) : inputFromBuilder(h);
+    h = onePass(input, params);
+    const len = h.totalLength();
+    if (prevLen !== Infinity && Math.abs(1 - len / prevLen) < params.convergenceEpsilon) {
+      break;
+    }
+    prevLen = len;
+  }
+  return h!;
 }
