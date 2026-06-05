@@ -82,42 +82,34 @@ test('every segment in every routed path is octilinear', () => {
   }
 });
 
-test('toCardinalDir biases the final segment toward the requested cardinal', () => {
-  // Soft (cost-based) constraint, not a hard guarantee: we verify that the
-  // constrained version's final segment is MORE aligned with the cardinal
-  // than the unconstrained baseline. (The router may still pick a
-  // non-cardinal final segment when other costs — bend penalty, edge length —
-  // would be too high to overcome.)
+test('the first edge leaves the start in a direction that advances toward the goal', () => {
+  // Goal is NE of start. The first edge should head NE-ish: either pure E,
+  // pure N, or the NE diagonal — NOT W, S, NW, SW (which would leave the
+  // station heading away from the goal). The amplified exit-direction cost
+  // makes any away-from-goal exit much more expensive than a 1-step detour
+  // along a forward-pointing edge.
   const positions = new Map<string, Pixel>([
     ['A', [0, 0]],
-    ['B', [200, 100]],
+    ['B', [300, 200]],
   ]);
-  const opts = { snapCell: 50, padding: 50, medianEdgeLength: 200 };
-  const base = routeAllEdgesViaHanan(
-    positions,
-    [{ id: 'e', from: 'A', to: 'B', lineIds: new Set(['L']) }],
-    opts,
-  );
-  const constrained = routeAllEdgesViaHanan(
-    positions,
-    [{ id: 'e', from: 'A', to: 'B', lineIds: new Set(['L']), toCardinalDir: 2 }],
-    opts,
-  );
-  // Verticality of last segment = |dy| / |seg_length|. 1 = pure vertical.
-  const verticality = (p: Pixel[]): number => {
-    const a = p[p.length - 2];
-    const b = p[p.length - 1];
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    const len = Math.hypot(dx, dy) || 1;
-    return Math.abs(dy) / len;
-  };
-  const v0 = verticality(base.paths.get('e')!);
-  const v1 = verticality(constrained.paths.get('e')!);
-  assert.ok(
-    v1 >= v0,
-    `toCardinalDir=2 should make last seg at least as vertical (v0=${v0}, v1=${v1})`,
-  );
+  const edges = [{ id: 'e', from: 'A', to: 'B', lineIds: new Set(['L']) }];
+  const out = routeAllEdgesViaHanan(positions, edges, {
+    snapCell: 50,
+    padding: 50,
+    medianEdgeLength: 300,
+  });
+  const path = out.paths.get('e')!;
+  assert.ok(path.length >= 2);
+  // dot of (first edge direction) with (start → goal direction) must be > 0:
+  // the exit edge has a positive component toward the goal.
+  const ex = path[1][0] - path[0][0];
+  const ey = path[1][1] - path[0][1];
+  const eLen = Math.hypot(ex, ey) || 1;
+  const gx = 300;
+  const gy = 200;
+  const gLen = Math.hypot(gx, gy);
+  const dot = (ex * gx + ey * gy) / (eLen * gLen);
+  assert.ok(dot > 0, `exit edge should advance toward goal; dot=${dot}`);
 });
 
 test('a 90° bend is avoided at the first node after the start when possible', () => {
@@ -154,33 +146,3 @@ test('a 90° bend is avoided at the first node after the start when possible', (
   }
 });
 
-test('fromCardinalDir forces the first segment to leave the start in that cardinal', () => {
-  // Start at (0, 0), goal at (200, 100). Force dir 0 (E, +x) for the first
-  // segment — so the path must initially travel purely east, not diagonal.
-  const positions = new Map<string, Pixel>([
-    ['A', [0, 0]],
-    ['B', [200, 100]],
-  ]);
-  const edges = [
-    {
-      id: 'e',
-      from: 'A',
-      to: 'B',
-      lineIds: new Set(['L']),
-      fromCardinalDir: 0,
-    },
-  ];
-  const out = routeAllEdgesViaHanan(positions, edges, {
-    snapCell: 50,
-    padding: 50,
-    medianEdgeLength: 200,
-  });
-  const path = out.paths.get('e')!;
-  assert.ok(path.length >= 2);
-  const first = path[0];
-  const next = path[1];
-  const dx = next[0] - first[0];
-  const dy = next[1] - first[1];
-  assert.ok(Math.abs(dy) < 1e-6, `first segment should be horizontal; dy=${dy}`);
-  assert.ok(dx > 0, `first segment should travel in +x; dx=${dx}`);
-});

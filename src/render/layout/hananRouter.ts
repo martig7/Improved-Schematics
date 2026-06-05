@@ -17,15 +17,6 @@ export interface RouteableEdge {
   from: string;
   to: string;
   lineIds: Set<string>;
-  /** Cardinal grid direction (0=E, 2=+y, 4=W, 6=-y) the path's FIRST grid
-   *  segment must leave the start in. Used when the start station is high-
-   *  degree and we want its outgoing edges bucketed into ≤4 entry corridors.
-   *  Soft constraint: a finite-cost penalty pushes the router toward this
-   *  direction; the path still terminates if no cardinal route exists. */
-  fromCardinalDir?: number;
-  /** Cardinal grid direction the path's LAST grid segment must approach the
-   *  goal from. Same semantics, applied at the goal end. */
-  toCardinalDir?: number;
 }
 
 export interface HananRouterOptions {
@@ -63,18 +54,11 @@ const DIAG_CROSS_PENALTY_K = 2.0;
 // "leave direction" matters most. Weighted by edge length so longer wrong-way
 // edges are penalized more.
 const DIRECTION_DISAGREEMENT_K = 2.0;
-// Moderate (finite) penalty for first/last grid segments whose direction
-// doesn't match the edge's requested cardinal entry direction. Lets us steer
-// the router into ≤4 cardinal-aligned entry corridors at high-degree stations
-// without graph-level ghost nodes.
-//
-// Calibration: with this K, a diagonal final segment costs about (1 + K)·√2·snap;
-// a detour to enter cardinally costs roughly (D+1)·snap for D extra grid edges.
-// They break even at D ≈ K·√2 + (√2 − 1). For K=2.5 → break-even at ~4 extra
-// edges. Big enough to enforce cardinal entry when the natural direction is
-// already near a cardinal (1-3 edge bend cost); small enough that exactly-
-// diagonal naturals don't loop the long way around the station.
-const CARDINAL_MISMATCH_K = 2.5;
+// Extra multiplier on the disagreement cost for the FIRST edge leaving the
+// start. A path should originate in a direction that genuinely advances
+// toward the goal; an exit edge that goes sideways or backwards is much more
+// disruptive to read than a mid-path detour, so it pays more.
+const EXIT_DIRECTION_K = 4.0;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {
@@ -206,9 +190,12 @@ export function routeAllEdgesViaHanan(
         }
 
         // Direction-disagreement cost: penalize edges that point away from the
-        // goal. Most important at the start node (no prevDir to encourage a
-        // sensible leave direction); still helps mid-path against detours into
-        // wrong-direction shared corridors.
+        // goal. The exit edge (first edge leaving start, prev === null) pays
+        // the multiplied EXIT_DIRECTION_K — a path should originate in a
+        // direction that genuinely advances toward the goal, otherwise the
+        // line visibly "leaves the wrong way" out of the station. Mid-path
+        // edges pay the base K (still discourages detours into wrong-direction
+        // shared corridors).
         if (here) {
           const nextPos = grid.positions.get(e.to);
           if (nextPos) {
@@ -219,7 +206,8 @@ export function routeAllEdgesViaHanan(
             // alignment in [-1, 1]: 1 = exactly toward goal, -1 = exactly away.
             // (1 - alignment) in [0, 2]. Scale by length so longer wrong-way
             // edges are penalized more.
-            w += (1 - alignment) * DIRECTION_DISAGREEMENT_K * e.len;
+            const k = prev === null ? EXIT_DIRECTION_K : DIRECTION_DISAGREEMENT_K;
+            w += (1 - alignment) * k * e.len;
           }
         }
 
@@ -251,17 +239,6 @@ export function routeAllEdgesViaHanan(
           if (usedAxes && usedAxes.has(otherAxis)) {
             w += DIAG_CROSS_PENALTY_K * e.len;
           }
-        }
-
-        // Cardinal-entry constraint at the start: first edge leaving the
-        // start node must match `fromCardinalDir` if specified.
-        if (prev === null && tEdge.fromCardinalDir !== undefined && e.dir !== tEdge.fromCardinalDir) {
-          w += CARDINAL_MISMATCH_K * e.len;
-        }
-        // Cardinal-entry constraint at the goal: last edge arriving at the
-        // goal must match `toCardinalDir` if specified.
-        if (e.to === goalKey && tEdge.toCardinalDir !== undefined && e.dir !== tEdge.toCardinalDir) {
-          w += CARDINAL_MISMATCH_K * e.len;
         }
 
         if (w < 0.01) w = 0.01;

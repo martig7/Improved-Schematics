@@ -226,41 +226,6 @@ export function renderGeographic(input: GeoInput): string {
  *  station displacement; larger → finer grid, more work, less displacement. */
 const HANAN_SNAP_DIVISOR = 4;
 
-/** Limit each station to at most this many distinct entry directions. When
- *  a station has more incident edges than this, each edge is assigned to
- *  whichever of the 4 cardinal grid axes its neighbour direction is closest
- *  to, and the router is told to enter/leave the station along that axis. */
-const MAX_ENTRY_DIRECTIONS = 4;
-
-/** Four cardinal directions in pixel space (svg y-down), and the matching
- *  Hanan-grid direction code (0=E, 2=+y, 4=W, 6=-y). Used to bucket an
- *  incident edge by its geographic angle from the station to its neighbour
- *  and convert that bucket into a router cardinal-entry constraint. */
-const CARDINAL_AXES: ReadonlyArray<{ vec: [number, number]; routerDir: number }> = [
-  { vec: [1, 0], routerDir: 0 },
-  { vec: [0, 1], routerDir: 2 },
-  { vec: [-1, 0], routerDir: 4 },
-  { vec: [0, -1], routerDir: 6 },
-];
-
-/** Pick the cardinal axis whose vector best matches (vx, vy). Returns the
- *  router-encoded cardinal direction (0/2/4/6). */
-function nearestCardinalRouterDir(vx: number, vy: number): number {
-  const len = Math.hypot(vx, vy) || 1;
-  const ux = vx / len;
-  const uy = vy / len;
-  let bestDir = 0;
-  let bestDot = -Infinity;
-  for (const c of CARDINAL_AXES) {
-    const d = ux * c.vec[0] + uy * c.vec[1];
-    if (d > bestDot) {
-      bestDot = d;
-      bestDir = c.routerDir;
-    }
-  }
-  return bestDir;
-}
-
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
@@ -289,40 +254,10 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   lengths.sort((p, q) => p - q);
   const medianEdge = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 100;
 
-  // Cardinal-entry bucketing (paper §2, done at the router level rather than
-  // by graph mutation). For each station with more than MAX_ENTRY_DIRECTIONS
-  // incident edges, assign every incident edge to the cardinal grid axis
-  // closest to its neighbour direction. The router then enforces that each
-  // such edge's first / last grid segment travels along the assigned axis.
-  // Result: high-degree stations get at most 4 entry corridors. No new graph
-  // nodes — so no extra bezier kinks, no extra stop marks inflating the pill,
-  // no off-grid bridges.
+  // Router handles "exit toward goal" naturally via its direction-disagreement
+  // cost (amplified at the first edge of every routed edge), so we don't need
+  // any per-station bucketing here.
   const graph = baseGraph;
-  const incidence = new Map<string, typeof graph.edges>();
-  for (const e of graph.edges) {
-    for (const sid of [e.from, e.to] as const) {
-      let list = incidence.get(sid);
-      if (!list) {
-        list = [];
-        incidence.set(sid, list);
-      }
-      list.push(e);
-    }
-  }
-  const cardinalAtEdgeEnd = new Map<string, number>(); // sid + '|' + edgeId → routerDir
-  for (const [sid, edges] of incidence) {
-    if (edges.length <= MAX_ENTRY_DIRECTIONS) continue;
-    const station = graph.nodes.get(sid);
-    if (!station) continue;
-    for (const e of edges) {
-      const otherId = e.from === sid ? e.to : e.from;
-      const other = graph.nodes.get(otherId);
-      if (!other) continue;
-      const vx = other.pos[0] - station.pos[0];
-      const vy = other.pos[1] - station.pos[1];
-      cardinalAtEdgeEnd.set(sid + '|' + e.id, nearestCardinalRouterDir(vx, vy));
-    }
-  }
 
   // Real (projected) positions are the *input* to the router; the router snaps
   // each station onto its Hanan grid node and returns those snapped positions.
@@ -333,25 +268,12 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
 
   const routed = routeAllEdgesViaHanan(
     realPx,
-    graph.edges.map((e) => {
-      // The first segment LEAVES the start in the bucket direction (which is
-      // the station→neighbour direction). The last segment ARRIVES at the
-      // goal travelling along the OPPOSITE of the bucket direction (since the
-      // bucket points from station out to neighbour, but the arriving segment
-      // comes from neighbour back into station).
-      const fromBucket = cardinalAtEdgeEnd.get(e.from + '|' + e.id);
-      const toBucket = cardinalAtEdgeEnd.get(e.to + '|' + e.id);
-      return {
-        id: e.id,
-        from: e.from,
-        to: e.to,
-        lineIds: new Set(e.lines.map((l) => l.id)),
-        fromCardinalDir: fromBucket,
-        // Approaching goal from the bucket direction means the final segment's
-        // direction is the OPPOSITE cardinal: (dir + 4) mod 8.
-        toCardinalDir: toBucket === undefined ? undefined : (toBucket + 4) % 8,
-      };
-    }),
+    graph.edges.map((e) => ({
+      id: e.id,
+      from: e.from,
+      to: e.to,
+      lineIds: new Set(e.lines.map((l) => l.id)),
+    })),
     {
       snapCell: medianEdge / HANAN_SNAP_DIVISOR,
       padding: medianEdge,
