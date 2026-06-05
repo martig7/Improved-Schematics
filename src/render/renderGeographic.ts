@@ -11,7 +11,7 @@ import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
-import { smoothGeographic } from './layout/simplify';
+import { octilinearPath } from './layout/octilinearPath';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -211,6 +211,9 @@ export function renderGeographic(input: GeoInput): string {
   return svgWrap(parts, width, height);
 }
 
+/** How many alternating u1+u2 cycles to use when stepping between two stations. */
+const SMOOTHED_OCTI_SEGMENTS = 2;
+
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
@@ -219,52 +222,56 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     return renderGeographic({ ...input, smooth: false });
   }
 
+  // Frame on real station-group geography; project each node once. Stations
+  // stay at their actual locations — no relaxation, no grid snap.
   const bounds = (() => {
     const b = computeBounds([...graph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
   const proj = createProjection(bounds, width, height, padding);
-  for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
-  const relaxed = smoothGeographic(graph);
+  const nodePx = new Map<string, Pixel>();
+  for (const n of graph.nodes.values()) {
+    const p = proj.toSVG(n.lngLat);
+    n.pos = p;
+    nodePx.set(n.id, p);
+  }
 
-  // Synthesise a Layout where each node's "cell" is its smoothed pixel position
-  // and each edge's "path" is the straight pair [from_pixel, to_pixel]. This
-  // lets the schematic-style ribbon renderer bundle lines + draw pills.
+  // Synthesise a Layout: each node "cell" is its real projected pixel; each
+  // edge's "path" is an octilinear staircase that lands exactly on the next
+  // station. The schematic ribbon renderer then bundles parallel lines and
+  // draws pills at the multi-route nodes.
   const layoutNodes = new Map<string, LayoutNode>();
   for (const n of graph.nodes.values()) {
-    const px = relaxed.get(n.id) ?? n.pos;
     layoutNodes.set(n.id, {
       id: n.id,
-      cell: [px[0], px[1]] as Cell,
+      cell: [n.pos[0], n.pos[1]] as Cell,
       label: n.label,
       lngLat: n.lngLat,
     });
   }
-  const layoutEdges: LayoutEdge[] = graph.edges.map((e) => ({
-    id: e.id,
-    from: e.from,
-    to: e.to,
-    path: [
-      (relaxed.get(e.from) ?? graph.nodes.get(e.from)!.pos) as Cell,
-      (relaxed.get(e.to) ?? graph.nodes.get(e.to)!.pos) as Cell,
-    ],
-    lines: e.lines,
-    lineOrder: e.lines.map((l) => l.id).sort(),
-    stops: e.stops,
-  }));
+  const layoutEdges: LayoutEdge[] = graph.edges.map((e) => {
+    const from = nodePx.get(e.from)!;
+    const to = nodePx.get(e.to)!;
+    const path = octilinearPath(from, to, SMOOTHED_OCTI_SEGMENTS).map(
+      (p) => [p[0], p[1]] as Cell,
+    );
+    return {
+      id: e.id,
+      from: e.from,
+      to: e.to,
+      path,
+      lines: e.lines,
+      lineOrder: e.lines.map((l) => l.id).sort(),
+      stops: e.stops,
+    };
+  });
   const layout: Layout = {
     cellSize: 1,
     nodes: layoutNodes,
     edges: layoutEdges,
     lineTraversals: graph.lineTraversals,
   };
-
-  // Order parallel lines on shared edges so canonical offsets stay stable.
   orderLines(layout);
-
-  // Pre-projected node pixels and identity edge-polyline for renderRibbons.
-  const nodePx = new Map<string, Pixel>();
-  for (const n of layoutNodes.values()) nodePx.set(n.id, [n.cell[0], n.cell[1]]);
 
   const transfers = findTransferPairs(groups, DEFAULT_TRANSFER_METERS);
 
