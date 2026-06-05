@@ -42,6 +42,15 @@ export interface HananRouterOptions {
 // Cost-weight constants. Scaled by medianEdgeLength so different cities behave
 // similarly. Tune after the visual checkpoint.
 const BEND_TURN_K = 0.3;
+// Bends that happen RIGHT after leaving the start node (n one step from start)
+// or RIGHT before arriving at the goal (e.to === goalKey) get this multiplier
+// on top of the base bend cost. A line that leaves a station diagonally then
+// immediately snaps to a contradictory direction looks like a mini-loop at the
+// station endpoint — visually identical to the "loop" complaint but smaller.
+// Multiplying station-adjacent bends pushes the router to commit to one
+// direction for ≥1 extra grid edge before turning. Composes with the cardinal-
+// entry constraint to produce a clean ~2-edge approach corridor at each end.
+const STATION_ADJACENT_BEND_K = 4.0;
 const STATION_PENALTY_K = 2.0;
 // Bundle bonus reduced so corridor-sharing doesn't override "go toward goal":
 // the earlier (-1.5) made backwards detours through shared lanes cheaper than
@@ -184,8 +193,16 @@ export function routeAllEdgesViaHanan(
         let w = e.len;
 
         // Bend cost: 0 for straight continuation, scaled by turn-step count.
+        // Bends at station-adjacent nodes (one step from start, or just before
+        // the goal) get a multiplier so the line commits to one direction for
+        // at least one extra grid edge before turning.
         if (prevDir >= 0) {
-          w += turnSteps(prevDir, e.dir) * BEND_TURN_K * med;
+          const steps = turnSteps(prevDir, e.dir);
+          let bend = steps * BEND_TURN_K * med;
+          if (steps > 0 && (prev === startKey || e.to === goalKey)) {
+            bend *= STATION_ADJACENT_BEND_K;
+          }
+          w += bend;
         }
 
         // Direction-disagreement cost: penalize edges that point away from the
