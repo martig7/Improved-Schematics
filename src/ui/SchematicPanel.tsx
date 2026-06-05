@@ -14,6 +14,8 @@
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { generateSchematicSVG } from '../render/schematic';
 import type { RenderMode, WaterCollection } from '../render/types';
+import { generateWater } from '../water/oceanIndex';
+import { modState } from '../state';
 
 const api = window.SubwayBuilderAPI;
 
@@ -29,9 +31,20 @@ export function SchematicPanel() {
   const [showLabels, setShowLabels] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Water for the current city. Populated by the runtime generator (TODO);
-  // undefined for now → modes render without a water layer.
-  const water: WaterCollection | undefined = undefined;
+  // Water for the current city, generated from its ocean_depth_index on first
+  // open and cached. Undefined until it resolves (or if the city has none).
+  const [water, setWater] = useState<WaterCollection | undefined>(undefined);
+  useEffect(() => {
+    const city = modState.cityCode;
+    if (!city) return;
+    let alive = true;
+    generateWater(city).then((wc) => {
+      if (alive && wc) setWater(wc);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const svg = useMemo(() => {
     const routes = api.gameState.getRoutes();

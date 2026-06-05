@@ -7,6 +7,7 @@
  */
 
 import { SchematicPanel } from './ui/SchematicPanel';
+import { modState } from './state';
 
 const MOD_VERSION = '0.1.0';
 const TAG = '[ImprovedSchematics]';
@@ -17,6 +18,11 @@ if (!api) {
   console.error(`${TAG} SubwayBuilderAPI not found!`);
 } else {
   console.log(`${TAG} v${MOD_VERSION} | API v${api.version}`);
+
+  // Track the current city so the panel can load that city's water layer.
+  api.hooks.onCityLoad((cityCode) => {
+    modState.cityCode = cityCode;
+  });
 
   // onMapReady can fire multiple times (city load/switch); guard init.
   let initialized = false;
