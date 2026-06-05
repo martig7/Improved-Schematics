@@ -14,7 +14,7 @@ import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { generateSchematicSVG } from '../render/schematic';
 import type { RenderMode, WaterCollection } from '../render/types';
 import { generateWater } from '../water/oceanIndex';
-import { modState } from '../state';
+import { modState, PANEL_STORAGE_KEY } from '../state';
 
 const api = window.SubwayBuilderAPI;
 
@@ -69,6 +69,18 @@ export function SchematicPanel() {
     });
     return () => {
       alive = false;
+    };
+  }, []);
+
+  // Drop the game's persisted panel size/position when the panel closes, so
+  // the next open uses our defaults instead of the last user-resized state.
+  useEffect(() => {
+    return () => {
+      try {
+        localStorage.removeItem(PANEL_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 

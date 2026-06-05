@@ -7,7 +7,7 @@
  */
 
 import { SchematicPanel } from './ui/SchematicPanel';
-import { modState } from './state';
+import { modState, PANEL_ID, PANEL_STORAGE_KEY } from './state';
 
 const MOD_VERSION = '0.1.0';
 const TAG = '[ImprovedSchematics]';
@@ -18,6 +18,14 @@ if (!api) {
   console.error(`${TAG} SubwayBuilderAPI not found!`);
 } else {
   console.log(`${TAG} v${MOD_VERSION} | API v${api.version}`);
+
+  // Forget any persisted panel size/position from a previous session, so a
+  // fresh game launch always opens the panel at our defaults.
+  try {
+    localStorage.removeItem(PANEL_STORAGE_KEY);
+  } catch {
+    /* localStorage may be unavailable in some embeddings; ignore. */
+  }
 
   // Track the current city so the panel can load that city's water layer.
   api.hooks.onCityLoad((cityCode) => {
@@ -33,7 +41,7 @@ if (!api) {
 
     try {
       api.ui.addFloatingPanel({
-        id: 'improved-schematic-panel',
+        id: PANEL_ID,
         title: 'Improved Schematic',
         icon: 'Map',
         defaultWidth: 840,
