@@ -97,6 +97,10 @@ export interface RenderRibbonsArgs {
   /** Pairs of (ghost a, ghost b) sharing one original station — drawn as a
    *  thin grey "this is one station" bar behind the line ribbons. */
   ghostConnectors?: Array<{ fromPos: Pixel; toPos: Pixel }>;
+  /** originalStationId → ghost ids. When supplied, sibling-ghost stop-marks
+   *  and labels are merged into a single pill so the cluster visually reads
+   *  as one interchange, while the routing still benefits from the split. */
+  ghostGroups?: Map<string, string[]>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -218,6 +222,30 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
         LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
     );
+  }
+
+  // Merge sibling-ghost stop marks into a single pill so the cluster reads as
+  // one interchange. We keep the routing-level split but unify the visual
+  // marker: all ghosts' stops are collected under the FIRST ghost id, and the
+  // remaining sibling entries are dropped from the stops map so renderStops
+  // draws one rounded rect spanning every sibling lane.
+  if (args.ghostGroups) {
+    for (const [, ghostIds] of args.ghostGroups) {
+      if (ghostIds.length < 2) continue;
+      const primary = ghostIds[0];
+      let merged = stopsByNode.get(primary);
+      if (!merged) {
+        merged = [];
+        stopsByNode.set(primary, merged);
+      }
+      for (let i = 1; i < ghostIds.length; i++) {
+        const sibStops = stopsByNode.get(ghostIds[i]);
+        if (sibStops) {
+          for (const s of sibStops) merged.push(s);
+          stopsByNode.delete(ghostIds[i]);
+        }
+      }
+    }
   }
 
   const stopParts = renderStops(stopsByNode, dark);

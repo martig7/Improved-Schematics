@@ -33,6 +33,10 @@ export interface GhostNodeResult {
   /** Pairs of (ghost a, ghost b) that share an original station — for the
    *  caller to draw thin "this is one station" connector bars. */
   ghostConnectors: Array<{ from: string; to: string; fromPos: Pixel; toPos: Pixel }>;
+  /** originalStationId -> [ghost ids], in cluster order. Lets the caller
+   *  merge sibling stop-marks/labels into a single pill so the cluster reads
+   *  as one interchange visually. */
+  ghostGroups: Map<string, string[]>;
 }
 
 /** Count distinct route IDs through each node (union over incident edges). */
@@ -128,7 +132,13 @@ export function splitHighRouteNodes(
   }
 
   // Short-circuit: nothing to split → return the input graph unchanged.
-  if (splitMap.size === 0) return { graph, ghostConnectors: [] };
+  if (splitMap.size === 0) return { graph, ghostConnectors: [], ghostGroups: new Map() };
+
+  // Build the original-station → ghost-ids index now that splitting is decided.
+  const ghostGroups = new Map<string, string[]>();
+  for (const [origId, ghosts] of splitMap) {
+    ghostGroups.set(origId, ghosts.map((g) => g.id));
+  }
 
   // 2. Build the new node map.
   const newNodes = new Map<string, GraphNode>();
@@ -216,5 +226,6 @@ export function splitHighRouteNodes(
       lineTraversals: newLineTraversals,
     },
     ghostConnectors,
+    ghostGroups,
   };
 }

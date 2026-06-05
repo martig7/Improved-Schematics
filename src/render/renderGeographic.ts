@@ -264,7 +264,9 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   // Ghost-node splitting: stations carrying many routes get split into a
   // cluster of smaller ghost groups so the canonical-offset bundler fans the
   // lanes across multiple narrower pills instead of one wide one (paper §2).
-  const { graph, ghostConnectors } = splitHighRouteNodes(baseGraph, {
+  // The renderer then merges sibling-ghost stop-marks back into a single pill
+  // so the cluster reads as one interchange — split for routing, unified visually.
+  const { graph, ghostConnectors, ghostGroups } = splitHighRouteNodes(baseGraph, {
     maxRoutesPerGhost: MAX_ROUTES_PER_GHOST,
     ghostSpacing: medianEdge * GHOST_SPACING_RATIO,
   });
@@ -350,6 +352,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     water: input.water,
     transfers,
+    ghostGroups,
   });
 }
 

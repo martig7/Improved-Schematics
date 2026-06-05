@@ -34,9 +34,17 @@ export interface HananRouterOptions {
 // similarly. Tune after the visual checkpoint.
 const BEND_TURN_K = 0.3;
 const STATION_PENALTY_K = 2.0;
-const BUNDLE_BONUS_K = -1.5;
+// Bundle bonus reduced so corridor-sharing doesn't override "go toward goal":
+// the earlier (-1.5) made backwards detours through shared lanes cheaper than
+// forward edges away from them, producing visible loops at stations.
+const BUNDLE_BONUS_K = -0.4;
 const CONFLICT_PENALTY_K = 3.0;
 const DIAG_CROSS_PENALTY_K = 2.0;
+// Penalty for taking an edge that disagrees with the geographic direction to
+// the goal. Applied at every step; biggest impact at start nodes where the
+// "leave direction" matters most. Weighted by edge length so longer wrong-way
+// edges are penalized more.
+const DIRECTION_DISAGREEMENT_K = 0.8;
 
 /** Number of 45° steps between two octilinear direction indices (0..4). */
 function turnSteps(prev: number, cur: number): number {
@@ -137,6 +145,19 @@ export function routeAllEdgesViaHanan(
     const neighbors = (n: string, prev: string | null) => {
       const adj = grid.adj.get(n) ?? [];
       const prevDir = prev === null ? -1 : dirOfEdge(grid, prev, n);
+      const here = grid.positions.get(n);
+      // Goal direction from the current node, as a unit vector. We compare
+      // each candidate edge's direction against this to penalize "wrong-way"
+      // leaves.
+      let goalUx = 0;
+      let goalUy = 0;
+      if (here) {
+        const gx = goalPos[0] - here[0];
+        const gy = goalPos[1] - here[1];
+        const gl = Math.hypot(gx, gy) || 1;
+        goalUx = gx / gl;
+        goalUy = gy / gl;
+      }
       const result: { to: string; w: number }[] = [];
       for (const e of adj) {
         let w = e.len;
@@ -144,6 +165,24 @@ export function routeAllEdgesViaHanan(
         // Bend cost: 0 for straight continuation, scaled by turn-step count.
         if (prevDir >= 0) {
           w += turnSteps(prevDir, e.dir) * BEND_TURN_K * med;
+        }
+
+        // Direction-disagreement cost: penalize edges that point away from the
+        // goal. Most important at the start node (no prevDir to encourage a
+        // sensible leave direction); still helps mid-path against detours into
+        // wrong-direction shared corridors.
+        if (here) {
+          const nextPos = grid.positions.get(e.to);
+          if (nextPos) {
+            const edx = nextPos[0] - here[0];
+            const edy = nextPos[1] - here[1];
+            const eLen = Math.hypot(edx, edy) || 1;
+            const alignment = (edx / eLen) * goalUx + (edy / eLen) * goalUy;
+            // alignment in [-1, 1]: 1 = exactly toward goal, -1 = exactly away.
+            // (1 - alignment) in [0, 2]. Scale by length so longer wrong-way
+            // edges are penalized more.
+            w += (1 - alignment) * DIRECTION_DISAGREEMENT_K * e.len;
+          }
         }
 
         // Discourage routing through other stations (not the goal itself).
