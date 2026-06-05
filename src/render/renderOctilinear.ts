@@ -143,13 +143,25 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     if (!line || traversal.length === 0) continue;
 
     const turns: boolean[] = new Array(traversal.length).fill(false);
+    // Compare UNIT directions, not raw deltas. Two consecutive grid edges in
+    // the same line traversal can both go (say) east but with different
+    // lengths — raw-delta equality would fail, the renderer would draw a
+    // quadratic bezier through the un-offset station center, and since both
+    // offset endpoints are the same point in that case, the bezier becomes a
+    // degenerate curve that "dips" toward the station center and back. That
+    // dip renders as a tiny non-octi spike at the station.
     for (let i = 0; i < traversal.length - 1; i++) {
       const ea = edgeById.get(traversal[i].edgeId);
       const eb = edgeById.get(traversal[i + 1].edgeId);
       if (!ea || !eb || ea.path.length < 2 || eb.path.length < 2) continue;
       const da = endDir(edgePolyline(ea), traversal[i].reversed);
       const db = startDir(edgePolyline(eb), traversal[i + 1].reversed);
-      if (da[0] !== db[0] || da[1] !== db[1]) turns[i] = true;
+      const la = Math.hypot(da[0], da[1]);
+      const lb = Math.hypot(db[0], db[1]);
+      if (la < 1e-9 || lb < 1e-9) continue;
+      const dx = da[0] / la - db[0] / lb;
+      const dy = da[1] / la - db[1] / lb;
+      if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) turns[i] = true;
     }
 
     const d: string[] = [];
