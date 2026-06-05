@@ -6,12 +6,13 @@
 import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
-import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cell } from './layout/types';
+import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cell, EdgeStop, SupportGraph } from './layout/types';
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { routeAllEdgesViaHanan } from './layout/hananRouter';
+import { topo } from './layout/topo';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -147,6 +148,47 @@ function renderGeoNodes(
   return out;
 }
 
+/** Adapt a topo SupportGraph into the Layout shape renderRibbons consumes.
+ *  Node "cells" are pixels (identity edgePolyline), edge paths are the merged
+ *  corridor polylines, and stops come from the support graph's stopAt set. */
+function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string, Pixel> } {
+  const nodes = new Map<string, LayoutNode>();
+  const nodePx = new Map<string, Pixel>();
+  // Render stations at their support-node positions; label by station.
+  const labelByNode = new Map<string, string>();
+  for (const st of h.stations.values()) labelByNode.set(st.nodeId, st.label);
+  for (const [id, n] of h.nodes) {
+    nodes.set(id, {
+      id,
+      cell: [n.pos[0], n.pos[1]] as Cell,
+      label: labelByNode.get(id) ?? '',
+      lngLat: [n.pos[0] / 1e5, n.pos[1] / 1e5] as Coordinate,
+    });
+    nodePx.set(id, n.pos);
+  }
+  const edges: LayoutEdge[] = [];
+  for (const e of h.edges.values()) {
+    const lines = [...e.lineIds].map((id) => h.lineRefs.get(id)!).filter(Boolean);
+    const stops = new Map<string, EdgeStop>();
+    for (const id of e.lineIds) {
+      const atFrom = h.stopAt.has(id + '|' + e.from);
+      const atTo = h.stopAt.has(id + '|' + e.to);
+      if (atFrom || atTo) stops.set(id, { atFrom, atTo });
+    }
+    edges.push({
+      id: e.id,
+      from: e.from,
+      to: e.to,
+      path: e.points.map((p) => [p[0], p[1]] as Cell),
+      lines,
+      lineOrder: lines.map((l) => l.id).sort(),
+      stops,
+    });
+  }
+  const layout: Layout = { cellSize: 1, nodes, edges, lineTraversals: h.lineTraversals };
+  return { layout, nodePx };
+}
+
 export function renderGeographic(input: GeoInput): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
@@ -158,6 +200,10 @@ export function renderGeographic(input: GeoInput): string {
 
   if (input.smooth) {
     return renderSmoothed(input, opts);
+  }
+
+  if (opts.useTopoMerge) {
+    return renderGeographicTopo(input, opts);
   }
 
   const lines = extractRouteLines(input.routes, input.tracks);
@@ -219,6 +265,42 @@ export function renderGeographic(input: GeoInput): string {
   }
 
   return svgWrap(parts, width, height);
+}
+
+function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
+  const { width, height, padding, dark } = opts;
+  const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
+  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
+  const graph = buildTransitGraph(input.stations as never, input.routes, groups);
+  if (graph.edges.length === 0) {
+    return renderGeographic({ ...input, options: { ...input.options, useTopoMerge: false } });
+  }
+
+  // Frame on geography; project each node position into pixels.
+  const bounds = (() => {
+    const b = computeBounds([...graph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
+    return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
+  })();
+  const proj = createProjection(bounds, width, height, padding);
+  for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
+
+  const h = topo(graph, groups, { lineWidth: theme.lineWidth });
+  const { layout, nodePx } = supportToLayout(h);
+  orderLines(layout);
+
+  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
+
+  return renderRibbons({
+    layout,
+    nodePx,
+    edgePolyline: (e) => e.path.map((c) => [c[0], c[1]]),
+    width,
+    height,
+    dark,
+    showLabels: opts.showLabels,
+    water: input.water,
+    transfers,
+  });
 }
 
 /** Snap divisor used to derive the Hanan grid's base-cell size from the

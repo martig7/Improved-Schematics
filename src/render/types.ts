@@ -65,6 +65,9 @@ export interface SchematicOptions {
   /** Diagnostic: overlay the Hanan routing grid underneath the routes
    *  (Smoothed mode only — that's the only renderer that uses one). */
   showGrid?: boolean;
+  /** When true, geographic + smoothed modes run the LOOM topo merge so
+   *  parallel corridors bundle in the graph. Default off until tuned. */
+  useTopoMerge?: boolean;
   /** Which render mode to use. Defaults to 'geographic'. */
   mode: RenderMode;
   /** Render with a dark background/palette. */
