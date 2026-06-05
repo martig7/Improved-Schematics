@@ -10,6 +10,7 @@
     "dev:link": "tsx scripts/link.ts",
     "dev:unlink": "tsx scripts/link.ts --unlink",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "render": "tsx dev/render-test.ts"
   },
   "keywords": [

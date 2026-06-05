@@ -4,3 +4,6 @@ debug/
 *.log
 .DS_Store
 .claude/
+# dev render artifacts
+dev/out*.svg
+dev/out*.png

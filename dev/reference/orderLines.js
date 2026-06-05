@@ -30,8 +30,8 @@ function orderLines(_0x310fbb) {
         }
         const _0x4fea5f = _0x2ed2d3["lineOrder"]["join"](",");
         _0x2ed2d3["lineOrder"] = [..._0x2ed2d3["lineOrder"]]["sort"]((_0x4c49ba, _0x38a787) => {
-          const _0x132da3 = _0x420f4d, _0x5472f3 = _0x19c8f4[_0x132da3(432)](_0x4c49ba) ?? 0, _0xfb527 = _0x19c8f4["get"](_0x38a787) ?? 0;
-          if (_0x5472f3 === _0xfb527) return _0x4c49ba[_0x132da3(433)](_0x38a787);
+          const _0x132da3 = _0x420f4d, _0x5472f3 = _0x19c8f4["get"](_0x4c49ba) ?? 0, _0xfb527 = _0x19c8f4["get"](_0x38a787) ?? 0;
+          if (_0x5472f3 === _0xfb527) return _0x4c49ba["localeCompare"](_0x38a787);
           return _0x5472f3 - _0xfb527;
         });
         if (_0x2ed2d3["lineOrder"]["join"](",") !== _0x4fea5f) _0x260835 = !![];

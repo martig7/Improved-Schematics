@@ -20,7 +20,7 @@ function snapStations(_0x4fed9e) {
     _0x46feb6["set"](_0x173247, [_0x4dfbaa, _0x5e53e4]);
   }
   const _0x38d011 = [..._0x4fed9e["nodes"]["keys"]()]["sort"]((_0x2e915a, _0x1fb547) => {
-    const _0x432185 = _0x255520, _0x4e6c1f = _0x4fed9e[_0x432185(186)]["get"](_0x2e915a)?.[_0x432185(165)] ?? 0, _0x152c5d = _0x4fed9e["adj"]["get"](_0x1fb547)?.[_0x432185(165)] ?? 0;
+    const _0x432185 = _0x255520, _0x4e6c1f = _0x4fed9e["adj"]["get"](_0x2e915a)?.["length"] ?? 0, _0x152c5d = _0x4fed9e["adj"]["get"](_0x1fb547)?.["length"] ?? 0;
     if (_0x152c5d !== _0x4e6c1f) return _0x152c5d - _0x4e6c1f;
     return _0x2e915a["localeCompare"](_0x1fb547);
   }), _0x2dc3f2 = /* @__PURE__ */ new Map();
