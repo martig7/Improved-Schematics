@@ -45,6 +45,26 @@ export function densify(pts: Pixel[], step: number): Pixel[] {
   return out;
 }
 
+/** Walk `pts` from index 0 and return the point at arclength `d` from the
+ *  start (clamped to the polyline end). */
+export function pointAtDistance(pts: Pixel[], d: number): Pixel {
+  if (pts.length === 0) return [0, 0];
+  if (d <= 0) return pts[0].slice() as Pixel;
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const segLen = dist(pts[i - 1], pts[i]);
+    if (acc + segLen >= d) {
+      const t = segLen === 0 ? 0 : (d - acc) / segLen;
+      return [
+        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+      ];
+    }
+    acc += segLen;
+  }
+  return pts.at(-1)!.slice() as Pixel;
+}
+
 /** Paper's line-creep mitigation. With p1/pl the first/last samples of the
  *  edge being densified, reject candidate node `v` when it sits too far from
  *  the current sample relative to that sample's distance to either endpoint —
@@ -244,6 +264,39 @@ export class HBuilder {
     this.edges.delete(e.id);
     this.adj.get(e.a)?.delete(e.id);
     this.adj.get(e.b)?.delete(e.id);
+  }
+
+  /** Crop each adjacent edge at distance `dHat` from every node, move the node
+   *  to the average of the cropped endpoints, then re-anchor the edge polylines
+   *  at the moved node. */
+  intersectionSmoothing(dHat: number): void {
+    const newPos = new Map<string, Pixel>();
+    for (const [nid, eids] of this.adj) {
+      if (eids.size === 0) continue;
+      let sx = 0;
+      let sy = 0;
+      let n = 0;
+      for (const eid of eids) {
+        const e = this.edges.get(eid)!;
+        // Orient the polyline so it starts at this node.
+        const pts = e.a === nid ? e.points : [...e.points].reverse();
+        const cropped = pointAtDistance(pts, dHat);
+        sx += cropped[0];
+        sy += cropped[1];
+        n++;
+      }
+      newPos.set(nid, [sx / n, sy / n]);
+    }
+    for (const [nid, p] of newPos) {
+      const old = this.nodes.get(nid)!;
+      this.index.move(nid, old, p);
+      this.nodes.set(nid, p);
+    }
+    // Re-anchor edge endpoints to the moved node positions.
+    for (const e of this.edges.values()) {
+      e.points[0] = this.nodes.get(e.a)!;
+      e.points[e.points.length - 1] = this.nodes.get(e.b)!;
+    }
   }
 
   /** Snapshot the current nodes/edges/adjacency (used between rounds and for

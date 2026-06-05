@@ -178,3 +178,18 @@ test('a ~90° crossing does not merge (creep blocker prevents interlace)', () =>
   const shared = h.edgeList().filter((e) => e.lineIds.has('L1') && e.lineIds.has('L2'));
   assert.equal(shared.length, 0, 'crossing edges must not interlace into a shared run');
 });
+
+test('intersectionSmoothing recentres a node toward its cropped neighbours', () => {
+  const h = new HBuilder(50);
+  const c = h.addNode([0, 0]);
+  const e = h.addNode([100, 0]);
+  const w = h.addNode([-100, 2]);
+  h.addOrUnionEdge(c, e, new Set(['L1']));
+  h.addOrUnionEdge(c, w, new Set(['L1']));
+  h.intersectionSmoothing(40);
+  // The node should move toward the average of the two cropped endpoints,
+  // which sit symmetric in x but slightly off in y → small y shift, ~0 x.
+  const p = h.nodePos(c);
+  assert.ok(Math.abs(p[0]) < 1, 'x stays centred');
+  assert.ok(p[1] > 0 && p[1] < 2, 'y nudged toward the offset neighbour');
+});
