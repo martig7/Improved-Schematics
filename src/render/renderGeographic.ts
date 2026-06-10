@@ -15,7 +15,7 @@ import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
 import { buildDensityWarp } from './layout/densityWarp';
-import { mergeCoincidentPaths } from './layout/imageMerge';
+import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -524,6 +524,10 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   // carrying the union of lines so the renderer fans them into a bundle
   // instead of drawing one line invisibly on top of the other.
   const merged = mergeCoincidentPaths(support, imageRaw);
+  // Distinct station groups fused onto one drawn node (converged corridors +
+  // octi contraction) get separate markers again when their true separation
+  // exceeds the merge radius; closer pairs stay a shared interchange capsule.
+  separateFusedStations(merged.h, merged.img, dHat);
   const supportM = merged.h;
   const image = merged.img;
 

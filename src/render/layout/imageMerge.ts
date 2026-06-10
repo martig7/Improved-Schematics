@@ -291,3 +291,186 @@ export function mergeCoincidentPaths(
     img: { placement, paths, cellSize: img.cellSize },
   };
 }
+
+// ---- per-group station separation ------------------------------------------
+// Distinct station groups can end up fused onto ONE drawn node: corridors that
+// genuinely converge below the merge radius put their anchor nodes within a
+// couple of pixels, octi's short-edge contraction folds them into one grid
+// node, and the vertex fusion above keeps them as a single mn. Drawn that way,
+// two real stations become one marker and one label. Rule (user-agreed):
+// groups fused at one drawn node whose TRUE separation exceeds ~the merge
+// radius must render as separate markers; closer pairs are a legitimate
+// shared interchange capsule (e.g. Union Av + Cedar St at 10px).
+//
+// Mechanism: the station closest to the drawn node keeps it; each other
+// station is split onto a new node placed at the projection of its true
+// position onto the adjacent drawn corridor (so the marker stays ON its
+// line). The hosting edge is cut at that point; traversals, stop flags and
+// the station mapping are remapped. Mutates h and img in place.
+
+const MIN_SPLIT_ARC = 8; // px: min arc from either edge end (≈ 2 marker radii)
+
+export function separateFusedStations(
+  h: SupportGraph,
+  img: Image,
+  minSep: number,
+): void {
+  const dist = (a: Pixel, b: Pixel) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+  const byNode = new Map<string, SupportStation[]>();
+  for (const st of h.stations.values()) {
+    const arr = byNode.get(st.nodeId) ?? [];
+    arr.push(st);
+    byNode.set(st.nodeId, arr);
+  }
+
+  let seq = 0;
+  for (const [nid, sts] of byNode) {
+    const withTrue = sts.filter((s) => s.truePos);
+    if (withTrue.length < 2) continue;
+    const nodePos = h.nodes.get(nid)?.pos;
+    if (!nodePos) continue;
+
+    // keeper = closest to the drawn node; others split off when far enough
+    // from the keeper's true position
+    withTrue.sort(
+      (a, b) => dist(a.truePos!, nodePos) - dist(b.truePos!, nodePos) || a.id.localeCompare(b.id),
+    );
+    const keeper = withTrue[0];
+
+    for (const st of withTrue.slice(1)) {
+      if (dist(st.truePos!, keeper.truePos!) <= minSep) continue;
+
+      // best projection of the true position onto the adjacent drawn edges
+      let best: {
+        eid: string;
+        segIdx: number;
+        t: number;
+        p: Pixel;
+        d: number;
+        arcFromSplit: number;
+        arcTotal: number;
+      } | null = null;
+      for (const eid of h.adj.get(nid) ?? []) {
+        const e = h.edges.get(eid);
+        const pts = img.paths.get(eid) ?? e?.points;
+        if (!e || !pts || pts.length < 2) continue;
+        let arc = 0;
+        const arcs: number[] = [0];
+        for (let i = 1; i < pts.length; i++) {
+          arc += dist(pts[i - 1], pts[i]);
+          arcs.push(arc);
+        }
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1];
+          const b = pts[i];
+          const vx = b[0] - a[0];
+          const vy = b[1] - a[1];
+          const c2 = vx * vx + vy * vy;
+          if (c2 < 1e-9) continue;
+          let t = ((st.truePos![0] - a[0]) * vx + (st.truePos![1] - a[1]) * vy) / c2;
+          t = Math.max(0, Math.min(1, t));
+          const p: Pixel = [a[0] + vx * t, a[1] + vy * t];
+          const d = dist(st.truePos!, p);
+          const arcAt = arcs[i - 1] + Math.sqrt(c2) * t;
+          if (best && d >= best.d) continue;
+          best = { eid, segIdx: i - 1, t, p, d, arcFromSplit: arcAt, arcTotal: arc };
+        }
+      }
+      if (!best) continue;
+      // edge too short for a sliver-free split: leave the station fused
+      if (best.arcTotal < 2 * MIN_SPLIT_ARC) continue;
+      // keep the split point a minimum arc from both edge ends so the two
+      // markers actually separate (a mostly-perpendicular true offset
+      // projects right next to the shared node otherwise)
+      const arc = Math.max(MIN_SPLIT_ARC, Math.min(best.arcTotal - MIN_SPLIT_ARC, best.arcFromSplit));
+
+      const e = h.edges.get(best.eid)!;
+      const pts = (img.paths.get(best.eid) ?? e.points).map((p) => p.slice() as Pixel);
+      // locate the clamped arc on the polyline
+      let segIdx = 0;
+      let t = 0;
+      let splitP: Pixel = pts[0];
+      {
+        let acc = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const segLen = dist(pts[i - 1], pts[i]);
+          if (acc + segLen >= arc || i === pts.length - 1) {
+            segIdx = i - 1;
+            t = segLen > 1e-9 ? Math.min(1, Math.max(0, (arc - acc) / segLen)) : 0;
+            splitP = [
+              pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+              pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+            ];
+            break;
+          }
+          acc += segLen;
+        }
+      }
+
+      const head = pts.slice(0, segIdx + 1);
+      const tail = pts.slice(segIdx + 1);
+      // exact split point (skip duplicating it if it coincides with a vertex)
+      if (dist(head[head.length - 1], splitP) > 1e-6) head.push(splitP.slice() as Pixel);
+      if (tail.length === 0 || dist(tail[0], splitP) > 1e-6) tail.unshift(splitP.slice() as Pixel);
+
+      const newNid = `ms${seq}`;
+      const idA = `${best.eid}_a${seq}`;
+      const idB = `${best.eid}_b${seq}`;
+      seq++;
+
+      h.nodes.set(newNid, { id: newNid, pos: splitP.slice() as Pixel });
+      img.placement.set(newNid, splitP.slice() as Pixel);
+
+      h.edges.delete(best.eid);
+      img.paths.delete(best.eid);
+      h.edges.set(idA, { id: idA, from: e.from, to: newNid, points: head, lineIds: new Set(e.lineIds) });
+      h.edges.set(idB, { id: idB, from: newNid, to: e.to, points: tail, lineIds: new Set(e.lineIds) });
+      img.paths.set(idA, head.map((p) => p.slice() as Pixel));
+      img.paths.set(idB, tail.map((p) => p.slice() as Pixel));
+
+      const swap = (listNid: string, oldEid: string, newEid: string) => {
+        const arr = h.adj.get(listNid);
+        if (!arr) return;
+        const i = arr.indexOf(oldEid);
+        if (i >= 0) arr[i] = newEid;
+        else arr.push(newEid);
+      };
+      swap(e.from, best.eid, idA);
+      swap(e.to, best.eid, idB);
+      h.adj.set(newNid, [idA, idB]);
+
+      for (const [lineId, steps] of h.lineTraversals) {
+        let touched = false;
+        const out: TraversalStep[] = [];
+        for (const step of steps) {
+          if (step.edgeId !== best.eid) {
+            out.push(step);
+            continue;
+          }
+          touched = true;
+          if (step.reversed) {
+            out.push({ edgeId: idB, reversed: true }, { edgeId: idA, reversed: true });
+          } else {
+            out.push({ edgeId: idA, reversed: false }, { edgeId: idB, reversed: false });
+          }
+        }
+        if (touched) h.lineTraversals.set(lineId, out);
+      }
+
+      // move the station and its stop flags; a line keeps its flag at the old
+      // node only if a station remaining there is still served by it
+      st.nodeId = newNid;
+      const movedLines = st.stopLines ?? new Set<string>();
+      const remaining = new Set<string>();
+      for (const other of byNode.get(nid)!) {
+        if (other === st || other.nodeId !== nid) continue;
+        for (const l of other.stopLines ?? []) remaining.add(l);
+      }
+      for (const l of movedLines) {
+        h.stopAt.add(l + '|' + newNid);
+        if (!remaining.has(l)) h.stopAt.delete(l + '|' + nid);
+      }
+    }
+  }
+}

@@ -1318,19 +1318,30 @@ export function buildSupportGraph(
       label: group.name,
       lngLat: group.center,
       nodeId: best.id,
+      truePos: centroid.slice() as Pixel,
     });
   }
 
+  const stopLinesByGroup = new Map<string, Set<string>>();
   for (const e of g.edges) {
     for (const [lineId, flags] of e.stops) {
       const place = (groupId: string, isStop: boolean) => {
         if (!isStop) return;
         const sn = groupSupportNode.get(groupId) ?? mapToSupport(groupId);
-        if (sn) stopAt.add(lineId + '|' + sn);
+        if (sn) {
+          stopAt.add(lineId + '|' + sn);
+          let s = stopLinesByGroup.get(groupId);
+          if (!s) stopLinesByGroup.set(groupId, (s = new Set()));
+          s.add(lineId);
+        }
       };
       place(e.from, flags.atFrom);
       place(e.to, flags.atTo);
     }
+  }
+  for (const [gid, lines] of stopLinesByGroup) {
+    const st = stations.get(gid);
+    if (st) st.stopLines = lines;
   }
 
   if (

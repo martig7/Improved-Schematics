@@ -38,6 +38,10 @@ export interface GraphEdge {
   to: string;
   lines: LineRef[];
   stops: Map<string, EdgeStop>; // lineId -> stop flags
+  /** Geographic polyline (unprojected) from `from` to `to`, following the real
+   *  track course between the two station groups. Present only when
+   *  buildTransitGraph is given the track set; absent edges render straight. */
+  geo?: Coordinate[];
 }
 
 export interface TraversalStep {
@@ -113,6 +117,10 @@ export interface SupportStation {
   label: string;
   lngLat: Coordinate;
   nodeId: string;    // support node it was placed at
+  /** True (warped, projected) pixel position of the group center. */
+  truePos?: Pixel;
+  /** Lines that stop at this group (for per-group marker separation). */
+  stopLines?: Set<string>;
 }
 
 /** Output of topo: corridors as single edges + stations re-inserted. */

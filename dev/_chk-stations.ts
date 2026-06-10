@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import { getOrBuildStationGroups, buildTransitGraph } from '../src/render/layout/graph';
 import { buildSupportGraph, type TopoParams } from '../src/render/layout/topo';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from '../src/render/layout/octi';
-import { mergeCoincidentPaths } from '../src/render/layout/imageMerge';
+import { mergeCoincidentPaths, separateFusedStations } from '../src/render/layout/imageMerge';
 import { createProjection, computeBounds, padBounds, type Projection } from '../src/render/projection';
 import { buildDensityWarp } from '../src/render/layout/densityWarp';
 import type { Pixel } from '../src/render/layout/types';
@@ -53,6 +53,7 @@ const octiOpts = {
 };
 const img = octi(h, octiOpts);
 const merged = mergeCoincidentPaths(h, img);
+separateFusedStations(merged.h, merged.img, dHat);
 
 console.log(`groups=${groups.length} supportStations(pre-merge)=${h.stations.size} (post-merge)=${merged.h.stations.size}`);
 for (const name of NAMES) {
