@@ -31,6 +31,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
     }
   }
   const offsets = new Map<string, number>();
+  const authority = new Map<string, number>(); // canonical edge's lineOrder length
   for (const [lineId, edges] of byLine) {
     const canonical = [...edges].sort((a, b) => {
       if (b.lineOrder.length !== a.lineOrder.length) return b.lineOrder.length - a.lineOrder.length;
@@ -39,18 +40,123 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
     const idx = canonical.lineOrder.indexOf(lineId);
     const center = (canonical.lineOrder.length - 1) / 2;
     offsets.set(lineId, (idx - center) * spacing);
+    authority.set(lineId, canonical.lineOrder.length);
+  }
+
+  // De-collision: two lines that co-run on SOME edge but take their offsets
+  // from DIFFERENT canonical edges can land on the same global offset — they
+  // then draw at identical coordinates and one hides the other entirely.
+  // Process lines from most- to least-authoritative; each line keeps its slot
+  // unless it sits (effectively) on top of an already-fixed co-running line,
+  // in which case it shifts by whole lane spacings to the nearest free slot.
+  const neighbors = new Map<string, Set<string>>();
+  for (const edge of layout.edges) {
+    for (const a of edge.lines) {
+      for (const b of edge.lines) {
+        if (a.id === b.id) continue;
+        let s = neighbors.get(a.id);
+        if (!s) neighbors.set(a.id, (s = new Set()));
+        s.add(b.id);
+      }
+    }
+  }
+  const order = [...offsets.keys()].sort((a, b) => {
+    const d = (authority.get(b) ?? 0) - (authority.get(a) ?? 0);
+    return d !== 0 ? d : a.localeCompare(b);
+  });
+  const fixed = new Set<string>();
+  const COINCIDENT = 1.0; // px — only true overdraw counts as a collision
+  for (const lineId of order) {
+    const base = offsets.get(lineId)!;
+    const taken: number[] = [];
+    for (const n of neighbors.get(lineId) ?? []) {
+      if (fixed.has(n)) taken.push(offsets.get(n)!);
+    }
+    let chosen = base;
+    if (taken.some((t) => Math.abs(t - base) < COINCIDENT)) {
+      for (let step = 1; step < 32; step++) {
+        for (const cand of [base + step * spacing, base - step * spacing]) {
+          if (!taken.some((t) => Math.abs(t - cand) < COINCIDENT)) {
+            chosen = cand;
+            break;
+          }
+        }
+        if (chosen !== base) break;
+      }
+    }
+    offsets.set(lineId, chosen);
+    fixed.add(lineId);
+  }
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+  ) {
+    for (const [lineId, off] of offsets) {
+      console.error(`[offsets] ${lineId.slice(0, 6)} -> ${off}`);
+    }
+    for (const [a, ns] of neighbors) {
+      for (const b of ns) {
+        if (a < b && Math.abs(offsets.get(a)! - offsets.get(b)!) < COINCIDENT) {
+          console.error(`[offsets] RESIDUAL COINCIDENCE ${a.slice(0, 6)} ~ ${b.slice(0, 6)} @ ${offsets.get(a)}`);
+        }
+      }
+    }
   }
   return offsets;
 }
 
-/** Shift a pixel polyline perpendicular by `offset`, mitering at joints. */
-export function offsetPolyline(points: Pixel[], offset: number): Pixel[] {
-  if (points.length < 2) return points;
+/** Drop consecutive points that sit within `eps` of the previous one. Also
+ *  drop a middle vertex whose two adjacent edges undo each other (an A→B→A
+ *  ping-pong) — these produce a zero-bisector at B and turn into visible
+ *  spike artifacts when offset.
+ *
+ *  Co-linear vertices are deliberately KEPT: stops are placed at specific
+ *  centerline vertices and downstream code relies on the input-to-output
+ *  index correspondence holding (modulo U-turn/dup drops). Dropping straight-
+ *  line vertices broke that mapping and caused station dots to land off the
+ *  drawn line entirely. */
+export function simplifyPolyline(points: Pixel[], eps = 0.5): Pixel[] {
+  if (points.length < 2) return points.slice();
+  const dedup: Pixel[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const last = dedup[dedup.length - 1];
+    if (Math.hypot(points[i][0] - last[0], points[i][1] - last[1]) >= eps) {
+      dedup.push(points[i]);
+    }
+  }
+  if (dedup.length < 3) return dedup;
+  const out: Pixel[] = [dedup[0]];
+  for (let i = 1; i < dedup.length - 1; i++) {
+    const a = out[out.length - 1];
+    const b = dedup[i];
+    const c = dedup[i + 1];
+    // U-turn: incoming and outgoing unit vectors are anti-parallel (dot ≈ -1).
+    const u1 = unit(a, b);
+    const u2 = unit(b, c);
+    if (u1[0] * u2[0] + u1[1] * u2[1] < -0.95) continue; // drop B
+    out.push(b);
+  }
+  out.push(dedup[dedup.length - 1]);
+  return out;
+}
+
+/** Shift a pixel polyline perpendicular by `offset`, mitering at joints.
+ *  By default pre-simplifies the input so U-turns and consecutive duplicates
+ *  don't collapse the bisector into a zero-length normal (which would
+ *  otherwise produce visible "spike" artifacts on offset bundles). Pass
+ *  `simplify=false` when the caller needs the output indices to correspond
+ *  1:1 with the input indices — e.g. when computing stop positions that must
+ *  sit on the same drawn ribbon. The miter floor caps the lateral overshoot
+ *  at sharp turns so an acute corner can't extend the offset polyline more
+ *  than ~sqrt(1/0.5) ≈ 1.41× the offset distance. */
+export function offsetPolyline(points: Pixel[], offset: number, simplify = true): Pixel[] {
+  const pts = simplify ? simplifyPolyline(points, 0.5) : points;
+  if (pts.length < 2) return pts;
   const out: Pixel[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const prev = points[i - 1];
-    const cur = points[i];
-    const next = points[i + 1];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    const next = pts[i + 1];
     let normal: Pixel;
     if (!prev) {
       normal = perp(unit(cur, next));
@@ -60,9 +166,20 @@ export function offsetPolyline(points: Pixel[], offset: number): Pixel[] {
       const n1 = perp(unit(prev, cur));
       const n2 = perp(unit(cur, next));
       const sum: Pixel = [n1[0] + n2[0], n1[1] + n2[1]];
-      const len = Math.hypot(sum[0], sum[1]) || 1;
-      const miter = Math.max(0.3, (n1[0] * n2[0] + n1[1] * n2[1] + 1) / 2);
-      normal = [sum[0] / len / Math.sqrt(miter), sum[1] / len / Math.sqrt(miter)];
+      const sumLen = Math.hypot(sum[0], sum[1]);
+      if (sumLen < 1e-6) {
+        // U-turn slipped past simplifyPolyline (degenerate after dedup).
+        // Use the incoming normal directly — better than a NaN/0 vector.
+        normal = n1;
+      } else {
+        // Miter floor raised from 0.3 → 0.5: limits the perpendicular over-
+        // shoot at acute turns to ~sqrt(1/0.5) = 1.41× the offset distance.
+        // The previous 0.3 floor allowed ~1.83× extension, which produced
+        // visible spike/Z-triangle artifacts at bundle joints where yellow
+        // and similar lines made sharp lateral transitions.
+        const miter = Math.max(0.5, (n1[0] * n2[0] + n1[1] * n2[1] + 1) / 2);
+        normal = [sum[0] / sumLen / Math.sqrt(miter), sum[1] / sumLen / Math.sqrt(miter)];
+      }
     }
     out.push([cur[0] + normal[0] * offset, cur[1] + normal[1] * offset]);
   }

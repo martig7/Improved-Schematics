@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, type TopoParams } from './topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, type TopoParams } from './topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup } from './types';
 
 test('dist computes euclidean distance', () => {
@@ -102,6 +102,119 @@ test('contractDegree2 does NOT collapse when line sets differ', () => {
   assert.equal(h.edgeList().length, 2);
 });
 
+test('contractShortEdges merges a junction micro-mesh and folds the spur legs', () => {
+  // Seattle NW hairpin shape in miniature: a balloon spur whose up-pass and
+  // down-pass corridors land on two near-coincident base nodes joined by a
+  // tiny mesh edge that degree-2 contraction cannot remove because junction
+  // edges (E) keep the nodes above degree 2.
+  const h = new HBuilder(5);
+  const baseUp = h.addNode([0, 0]);
+  const baseDn = h.addNode([3, 4]);
+  const apex = h.addNode([0, 100]);
+  const west = h.addNode([-100, 0]);
+  const east = h.addNode([100, 0]);
+  h.addOrUnionEdge(baseUp, baseDn, new Set(['L'])); // 5px mesh connector
+  h.addOrUnionEdge(baseUp, apex, new Set(['L'])); // spur up-pass
+  h.addOrUnionEdge(baseDn, apex, new Set(['L'])); // spur down-pass
+  h.addOrUnionEdge(west, baseUp, new Set(['L', 'E']));
+  h.addOrUnionEdge(baseDn, east, new Set(['L', 'E']));
+  h.contractShortEdges(20);
+  // baseUp/baseDn merge; the two spur legs become parallel edges and fold
+  // into ONE base->apex edge still carrying L.
+  const edges = h.edgeList();
+  const spur = edges.filter((e) => e.a === apex || e.b === apex);
+  assert.equal(spur.length, 1);
+  assert.deepEqual([...spur[0].lineIds], ['L']);
+  assert.equal(edges.length, 3); // west-base, base-apex, base-east
+});
+
+test('contractShortEdges folds parallel edges with line-set union', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([6, 0]);
+  const c = h.addNode([100, 0]);
+  h.addOrUnionEdge(a, c, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L2']));
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.contractShortEdges(10);
+  const edges = h.edgeList();
+  assert.equal(edges.length, 1);
+  assert.deepEqual([...edges[0].lineIds].sort(), ['L1', 'L2']);
+});
+
+test('contractShortEdges leaves edges at/above the threshold alone', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([20, 0]);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.contractShortEdges(20);
+  assert.equal(h.edgeList().length, 1);
+});
+
+test('contractShortEdges keeps protected endpoints anchored', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([5, 0]);
+  const c = h.addNode([100, 0]);
+  h.markProtected(b);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L1']));
+  h.contractShortEdges(10);
+  // a merges into protected b; b's position is untouched.
+  assert.deepEqual(h.nodePos(b), [5, 0]);
+  const edges = h.edgeList();
+  assert.equal(edges.length, 1);
+  assert.equal(edges[0].a === b || edges[0].b === b, true);
+});
+
+test('cutPolylineFolds leaves straight and gently-curved polylines alone', () => {
+  const straight: Pixel[] = [[0, 0], [50, 0], [100, 0], [150, 0]];
+  assert.deepEqual(cutPolylineFolds(straight, 16), straight);
+  // genuine V-corner: legs touch near the vertex but diverge immediately
+  const v: Pixel[] = [[0, 0], [50, 5], [100, 0], [50, -5], [0, -40]];
+  assert.equal(cutPolylineFolds(v, 16).length, v.length);
+});
+
+test('cutPolylineFolds excises an out-and-back retrace', () => {
+  // edge goes 100px out and comes straight back to 10px from its start
+  const pts: Pixel[] = [[0, 0], [50, 2], [100, 4], [50, 6], [10, 8], [12, 30]];
+  const cut = cutPolylineFolds(pts, 16);
+  let len = 0;
+  for (let i = 1; i < cut.length; i++) len += Math.hypot(cut[i][0] - cut[i - 1][0], cut[i][1] - cut[i - 1][1]);
+  assert.ok(len < 60, `expected fold removed, length ${len}`);
+  // endpoints survive
+  assert.deepEqual(cut[0], [0, 0]);
+  assert.deepEqual(cut[cut.length - 1], [12, 30]);
+});
+
+test('cutPolylineFolds cuts a balloon loop at its neck', () => {
+  // lasso: straight approach, 40px-diameter loop, exit at the neck
+  const pts: Pixel[] = [
+    [0, 0], [40, 0], [80, 0],            // approach
+    [100, 20], [120, 0], [100, -20],     // loop around
+    [82, -2],                            // back to within eps of [80,0]
+    [40, -4], [0, -6],                   // retrace out
+  ];
+  const cut = cutPolylineFolds(pts, 16);
+  let len = 0;
+  for (let i = 1; i < cut.length; i++) len += Math.hypot(cut[i][0] - cut[i - 1][0], cut[i][1] - cut[i - 1][1]);
+  const span = Math.hypot(cut[cut.length - 1][0] - cut[0][0], cut[cut.length - 1][1] - cut[0][1]);
+  assert.ok(len < span * 30, 'loop interior removed');
+  assert.ok(cut.length < pts.length);
+  assert.deepEqual(cut[cut.length - 1], [0, -6]);
+});
+
+test('contractShortEdges skips an edge between two protected nodes', () => {
+  const h = new HBuilder(5);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([5, 0]);
+  h.markProtected(a);
+  h.markProtected(b);
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.contractShortEdges(10);
+  assert.equal(h.edgeList().length, 1);
+});
+
 function graphFrom(
   nodes: Record<string, [number, number]>,
   edges: Array<{ id: string; from: string; to: string; lines: string[] }>,
@@ -194,6 +307,35 @@ test('intersectionSmoothing recentres a node toward its cropped neighbours', () 
   assert.ok(p[1] > 0 && p[1] < 2, 'y nudged toward the offset neighbour');
 });
 
+test('buildSupportGraph reconstructs a continuous line traversal over merged edges', () => {
+  const g = graphFrom(
+    { a: [0, 0], b: [100, 0], c: [200, 0] },
+    [
+      { id: 'e0', from: 'a', to: 'b', lines: ['L1'] },
+      { id: 'e1', from: 'b', to: 'c', lines: ['L1'] },
+    ],
+  );
+  g.lineTraversals.set('L1', [
+    { edgeId: 'e0', reversed: false },
+    { edgeId: 'e1', reversed: false },
+  ]);
+  const groups: StationGroup[] = [
+    { id: 'a', name: 'A', center: [0, 0], stationIds: [] },
+    { id: 'b', name: 'B', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'c', name: 'C', center: [200 / 1e5, 0], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  const steps = h.lineTraversals.get('L1')!;
+  assert.ok(steps.length > 0);
+  for (let i = 1; i < steps.length; i++) {
+    const e0 = h.edges.get(steps[i - 1].edgeId)!;
+    const e1 = h.edges.get(steps[i].edgeId)!;
+    const end0 = steps[i - 1].reversed ? e0.from : e0.to;
+    const start1 = steps[i].reversed ? e1.to : e1.from;
+    assert.equal(end0, start1, `step ${i} should connect to step ${i - 1}`);
+  }
+});
+
 test('buildSupportGraph reconstructs a single line traversal over merged edges', () => {
   const g = graphFrom(
     { a: [0, 0], b: [100, 0], c: [200, 0] },
@@ -252,4 +394,68 @@ test('topo derives d̂ from line width and corridor capacity', () => {
   const h = topo(g, groups, { lineWidth: 4 });
   assert.ok(h.nodes.size > 0);
   assert.ok(h.edges.size > 0);
+});
+
+test('merge rounds keep bowed parallel corridors separate (no chord-refeed weld)', () => {
+  // Two routes between the same junction pair, bowing 120px apart mid-span —
+  // far beyond dHat=20. Round 1 keeps them apart; the old endpoint-chord
+  // refeed welded them in round 2.
+  const g = graphFrom(
+    {
+      J1: [0, 0],
+      A1: [100, 60],
+      A2: [200, 60],
+      B1: [100, -60],
+      B2: [200, -60],
+      J2: [300, 0],
+    },
+    [
+      { id: 'a1', from: 'J1', to: 'A1', lines: ['LA'] },
+      { id: 'a2', from: 'A1', to: 'A2', lines: ['LA'] },
+      { id: 'a3', from: 'A2', to: 'J2', lines: ['LA'] },
+      { id: 'b1', from: 'J1', to: 'B1', lines: ['LB'] },
+      { id: 'b2', from: 'B1', to: 'B2', lines: ['LB'] },
+      { id: 'b3', from: 'B2', to: 'J2', lines: ['LB'] },
+    ],
+  );
+  const h = runMergeRounds(g, PARAMS);
+  let weldedLen = 0;
+  for (const e of h.edgeList()) {
+    if (e.lineIds.has('LA') && e.lineIds.has('LB')) weldedLen += polylineLength(e.points);
+  }
+  // Junction-adjacent welds are fine (the routes genuinely meet at J1/J2);
+  // the 200px bowed interior must stay two corridors.
+  assert.ok(weldedLen < 80, `bowed parallels welded: ${weldedLen}px shared`);
+});
+
+test('merge rounds still weld genuinely close parallels', () => {
+  // Same shape but the corridors run 8px apart — inside dHat=20. These MUST
+  // merge into one corridor carrying both lines.
+  const g = graphFrom(
+    {
+      J1: [0, 0],
+      A1: [100, 4],
+      A2: [200, 4],
+      B1: [100, -4],
+      B2: [200, -4],
+      J2: [300, 0],
+    },
+    [
+      { id: 'a1', from: 'J1', to: 'A1', lines: ['LA'] },
+      { id: 'a2', from: 'A1', to: 'A2', lines: ['LA'] },
+      { id: 'a3', from: 'A2', to: 'J2', lines: ['LA'] },
+      { id: 'b1', from: 'J1', to: 'B1', lines: ['LB'] },
+      { id: 'b2', from: 'B1', to: 'B2', lines: ['LB'] },
+      { id: 'b3', from: 'B2', to: 'J2', lines: ['LB'] },
+    ],
+  );
+  const h = runMergeRounds(g, PARAMS);
+  let weldedLen = 0;
+  let total = 0;
+  for (const e of h.edgeList()) {
+    const len = polylineLength(e.points);
+    total += len;
+    if (e.lineIds.has('LA') && e.lineIds.has('LB')) weldedLen += len;
+  }
+  assert.ok(weldedLen > total * 0.5, `close parallels failed to weld: ${weldedLen}/${total}px`);
 });

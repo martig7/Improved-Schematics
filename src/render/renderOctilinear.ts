@@ -80,9 +80,9 @@ function waterBackdrop(layout: Layout, nodePx: Map<string, Pixel>, water: WaterC
  * grid-octilinear (renderOctilinear) and smoothed-graph (renderSmoothedRibbons)
  * use this.
  *
- * `edgePolyline(edge)` returns the edge's path already in pixel space (callers
- * pre-project from cells or graph-pixel positions). `nodePx` is the projected
- * position of each node; `width`/`height` are the SVG canvas dimensions.
+ * Stops are placed at offset-path endpoints along the full service traversal
+ * (topo support nodes). Line geometry may deduplicate revisited corridors so
+ * round-trip patterns draw a single centerline like geographic mode.
  */
 export interface RenderRibbonsArgs {
   layout: Layout;
@@ -117,6 +117,20 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const lineById = new Map<string, { id: string; color: string }>();
   for (const e of layout.edges) for (const l of e.lines) if (!lineById.has(l.id)) lineById.set(l.id, l);
 
+  // Offsets are applied along the travel-relative perpendicular, so the same
+  // numeric offset lands on OPPOSITE geometric sides for opposite travel
+  // directions. Two lines sharing a corridor in opposing directions with
+  // mirrored slots would then draw exactly coincident — one invisible under
+  // the other. Normalize the sign to a direction-independent frame: flip
+  // whenever the polyline's dominant direction is anti-canonical.
+  const dirSign = (pts: Pixel[]): number => {
+    if (pts.length < 2) return 1;
+    const dx = pts[pts.length - 1][0] - pts[0][0];
+    const dy = pts[pts.length - 1][1] - pts[0][1];
+    const d = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
+    return d < 0 ? -1 : 1;
+  };
+
   const offsetCache = new Map<string, Pixel[]>();
   const offsetPath = (edge: Layout['edges'][number], lineId: string): Pixel[] => {
     const key = edge.id + '|' + lineId;
@@ -124,38 +138,142 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     if (cached) return cached;
     const off = offsets.get(lineId) ?? 0;
     const px = edgePolyline(edge);
-    const result = off === 0 ? px : offsetPolyline(px, off);
+    const o = off * dirSign(px);
+    const result = o === 0 ? px : offsetPolyline(px, o);
     offsetCache.set(key, result);
     return result;
   };
 
-  const endDir = (path: Pixel[], reversed: boolean): [number, number] => {
-    const a = reversed ? 0 : path.length - 1;
-    const b = reversed ? 1 : path.length - 2;
-    return [path[a][0] - path[b][0], path[a][1] - path[b][1]];
-  };
-  const startDir = (path: Pixel[], reversed: boolean): [number, number] => {
-    const a = reversed ? path.length - 1 : 0;
-    const b = reversed ? path.length - 2 : 1;
-    return [path[b][0] - path[a][0], path[b][1] - path[a][1]];
-  };
-
-  const edgeParts: string[] = [];
+  const casingParts: string[] = [];
+  const strokeParts: string[] = [];
 
   for (const [lineId, traversal] of layout.lineTraversals) {
     const line = lineById.get(lineId);
     if (!line || traversal.length === 0) continue;
 
-    // Note: bezier smoothing at line transitions has been removed entirely.
-    // The bezier was a quadTo from the previous edge's offset endpoint through
-    // the un-offset station center to the next edge's offset start point. It
-    // produced visible curves at every direction change and degenerated into
-    // a small spike at same-direction transitions whose offset endpoints
-    // coincide. We now always draw a straight lineTo at transitions; any
-    // genuine direction mismatch between consecutive line-traversal edges
-    // surfaces visually as a short straight kink, which is the signal the
-    // router should be using to align directions at shared stations.
+    const addStop = (nodeId: string, pos: Pixel) => {
+      const key = nodeId + '|' + lineId;
+      if (stopSeen.has(key)) return;
+      stopSeen.add(key);
+      if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
+      stopsByNode.get(nodeId)!.push({ lineId, color: line.color, pos });
+    };
 
+    // Build centerline RUNS (unoffset polylines spanning topologically-
+    // continuous stretches of the line's traversal) while tracking which
+    // centerline vertex index corresponds to each support-node stop. After
+    // we offset the run as a whole, we read each stop's pixel position from
+    // the offset polyline AT THE SAME INDEX so the dot lands exactly on the
+    // drawn ribbon. Previous code placed stops via the per-edge offset path
+    // endpoints, which used single-segment perps at the endpoint; the whole-
+    // run offset uses BISECTORS at mid-run vertices, so stops in the middle
+    // of a run drifted off the line.
+    interface Run {
+      centerline: Pixel[];
+      stops: Array<{ nodeId: string; idx: number }>;
+    }
+    const runs: Run[] = [];
+    let curRun: Run = { centerline: [], stops: [] };
+    let prevEndNode: string | null = null;
+    const usedCorridor = new Set<string>();
+
+    const appendEdgePath = (
+      path: Pixel[],
+      startNode: string,
+      endNode: string,
+      atFrom: boolean,
+      atTo: boolean,
+    ) => {
+      if (path.length === 0) return;
+      if (curRun.centerline.length === 0) {
+        for (const p of path) curRun.centerline.push(p);
+        if (atFrom) curRun.stops.push({ nodeId: startNode, idx: 0 });
+        if (atTo) curRun.stops.push({ nodeId: endNode, idx: path.length - 1 });
+        return;
+      }
+      const last = curRun.centerline[curRun.centerline.length - 1];
+      const gapLen = Math.hypot(path[0][0] - last[0], path[0][1] - last[1]);
+      if (
+        gapLen > 8 &&
+        typeof process !== 'undefined' &&
+        (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+      ) {
+        console.error(
+          `[ribbons] append GAP ${gapLen.toFixed(0)}px at ${startNode} ` +
+          `(${last.map((v) => v.toFixed(0))} -> ${path[0].map((v) => v.toFixed(0))})`,
+        );
+      }
+      const skipFirst = gapLen < 0.5;
+      // The shared vertex sits at the previous run's last index when we skip
+      // the duplicate, or at curRun.centerline.length when we don't.
+      const startVertexIdx = skipFirst ? curRun.centerline.length - 1 : curRun.centerline.length;
+      const startIdx = skipFirst ? 1 : 0;
+      for (let k = startIdx; k < path.length; k++) curRun.centerline.push(path[k]);
+      if (atFrom) curRun.stops.push({ nodeId: startNode, idx: startVertexIdx });
+      if (atTo) curRun.stops.push({ nodeId: endNode, idx: curRun.centerline.length - 1 });
+    };
+    const flushRun = () => {
+      if (curRun.centerline.length >= 2) runs.push(curRun);
+      curRun = { centerline: [], stops: [] };
+    };
+
+    for (let i = 0; i < traversal.length; i++) {
+      const step = traversal[i];
+      const edge = edgeById.get(step.edgeId);
+      if (!edge) continue;
+      const startNode = step.reversed ? edge.to : edge.from;
+      const endNode = step.reversed ? edge.from : edge.to;
+      const corridorKey = edge.from < edge.to ? edge.from + '|' + edge.to : edge.to + '|' + edge.from;
+      const stop = edge.stops.get(lineId);
+      const atFrom = stop ? (step.reversed ? stop.atTo : stop.atFrom) : false;
+      const atTo = stop ? (step.reversed ? stop.atFrom : stop.atTo) : false;
+
+      if (usedCorridor.has(corridorKey)) {
+        // Revisited corridor: don't redraw the centerline, but if the line
+        // stops at one of its endpoints on this pass, place that stop by
+        // finding the matching vertex on a previously-drawn run.
+        const placeOnExisting = (nodeId: string) => {
+          const allRuns = runs.concat(curRun);
+          for (const r of allRuns) {
+            for (const s of r.stops) if (s.nodeId === nodeId) return; // already placed
+          }
+          const np = nodePx.get(nodeId);
+          if (!np) return;
+          for (const r of allRuns) {
+            let bestIdx = -1;
+            let bestD = 4; // px tolerance
+            for (let k = 0; k < r.centerline.length; k++) {
+              const d = Math.hypot(r.centerline[k][0] - np[0], r.centerline[k][1] - np[1]);
+              if (d < bestD) { bestD = d; bestIdx = k; }
+            }
+            if (bestIdx >= 0) {
+              r.stops.push({ nodeId, idx: bestIdx });
+              return;
+            }
+          }
+        };
+        if (stop && atFrom) placeOnExisting(startNode);
+        if (stop && atTo) placeOnExisting(endNode);
+        // The revisited stretch is already drawn, but the pen is parked at the
+        // PREVIOUS run's end while prevEndNode advances along the revisit — a
+        // later new edge would look "continuous" by node id and get appended,
+        // drawing a long chord across the map. Always start a fresh run.
+        flushRun();
+        prevEndNode = endNode;
+        continue;
+      }
+
+      usedCorridor.add(corridorKey);
+      const base = edgePolyline(edge);
+      const path = step.reversed ? [...base].reverse() : base;
+
+      if (i > 0 && prevEndNode !== startNode) flushRun();
+      appendEdgePath(path, startNode, endNode, atFrom, atTo);
+      prevEndNode = endNode;
+    }
+    flushRun();
+
+    const off = offsets.get(lineId) ?? 0;
     const d: string[] = [];
     let prev: Pixel | null = null;
     const lineTo = (p: Pixel) => {
@@ -167,55 +285,56 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       d.push('M' + p[0].toFixed(1) + ',' + p[1].toFixed(1));
       prev = p;
     };
-    for (let i = 0; i < traversal.length; i++) {
-      const step = traversal[i];
-      const edge = edgeById.get(step.edgeId);
-      if (!edge) continue;
-      const base = offsetPath(edge, lineId);
-      const path = step.reversed ? [...base].reverse() : base;
-      const stop = edge.stops.get(lineId);
-      if (stop) {
-        const fromNode = step.reversed ? edge.to : edge.from;
-        const toNode = step.reversed ? edge.from : edge.to;
-        const atFrom = step.reversed ? stop.atTo : stop.atFrom;
-        const atTo = step.reversed ? stop.atFrom : stop.atTo;
-        const first = path[0];
-        const last = path[path.length - 1];
-        const addStop = (nodeId: string, pos: Pixel) => {
-          const key = nodeId + '|' + lineId;
-          if (stopSeen.has(key)) return;
-          stopSeen.add(key);
-          if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
-          stopsByNode.get(nodeId)!.push({ lineId, color: line.color, pos });
-        };
-        if (atFrom) addStop(fromNode, first);
-        if (atTo) addStop(toNode, last);
-      }
 
-      if (i === 0) {
-        moveTo(path[0]);
-        for (let k = 1; k < path.length; k++) lineTo(path[k]);
-      } else {
-        const sameAsPrev = prev && prev[0] === path[0][0] && prev[1] === path[0][1];
-        for (let k = sameAsPrev ? 1 : 0; k < path.length; k++) lineTo(path[k]);
+    for (const r of runs) {
+      // Offset WITHOUT simplification so the ribbon indices correspond 1:1
+      // with the centerline indices we registered stops against. Sign is
+      // normalized per run (dirSign) so opposite-direction traversals of a
+      // shared corridor keep their geometric side — see offsetPath above.
+      const runOff = off * dirSign(r.centerline);
+      const ribbon = runOff === 0 ? r.centerline : offsetPolyline(r.centerline, runOff, /*simplify*/ false);
+      if (ribbon.length < 2) continue;
+      moveTo(ribbon[0]);
+      for (let k = 1; k < ribbon.length; k++) lineTo(ribbon[k]);
+      for (const s of r.stops) {
+        const idx = Math.max(0, Math.min(ribbon.length - 1, s.idx));
+        addStop(s.nodeId, ribbon[idx]);
       }
+    }
+
+    if (
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    ) {
+      let missing = 0;
+      let reused = 0;
+      const seen = new Set<string>();
+      for (const step of traversal) {
+        const e = edgeById.get(step.edgeId);
+        if (!e) { missing++; continue; }
+        const k = e.from < e.to ? e.from + '|' + e.to : e.to + '|' + e.from;
+        if (seen.has(k)) reused++;
+        seen.add(k);
+      }
+      console.error(
+        `[ribbons] line ${lineId.slice(0, 8)} steps=${traversal.length} missingEdges=${missing} ` +
+        `corridorRevisits=${reused} runs=${runs.length} dCmds=${d.length}`,
+      );
     }
 
     if (d.length < 2) continue;
     const dStr = d.join(' ');
-    edgeParts.push(
+    casingParts.push(
       '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
         '" stroke-linecap="round" stroke-linejoin="round"/>',
     );
-    edgeParts.push(
+    strokeParts.push(
       '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
         LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
     );
   }
+  const edgeParts: string[] = [...casingParts, ...strokeParts];
 
-  // Ghost nodes are invisible: drop any accidentally-attached stop marks
-  // (none should be there if the splitter put stops on bundle edges
-  // correctly, but a defensive sweep keeps the contract local).
   if (args.ghostNodeIds) {
     for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
@@ -224,7 +343,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
-    // Ghost nodes are invisible — no marker, no label.
     if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
     const anchor = nodePx.get(n.id);
@@ -238,8 +356,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   if (args.transfers && args.transfers.length > 0) {
     const excludeKeys = edgeKeysFromGraph(layout.edges);
     const dotR = LINE_WIDTH * 0.7;
-    // Resolve each node's *drawn* dot: a single stop is a circle at its mark; an
-    // interchange is the bounding box of its marks. Fall back to the node pixel.
     const dotOf = (id: string): { center: Pixel; radius: number } | null => {
       const marks = stopsByNode.get(id);
       if (!marks || marks.length === 0) {
@@ -269,7 +385,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         return { from: a.center, to: b.center, radius: Math.max(a.radius, b.radius) };
       },
       excludeKeys,
-      { dark, strokeWidth: LINE_WIDTH * 0.6 },
+      { dark, strokeWidth: LINE_WIDTH * 0.35 },
     );
   }
 

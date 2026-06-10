@@ -3,6 +3,7 @@
 // ids, then re-insert stations at the best-scoring support nodes.
 // Reference: Brosi & Bast 2024, "Network Topology Extraction".
 
+import type { Coordinate } from '../../types/core';
 import type {
   Pixel,
   TransitGraph,
@@ -120,6 +121,13 @@ export class NodeIndex {
     this.insert(id, to);
   }
 
+  remove(id: string): void {
+    const p = this.pos.get(id);
+    if (!p) return;
+    this.buckets.get(this.key(p))?.delete(id);
+    this.pos.delete(id);
+  }
+
   nearest(p: Pixel, radius: number, exclude?: ReadonlySet<string>): string | null {
     const cx = Math.floor(p[0] / this.cell);
     const cy = Math.floor(p[1] / this.cell);
@@ -166,6 +174,7 @@ export class HBuilder {
   private index: NodeIndex;
   private nId = 0;
   private eId = 0;
+  private protected_ = new Set<string>();
 
   constructor(indexCell: number) {
     this.index = new NodeIndex(indexCell);
@@ -180,6 +189,10 @@ export class HBuilder {
     return id;
   }
 
+  markProtected(id: string): void {
+    this.protected_.add(id);
+  }
+
   nodePos(id: string): Pixel {
     return this.nodes.get(id)!;
   }
@@ -188,8 +201,10 @@ export class HBuilder {
     return this.index.nearest(p, radius, exclude);
   }
 
-  /** Move a node toward `sample`, averaging 50/50 (paper's running average). */
+  /** Move a node toward `sample`, averaging 50/50 (paper's running average).
+   *  Protected nodes stay anchored. */
   snap(id: string, sample: Pixel): void {
+    if (this.protected_.has(id)) return;
     const cur = this.nodes.get(id)!;
     const next: Pixel = [(cur[0] + sample[0]) / 2, (cur[1] + sample[1]) / 2];
     this.index.move(id, cur, next);
@@ -200,26 +215,34 @@ export class HBuilder {
     return a < b ? a + '|' + b : b + '|' + a;
   }
 
-  addOrUnionEdge(a: string, b: string, lines: Set<string>): void {
+  addOrUnionEdge(a: string, b: string, lines: Set<string>, via?: Pixel): void {
     if (a === b) return;
     for (const eid of this.adj.get(a)!) {
       const e = this.edges.get(eid)!;
       if ((e.a === a && e.b === b) || (e.a === b && e.b === a)) {
         for (const l of lines) e.lineIds.add(l);
+        if (via) this.appendVia(e, via);
         return;
       }
     }
+    const pa = this.nodes.get(a)!;
+    const pb = this.nodes.get(b)!;
+    const points: Pixel[] =
+      via && dist(pa, via) > 1e-6 && dist(via, pb) > 1e-6
+        ? [pa.slice() as Pixel, via.slice() as Pixel, pb.slice() as Pixel]
+        : [pa.slice() as Pixel, pb.slice() as Pixel];
     const id = 'he' + this.eId++;
-    const e: HEdge = {
-      id,
-      a,
-      b,
-      points: [this.nodes.get(a)!, this.nodes.get(b)!],
-      lineIds: new Set(lines),
-    };
+    const e: HEdge = { id, a, b, points, lineIds: new Set(lines) };
     this.edges.set(id, e);
     this.adj.get(a)!.add(id);
     this.adj.get(b)!.add(id);
+  }
+
+  /** Append an interior sample to an edge polyline (for corridor geometry). */
+  private appendVia(e: HEdge, via: Pixel): void {
+    const end = e.points[e.points.length - 1];
+    if (dist(end, via) < 1e-6) return;
+    e.points.splice(e.points.length - 1, 0, via.slice() as Pixel);
   }
 
   edgeList(): HEdge[] {
@@ -235,12 +258,21 @@ export class HBuilder {
   /** Collapse every degree-2 node whose two edges carry identical line sets,
    *  joining their polylines through the node. */
   contractDegree2WithMatchingLines(): void {
+    const trace =
+      typeof process !== 'undefined'
+        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+        : undefined;
     let changed = true;
     while (changed) {
       changed = false;
       for (const [nid, eids] of this.adj) {
+        if (this.protected_.has(nid)) continue;
         if (eids.size !== 2) continue;
         const [e1, e2] = [...eids].map((id) => this.edges.get(id)!);
+        if (trace && (!e1 || !e2)) {
+          console.error(`[topo] contract: STALE adj at ${nid}: ${[...eids]} -> ${!!e1},${!!e2}`);
+          continue;
+        }
         if (!setsEqual(e1.lineIds, e2.lineIds)) continue;
         const other1 = e1.a === nid ? e1.b : e1.a;
         const other2 = e2.a === nid ? e2.b : e2.a;
@@ -275,6 +307,81 @@ export class HBuilder {
     this.edges.delete(e.id);
     this.adj.get(e.a)?.delete(e.id);
     this.adj.get(e.b)?.delete(e.id);
+  }
+
+  /** LOOM removeEdgeArtifacts: contract edges shorter than `maxLen` even when
+   *  an endpoint is a junction fork, folding any parallel edges the rewiring
+   *  creates (line-set union, like LOOM's foldEdges). The merge can strand a
+   *  micro-mesh of near-coincident nodes around a multi-line junction — each
+   *  within dHat of the others, but never collapsed because degree-2
+   *  contraction is blocked at forks. Octi then inflates every micro-node to
+   *  its own grid cell, turning a 5px mesh into full-cell phantom loops.
+   *
+   *  Must run AFTER contractDegree2WithMatchingLines has joined the 4px sample
+   *  chains into long corridor edges, otherwise it would eat real corridors. */
+  contractShortEdges(maxLen: number): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const e of this.edges.values()) {
+        if (polylineLength(e.points) >= maxLen) continue;
+        const aProt = this.protected_.has(e.a);
+        const bProt = this.protected_.has(e.b);
+        if (aProt && bProt) continue;
+        // Keep the protected endpoint, else the busier one (junction stays put).
+        let keep = e.a;
+        let drop = e.b;
+        if (bProt || (!aProt && this.adj.get(e.b)!.size > this.adj.get(e.a)!.size)) {
+          keep = e.b;
+          drop = e.a;
+        }
+        this.detach(e);
+        const keepPos = this.nodes.get(keep)!;
+        for (const fid of [...this.adj.get(drop)!]) {
+          const f = this.edges.get(fid)!;
+          const other = f.a === drop ? f.b : f.a;
+          if (other === keep) {
+            this.detach(f); // would become a self-loop
+            continue;
+          }
+          let existing: HEdge | null = null;
+          for (const gid of this.adj.get(keep)!) {
+            const cand = this.edges.get(gid)!;
+            if (cand.a === other || cand.b === other) {
+              existing = cand;
+              break;
+            }
+          }
+          if (existing) {
+            for (const l of f.lineIds) existing.lineIds.add(l);
+            this.detach(f);
+            continue;
+          }
+          if (f.a === drop) {
+            f.a = keep;
+            f.points[0] = keepPos.slice() as Pixel;
+          } else {
+            f.b = keep;
+            f.points[f.points.length - 1] = keepPos.slice() as Pixel;
+          }
+          this.adj.get(drop)!.delete(fid);
+          this.adj.get(keep)!.add(fid);
+        }
+        this.index.remove(drop);
+        this.nodes.delete(drop);
+        this.adj.delete(drop);
+        changed = true;
+        break; // restart iteration; maps mutated
+      }
+    }
+  }
+
+  /** Excise balloon folds baked into edge polylines (see cutPolylineFolds). */
+  sanitizeEdgeGeometry(eps: number): void {
+    for (const e of this.edges.values()) {
+      if (e.points.length < 4) continue;
+      e.points = cutPolylineFolds(e.points, eps);
+    }
   }
 
   /** Crop each adjacent edge at distance `dHat` from every node, move the node
@@ -327,38 +434,168 @@ export interface TopoParams {
   convergenceEpsilon: number;    // edge-length-gap stop (0.002 = 0.2%)
   maxRounds: number;             // hard cap on the outer loop
   stationCandidateRadius: number;// station-insertion search radius (px)
+  /** When true, anchor junction/terminus nodes during merge and re-insert
+   *  pass-through stop positions afterward. Pass-through stops on a single line
+   *  may contract; see anchorGraphStops. */
+  preserveStations?: boolean;
+  /** When set, corridor `GraphEdge.geo` polylines are projected and used for
+   *  merge-round input instead of straight station-to-station chords. */
+  projectGeo?: (c: Coordinate) => Pixel;
+}
+
+interface MergeInputEdge {
+  fromId: string;
+  toId: string;
+  a: Pixel;
+  b: Pixel;
+  points: Pixel[];
+  lineIds: Set<string>;
 }
 
 interface MergeInput {
-  edges: Array<{ a: Pixel; b: Pixel; points: Pixel[]; lineIds: Set<string> }>;
+  edges: MergeInputEdge[];
 }
 
-function inputFromGraph(g: TransitGraph): MergeInput {
+/**
+ * Excise balloon folds from a polyline: spans where the path comes back
+ * within `eps` of an earlier point after a substantial arc (a lasso loop or
+ * an out-and-back retrace baked into one edge's geometry). Degree-2
+ * contraction welds chains straight through 180-degree turnaround nodes, so a
+ * terminal balloon loop ends up INSIDE a single edge polyline — its length
+ * then vastly exceeds its endpoint span, and octi's spring cost manufactures
+ * a phantom grid detour ("candy cane") to honor the extra length. LOOM never
+ * meets this because its merge re-walks all geometry each iteration, zipping
+ * intra-edge folds; our merge rounds re-feed endpoint chords only.
+ *
+ * Endpoints are always preserved. Genuine V-corners survive: the cut needs
+ * the legs to stay within eps after `minArc` of travel, not merely touch.
+ */
+export function cutPolylineFolds(pts: Pixel[], eps: number): Pixel[] {
+  if (pts.length < 4) return pts;
+  const minArc = Math.max(4 * eps, 24);
+  let out = pts;
+  for (let pass = 0; pass < 8; pass++) {
+    const arcs: number[] = [0];
+    for (let i = 1; i < out.length; i++) arcs.push(arcs[i - 1] + dist(out[i - 1], out[i]));
+    let cutFrom = -1;
+    let cutTo = -1;
+    outer: for (let j = 3; j < out.length; j++) {
+      for (let i = 0; i < j - 2; i++) {
+        if (arcs[j] - arcs[i] <= minArc) break; // arc gap only shrinks as i→j
+        if (dist(out[i], out[j]) < eps) {
+          cutFrom = i;
+          cutTo = j;
+          break outer;
+        }
+      }
+    }
+    if (cutFrom < 0) return out;
+    // Remove the loop interior; entry point stands in for the whole fold.
+    out = [...out.slice(0, cutFrom + 1), ...out.slice(cutTo + (cutTo === out.length - 1 ? 0 : 1))];
+    if (out.length < 4) return out;
+  }
+  return out;
+}
+
+/** Douglas–Peucker simplification (LOOM pre-densify step). */
+function simplifyRdp(pts: Pixel[], eps: number): Pixel[] {
+  if (pts.length <= 2) return pts.map((p) => p.slice() as Pixel);
+  const rdp = (slice: Pixel[]): Pixel[] => {
+    if (slice.length <= 2) return slice.map((p) => p.slice() as Pixel);
+    const a = slice[0];
+    const b = slice[slice.length - 1];
+    let maxD = 0;
+    let idx = 0;
+    for (let i = 1; i < slice.length - 1; i++) {
+      const p = slice[i];
+      const vx = b[0] - a[0];
+      const vy = b[1] - a[1];
+      const c2 = vx * vx + vy * vy;
+      const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / c2));
+      const q: Pixel = [a[0] + t * vx, a[1] + t * vy];
+      const d = dist(p, q);
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (maxD > eps) {
+      const left = rdp(slice.slice(0, idx + 1));
+      const right = rdp(slice.slice(idx));
+      return [...left.slice(0, -1), ...right];
+    }
+    return [a.slice() as Pixel, b.slice() as Pixel];
+  };
+  return rdp(pts);
+}
+
+/** LOOM-style corridor prep: simplify then equispaced samples. */
+function prepCorridorPolyline(pts: Pixel[], step: number, simplifyEps: number): Pixel[] {
+  if (pts.length < 2) return pts.map((p) => p.slice() as Pixel);
+  const simplified = simplifyRdp(pts, simplifyEps);
+  return densify(simplified, step);
+}
+
+function simplifyForTopo(pts: Pixel[], maxPts = 32): Pixel[] {
+  if (pts.length <= maxPts) return pts.map((p) => p.slice() as Pixel);
+  const out: Pixel[] = [pts[0]];
+  const st = (pts.length - 1) / (maxPts - 1);
+  for (let i = 1; i < maxPts - 1; i++) out.push(pts[Math.round(i * st)]);
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+export function inputFromGraph(g: TransitGraph, projectGeo?: (c: Coordinate) => Pixel): MergeInput {
   const edges = g.edges.map((e: GraphEdge) => {
     const a = g.nodes.get(e.from)!.pos;
     const b = g.nodes.get(e.to)!.pos;
-    return { a, b, points: [a, b] as Pixel[], lineIds: new Set(e.lines.map((l) => l.id)) };
+    let points: Pixel[];
+    if (e.geo && e.geo.length >= 2 && projectGeo) {
+      points = simplifyForTopo(e.geo.map((c) => projectGeo(c).slice() as Pixel), 32);
+      points[0] = a.slice() as Pixel;
+      points[points.length - 1] = b.slice() as Pixel;
+    } else {
+      points = [a.slice() as Pixel, b.slice() as Pixel];
+    }
+    return {
+      fromId: e.from,
+      toId: e.to,
+      a,
+      b,
+      points,
+      lineIds: new Set(e.lines.map((l) => l.id)),
+    };
   });
   return { edges };
 }
 
-function inputFromBuilder(h: HBuilder): MergeInput {
+/** Re-feed merged corridors into another collapse round. Feed RDP-simplified
+ *  REAL geometry, not endpoint chords: two bowed corridors between the same
+ *  junction pair otherwise become near-identical straight chords and weld
+ *  regardless of dHat (the blue/pink center conjoining). RDP at eps keeps the
+ *  vertex count low enough that re-walking does not re-densify or fragment
+ *  the graph (measured: 237 -> 231 corridor edges on the live Seattle dump). */
+export function inputFromBuilder(h: HBuilder, eps: number): MergeInput {
   return {
-    edges: h.edgeList().map((e) => ({
-      a: e.points[0],
-      b: e.points[e.points.length - 1],
-      points: e.points,
-      lineIds: e.lineIds,
-    })),
+    edges: h.edgeList().map((e) => {
+      const a = h.nodePos(e.a);
+      const b = h.nodePos(e.b);
+      const points = simplifyRdp(e.points, eps);
+      points[0] = a.slice() as Pixel;
+      points[points.length - 1] = b.slice() as Pixel;
+      return {
+        fromId: e.a,
+        toId: e.b,
+        a,
+        b,
+        points,
+        lineIds: e.lineIds,
+      };
+    }),
   };
 }
 
-/** True when the candidate node `vPos` sits predominantly *beside* the edge's
- *  local travel direction at sample `pk` (lateral offset >= along-track
- *  offset). Parallel corridors are offset sideways and pass; a transversal
- *  crossing's nodes sit ahead/behind along the travel direction and fail, so
- *  they can only ever share a single node — never interlace into a shared run.
- */
+/** True when the candidate sits beside (not along) the local travel direction. */
 function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos: Pixel): boolean {
   const ax = next ? next[0] - pk[0] : 0;
   const ay = next ? next[1] - pk[1] : 0;
@@ -367,80 +604,169 @@ function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos
   let tx = ax + bx;
   let ty = ay + by;
   const tl = Math.hypot(tx, ty);
-  if (tl < 1e-9) return true; // no travel direction → no creep to fear
+  if (tl < 1e-9) return true;
   tx /= tl;
   ty /= tl;
   const ox = vPos[0] - pk[0];
   const oy = vPos[1] - pk[1];
   const along = Math.abs(ox * tx + oy * ty);
-  const perp = Math.abs(ox * ty - oy * tx); // 2D cross magnitude
+  const perp = Math.abs(ox * ty - oy * tx);
   return perp > along;
 }
 
-/** One merge pass: walk every input edge's densified samples, snapping each to
- *  a nearby existing H node or creating a new one, honouring the creep blocker
- *  and a ring buffer that prevents an edge from snapping back onto a node it
- *  just used. */
-function onePass(input: MergeInput, params: TopoParams): HBuilder {
-  const { dHat, step } = params;
-  const h = new HBuilder(dHat);
-  // Shortest edges first → most stable merges (paper).
-  const sorted = [...input.edges].sort(
-    (x, y) => polylineLength(x.points) - polylineLength(y.points),
-  );
-  const ringSize = Math.max(1, Math.ceil(dHat / step));
-  for (const e of sorted) {
-    const samples = densify(e.points, step);
-    const ring: string[] = [];        // recently-used node ids (FIFO)
-    const blocking = new Set<string>(); // same contents, for O(1) exclusion
-    let vPrev: string | null = null;
-    for (let k = 0; k < samples.length; k++) {
-      const pk = samples[k];
-      // Nearest existing node that this edge has NOT just used (ring buffer).
-      let v = h.nearestNode(pk, dHat, blocking);
-      const prev = k > 0 ? samples[k - 1] : null;
-      const next = k + 1 < samples.length ? samples[k + 1] : null;
-      // A sample coincident with an existing node is the identity merge that
-      // preserves connectivity at shared/junction nodes (lines chain through
-      // common stops). The creep/lateral guards below only reject *spurious*
-      // merges; they must never reject a node sitting exactly on the sample
-      // (both degenerate to a false-negative at zero offset).
-      const coincident = v !== null && dist(h.nodePos(v), pk) < 1e-6;
-      if (
-        v !== null &&
-        (coincident ||
-          (!creepBlocked(h.nodePos(v), pk, samples) &&
-            lateralToTravel(prev, pk, next, h.nodePos(v))))
-      ) {
-        h.snap(v, pk);
-      } else {
-        v = h.addNode(pk);
-      }
-      if (vPrev !== null) h.addOrUnionEdge(vPrev, v, e.lineIds);
-      ring.push(v);
-      blocking.add(v);
-      if (ring.length > ringSize) {
-        const old = ring.shift()!;
-        if (!ring.includes(old)) blocking.delete(old);
-      }
-      vPrev = v;
+/** LOOM MapConstructor::ndCollapseCand — nearest node within dCut, or create. */
+function ndCollapseCand(
+  h: HBuilder,
+  myNds: Set<string>,
+  pk: Pixel,
+  dCut: number,
+  samples: Pixel[],
+  sampleIndex: number,
+): string {
+  const prev = sampleIndex > 0 ? samples[sampleIndex - 1] : null;
+  const next = sampleIndex + 1 < samples.length ? samples[sampleIndex + 1] : null;
+  const near = h.nearestNode(pk, dCut, myNds);
+  if (near !== null) {
+    const pos = h.nodePos(near);
+    const coincident = dist(pos, pk) < 1e-6;
+    if (coincident || (!creepBlocked(pos, pk, samples) && lateralToTravel(prev, pk, next, pos))) {
+      h.snap(near, pk);
+      return near;
     }
   }
+  return h.addNode(pk);
+}
+
+/** LOOM collapseShrdSegs core: longest edges first, walk densified geometry,
+ *  snap/create shared support nodes so parallel corridors collapse together. */
+export function collapseSharedSegments(
+  input: MergeInput,
+  params: TopoParams,
+  protectedPositions?: Pixel[],
+): HBuilder {
+  const { dHat, step } = params;
+  const simplifyEps = Math.max(0.5, dHat * 0.05);
+  const h = new HBuilder(dHat);
+  if (protectedPositions) {
+    for (const p of protectedPositions) {
+      const id = h.addNode(p);
+      h.markProtected(id);
+    }
+  }
+
+  const sorted = [...input.edges].sort(
+    (x, y) => polylineLength(y.points) - polylineLength(x.points),
+  );
+
+  const trace2 =
+    typeof process !== 'undefined'
+      ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+      : undefined;
+
+  const imgNds = new Map<string, string>();
+
+  for (const e of sorted) {
+    const samples = prepCorridorPolyline(e.points, step, simplifyEps);
+    let last: string | null = null;
+    let front: string | null = null;
+    const myNds = new Set<string>();
+    let imgFromCovered = false;
+    let imgToCovered = false;
+    let unions = 0;
+    let broke = false;
+
+    for (let i = 0; i < samples.length; i++) {
+      const pk = samples[i];
+      const cur = ndCollapseCand(h, myNds, pk, dHat, samples, i);
+      myNds.add(cur);
+
+      if (i === 0 && !imgNds.has(e.fromId)) {
+        imgNds.set(e.fromId, cur);
+        imgFromCovered = true;
+      }
+      if (i === samples.length - 1 && !imgNds.has(e.toId)) {
+        imgNds.set(e.toId, cur);
+        imgToCovered = true;
+      }
+
+      if (last === cur) continue;
+
+      if (cur === imgNds.get(e.fromId)) imgFromCovered = true;
+      const mappedTo = imgNds.get(e.toId);
+      if (mappedTo && cur === mappedTo) {
+        if (last) { h.addOrUnionEdge(last, cur, e.lineIds, pk); unions++; }
+        imgToCovered = true;
+        broke = true;
+        break;
+      }
+
+      if (last) { h.addOrUnionEdge(last, cur, e.lineIds, pk); unions++; }
+      if (!front) front = cur;
+      last = cur;
+    }
+
+    if (trace2 && e.lineIds.has(trace2)) {
+      console.error(
+        `[walk] edge ${e.fromId.slice(0, 6)}->${e.toId.slice(0, 6)} ` +
+        `len=${polylineLength(e.points).toFixed(0)} samples=${samples.length} ` +
+        `unions=${unions} earlyBreak=${broke}`,
+      );
+    }
+
+    const fromNd = imgNds.get(e.fromId);
+    const toNd = imgNds.get(e.toId);
+    if (fromNd && front && !imgFromCovered && fromNd !== front) {
+      h.addOrUnionEdge(fromNd, front, e.lineIds);
+    }
+    if (last && toNd && !imgToCovered && last !== toNd) {
+      h.addOrUnionEdge(last, toNd, e.lineIds);
+    }
+  }
+
+  const trace =
+    typeof process !== 'undefined'
+      ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+      : undefined;
+  if (trace) {
+    const n = h.edgeList().filter((e) => e.lineIds.has(trace)).length;
+    console.error(`[topo] pre-contract: trace line on ${n}/${h.edgeList().length} edges`);
+  }
   h.contractDegree2WithMatchingLines();
+  if (trace) {
+    const n = h.edgeList().filter((e) => e.lineIds.has(trace)).length;
+    console.error(`[topo] post-contract: trace line on ${n}/${h.edgeList().length} edges`);
+  }
   return h;
+}
+
+/** @deprecated Use collapseSharedSegments; kept as alias for tests. */
+function onePass(input: MergeInput, params: TopoParams, protectedPositions?: Pixel[]): HBuilder {
+  return collapseSharedSegments(input, params, protectedPositions);
 }
 
 export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
   let h: HBuilder | null = null;
   let prevLen = Infinity;
+  let prevEdges = Infinity;
+  const protectedPositions = params.preserveStations
+    ? [...g.nodes.values()]
+        .filter((n) => isMergeAnchor(g, n.id))
+        .map((n) => n.pos.slice() as Pixel)
+    : undefined;
   for (let round = 1; round <= params.maxRounds; round++) {
-    const input = h === null ? inputFromGraph(g) : inputFromBuilder(h);
-    h = onePass(input, params);
-    const len = h.totalLength();
+    const input = h === null ? inputFromGraph(g, params.projectGeo) : inputFromBuilder(h, params.dHat);
+    const next = collapseSharedSegments(input, params, protectedPositions);
+    const len = next.totalLength();
+    const edgeCount = next.edgeList().length;
+    if (h !== null && prevEdges !== Infinity && edgeCount >= prevEdges) {
+      break;
+    }
+    h = next;
     if (prevLen !== Infinity && Math.abs(1 - len / prevLen) < params.convergenceEpsilon) {
       break;
     }
     prevLen = len;
+    prevEdges = edgeCount;
   }
   return h!;
 }
@@ -495,8 +821,8 @@ function bfsLinePath(
   while (queue.length > 0) {
     const cur = queue.shift()!;
     for (const eid of adj.get(cur) ?? []) {
-      const e = edges.get(eid)!;
-      if (!e.lineIds.has(lineId)) continue;
+      const e = edges.get(eid);
+      if (!e || !e.lineIds.has(lineId)) continue;
       const nxt = e.from === cur ? e.to : e.from;
       if (seen.has(nxt)) continue;
       seen.add(nxt);
@@ -519,66 +845,406 @@ function bfsLinePath(
   return null;
 }
 
+/** Single-hop step when BFS is unnecessary. */
+function directStep(
+  src: string,
+  dst: string,
+  lineId: string,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+): TraversalStep | null {
+  for (const eid of adj.get(src) ?? []) {
+    const e = edges.get(eid);
+    if (!e || !e.lineIds.has(lineId)) continue;
+    const nxt = e.from === src ? e.to : e.from;
+    if (nxt === dst) return { edgeId: eid, reversed: e.from !== src };
+  }
+  return null;
+}
+
+/** Shortest path over ALL support edges (Dijkstra by polyline length), with a
+ *  total-length cap. Used as the self-healing fallback when a line-constrained
+ *  search fails because the merge under-painted the line's corridors. */
+function shortestAnyPath(
+  src: string,
+  dst: string,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+  maxLen: number,
+): TraversalStep[] | null {
+  if (src === dst) return [];
+  const distTo = new Map<string, number>([[src, 0]]);
+  const prev = new Map<string, { node: string; edgeId: string }>();
+  const done = new Set<string>();
+  for (;;) {
+    let cur: string | null = null;
+    let curD = Infinity;
+    for (const [n, d] of distTo) {
+      if (!done.has(n) && d < curD) { cur = n; curD = d; }
+    }
+    if (cur === null || curD > maxLen) return null;
+    if (cur === dst) break;
+    done.add(cur);
+    for (const eid of adj.get(cur) ?? []) {
+      const e = edges.get(eid);
+      if (!e) continue;
+      const nxt = e.from === cur ? e.to : e.from;
+      const nd = curD + polylineLength(e.points);
+      if (nd < (distTo.get(nxt) ?? Infinity)) {
+        distTo.set(nxt, nd);
+        prev.set(nxt, { node: cur, edgeId: eid });
+      }
+    }
+  }
+  const steps: TraversalStep[] = [];
+  let at = dst;
+  while (at !== src) {
+    const back = prev.get(at)!;
+    const e = edges.get(back.edgeId)!;
+    steps.push({ edgeId: back.edgeId, reversed: e.from !== back.node });
+    at = back.node;
+  }
+  steps.reverse();
+  return steps;
+}
+
+/** Brute-force nearest support node (NodeIndex only searches a 3×3 cell hood). */
+function nearestSupportNode(
+  p: Pixel,
+  nodes: Map<string, SupportNode>,
+  maxDist: number,
+): string | null {
+  let best: string | null = null;
+  let bestD = maxDist;
+  for (const [id, n] of nodes) {
+    const d = dist(n.pos, p);
+    if (d <= bestD) {
+      bestD = d;
+      best = id;
+    }
+  }
+  return best;
+}
+
+/** True when an input-graph node must stay anchored during merge. */
+function isMergeAnchor(g: TransitGraph, nodeId: string): boolean {
+  const eids = g.adj.get(nodeId) ?? [];
+  if (eids.length !== 2) return true;
+  const es = eids.map((id) => g.edges.find((e) => e.id === id)!);
+  const lineKey = (e: GraphEdge) => [...e.lines.map((l) => l.id)].sort().join(',');
+  return lineKey(es[0]) !== lineKey(es[1]);
+}
+
+function projectOntoPolyline(pts: Pixel[], p: Pixel): Pixel {
+  let bestD = Infinity;
+  let bestPoint: Pixel = pts[0];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const vx = b[0] - a[0];
+    const vy = b[1] - a[1];
+    const c2 = vx * vx + vy * vy;
+    const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / c2));
+    const q: Pixel = [a[0] + t * vx, a[1] + t * vy];
+    const d = dist(p, q);
+    if (d < bestD) {
+      bestD = d;
+      bestPoint = q;
+    }
+  }
+  return bestPoint;
+}
+
+/** Split support edges so contracted pass-through stops regain a node. */
+function anchorGraphStops(
+  g: TransitGraph,
+  nodes: Map<string, SupportNode>,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+  snapRadius: number,
+  nextNodeId: () => string,
+  nextEdgeId: () => string,
+): void {
+  const hasNodeNear = (p: Pixel): boolean => {
+    for (const n of nodes.values()) if (dist(n.pos, p) <= snapRadius) return true;
+    return false;
+  };
+
+  const stopsToAnchor: Array<{ pos: Pixel; lineId: string }> = [];
+  for (const ge of g.edges) {
+    for (const [lineId, flags] of ge.stops) {
+      if (flags.atFrom) {
+        const gp = g.nodes.get(ge.from);
+        if (gp) stopsToAnchor.push({ pos: gp.pos, lineId });
+      }
+      if (flags.atTo) {
+        const gp = g.nodes.get(ge.to);
+        if (gp) stopsToAnchor.push({ pos: gp.pos, lineId });
+      }
+    }
+  }
+
+  for (const { pos, lineId } of stopsToAnchor) {
+    if (hasNodeNear(pos)) continue;
+
+    let bestEid: string | null = null;
+    let bestD = Infinity;
+    let bestPoint: Pixel = pos;
+    for (const [eid, e] of edges) {
+      if (!e.lineIds.has(lineId)) continue;
+      const point = projectOntoPolyline(e.points, pos);
+      const d = dist(point, pos);
+      if (d < bestD) {
+        bestD = d;
+        bestEid = eid;
+        bestPoint = point;
+      }
+    }
+    if (!bestEid || bestD > snapRadius * 4) continue;
+    const e = edges.get(bestEid);
+    if (!e) continue;
+    if (dist(bestPoint, e.points[0]) < 1 || dist(bestPoint, e.points[e.points.length - 1]) < 1) continue;
+
+    let splitAt = 0;
+    for (let i = 1; i < e.points.length; i++) {
+      const a = e.points[i - 1];
+      const b = e.points[i];
+      const vx = b[0] - a[0];
+      const vy = b[1] - a[1];
+      const c2 = vx * vx + vy * vy;
+      const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((bestPoint[0] - a[0]) * vx + (bestPoint[1] - a[1]) * vy) / c2));
+      const q: Pixel = [a[0] + t * vx, a[1] + t * vy];
+      if (dist(q, bestPoint) < 1) {
+        splitAt = i - 1;
+        bestPoint = q;
+        break;
+      }
+    }
+
+    const nid = nextNodeId();
+    nodes.set(nid, { id: nid, pos: bestPoint.slice() as Pixel });
+    adj.set(nid, []);
+
+    const leftPts = [...e.points.slice(0, splitAt + 1), bestPoint];
+    const rightPts = [bestPoint, ...e.points.slice(splitAt + 1)];
+
+    adj.get(e.from)!.splice(adj.get(e.from)!.indexOf(bestEid), 1);
+    adj.get(e.to)!.splice(adj.get(e.to)!.indexOf(bestEid), 1);
+    edges.delete(bestEid);
+
+    const leftId = nextEdgeId();
+    const rightId = nextEdgeId();
+    edges.set(leftId, { id: leftId, from: e.from, to: nid, points: leftPts, lineIds: new Set(e.lineIds) });
+    edges.set(rightId, { id: rightId, from: nid, to: e.to, points: rightPts, lineIds: new Set(e.lineIds) });
+    adj.get(e.from)!.push(leftId);
+    adj.get(nid)!.push(leftId);
+    adj.get(nid)!.push(rightId);
+    adj.get(e.to)!.push(rightId);
+  }
+}
+
 export function buildSupportGraph(
   g: TransitGraph,
   groups: StationGroup[],
   params: TopoParams,
 ): SupportGraph {
   const builder = runMergeRounds(g, params);
-  builder.intersectionSmoothing(params.dHat);
-  const { nodes, edges, adj, index } = freezeBuilder(builder, g);
+  // Honest lengths before contraction: a balloon fold inflates polyline
+  // length past the short-edge threshold and shields the edge from cleanup.
+  builder.sanitizeEdgeGeometry(params.dHat);
+  // Junction micro-mesh cleanup (LOOM removeEdgeArtifacts). Folding parallel
+  // edges can re-open degree-2 chains, so re-contract afterwards.
+  builder.contractShortEdges(params.dHat);
+  builder.contractDegree2WithMatchingLines();
+  // Degree-2 joins weld chains through 180-degree turnarounds, baking new
+  // folds into the joined polylines — sanitize again so octi's spring cost
+  // never sees phantom length (it pays it back as candy-cane grid detours).
+  builder.sanitizeEdgeGeometry(params.dHat);
+  if (!params.preserveStations) builder.intersectionSmoothing(params.dHat);
+  const { nodes, edges, adj } = freezeBuilder(builder, g);
+
+  let nodeSeq = nodes.size;
+  let edgeSeq = edges.size;
+  {
+    // ALWAYS re-anchor stops: the merge contracts away mid-corridor nodes, so
+    // without splitting the corridors back open at stop positions, every
+    // intermediate station snaps to the nearest surviving node (usually an
+    // interchange at the corridor END) — stations visually vanish and long
+    // corridors render as misleading express-like straights.
+    anchorGraphStops(
+      g,
+      nodes,
+      edges,
+      adj,
+      Math.max(2, params.dHat / 2),
+      () => 'ha' + nodeSeq++,
+      () => 'he' + edgeSeq++,
+    );
+    for (const ids of adj.values()) ids.length = 0;
+    for (const id of nodes.keys()) if (!adj.has(id)) adj.set(id, []);
+    for (const e of edges.values()) {
+      if (!adj.has(e.from)) adj.set(e.from, []);
+      if (!adj.has(e.to)) adj.set(e.to, []);
+      adj.get(e.from)!.push(e.id);
+      adj.get(e.to)!.push(e.id);
+    }
+  }
 
   const lineRefs = new Map<string, LineRef>();
   for (const e of g.edges) for (const l of e.lines) if (!lineRefs.has(l.id)) lineRefs.set(l.id, l);
 
-  // Reconstruct line traversals over the merged edges.
+  const mapRadius = params.dHat * 2;
+  const mapToSupport = (nid: string): string | null => {
+    const gp = g.nodes.get(nid);
+    if (!gp) return null;
+    for (const [id, n] of nodes) {
+      if (dist(n.pos, gp.pos) < 1) return id;
+    }
+    return (
+      nearestSupportNode(gp.pos, nodes, mapRadius) ??
+      nearestSupportNode(gp.pos, nodes, Infinity)
+    );
+  };
+
+  let healCounter = 0;
+
+  const appendTraversalSteps = (steps: TraversalStep[], seg: TraversalStep[]): void => {
+    for (const s of seg) {
+      const last = steps[steps.length - 1];
+      if (last && last.edgeId === s.edgeId && last.reversed === s.reversed) continue;
+      steps.push(s);
+    }
+  };
+
+  const pathForLineSegment = (
+    fromS: string,
+    toS: string,
+    lineId: string,
+  ): TraversalStep[] | null => {
+    if (fromS === toS) return [];
+    const path = bfsLinePath(fromS, toS, lineId, edges, adj);
+    if (path) return path;
+    const direct = directStep(fromS, toS, lineId, edges, adj);
+    if (direct) return [direct];
+    // Self-heal an under-painted merge: the walk can miss unioning a line
+    // onto corridors its geometry rides (then the line-constrained BFS finds
+    // nothing and the line would silently vanish from the map). Route over
+    // ANY support edges instead — shortest by length, capped so a mis-mapped
+    // node can't commit a wild detour — and paint the line onto the edges
+    // used so offsets, stops, and later segments see it.
+    const fa = nodes.get(fromS);
+    const fb = nodes.get(toS);
+    if (!fa || !fb) return null;
+    const cap = dist(fa.pos, fb.pos) * 3 + params.dHat * 10;
+    const any = shortestAnyPath(fromS, toS, edges, adj, cap);
+    if (any) {
+      for (const s of any) edges.get(s.edgeId)!.lineIds.add(lineId);
+      return any;
+    }
+    // No path at all — the merge fragmented this part of the network into
+    // disconnected pieces (its stitching is heuristic). The input graph
+    // guarantees the line IS connected here, so restore the link with a
+    // bridge edge carrying the line.
+    const id = '__heal' + healCounter++;
+    edges.set(id, {
+      id,
+      from: fromS,
+      to: toS,
+      points: [fa.pos.slice() as Pixel, fb.pos.slice() as Pixel],
+      lineIds: new Set([lineId]),
+    });
+    adj.get(fromS)?.push(id);
+    adj.get(toS)?.push(id);
+    return [{ edgeId: id, reversed: false }];
+  };
+
+  // Line-aware node mapping: snap a graph node to the nearest support node
+  // whose incident edges actually CARRY the line. Pure nearest-by-position
+  // snapping (mapToSupport) can land on a parallel corridor a few pixels
+  // away that the line never touches — then every line-constrained BFS
+  // segment fails and the whole line silently vanishes from the map.
+  const mapToSupportForLine = (nid: string, lineId: string): string | null => {
+    const gp = g.nodes.get(nid);
+    if (!gp) return null;
+    let bestLine: string | null = null;
+    let bestLineD = Infinity;
+    for (const [id, n] of nodes) {
+      const d = dist(n.pos, gp.pos);
+      if (d >= bestLineD) continue;
+      let carries = false;
+      for (const eid of adj.get(id) ?? []) {
+        if (edges.get(eid)?.lineIds.has(lineId)) { carries = true; break; }
+      }
+      if (carries) {
+        bestLineD = d;
+        bestLine = id;
+      }
+    }
+    if (bestLine && bestLineD <= mapRadius * 3) return bestLine;
+    return mapToSupport(nid);
+  };
+
   const lineTraversals = new Map<string, TraversalStep[]>();
   for (const [lineId, origSteps] of g.lineTraversals) {
-    // Ordered original node ids along the line.
-    const seq: string[] = [];
+    const graphNodes: string[] = [];
     for (const step of origSteps) {
       const e = g.edges.find((x) => x.id === step.edgeId);
       if (!e) continue;
-      const from = step.reversed ? e.to : e.from;
-      const to = step.reversed ? e.from : e.to;
-      if (seq.length === 0) seq.push(from);
-      if (seq[seq.length - 1] !== to) seq.push(to);
+      const fromId = step.reversed ? e.to : e.from;
+      const toId = step.reversed ? e.from : e.to;
+      if (graphNodes.length === 0) graphNodes.push(fromId);
+      graphNodes.push(toId);
     }
-    // Map each original node to its nearest support node, collapse dups.
-    const supportSeq: string[] = [];
-    for (const nid of seq) {
-      const gp = g.nodes.get(nid);
-      if (!gp) continue;
-      const sn = index.nearest(gp.pos, params.dHat * 2) ?? index.nearest(gp.pos, Infinity);
-      if (sn && supportSeq[supportSeq.length - 1] !== sn) supportSeq.push(sn);
+
+    const supportNodes: string[] = [];
+    for (const gn of graphNodes) {
+      const sn = mapToSupportForLine(gn, lineId);
+      if (!sn) continue;
+      if (supportNodes.length === 0 || supportNodes[supportNodes.length - 1] !== sn) {
+        supportNodes.push(sn);
+      }
     }
+
     const steps: TraversalStep[] = [];
-    for (let i = 0; i < supportSeq.length - 1; i++) {
-      const seg = bfsLinePath(supportSeq[i], supportSeq[i + 1], lineId, edges, adj);
-      if (seg) steps.push(...seg);
+    let curNode: string | null = supportNodes[0] ?? null;
+    let stalled = false;
+    for (let i = 0; curNode && i < supportNodes.length - 1; i++) {
+      const target = supportNodes[i + 1];
+      if (curNode === target) {
+        stalled = false;
+        continue;
+      }
+      const seg = pathForLineSegment(curNode, target, lineId);
+      if (!seg) {
+        // First failure: keep curNode so the next iteration can bridge OVER a
+        // single mis-mapped node. Second consecutive failure: jump to the
+        // target with a discontinuity (the renderer flushes runs across gaps)
+        // instead of stalling forever and dropping the entire line.
+        if (stalled) curNode = target;
+        stalled = !stalled;
+        continue;
+      }
+      stalled = false;
+      appendTraversalSteps(steps, seg);
+      curNode = target;
+    }
+    if (
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE === lineId
+    ) {
+      console.error(
+        `[trav] line ${lineId.slice(0, 8)}: graphNodes=${graphNodes.length} ` +
+        `supportNodes=[${supportNodes.map((s) => s.slice(0, 6)).join(',')}] steps=${steps.length}`,
+      );
     }
     if (steps.length > 0) lineTraversals.set(lineId, steps);
   }
 
-  // Stop flags: a line stops at a support node if it stopped at the original
-  // node nearest to it.
   const stopAt = new Set<string>();
-  for (const e of g.edges) {
-    for (const [lineId, flags] of e.stops) {
-      const place = (origNodeId: string, stops: boolean) => {
-        if (!stops) return;
-        const gp = g.nodes.get(origNodeId);
-        if (!gp) return;
-        const sn = index.nearest(gp.pos, params.dHat * 2);
-        if (sn) stopAt.add(lineId + '|' + sn);
-      };
-      place(e.from, flags.atFrom);
-      place(e.to, flags.atTo);
-    }
-  }
 
-  // Insert stations.
+  // One schematic station marker per station group (single support node).
   const stations = new Map<string, SupportStation>();
+  const groupSupportNode = new Map<string, string>();
   const origIncident = new Map<string, GraphEdge[]>();
   for (const e of g.edges) {
     for (const nid of [e.from, e.to]) {
@@ -595,37 +1261,72 @@ export function buildSupportGraph(
     for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
 
     const centroid = groupPixel(group, g);
-    // Candidate support nodes within radius, scored by served-line count.
-    const candidates: Array<{ id: string; served: Set<string> }> = [];
+    let best: { id: string; served: number } | null = null;
     for (const [nid, node] of nodes) {
       if (dist(node.pos, centroid) > params.stationCandidateRadius) continue;
-      const served = new Set<string>();
+      let served = 0;
       for (const eid of adj.get(nid) ?? []) {
-        for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served.add(l);
+        for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
       }
-      if (served.size > 0) candidates.push({ id: nid, served });
+      if (served === 0) continue;
+      if (!best || served > best.served) best = { id: nid, served };
     }
-    if (candidates.length === 0) continue;
-    candidates.sort((a, b) => b.served.size - a.served.size);
+    if (!best) {
+      for (const [nid, node] of nodes) {
+        if (dist(node.pos, centroid) > mapRadius) continue;
+        let served = 0;
+        for (const eid of adj.get(nid) ?? []) {
+          for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
+        }
+        if (served === 0) continue;
+        if (!best || served > best.served) best = { id: nid, served };
+      }
+    }
+    if (!best) {
+      const sn = mapToSupport(group.id);
+      if (sn) {
+        let served = 0;
+        for (const eid of adj.get(sn) ?? []) {
+          for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
+        }
+        if (served > 0) best = { id: sn, served };
+      }
+    }
+    if (!best) continue;
+    groupSupportNode.set(group.id, best.id);
+    stations.set(group.id, {
+      id: group.id,
+      label: group.name,
+      lngLat: group.center,
+      nodeId: best.id,
+    });
+  }
 
-    const used = new Set<string>();
-    let idx = 0;
-    for (const cand of candidates) {
-      const adds = [...cand.served].filter((l) => !used.has(l));
-      if (adds.length === 0) continue;
-      for (const l of adds) used.add(l);
-      const stationId = idx === 0 ? group.id : group.id + '__alt' + idx;
-      stations.set(stationId, {
-        id: stationId,
-        label: group.name,
-        lngLat: group.center,
-        nodeId: cand.id,
-      });
-      idx++;
-      if (used.size >= wantLines.size) break;
+  for (const e of g.edges) {
+    for (const [lineId, flags] of e.stops) {
+      const place = (groupId: string, isStop: boolean) => {
+        if (!isStop) return;
+        const sn = groupSupportNode.get(groupId) ?? mapToSupport(groupId);
+        if (sn) stopAt.add(lineId + '|' + sn);
+      };
+      place(e.from, flags.atFrom);
+      place(e.to, flags.atTo);
     }
   }
 
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+  ) {
+    let anchors = 0;
+    let heals = 0;
+    for (const id of nodes.keys()) if (id.startsWith('ha')) anchors++;
+    for (const id of edges.keys()) if (id.startsWith('__heal')) heals++;
+    console.error(
+      `[topo] support: ${nodes.size} nodes (${anchors} anchor splits), ` +
+      `${edges.size} edges (${heals} heal bridges)`,
+    );
+  }
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
 
