@@ -501,9 +501,15 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   ) {
     octiOpts.combineDeg2 = false;
   }
-  // (dev diagnostic, default off: OCTI_AFFINITY=<n> sets octi's geographic-
-  // course enforcement penalty — LOOM's -G enfGeoPen — for macro-geometry
-  // sweeps; 0/unset = pure LOOM schematic, current production behavior)
+  // Geographic-course enforcement (LOOM's -G enfGeoPen). 0.05 chosen by the
+  // 2026-06-10 warp x affinity sweep on the live Seattle dump: with zero
+  // affinity octi pays nothing for abandoning real corridor courses and bent
+  // Tacoma's radial fan into nested parallel U-wraps; 0.05 restores the
+  // diverging branches at identical violation count and runtime, while 0.15
+  // over-constrains (terminal rings return). The density warp was exonerated
+  // (and is load-bearing: disabling it snarls the core, 35-57 violations).
+  // (dev override: OCTI_AFFINITY=<n> for sweeps)
+  octiOpts.geographicAffinity = 0.05;
   const affEnv =
     typeof process !== 'undefined'
       ? Number((process as { env?: Record<string, string> }).env?.OCTI_AFFINITY)
