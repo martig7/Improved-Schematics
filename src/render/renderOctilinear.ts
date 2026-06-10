@@ -138,14 +138,31 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
   };
 
+  // A line draws on an edge only if its traversal actually uses that edge —
+  // edge.lineIds alone over-draws: merge walks and anchor splits leave line
+  // ids painted on corridor remnants no service runs over (bare tails past a
+  // terminus, stub "fingers" at hubs). Lines with NO traversal at all fall
+  // back to drawing every edge that carries them (existence beats tails).
+  const usesEdge = new Map<string, Set<string>>(); // lineId -> edgeIds
+  for (const [lineId, traversal] of layout.lineTraversals) {
+    const s = new Set<string>();
+    for (const step of traversal) s.add(step.edgeId);
+    if (s.size > 0) usesEdge.set(lineId, s);
+  }
+  const drawsOn = (lineId: string, edgeId: string): boolean => {
+    const s = usesEdge.get(lineId);
+    return s ? s.has(edgeId) : true;
+  };
+
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);
     if (base.length < 2) continue;
-    const order = edge.lineOrder.length > 0 ? edge.lineOrder : edge.lines.map((l) => l.id);
+    const order = (edge.lineOrder.length > 0 ? edge.lineOrder : edge.lines.map((l) => l.id)).filter(
+      (lineId) => lineById.has(lineId) && drawsOn(lineId, edge.id),
+    );
     const center = (order.length - 1) / 2;
     for (let i = 0; i < order.length; i++) {
       const lineId = order[i];
-      if (!lineById.has(lineId)) continue;
       const o = (i - center) * spacing;
       const poly =
         o === 0 ? base.map((p) => p.slice() as Pixel) : offsetPolyline(base, o, /*simplify*/ false);
@@ -165,7 +182,20 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   };
 
   // Stops come straight from edge.stops — no traversal dependency, so lines
-  // whose traversal reconstruction failed still get their station marks.
+  // whose traversal reconstruction failed still get their station marks. The
+  // POSITION resolves from any DRAWN edge of the line at that node: the flag
+  // itself may sit on a filtered-out remnant edge (tail past a terminus).
+  const drawnEndAt = new Map<string, Pixel>(); // nodeId|lineId -> ribbon endpoint
+  for (const edge of layout.edges) {
+    for (const l of edge.lines) {
+      for (const nodeId of [edge.from, edge.to]) {
+        const key = nodeId + '|' + l.id;
+        if (drawnEndAt.has(key)) continue;
+        const p = lineEndAt(edge.id, l.id, nodeId);
+        if (p) drawnEndAt.set(key, p);
+      }
+    }
+  }
   const addStop = (lineId: string, color: string, nodeId: string, pos: Pixel) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
@@ -178,11 +208,11 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const line = lineById.get(lineId);
       if (!line) continue;
       if (stop.atFrom) {
-        const p = lineEndAt(edge.id, lineId, edge.from);
+        const p = drawnEndAt.get(edge.from + '|' + lineId);
         if (p) addStop(lineId, line.color, edge.from, p);
       }
       if (stop.atTo) {
-        const p = lineEndAt(edge.id, lineId, edge.to);
+        const p = drawnEndAt.get(edge.to + '|' + lineId);
         if (p) addStop(lineId, line.color, edge.to, p);
       }
     }
