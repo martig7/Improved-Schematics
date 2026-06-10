@@ -152,19 +152,39 @@ test('contractShortEdges leaves edges at/above the threshold alone', () => {
 });
 
 test('contractShortEdges keeps protected endpoints anchored', () => {
+  // w-a-b-c chain so the short a-b edge is interior (terminal stubs are
+  // exempt from contraction; see the degree-1 guard).
   const h = new HBuilder(5);
+  const w = h.addNode([-100, 0]);
   const a = h.addNode([0, 0]);
   const b = h.addNode([5, 0]);
   const c = h.addNode([100, 0]);
   h.markProtected(b);
+  h.addOrUnionEdge(w, a, new Set(['L1']));
   h.addOrUnionEdge(a, b, new Set(['L1']));
   h.addOrUnionEdge(b, c, new Set(['L1']));
   h.contractShortEdges(10);
   // a merges into protected b; b's position is untouched.
   assert.deepEqual(h.nodePos(b), [5, 0]);
   const edges = h.edgeList();
-  assert.equal(edges.length, 1);
-  assert.equal(edges[0].a === b || edges[0].b === b, true);
+  assert.equal(edges.length, 2);
+  assert.equal(edges.some((e) => e.a === b || e.b === b), true);
+});
+
+test('contractShortEdges leaves terminal stubs alone', () => {
+  // A 6px dead-end stub off a junction: contracting it would delete a real
+  // terminus station's corridor (the 320 Pl bug).
+  const h = new HBuilder(5);
+  const j = h.addNode([0, 0]);
+  const tip = h.addNode([6, 0]);
+  const w = h.addNode([-100, 0]);
+  const e = h.addNode([0, 100]);
+  h.addOrUnionEdge(j, tip, new Set(['L1']));
+  h.addOrUnionEdge(w, j, new Set(['L1']));
+  h.addOrUnionEdge(j, e, new Set(['L2']));
+  h.contractShortEdges(16);
+  assert.equal(h.edgeList().length, 3);
+  assert.deepEqual(h.nodePos(tip), [6, 0]);
 });
 
 test('cutPolylineFolds leaves straight and gently-curved polylines alone', () => {

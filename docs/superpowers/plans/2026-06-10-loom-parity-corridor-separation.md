@@ -392,6 +392,24 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 ---
 
+### Task 6 (inserted, user field report 2026-06-10 pm): station fidelity round
+
+User-verified in-game issues: (a) missing terminus stations (320 Pl after
+307 Pl) — builder-level `contractShortEdges` eats terminal stubs before
+stations exist; (b) stops compressed into the Tacoma tip triangle and a
+station rendered in water mid-line — even redistribution artifacts; (c) hub
+"finger" spikes — diagnose after the fixes land.
+
+Fixes: (1) `HBuilder.contractShortEdges` skips edges with a degree-1 endpoint
+(terminal stubs survive to anchoring); (2) `anchorGraphStops` force-places
+instead of silently skipping beyond 4x snap radius; (3) degree-1 station
+nodes pin to their true warped position post-octi (user: "force end stations
+as geographically accurate"); (4) `expandImage` replaces even redistribution
+with constrained 1D projection (project each chain station's true warped
+position onto the routed path arc, order-preserving, min-gap relaxed,
+even-spacing fallback when over-constrained). Verify on the four reported
+windows + full battery; then diagnose residual fingers/triangle.
+
 ### Task 5: Final verification + handoff
 
 **Files:**

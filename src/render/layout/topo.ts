@@ -325,6 +325,10 @@ export class HBuilder {
       changed = false;
       for (const e of this.edges.values()) {
         if (polylineLength(e.points) >= maxLen) continue;
+        // Terminal stubs survive: stations don't exist at builder stage, so a
+        // contracted dead-end deletes a real terminus (the line then ends one
+        // station early and anchorGraphStops has no corridor to split).
+        if (this.adj.get(e.a)!.size === 1 || this.adj.get(e.b)!.size === 1) continue;
         const aProt = this.protected_.has(e.a);
         const bProt = this.protected_.has(e.b);
         if (aProt && bProt) continue;
@@ -1000,7 +1004,16 @@ function anchorGraphStops(
         bestPoint = point;
       }
     }
-    if (!bestEid || bestD > snapRadius * 4) continue;
+    // Force-place: a far anchor is still better than a silently missing
+    // station (the user-facing symptom is a line ending one stop early).
+    if (!bestEid) continue; // no corridor carries this line at all
+    if (
+      bestD > snapRadius * 4 &&
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    ) {
+      console.error(`[topo] anchor FAR: stop for ${lineId.slice(0, 8)} at ${bestD.toFixed(0)}px`);
+    }
     const e = edges.get(bestEid);
     if (!e) continue;
     if (dist(bestPoint, e.points[0]) < 1 || dist(bestPoint, e.points[e.points.length - 1]) < 1) continue;
@@ -1261,26 +1274,28 @@ export function buildSupportGraph(
     for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
 
     const centroid = groupPixel(group, g);
-    let best: { id: string; served: number } | null = null;
-    for (const [nid, node] of nodes) {
-      if (dist(node.pos, centroid) > params.stationCandidateRadius) continue;
+    // Nearest line-serving node wins (tie-break: more served). The previous
+    // most-served-wins rule let a busy junction steal a group from its own
+    // terminus stub / anchor node (two groups one marker — "320 Pl missing"),
+    // erasing the line's last hop visually. anchorGraphStops creates a node
+    // at every stop position, so nearest-with-service maps each group to its
+    // own node.
+    let best: { id: string; served: number; d: number } | null = null;
+    const consider = (nid: string, node: SupportNode, radius: number) => {
+      const d = dist(node.pos, centroid);
+      if (d > radius) return;
       let served = 0;
       for (const eid of adj.get(nid) ?? []) {
         for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
       }
-      if (served === 0) continue;
-      if (!best || served > best.served) best = { id: nid, served };
-    }
-    if (!best) {
-      for (const [nid, node] of nodes) {
-        if (dist(node.pos, centroid) > mapRadius) continue;
-        let served = 0;
-        for (const eid of adj.get(nid) ?? []) {
-          for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
-        }
-        if (served === 0) continue;
-        if (!best || served > best.served) best = { id: nid, served };
+      if (served === 0) return;
+      if (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) < 1e-9 && served > best.served)) {
+        best = { id: nid, served, d };
       }
+    };
+    for (const [nid, node] of nodes) consider(nid, node, params.stationCandidateRadius);
+    if (!best) {
+      for (const [nid, node] of nodes) consider(nid, node, mapRadius);
     }
     if (!best) {
       const sn = mapToSupport(group.id);
@@ -1289,7 +1304,7 @@ export function buildSupportGraph(
         for (const eid of adj.get(sn) ?? []) {
           for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
         }
-        if (served > 0) best = { id: sn, served };
+        if (served > 0) best = { id: sn, served, d: dist(nodes.get(sn)!.pos, centroid) };
       }
     }
     if (!best) continue;
