@@ -501,6 +501,16 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   ) {
     octiOpts.combineDeg2 = false;
   }
+  // (dev diagnostic, default off: OCTI_AFFINITY=<n> sets octi's geographic-
+  // course enforcement penalty — LOOM's -G enfGeoPen — for macro-geometry
+  // sweeps; 0/unset = pure LOOM schematic, current production behavior)
+  const affEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_AFFINITY)
+      : NaN;
+  if (Number.isFinite(affEnv) && affEnv > 0) {
+    octiOpts.geographicAffinity = affEnv;
+  }
   const imageRaw = octi(support, octiOpts);
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
