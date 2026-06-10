@@ -11,8 +11,11 @@ import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
-import { routeAllEdgesViaHanan } from './layout/hananRouter';
-import { topo } from './layout/topo';
+import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
+import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
+import { buildSupportGraph, type TopoParams } from './layout/topo';
+import { buildDensityWarp } from './layout/densityWarp';
+import { mergeCoincidentPaths } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -148,6 +151,59 @@ function renderGeoNodes(
   return out;
 }
 
+function pointToSeg(p: Pixel, a: Pixel, b: Pixel): number {
+  const vx = b[0] - a[0];
+  const vy = b[1] - a[1];
+  const wx = p[0] - a[0];
+  const wy = p[1] - a[1];
+  const c1 = vx * wx + vy * wy;
+  if (c1 <= 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  const c2 = vx * vx + vy * vy;
+  if (c2 <= c1) return Math.hypot(p[0] - b[0], p[1] - b[1]);
+  const t = c1 / c2;
+  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+}
+
+/** Douglas–Peucker simplification. */
+function rdp(pts: Pixel[], eps: number): Pixel[] {
+  if (pts.length < 3) return pts.slice();
+  let maxD = 0;
+  let idx = 0;
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = pointToSeg(pts[i], a, b);
+    if (d > maxD) {
+      maxD = d;
+      idx = i;
+    }
+  }
+  if (maxD > eps) {
+    const left = rdp(pts.slice(0, idx + 1), eps);
+    const right = rdp(pts.slice(idx), eps);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [a, b];
+}
+
+/** Remove near-duplicate consecutive points, then lightly simplify. Topo's
+ *  densified+smoothed corridor polylines carry many sub-pixel and near-180°
+ *  zig points that make offsetPolyline spike into visible curls; cleaning them
+ *  yields smooth ribbons while preserving real corridor bends. */
+function cleanPolyline(pts: Pixel[]): Pixel[] {
+  if (pts.length <= 2) return pts.slice();
+  const dedup: Pixel[] = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const last = dedup[dedup.length - 1];
+    if (Math.hypot(pts[i][0] - last[0], pts[i][1] - last[1]) >= 1) dedup.push(pts[i]);
+  }
+  // Always keep the true last endpoint so the edge still meets its node.
+  const end = pts[pts.length - 1];
+  if (dedup[dedup.length - 1] !== end) dedup.push(end);
+  if (dedup.length <= 2) return dedup;
+  return rdp(dedup, 2.5);
+}
+
 /** Adapt a topo SupportGraph into the Layout shape renderRibbons consumes.
  *  Node "cells" are pixels (identity edgePolyline), edge paths are the merged
  *  corridor polylines, and stops come from the support graph's stopAt set. */
@@ -179,7 +235,7 @@ function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string,
       id: e.id,
       from: e.from,
       to: e.to,
-      path: e.points.map((p) => [p[0], p[1]] as Cell),
+      path: cleanPolyline(e.points).map((p) => [p[0], p[1]] as Cell),
       lines,
       lineOrder: lines.map((l) => l.id).sort(),
       stops,
@@ -206,7 +262,7 @@ export function renderGeographic(input: GeoInput): string {
     return renderGeographicTopo(input, opts);
   }
 
-  const lines = extractRouteLines(input.routes, input.tracks);
+  const lines = extractRouteLines(input.routes, input.tracks, input.stations as never, input.stationGroups);
   const bounds = (() => {
     const b = computeBounds(lines);
     return b ? padBounds(b, 0.08) : ([-1, -1, 1, 1] as [number, number, number, number]);
@@ -271,25 +327,49 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const graph = buildTransitGraph(input.stations as never, input.routes, groups);
+  const graph = buildTransitGraph(input.stations as never, input.routes, groups, input.tracks);
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, options: { ...input.options, useTopoMerge: false } });
   }
 
-  // Frame on geography; project each node position into pixels.
+  // Frame on geography. Include curved corridor geometry in the bounds so track
+  // courses that bow beyond the station centres aren't clipped.
   const bounds = (() => {
-    const b = computeBounds([...graph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
+    const framePts: { points: Coordinate[] }[] = [...graph.nodes.values()].map((n) => ({ points: [n.lngLat] }));
+    for (const e of graph.edges) if (e.geo) framePts.push({ points: e.geo });
+    const b = computeBounds(framePts);
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
   const proj = createProjection(bounds, width, height, padding);
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
 
-  const h = topo(graph, groups, { lineWidth: theme.lineWidth });
+  // LOOM topo merge (same tuning as smoothed mode; see renderSmoothed). In
+  // geographic mode we don't go through octi, so support edges keep their
+  // merged corridor geometry directly. preserveStations keeps every transit-
+  // graph node alive so intermediate stops along trunks remain visible.
+  // dHat is a corridor-merge radius, not a stroke property: pinned >= 16px so
+  // thinner theme line widths don't shrink the tuned merge radius.
+  const dHat = Math.max(16, theme.lineWidth * 4);
+  const topoParams: TopoParams = {
+    dHat,
+    step: Math.max(2, dHat / 4),
+    convergenceEpsilon: 0.002,
+    maxRounds: 8,
+    stationCandidateRadius: 2 * dHat,
+    preserveStations: false,
+  };
+  const h = buildSupportGraph(graph, groups, topoParams);
   const { layout, nodePx } = supportToLayout(h);
   orderLines(layout);
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
+  // Render water through the real projection (the support graph carries no
+  // lngLat, so renderRibbons' bbox-affine water mapping can't be used). Inject
+  // it via the gridOverlay slot, which draws between the background and routes.
+  const waterColor = dark ? DARK_THEME.water : theme.water;
+  const waterOverlay = input.water ? waterGroup(input.water, proj, waterColor) : '';
+
   return renderRibbons({
     layout,
     nodePx,
@@ -298,127 +378,159 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
     height,
     dark,
     showLabels: opts.showLabels,
-    water: input.water,
     transfers,
+    gridOverlay: waterOverlay,
   });
 }
-
-/** Snap divisor used to derive the Hanan grid's base-cell size from the
- *  median transit-edge length. Smaller divisor → coarser grid, less work, more
- *  station displacement; larger → finer grid, more work, less displacement. */
-const HANAN_SNAP_DIVISOR = 4;
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
+  const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const baseGraph = buildTransitGraph(input.stations as never, input.routes, groups);
-  if (baseGraph.edges.length === 0) {
+  const graph = buildTransitGraph(input.stations as never, input.routes, groups, input.tracks);
+  if (graph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });
   }
 
-  // Frame on real station-group geography; project each node once. Stations
-  // stay at their actual locations — no relaxation, no grid snap.
   const bounds = (() => {
-    const b = computeBounds([...baseGraph.nodes.values()].map((n) => ({ points: [n.lngLat] })));
+    const framePts: { points: Coordinate[] }[] = [...graph.nodes.values()].map((n) => ({ points: [n.lngLat] }));
+    for (const e of graph.edges) if (e.geo) framePts.push({ points: e.geo });
+    const b = computeBounds(framePts);
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
-  const proj = createProjection(bounds, width, height, padding);
-  for (const n of baseGraph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
-
-  // Compute median edge length up front; the Hanan grid's snap-cell scales
-  // off it.
-  const lengths: number[] = [];
-  for (const e of baseGraph.edges) {
-    const a = baseGraph.nodes.get(e.from)!.pos;
-    const b = baseGraph.nodes.get(e.to)!.pos;
-    lengths.push(Math.hypot(a[0] - b[0], a[1] - b[1]));
-  }
-  lengths.sort((p, q) => p - q);
-  const medianEdge = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 100;
-
-  // Router handles "exit toward goal" naturally via its direction-disagreement
-  // cost (amplified at the first edge of every routed edge), so we don't need
-  // any per-station bucketing here.
-  const graph = baseGraph;
-
-  // Real (projected) positions are the *input* to the router; the router snaps
-  // each station onto its Hanan grid node and returns those snapped positions.
-  // Stations render AT the snapped positions so paths and markers line up
-  // perfectly and every segment stays octilinear.
-  const realPx = new Map<string, Pixel>();
-  for (const n of graph.nodes.values()) realPx.set(n.id, n.pos);
-
-  // Build lineEdgeOrder for the router: for each line, the ordered list of
-  // edge ids along its traversal. The router routes a line's edges back to
-  // back, propagating direction state at intermediate stations so a line
-  // continues in the same direction at each pass-through.
-  const lineEdgeOrder = new Map<string, string[]>();
-  for (const [lineId, traversal] of graph.lineTraversals) {
-    lineEdgeOrder.set(
-      lineId,
-      traversal.map((step) => step.edgeId),
-    );
-  }
-
-  const routed = routeAllEdgesViaHanan(
-    realPx,
-    graph.edges.map((e) => ({
-      id: e.id,
-      from: e.from,
-      to: e.to,
-      lineIds: new Set(e.lines.map((l) => l.id)),
-    })),
-    {
-      snapCell: medianEdge / HANAN_SNAP_DIVISOR,
-      padding: medianEdge,
-      medianEdgeLength: medianEdge,
-    },
-    lineEdgeOrder,
-  );
-
-  // Use snapped positions for everything that ends up in the rendered SVG.
-  const nodePx = new Map<string, Pixel>();
-  for (const [id, p] of routed.snappedPositions) nodePx.set(id, p);
-  // (Fallback for any node the router didn't return, shouldn't happen.)
-  for (const n of graph.nodes.values()) if (!nodePx.has(n.id)) nodePx.set(n.id, n.pos);
-
-  // Synthesise a Layout: each node's "cell" is its snapped pixel; each edge's
-  // "path" is the routed polyline starting/ending at snapped positions.
-  const layoutNodes = new Map<string, LayoutNode>();
+  // Density-equalizing warp: enlarge crowded parts of the map (the way print
+  // NYC subway maps blow up Manhattan) so the octi grid effectively gets finer
+  // exactly where the network is dense. The warp wraps the projection, so the
+  // network, the water polygons, and every overlay deform through one
+  // continuous, provably fold-free mapping; octi runs AFTER the warp, so the
+  // output is still perfectly octilinear in screen space.
+  // (dev override: OCTI_WARP=<alpha>, 0 disables)
+  const baseProj = createProjection(bounds, width, height, padding);
+  const warpAlpha = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP)
+        : NaN;
+    return Number.isFinite(env) ? env : 0.6;
+  })();
+  // Weight each station by the number of lines through it (capped) so that
+  // corridor-rich hub areas — not just station-dense downtowns — dilate.
+  // A West-Seattle-style fan hub has moderate station density but needs room
+  // proportional to its LINE fan; pure station counting would compress it.
+  const warpSamples: Pixel[] = [];
   for (const n of graph.nodes.values()) {
-    const p = nodePx.get(n.id)!;
-    layoutNodes.set(n.id, {
-      id: n.id,
-      cell: [p[0], p[1]] as Cell,
-      label: n.label,
-      lngLat: n.lngLat,
-    });
+    const p = baseProj.toSVG(n.lngLat);
+    const lines = new Set<string>();
+    for (const eid of graph.adj.get(n.id) ?? []) {
+      const e = graph.edges.find((x) => x.id === eid);
+      if (e) for (const l of e.lines) lines.add(l.id);
+    }
+    const w = Math.max(1, Math.min(4, lines.size));
+    for (let i = 0; i < w; i++) warpSamples.push(p);
   }
-  const layoutEdges: LayoutEdge[] = graph.edges.map((e) => {
-    const path = (routed.paths.get(e.id) ?? [nodePx.get(e.from)!, nodePx.get(e.to)!]).map(
-      (p) => [p[0], p[1]] as Cell,
-    );
-    return {
-      id: e.id,
-      from: e.from,
-      to: e.to,
-      path,
-      lines: e.lines,
-      lineOrder: e.lines.map((l) => l.id).sort(),
-      stops: e.stops,
-    };
-  });
-  const layout: Layout = {
-    cellSize: 1,
-    nodes: layoutNodes,
-    edges: layoutEdges,
-    lineTraversals: graph.lineTraversals,
+  const warp = buildDensityWarp(
+    warpSamples,
+    { minX: 0, minY: 0, maxX: width, maxY: height },
+    { alpha: warpAlpha },
+  );
+  const proj: Projection = {
+    ...baseProj,
+    toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
+  for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
+
+  // LOOM topo merge: collapse geographically parallel transit edges into
+  // single support edges carrying the union of their line ids (Brosi & Bast
+  // 2024 §"Network Topology Extraction"). With bundling solved at the GRAPH
+  // level, octi routes each merged corridor as ONE octilinear path and the
+  // per-edge offset model (orderLines + computeCanonicalOffsets) lanes the
+  // co-running lines into parallel ribbons — no post-hoc grid-segment fix-up.
+  //
+  // dHat (the merge-distance threshold) is fixed at 4× line width in pixels.
+  // The paper's 2.5·w·c formula explodes at NYC-scale line counts and
+  // collapses the map; a fixed pixel target reliably catches geographically
+  // parallel corridors (yellow+purple+pink along Lex, etc.) without merging
+  // unrelated nearby edges. See dev/_diag-topo-octi.ts for the sweep.
+  // (dev diagnostic, default off: OCTI_DHAT=<px> overrides the fixed merge
+  // radius for LOOM-parity sweeps — see dev/_parity-dhat-sweep.ts. Unset in
+  // production, so behavior is unchanged.)
+  const dHatEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_DHAT)
+      : NaN;
+  // dHat is a corridor-merge radius, not a stroke property: pinned >= 16px so
+  // thinner theme line widths don't shrink the tuned merge radius.
+  const dHat =
+    Number.isFinite(dHatEnv) && dHatEnv > 0 ? dHatEnv : Math.max(16, theme.lineWidth * 4);
+  const topoParams: TopoParams = {
+    dHat,
+    step: Math.max(2, dHat / 4),
+    convergenceEpsilon: 0.002,
+    maxRounds: 8,
+    stationCandidateRadius: 2 * dHat,
+    preserveStations: false,
+  };
+  const support = buildSupportGraph(graph, groups, topoParams);
+  const medLen = medianEdgeLength(support);
+  const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
+  // Grid fineness vs contraction: octi contracts away everything shorter
+  // than half a cell, so a coarser grid both merges noisy station clusters
+  // into single skeleton nodes AND leaves each surviving node more breathing
+  // room per cell. Two regimes:
+  //  - metro-scale (hundreds of support edges, NYC saves): finer grid
+  //    (divisor 2.5) resolves congested downtowns without detours;
+  //  - bus-scale (thousands of edges, Seattle-like, mega-hubs): a fine grid
+  //    lets corridors NEST in concentric rings around hubs and explodes
+  //    routing time. LOOM defaults to ~100% of station spacing — coarse
+  //    grids force clean radial fans and are fast.
+  // (dev override: OCTI_DIVISOR for tuning sweeps)
+  const divisor =
+    (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
+    (support.edges.size > 800 ? 1.2 : 2.5);
+  octiOpts.cellSize = Math.max(12, medLen / divisor);
+  // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
+  // collapse so every station node is placed by the octilinearizer itself)
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_NO_COMBINE === '1'
+  ) {
+    octiOpts.combineDeg2 = false;
+  }
+  const imageRaw = octi(support, octiOpts);
+
+  // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
+  // edges share grid segments; consolidate coincident runs into single edges
+  // carrying the union of lines so the renderer fans them into a bundle
+  // instead of drawing one line invisibly on top of the other.
+  const merged = mergeCoincidentPaths(support, imageRaw);
+  const supportM = merged.h;
+  const image = merged.img;
+
+  // Build a Layout from the merged support graph, then override node positions
+  // with octi's grid placement and edge paths with its routed octilinear
+  // polylines. Each layout edge already carries the union of merged line ids.
+  const { layout, nodePx } = supportToLayout(supportM);
+  for (const n of layout.nodes.values()) {
+    const placed = image.placement.get(n.id);
+    if (placed) {
+      n.cell = [placed[0], placed[1]] as Cell;
+      nodePx.set(n.id, placed);
+    }
+  }
+  for (const e of layout.edges) {
+    const routed = image.paths.get(e.id);
+    if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
+  }
   orderLines(layout);
 
-  const transfers = findTransferPairs(routedGroupsOnly(groups, baseGraph), DEFAULT_TRANSFER_METERS);
+  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
-  const gridOverlay = opts.showGrid ? buildGridSvg(routed.grid, dark) : '';
+  // The support graph carries no lngLat for renderRibbons' affine water map, so
+  // draw water through the real projection and inject it (plus the optional Γ'
+  // overlay) via the gridOverlay slot.
+  const waterColor = dark ? DARK_THEME.water : theme.water;
+  const waterOverlay = input.water ? waterGroup(input.water, proj, waterColor) : '';
+  const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
 
   return renderRibbons({
     layout,
@@ -428,45 +540,52 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     height,
     dark,
     showLabels: opts.showLabels,
-    water: input.water,
     transfers,
-    gridOverlay,
+    gridOverlay: waterOverlay + gridSvg,
   });
 }
 
-/** Diagnostic overlay: every Hanan grid edge drawn as a thin line, every grid
- *  node as a tiny dot. Each undirected edge is emitted once (key on the
- *  ordered node-id pair). Drawn between water and routes so the routes sit on
- *  top but the grid is clearly visible underneath. */
-function buildGridSvg(grid: import('./layout/hananGrid').HananGrid, dark: boolean): string {
+/** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */
+function pixelBounds(nodePx: Map<string, Pixel>): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of nodePx.values()) {
+    if (p[0] < minX) minX = p[0];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  if (!isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  return { minX, minY, maxX, maxY };
+}
+
+/** Diagnostic overlay: the octi base grid as faint axis/diagonal lines plus
+ *  base-node dots. Drawn between water and routes. */
+function buildOctiGridSvg(grid: OctiGrid, dark: boolean): string {
   const stroke = dark ? '#3a4150' : '#cdd3dc';
   const dotFill = dark ? '#525a6a' : '#a3acbb';
   const seen = new Set<string>();
   const lines: string[] = [];
-  for (const [u, adj] of grid.adj) {
-    const pu = grid.positions.get(u);
-    if (!pu) continue;
-    for (const e of adj) {
-      const key = u < e.to ? u + '|' + e.to : e.to + '|' + u;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const pv = grid.positions.get(e.to);
-      if (!pv) continue;
-      lines.push(
-        '<line x1="' + pu[0].toFixed(1) + '" y1="' + pu[1].toFixed(1) +
-          '" x2="' + pv[0].toFixed(1) + '" y2="' + pv[1].toFixed(1) +
-          '" stroke="' + stroke + '" stroke-width="0.4" opacity="0.55"/>',
-      );
-    }
-  }
-  const dots: string[] = [];
-  for (const p of grid.positions.values()) {
-    dots.push(
-      '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) +
-        '" r="0.9" fill="' + dotFill + '" opacity="0.85"/>',
+  for (const e of grid.edges) {
+    if (e.kind !== 'grid') continue;
+    const fromBase = e.from.split(':')[0];
+    const toBase = e.to.split(':')[0];
+    const key = fromBase < toBase ? fromBase + '|' + toBase : toBase + '|' + fromBase;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const pa = grid.baseById.get(fromBase)?.pos;
+    const pb = grid.baseById.get(toBase)?.pos;
+    if (!pa || !pb) continue;
+    lines.push(
+      '<line x1="' + pa[0].toFixed(1) + '" y1="' + pa[1].toFixed(1) +
+        '" x2="' + pb[0].toFixed(1) + '" y2="' + pb[1].toFixed(1) +
+        '" stroke="' + stroke + '" stroke-width="0.4" opacity="0.5"/>',
     );
   }
-  return '<g class="hanan-grid">' + lines.join('') + dots.join('') + '</g>';
+  const dots: string[] = [];
+  for (const b of grid.baseNodes) {
+    dots.push('<circle cx="' + b.pos[0].toFixed(1) + '" cy="' + b.pos[1].toFixed(1) + '" r="0.9" fill="' + dotFill + '" opacity="0.8"/>');
+  }
+  return '<g class="octi-grid">' + lines.join('') + dots.join('') + '</g>';
 }
 
 function svgWrap(parts: string[], width: number, height: number): string {

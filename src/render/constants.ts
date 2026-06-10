@@ -11,7 +11,14 @@ export const BEND_STIFFNESS = 0.12;
 export const MAX_STEP_PER_ITER = 0.6;
 
 export const CELL_PX = 36;
-export const LINE_WIDTH = 5;
+/** Diagnostic override for the corridor-spacing sweep (IS_LINE_WIDTH env);
+ *  the literal default is the production value. Browser-safe guard: process
+ *  is undefined inside the game's renderer. */
+const LINE_WIDTH_DEFAULT = 5;
+export const LINE_WIDTH =
+  (typeof process !== 'undefined' &&
+    Number((process as { env?: Record<string, string> }).env?.IS_LINE_WIDTH)) ||
+  LINE_WIDTH_DEFAULT;
 export const LINE_GAP = 2;
 export const PAD = 24;
 export const LABEL_FONT_SIZE = 11;
