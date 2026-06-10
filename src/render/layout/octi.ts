@@ -556,16 +556,24 @@ function buildCombCtx(
 
     // EdgeOrdering: adjacent edges sorted by descending departure angle, which
     // matches stepping port indices clockwise (LOOM PairCmp sorts descending).
+    // The tangent is taken one grid CELL along the course, not at the first
+    // geometry sample (~4px): merge rounds leave micro-wiggles at junctions,
+    // and a noise-scale tangent can mirror the circular order — the topology
+    // blocking in writeNdCosts then pins an edge on the wrong side of its
+    // siblings and forces a corridor-wide detour (W-line Lawrence->Burke bug).
+    // The first grid hop subtends a full cell, so that is the scale the port
+    // ordering physically describes.
     const nd = h.nodes.get(id)!;
     const entries: Array<{ eid: string; ang: number }> = [];
     for (const eid of adj) {
       const e = h.edges.get(eid);
       if (!e) continue;
-      let ref: Pixel;
-      if (e.from === id) {
-        ref = e.points.length > 1 ? e.points[1] : h.nodes.get(e.to)!.pos;
-      } else {
-        ref = e.points.length > 1 ? e.points[e.points.length - 2] : h.nodes.get(e.from)!.pos;
+      const pts = e.from === id ? e.points : [...e.points].reverse();
+      let ref: Pixel = pts.length > 1 ? pts[pts.length - 1] : h.nodes.get(e.from === id ? e.to : e.from)!.pos;
+      let acc = 0;
+      for (let i = 1; i < pts.length; i++) {
+        acc += dist(pts[i - 1], pts[i]);
+        if (acc >= grid.cellSize) { ref = pts[i]; break; }
       }
       entries.push({ eid, ang: Math.atan2(ref[1] - nd.pos[1], ref[0] - nd.pos[0]) });
     }
@@ -1499,10 +1507,29 @@ function tryDraw(
     let sweepImp = 0;
 
     for (const a of nodes) {
-      if (Date.now() - t0 > budget) break outer;
+      if (Date.now() - t0 > budget) {
+        if (DBG) {
+          console.error(
+            `[octi] locSearch BUDGET EXHAUSTED in node-move loop, sweep ${iter}, ` +
+            `node ${nodes.indexOf(a)}/${nodes.length} — edge re-route sweep never ran this sweep`,
+          );
+        }
+        break outer;
+      }
       const curBase = drawing.nds.get(a);
       if (curBase === undefined) continue;
-      const adjE = ctx.adjEdges(a);
+      // Fan re-route order: longest chains first. A junction's short stub
+      // edges (1-2 cells, near-unlimited candidate wedges) routed first wall
+      // off the port wedge a long course-constrained chain needs; the chain
+      // then detours around the whole junction, and the single-edge re-route
+      // sweep can never repair it (transiting the stub's turn-closed bases is
+      // a violation). Longest-first lets the constrained chain claim its
+      // corridor and the flexible stubs adapt (W-line Lawrence->Burke bug).
+      const adjE = ctx.adjEdges(a).slice().sort((x, y) => {
+        const sx = dist(ctx.posOf(x.from), ctx.posOf(x.to));
+        const sy = dist(ctx.posOf(y.from), ctx.posOf(y.to));
+        return (sy - sx) || x.id.localeCompare(y.id);
+      });
 
       // un-draw a's incident edges and a itself
       const dcp = drawing.clone();
@@ -1551,7 +1578,15 @@ function tryDraw(
     // forced through violations that no longer exist in the settled end state.
     // Rip each edge up and redraw it under the final constraints.
     for (const ce of hEdges) {
-      if (Date.now() - t0 > budget) break outer;
+      if (Date.now() - t0 > budget) {
+        if (DBG) {
+          console.error(
+            `[octi] locSearch BUDGET EXHAUSTED in edge re-route loop, sweep ${iter}, ` +
+            `edge ${hEdges.indexOf(ce)}/${hEdges.length}`,
+          );
+        }
+        break outer;
+      }
       if (ce.from === ce.to || !drawing.drawn(ce.id)) continue;
 
       const run = drawing.clone();
@@ -1589,6 +1624,198 @@ function tryDraw(
         `[octi]   vio x${v} on ${ceId} ` +
         `(${f?.map((x) => x.toFixed(0))} -> ${t?.map((x) => x.toFixed(0))})`,
       );
+    }
+  }
+
+  // Diagnostic (OCTI_TRACE_GEO=1): per comb edge, what the FINAL routed path
+  // actually paid in geographic-course penalty and how far it strays from the
+  // course — the ground truth for "is geoPen inert or just out-bid".
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_TRACE_GEO
+  ) {
+    const geoW = opts.geographicAffinity ?? 0;
+    const devTo = (p: Pixel, course: Pixel[]): number => {
+      let best = Infinity;
+      for (let i = 1; i < course.length; i++) {
+        best = Math.min(best, pointToSegment(p, course[i - 1], course[i]));
+      }
+      return best === Infinity ? 0 : best;
+    };
+    const rows: Array<{
+      id: string; hops: number; bow: number; w: number; paid: number;
+      maxDev: number; spring: number; cost: number; fr: Pixel; to: Pixel;
+    }> = [];
+    for (const ce of h.edges.values()) {
+      const path = drawing.edgs.get(ce.id);
+      if (!path || path.length === 0) continue;
+      const span = dist(ce.points[0], ce.points[ce.points.length - 1]);
+      const bow = span > 1e-6 ? Math.max(1, polyLen(ce.points) / span) : 4;
+      const w = geoW * Math.min(8, bow * bow);
+      let paid = 0;
+      let maxDev = 0;
+      let hops = 0;
+      for (const e of path) {
+        if (!grid.isGridEdge(e)) continue;
+        hops++;
+        const [a, b] = grid.gridEdgeBases(e);
+        const d = Math.max(devTo(grid.basePos(a), ce.points), devTo(grid.basePos(b), ce.points)) / grid.cellSize;
+        maxDev = Math.max(maxDev, d);
+        paid += Math.min(SOFT_INF, w * d * d);
+      }
+      rows.push({
+        id: ce.id, hops, bow, w, paid, maxDev,
+        spring: drawing.springCosts.get(ce.id) ?? 0,
+        cost: drawing.edgCosts.get(ce.id) ?? 0,
+        fr: ctx.posOf(ce.from), to: ctx.posOf(ce.to),
+      });
+    }
+    rows.sort((a, b) => b.maxDev - a.maxDev);
+    console.error(`[octi] TRACE_GEO cellSize=${grid.cellSize.toFixed(1)} geoW=${geoW} (top 25 by max course deviation in cells)`);
+    for (const r of rows.slice(0, 25)) {
+      console.error(
+        `[octi]   ${r.id} (${r.fr.map((x) => x.toFixed(0))})->(${r.to.map((x) => x.toFixed(0))}) ` +
+        `hops=${r.hops} bow=${r.bow.toFixed(2)} w=${r.w.toFixed(3)} ` +
+        `maxDev=${r.maxDev.toFixed(1)}c paid=${r.paid.toFixed(1)} spring=${r.spring.toFixed(1)} cost=${r.cost.toFixed(1)}`,
+      );
+    }
+
+    // OCTI_TRACE_CE=<id,...>: who occupies the grid along this edge's TRUE
+    // course in the final state — the would-be faithful corridor's residents.
+    const traceCe = (process as { env?: Record<string, string> }).env?.OCTI_TRACE_CE;
+    for (const ceId of (traceCe ?? '').split(',').filter(Boolean)) {
+      const ce = h.edges.get(ceId);
+      if (!ce) { console.error(`[octi] TRACE_CE ${ceId}: no such edge`); continue; }
+      console.error(`[octi] TRACE_CE ${ceId} lines={${[...ce.lineIds].map((l) => l.slice(0, 8)).join(',')}} course pts=${ce.points.length}`);
+      const owners = new Map<string, number>();
+      let closedBases = 0;
+      let samples = 0;
+      const step = grid.cellSize / 2;
+      let acc = 0;
+      let prev = ce.points[0];
+      const visit = (p: Pixel) => {
+        samples++;
+        const col = Math.max(0, Math.min(grid.cols - 1, Math.round((p[0] - grid.originX) / grid.cellSize)));
+        const row = Math.max(0, Math.min(grid.rows - 1, Math.round((p[1] - grid.originY) / grid.cellSize)));
+        const b = grid.baseIdx(col, row);
+        if (grid.isClosed(b)) closedBases++;
+        for (let d = 0; d < 8; d++) {
+          const res = grid.getResEdgs(grid.gridIdx(b, d));
+          if (res) for (const o of res) owners.set(o, (owners.get(o) ?? 0) + 1);
+        }
+      };
+      visit(prev);
+      for (let i = 1; i < ce.points.length; i++) {
+        let segLen = dist(prev, ce.points[i]);
+        while (acc + segLen >= step) {
+          const t = (step - acc) / segLen;
+          prev = [prev[0] + (ce.points[i][0] - prev[0]) * t, prev[1] + (ce.points[i][1] - prev[1]) * t];
+          segLen = dist(prev, ce.points[i]);
+          acc = 0;
+          visit(prev);
+        }
+        acc += segLen;
+        prev = ce.points[i];
+      }
+      const lineOf = (oid: string) => {
+        const oe = h.edges.get(oid);
+        return oe ? [...oe.lineIds].map((l) => l.slice(0, 8)).join('+') : '?';
+      };
+      console.error(`[octi]   course samples=${samples} closedBases=${closedBases}`);
+      for (const [oid, n] of [...owners.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+        const oe = h.edges.get(oid);
+        const fr = oe ? ctx.posOf(oe.from) : undefined;
+        const to = oe ? ctx.posOf(oe.to) : undefined;
+        console.error(
+          `[octi]   resident ${oid} x${n} lines={${lineOf(oid)}} ` +
+          `(${fr?.map((x) => x.toFixed(0))})->(${to?.map((x) => x.toFixed(0))})${oid === ceId ? '  <-- SELF' : ''}`,
+        );
+      }
+
+      // Angular-ordering audit at both endpoints: tangent at 4px (current
+      // ordering basis) vs tangent at cell scale (what the first grid hop
+      // actually subtends). An order swap between the two = the topology
+      // blocking constraint enforces a noise-scale ordering.
+      for (const nd of [ce.from, ce.to]) {
+        const ndPos = ctx.posOf(nd);
+        const rows2: string[] = [];
+        for (const ae of ctx.adjEdges(nd)) {
+          const pts = ae.from === nd ? ae.points : [...ae.points].reverse();
+          const refNear = pts.length > 1 ? pts[1] : ctx.posOf(ae.to === nd ? ae.from : ae.to);
+          let acc2 = 0;
+          let refCell: Pixel = pts[pts.length - 1];
+          for (let i = 1; i < pts.length; i++) {
+            acc2 += dist(pts[i - 1], pts[i]);
+            if (acc2 >= grid.cellSize) { refCell = pts[i]; break; }
+          }
+          const angN = Math.atan2(refNear[1] - ndPos[1], refNear[0] - ndPos[0]) * 180 / Math.PI;
+          const angC = Math.atan2(refCell[1] - ndPos[1], refCell[0] - ndPos[0]) * 180 / Math.PI;
+          rows2.push(
+            `${ae.id}${ae.id === ceId ? '*' : ''} lines={${lineOf(ae.id)}} ` +
+            `ang4px=${angN.toFixed(0)} angCell=${angC.toFixed(0)} circ=${ctx.circDist(nd, ae.id, ceId)}`,
+          );
+        }
+        console.error(`[octi]   ordering at ${nd} (${ndPos.map((x) => x.toFixed(0))}):`);
+        for (const r of rows2) console.error(`[octi]     ${r}`);
+      }
+
+      // Active experiment: rip the edge up and re-route it under the FINAL
+      // constraints — if this finds a cheaper path, the local-search edge
+      // sweep would have fixed it and simply never got the chance.
+      if (drawing.drawn(ce.id)) {
+        const before = drawing.score();
+        for (const [tag, cutoff] of [['budgeted', before], ['unbounded', Infinity]] as const) {
+          const run = drawing.clone();
+          run.eraseEdgeFromGrid(ce.id, grid);
+          run.eraseEdge(ce, grid, ctx);
+          const err = drawOrder([ce], new Map(), grid, run, cutoff, ctx);
+          const after = run.score();
+          let detail = '';
+          if (err === 'DRAWN') {
+            const path = run.edgs.get(ce.id) ?? [];
+            let maxDev = 0;
+            let hops = 0;
+            for (const e of path) {
+              if (!grid.isGridEdge(e)) continue;
+              hops++;
+              const [a, b] = grid.gridEdgeBases(e);
+              const d = Math.max(devTo(grid.basePos(a), ce.points), devTo(grid.basePos(b), ce.points)) / grid.cellSize;
+              maxDev = Math.max(maxDev, d);
+            }
+            detail = ` newPath hops=${hops} maxDev=${maxDev.toFixed(1)}c edgCost=${(run.edgCosts.get(ce.id) ?? 0).toFixed(1)}`;
+            // pinpoint each violated (soft-closed/blocked) element of the new
+            // path: position + every resident path at its two bases
+            for (const e of path) {
+              if (grid.edgeCost(e) < SOFT_INF) continue;
+              const parts: string[] = [];
+              if (grid.isGridEdge(e)) {
+                const [a, b] = grid.gridEdgeBases(e);
+                for (const bb of [a, b]) {
+                  const res = new Set<string>();
+                  for (let d8 = 0; d8 < 8; d8++) {
+                    const r = grid.getResEdgs(grid.gridIdx(bb, d8));
+                    if (r) for (const o of r) res.add(o);
+                  }
+                  const p = grid.basePos(bb);
+                  parts.push(
+                    `base(${p[0].toFixed(0)},${p[1].toFixed(0)}) closed=${grid.isClosed(bb)} ` +
+                    `settled=${grid.isSettledBase(bb)} residents=[${[...res].join(',')}]`,
+                  );
+                }
+                console.error(`[octi]     VIOLATED grid edge: ${parts.join(' | ')}`);
+              } else {
+                console.error(`[octi]     VIOLATED non-grid edge (bend/sink) idx=${e}`);
+              }
+            }
+          }
+          console.error(
+            `[octi]   re-route(${tag}): ${err} before=${before.toFixed(1)} after=${after.toFixed(1)}${detail}`,
+          );
+          // restore the original drawing on the grid
+          if (err === 'DRAWN') run.eraseEdgeFromGrid(ce.id, grid);
+          drawing.applyEdgeToGrid(ce.id, grid);
+        }
+      }
     }
   }
 
