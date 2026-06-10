@@ -182,6 +182,30 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 ---
 
+### Task 1.5 (inserted, user-approved): Per-edge bundle rendering
+
+**Why:** Task 1's gate exposed that per-run global offsets are unsound: a winding
+run crossing a shared corridor against its dominant direction lands on the wrong
+side, leaving ~85 same-coordinate stretches (blue hidden under gray). The
+LOOM-transitmap model — each edge draws its own bundle from its own
+`lineOrder`, with short connectors joining a line's segments across nodes —
+eliminates the class: within an edge, slots are distinct by construction, and
+`imageMerge` guarantees distinct edges don't share geometry.
+
+**Files:**
+- Modify: `src/render/renderOctilinear.ts` (rewrite `renderRibbons` internals)
+- Test: `src/render/renderOctilinear.test.ts`, plus the `dev/_chk-overdraw.ts` gate
+
+**Steps:** rewrite ribbons to (1) draw per-edge offset segments
+(`(idx - center) * spacing` from the edge's OWN lineOrder, offset along the
+edge's canonical from→to direction); (2) join consecutive traversal steps of a
+line across nodes with straight connectors when endpoint gap > 0.5px;
+(3) register stops at the line's drawn endpoint at the stop node; (4) keep
+casing/labels/grid overlay; (5) delete the run machinery (usedCorridor,
+flushRun, placeOnExisting) — retraces become no-ops by construction.
+Gate: `dev/_chk-overdraw.ts` reports 0 route-color shared segments on the
+live dump; tests + NYC/geojson/dump renders pass visual check.
+
 ### Task 2: Sweep infrastructure (line-width knob + sweep driver)
 
 **Files:**
