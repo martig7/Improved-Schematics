@@ -633,6 +633,18 @@ function buildCombCtx(
       let cache = penCaches.get(ce.id);
       if (!cache) penCaches.set(ce.id, (cache = new Map()));
       const course = courseOf(ce);
+      // Bow-scaled enforcement: a chain whose real course is much longer than
+      // its endpoint span (a corridor that swings far around) is exactly the
+      // one the router will shortcut — and a flat global affinity that is
+      // safe for straight chains is too weak to defend a bow (the W line's
+      // Lawrence->Burke Court corridor drew SOUTH of its span though every
+      // station lies north). Scale the penalty by the bow factor, capped 4x.
+      const span = dist(ce.points[0], ce.points[ce.points.length - 1]);
+      const bow = span > 1e-6 ? Math.max(1, polyLen(ce.points) / span) : 4;
+      // Quadratic in the bow, capped: a 1.7x bow pays ~3x, a loop pays 8x.
+      // Linear scaling measured too weak (the W-line western bow still cut
+      // inside at 1.7x); straight chains stay at base affinity.
+      const w = geoW * Math.min(8, bow * bow);
       return (e: number) => {
         let v = cache!.get(e);
         if (v !== undefined) return v;
@@ -640,7 +652,7 @@ function buildCombCtx(
         const pa = g.basePos(a);
         const pb = g.basePos(b);
         const d = Math.max(distToCourse(pa, course), distToCourse(pb, course)) / g.cellSize;
-        v = Math.min(SOFT_INF, geoW * d * d);
+        v = Math.min(SOFT_INF, w * d * d);
         cache!.set(e, v);
         return v;
       };
