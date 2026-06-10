@@ -386,6 +386,12 @@ export function combineDeg2(h: SupportGraph): { hC: SupportGraph; info: Collapse
     edges: c.edges.slice().reverse().map((x) => ({ id: x.id, reversed: !x.reversed })),
   });
 
+  const sameLines = (x: ReadonlySet<string>, y: ReadonlySet<string>): boolean => {
+    if (x.size !== y.size) return false;
+    for (const v of x) if (!y.has(v)) return false;
+    return true;
+  };
+
   const queue = [...nodes.keys()];
   while (queue.length) {
     const n = queue.pop()!;
@@ -398,6 +404,14 @@ export function combineDeg2(h: SupportGraph): { hC: SupportGraph; info: Collapse
     const na = ea.from === n ? ea.to : ea.from;
     const nb = eb.from === n ? eb.to : eb.from;
     if (na === nb || na === n || nb === n) continue;
+    // Line-set boundary guard (mirrors topo's contractDegree2WithMatchingLines):
+    // a degree-2 node where the line sets CHANGE is a service junction (e.g. a
+    // terminal loop where line U hands over to line X). Collapsing through it
+    // hides the junction inside one comb edge — the router then flattens the
+    // structure (west-Tacoma terminal loop drew 65% of its arc, joins packed
+    // into one tip knot at the projection min-gap) and the junction station
+    // can never be placed as a skeleton node.
+    if (!sameLines(ea.lineIds, eb.lineIds)) continue;
     // multigraph guard (LOOM: don't merge if it would duplicate an edge)
     let exists = false;
     for (const eid of adj.get(na) ?? []) {

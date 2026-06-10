@@ -752,11 +752,15 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
   let h: HBuilder | null = null;
   let prevLen = Infinity;
   let prevEdges = Infinity;
-  const protectedPositions = params.preserveStations
-    ? [...g.nodes.values()]
-        .filter((n) => isMergeAnchor(g, n.id))
-        .map((n) => n.pos.slice() as Pixel)
-    : undefined;
+  // Junction/terminus anchors are protected UNCONDITIONALLY (was gated on
+  // preserveStations, which the smoothed path never sets): rounds >= 2 re-feed
+  // averaged geometry, so node drift COMPOUNDS dHat per round — round-1
+  // averaging crept two genuinely ~24px-apart legs within dHat of each other
+  // and round 2 zipped them into a phantom shared trunk, demoting a real
+  // degree-4 junction and manufacturing a fake one a corridor away.
+  const protectedPositions = [...g.nodes.values()]
+    .filter((n) => isMergeAnchor(g, n.id))
+    .map((n) => n.pos.slice() as Pixel);
   for (let round = 1; round <= params.maxRounds; round++) {
     const input = h === null ? inputFromGraph(g, params.projectGeo) : inputFromBuilder(h, params.dHat);
     const next = collapseSharedSegments(input, params, protectedPositions);
