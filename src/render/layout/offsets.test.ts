@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeCanonicalOffsets, offsetPolyline } from './offsets';
+import { LINE_WIDTH, LINE_GAP } from '../constants';
 import type { Layout, LayoutEdge, LineRef, Pixel } from './types';
+
+const SPACING = LINE_WIDTH + LINE_GAP;
 
 const ref = (id: string): LineRef => ({ id, label: id, color: '#000' });
 
@@ -34,7 +37,7 @@ test('computeCanonicalOffsets separates co-running lines with colliding global o
   const offsets = computeCanonicalOffsets(layout);
   const a = offsets.get('A')!;
   const b = offsets.get('B')!;
-  assert.ok(Math.abs(a - b) >= 6, `co-running lines still coincident: A=${a} B=${b}`);
+  assert.ok(Math.abs(a - b) >= SPACING * 0.9, `co-running lines still coincident: A=${a} B=${b}`);
 });
 
 test('computeCanonicalOffsets leaves non-colliding lines at their canonical slots', () => {
@@ -48,7 +51,7 @@ test('computeCanonicalOffsets leaves non-colliding lines at their canonical slot
   };
   const offsets = computeCanonicalOffsets(layout);
   const spacing = Math.abs(offsets.get('A')! - offsets.get('B')!);
-  assert.ok(spacing >= 6, `expected one lane spacing, got ${spacing}`);
+  assert.ok(spacing >= SPACING * 0.9, `expected one lane spacing, got ${spacing}`);
   assert.equal(offsets.get('A')! + offsets.get('B')!, 0); // symmetric around center
 });
 

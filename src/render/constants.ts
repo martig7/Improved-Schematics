@@ -13,8 +13,11 @@ export const MAX_STEP_PER_ITER = 0.6;
 export const CELL_PX = 36;
 /** Diagnostic override for the corridor-spacing sweep (IS_LINE_WIDTH env);
  *  the literal default is the production value. Browser-safe guard: process
- *  is undefined inside the game's renderer. */
-const LINE_WIDTH_DEFAULT = 5;
+ *  is undefined inside the game's renderer.
+ *  3.5 (was 5): chosen by the 2026-06-10 spacing sweep on the live Seattle
+ *  dump — with grid divisor 1.6 it puts adjacent corridors ~6.6 line-widths
+ *  apart (spec target >= 6) and reads closer to LOOM's proportions. */
+const LINE_WIDTH_DEFAULT = 3.5;
 export const LINE_WIDTH =
   (typeof process !== 'undefined' &&
     Number((process as { env?: Record<string, string> }).env?.IS_LINE_WIDTH)) ||

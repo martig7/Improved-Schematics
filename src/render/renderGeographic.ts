@@ -484,9 +484,14 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   //    routing time. LOOM defaults to ~100% of station spacing — coarse
   //    grids force clean radial fans and are fast.
   // (dev override: OCTI_DIVISOR for tuning sweeps)
+  // Divisor 1.6 (was 2.5) for metro-scale graphs: chosen by the 2026-06-10
+  // spacing sweep on the live Seattle dump — spreads adjacent corridors to
+  // >= 1 cell ~= 6.6 line-widths (at lineWidth 3.5) so unmerged parallels
+  // read as separate lines instead of a crammed band; 2.5 stayed compressed,
+  // 1.0 reintroduced spiral wraps at terminal loops.
   const divisor =
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
-    (support.edges.size > 800 ? 1.2 : 2.5);
+    (support.edges.size > 800 ? 1.2 : 1.6);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)
