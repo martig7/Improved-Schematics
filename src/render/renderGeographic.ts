@@ -579,6 +579,11 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     transfers,
     gridOverlay: waterOverlay + gridSvg,
+    stations: [...supportM.stations.values()].map((st) => ({
+      nodeId: st.nodeId,
+      members: st.members ?? 1,
+      stopNodes: st.stopNodes ?? new Map<string, string>(),
+    })),
   });
 }
 

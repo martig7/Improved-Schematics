@@ -1,45 +1,41 @@
-// Per-line stop markers (single circle, or an oriented capsule for
-// interchanges). The capsule follows LOOM's transitmap station style: a
-// stadium hull along the axis of the stop marks, instead of an axis-aligned
-// bounding box (which ballooned into huge blobs whenever a node's lane fan
-// spread out or marks landed on more than one corridor).
+// Per-station markers. The capsule rule is DATA-driven (user-set): a station
+// group with multiple member stations renders as an oriented capsule
+// (stadium hull along its lane-fan axis, LOOM transitmap style); a single
+// station renders as a dot — never a capsule — even when several lines stop
+// at it (the dot sits at the centre of its marks). Legacy callers without
+// member data fall back to the old geometric rule (2+ marks = capsule).
 
 import type { StopMark } from './layout/types';
 import { LINE_WIDTH } from './constants';
 import { escapeXml } from './escape';
 
-export function renderStops(stopsByNode: Map<string, StopMark[]>, dark: boolean): string[] {
+export function renderStops(
+  stopsByNode: Map<string, StopMark[]>,
+  dark: boolean,
+  membersByNode?: Map<string, number>,
+): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
 
   // Each marker is wrapped in an anchored group (class imp-stop, data-ax/-ay
-  // = the marker's anchor point) so the panel can counter-scale the WHOLE
-  // marker on zoom — geometry included, like the labels — instead of only
-  // its stroke width (which left capsule length in world units: zooming out
-  // squashed interchanges into blobs).
+  // = the marker's anchor point); markers are pure map objects (no panel
+  // counter-scaling) but the class also excludes them from stroke scaling.
   const wrap = (ax: number, ay: number, inner: string): string =>
     '<g class="imp-stop" data-ax="' + ax.toFixed(1) + '" data-ay="' + ay.toFixed(1) + '">' +
     inner + '</g>';
 
   for (const [nodeId, marks] of stopsByNode) {
-    if (marks.length === 1) {
-      const [x, y] = marks[0].pos;
-      out.push(wrap(x, y,
-        '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + r.toFixed(1) +
-        '" fill="' + fill + '" stroke="' + escapeXml(marks[0].color) +
-        '" stroke-width="1.5" data-stops="' + escapeXml(marks[0].lineId) +
-        '" data-station-id="' + escapeXml(nodeId) + '"/>',
-      ));
-      continue;
-    }
+    if (marks.length === 0) continue;
+    const members = membersByNode?.get(nodeId);
+    const capsule = members !== undefined ? members > 1 : marks.length > 1;
 
-    // Farthest pair of marks defines the capsule axis (marks per node are the
-    // lane fan across a bundle, so they are near-collinear).
+    // Farthest pair of marks defines the marker axis (marks per station are
+    // the lane fan across a bundle, so they are near-collinear).
     let ai = 0;
     let bi = 0;
-    let best = -1;
+    let best = 0;
     for (let i = 0; i < marks.length; i++) {
       for (let j = i + 1; j < marks.length; j++) {
         const d = Math.hypot(
@@ -55,8 +51,20 @@ export function renderStops(stopsByNode: Map<string, StopMark[]>, dark: boolean)
     const attrs =
       ' data-stops="' + escapeXml(lineIds) + '" data-station-id="' + escapeXml(nodeId) + '"';
 
+    if (!capsule) {
+      // single station: one dot at the centre of its marks
+      const cx = (a[0] + b[0]) / 2;
+      const cy = (a[1] + b[1]) / 2;
+      const ring = marks.length === 1 ? escapeXml(marks[0].color) : stroke;
+      out.push(wrap(cx, cy,
+        '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) +
+        '" fill="' + fill + '" stroke="' + ring + '" stroke-width="1.5"' + attrs + '/>',
+      ));
+      continue;
+    }
+
     if (best < 1e-3) {
-      // all marks coincide: plain interchange circle
+      // interchange whose marks coincide: capsule degenerates to a circle
       out.push(wrap(a[0], a[1],
         '<circle cx="' + a[0].toFixed(1) + '" cy="' + a[1].toFixed(1) + '" r="' + r.toFixed(1) +
         '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.5"' + attrs + '/>',

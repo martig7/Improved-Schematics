@@ -90,13 +90,18 @@ test('separateFusedStations splits far-apart groups onto a new on-line node', ()
   assert.ok(h.stopAt.has('L1|N'));
 });
 
-test('separateFusedStations keeps close pairs as a shared capsule', () => {
+test('separateFusedStations splits even close pairs (one marker per station)', () => {
+  // user rule: distinct station groups ALWAYS render separate markers —
+  // capsule-ness comes from the group itself, not from fusion geometry
   const { h, img } = fusedFixture([108, 4]); // ~11px from g1's truePos
   separateFusedStations(h, img, 16);
-  assert.equal(h.stations.get('g1')!.nodeId, 'N');
-  assert.equal(h.stations.get('g2')!.nodeId, 'N');
-  assert.ok(h.edges.has('e2'), 'no split performed');
-  assert.ok(h.stopAt.has('L1|N') && h.stopAt.has('L2|N'));
+  const g1 = h.stations.get('g1')!;
+  const g2 = h.stations.get('g2')!;
+  assert.equal(g1.nodeId, 'N', 'closest group keeps the drawn node');
+  assert.notEqual(g2.nodeId, 'N', 'close pair still gets its own node');
+  const p = h.nodes.get(g2.nodeId)!.pos;
+  assert.ok(Math.hypot(p[0] - 100, p[1]) >= 8 - 1e-9, `dots visually apart (got ${p})`);
+  assert.ok(h.stopAt.has('L1|N') && h.stopAt.has('L2|' + g2.nodeId));
 });
 
 test('separateFusedStations clamps a near-node projection to a visible arc', () => {

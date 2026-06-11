@@ -102,6 +102,11 @@ export interface RenderRibbonsArgs {
    *  the water layer and the route ribbons. Used to overlay the Hanan grid
    *  for diagnostic purposes (showGrid option). */
   gridOverlay?: string;
+  /** Station-group marker data (smoothed mode): ONE marker per group at its
+   *  node — capsule iff the group has multiple member stations — gathering
+   *  the marks of its lines from their per-line stop-flag nodes. Without
+   *  this, markers fall back to the legacy per-node edge.stops model. */
+  stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -328,17 +333,33 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({ lineId, color, pos });
   };
-  for (const edge of layout.edges) {
-    for (const [lineId, stop] of edge.stops) {
-      const line = lineById.get(lineId);
-      if (!line) continue;
-      if (stop.atFrom) {
-        const p = drawnEndAt.get(edge.from + '|' + lineId);
-        if (p) addStop(lineId, line.color, edge.from, p);
+  const membersByNode = args.stations ? new Map<string, number>() : undefined;
+  if (args.stations) {
+    // Group-keyed markers: ONE bucket per station group at its node, marks
+    // gathered from each line's own stop-flag node (per-line flags can sit
+    // on diverged corridors — 307 Pl's cyan terminus vs its green column).
+    for (const st of args.stations) {
+      membersByNode!.set(st.nodeId, st.members);
+      for (const [lineId, flagNode] of st.stopNodes) {
+        const line = lineById.get(lineId);
+        if (!line) continue;
+        const p = drawnEndAt.get(flagNode + '|' + lineId);
+        if (p) addStop(lineId, line.color, st.nodeId, p);
       }
-      if (stop.atTo) {
-        const p = drawnEndAt.get(edge.to + '|' + lineId);
-        if (p) addStop(lineId, line.color, edge.to, p);
+    }
+  } else {
+    for (const edge of layout.edges) {
+      for (const [lineId, stop] of edge.stops) {
+        const line = lineById.get(lineId);
+        if (!line) continue;
+        if (stop.atFrom) {
+          const p = drawnEndAt.get(edge.from + '|' + lineId);
+          if (p) addStop(lineId, line.color, edge.from, p);
+        }
+        if (stop.atTo) {
+          const p = drawnEndAt.get(edge.to + '|' + lineId);
+          if (p) addStop(lineId, line.color, edge.to, p);
+        }
       }
     }
   }
@@ -430,7 +451,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
 
-  const stopParts = renderStops(stopsByNode, dark);
+  const stopParts = renderStops(stopsByNode, dark, membersByNode);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {

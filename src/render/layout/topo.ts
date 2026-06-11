@@ -1486,6 +1486,8 @@ export function buildSupportGraph(
       lngLat: group.center,
       nodeId: best.id,
       truePos: centroid.slice() as Pixel,
+      members: Math.max(1, group.stationIds?.length ?? 1),
+      stopNodes: new Map(),
     });
   }
 
@@ -1523,6 +1525,7 @@ export function buildSupportGraph(
         let s = stopLinesByGroup.get(groupId);
         if (!s) stopLinesByGroup.set(groupId, (s = new Set()));
         s.add(lineId);
+        stations.get(groupId)?.stopNodes?.set(lineId, sn);
       };
       place(e.from, flags.atFrom);
       place(e.to, flags.atTo);

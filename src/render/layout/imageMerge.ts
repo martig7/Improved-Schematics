@@ -261,7 +261,13 @@ export function mergeCoincidentPaths(
   const stations = new Map<string, SupportStation>();
   for (const [gid, st] of h.stations) {
     const nid = mapOldNode(st.nodeId);
-    if (nid) stations.set(gid, { ...st, nodeId: nid });
+    if (!nid) continue;
+    const stopNodes = new Map<string, string>();
+    for (const [lineId, oldNid] of st.stopNodes ?? []) {
+      const mapped = mapOldNode(oldNid);
+      if (mapped) stopNodes.set(lineId, mapped);
+    }
+    stations.set(gid, { ...st, nodeId: nid, stopNodes });
   }
 
   const stopAt = new Set<string>();
@@ -339,7 +345,11 @@ export function separateFusedStations(
     const keeper = withTrue[0];
 
     for (const st of withTrue.slice(1)) {
-      if (dist(st.truePos!, keeper.truePos!) <= minSep) continue;
+      // Distinct station groups ALWAYS get their own markers (user rule:
+      // one marker per station; capsule-ness comes from the group itself) —
+      // even close pairs split, with the min-arc guard keeping the dots
+      // visually apart on the bundled corridor.
+      void minSep;
 
       // best projection of the true position onto the adjacent drawn edges
       let best: {
@@ -513,9 +523,13 @@ export function separateFusedStations(
       }
 
       // move the station and its stop flags; a line keeps its flag at the old
-      // node only if a station remaining there is still served by it
+      // node only if a station remaining there is still served by it. Only
+      // lines the split corridor actually CARRIES move (a flag on a node
+      // with no edge of that line can never render); others keep their
+      // existing per-line flag node.
       st.nodeId = newNid;
-      const movedLines = st.stopLines ?? new Set<string>();
+      const splitLines = h.edges.get(idA)!.lineIds;
+      const movedLines = [...(st.stopLines ?? new Set<string>())].filter((l) => splitLines.has(l));
       const remaining = new Set<string>();
       for (const other of byNode.get(nid)!) {
         if (other === st || other.nodeId !== nid) continue;
@@ -524,6 +538,7 @@ export function separateFusedStations(
       for (const l of movedLines) {
         h.stopAt.add(l + '|' + newNid);
         if (!remaining.has(l)) h.stopAt.delete(l + '|' + nid);
+        st.stopNodes?.set(l, newNid);
       }
     }
   }

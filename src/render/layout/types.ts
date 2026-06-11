@@ -121,6 +121,12 @@ export interface SupportStation {
   truePos?: Pixel;
   /** Lines that stop at this group (for per-group marker separation). */
   stopLines?: Set<string>;
+  /** Member stations in the group: > 1 renders as an interchange capsule,
+   *  1 renders as a dot (the user-set capsule rule). */
+  members?: number;
+  /** Per line: the support node carrying this line's stop flag (lines through
+   *  one station can ride diverged corridors — flags re-home per line). */
+  stopNodes?: Map<string, string>;
 }
 
 /** Output of topo: corridors as single edges + stations re-inserted. */
