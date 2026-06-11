@@ -353,6 +353,46 @@ interface CollapseInfo {
   endLines: Map<string, { from: Set<string>; to: Set<string> }>;
 }
 
+/** Excise course folds the grid cannot represent: a stretch that leaves a
+ *  point and returns within half a cell of it, with lateral extent below one
+ *  cell. Support-level fold cutting (sanitizeEdgeGeometry) can't see these —
+ *  they span station NODES and only appear when combineDeg2 welds a chain
+ *  through them (e.g. a terminus 12px behind the previous stop: 12 Pl →
+ *  10 St → 1 Pl spans ~25px ≈ one cell). The router honors the phantom
+ *  length by retracing its own corridor, and imageMerge then fuses the
+ *  retrace into a phantom deg-3 hub — the terminus "branch" artifact.
+ *  Real balloon loops have extent ≥ a cell and remain drawable. */
+export function cutSubCellFolds(pts: Pixel[], cell: number): Pixel[] {
+  if (pts.length < 3) return pts;
+  const retEps = cell * 0.5;
+  const minArc = cell * 0.75; // below this it's RDP-scale wiggle, not a fold
+  let out = pts;
+  for (let pass = 0; pass < 6; pass++) {
+    const arcs: number[] = [0];
+    for (let i = 1; i < out.length; i++) arcs.push(arcs[i - 1] + dist(out[i - 1], out[i]));
+    let cutFrom = -1;
+    let cutTo = -1;
+    outer: for (let i = 0; i < out.length - 2; i++) {
+      // scan j from the far end so the LARGEST excisable fold cuts first
+      for (let j = out.length - 1; j > i + 1; j--) {
+        if (arcs[j] - arcs[i] < minArc) break; // arc gap only shrinks as j--
+        if (dist(out[i], out[j]) > retEps) continue;
+        let extent = 0;
+        for (let k = i + 1; k < j; k++) extent = Math.max(extent, dist(out[k], out[i]));
+        if (extent <= cell) {
+          cutFrom = i;
+          cutTo = j;
+          break outer;
+        }
+      }
+    }
+    if (cutFrom < 0) break;
+    out = [...out.slice(0, cutFrom + 1), ...out.slice(cutTo)];
+    if (out.length < 3) break;
+  }
+  return out;
+}
+
 /**
  * Collapse every degree-2 station into its corridor, exactly like LOOM's comb
  * graph: octi then routes only the topological skeleton (interchanges and
@@ -1237,6 +1277,12 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     opts.combineDeg2 === false
       ? { hC: hP, info: { chains: new Map(), endLines: new Map() } as CollapseInfo }
       : combineDeg2(hP);
+  if (opts.combineDeg2 !== false) {
+    // combineDeg2 deep-copies edge geometry, so in-place fold cutting is safe
+    for (const e of hC.edges.values()) {
+      if (e.points.length > 2) e.points = cutSubCellFolds(e.points, dg);
+    }
+  }
 
   const finish = (imgP: Image): Image =>
     pinStationTermini(expandContraction(contractSplits(imgP, hK, splits), h, merged), h);
@@ -1425,6 +1471,34 @@ function expandImage(imageC: Image, h: SupportGraph, hC: SupportGraph, info: Col
     const L = polyLen(path);
     const tot = chain.edges.length;
     const arcs = projectChainArcs(path, L, chain.nodes, h);
+    // Diagnostic (OCTI_TRACE_CHAIN=<nodeId>): dump projection inputs/outputs
+    // for the chain containing that node.
+    const traceNd =
+      typeof process !== 'undefined'
+        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_CHAIN
+        : undefined;
+    const traceHit = (() => {
+      if (!traceNd) return false;
+      if (traceNd.includes(',')) {
+        const [tx, ty] = traceNd.split(',').map(Number);
+        return chain.nodes.some((n) => {
+          const p = h.nodes.get(n)?.pos;
+          return p && Math.hypot(p[0] - tx, p[1] - ty) < 30;
+        });
+      }
+      return chain.nodes.includes(traceNd);
+    })();
+    if (traceHit) {
+      console.error(`[octi] TRACE_CHAIN ${e.id} L=${L.toFixed(1)} pathStart=(${path[0]}) pathEnd=(${path[path.length - 1]})`);
+      console.error(`[octi]   path: ${path.map((p) => `(${p[0].toFixed(0)},${p[1].toFixed(0)})`).slice(0, 12).join(' ')}${path.length > 12 ? ' ...' : ''}`);
+      for (let i = 0; i <= tot; i++) {
+        const n = h.nodes.get(chain.nodes[i]);
+        const raw = n && i > 0 && i < tot ? nearestArcOn(path, n.pos).toFixed(1) : '-';
+        console.error(
+          `[octi]   node[${i}] ${chain.nodes[i]} true=(${n?.pos.map((x) => x.toFixed(0))}) rawArc=${raw} arc=${arcs[i].toFixed(1)} -> (${pointAlong(path, arcs[i]).map((x) => x.toFixed(0))})`,
+        );
+      }
+    }
     for (let i = 1; i < tot; i++) {
       placement.set(chain.nodes[i], pointAlong(path, arcs[i]));
     }

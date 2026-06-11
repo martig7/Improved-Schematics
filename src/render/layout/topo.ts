@@ -1060,6 +1060,107 @@ function anchorGraphStops(
   }
 }
 
+/** Nearest point on a polyline with arc/segment info (the older
+ *  projectOntoPolyline above returns only the point). */
+function projectArcOnPolyline(
+  pts: Pixel[],
+  q: Pixel,
+): { d: number; arc: number; segIdx: number; total: number } {
+  let acc = 0;
+  let best = { d: Infinity, arc: 0, segIdx: 0, total: 0 };
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const vx = b[0] - a[0];
+    const vy = b[1] - a[1];
+    const c2 = vx * vx + vy * vy;
+    const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / c2));
+    const d = Math.hypot(q[0] - (a[0] + vx * t), q[1] - (a[1] + vy * t));
+    const seg = Math.sqrt(c2);
+    if (d < best.d) best = { d, arc: acc + seg * t, segIdx: i - 1, total: 0 };
+    acc += seg;
+  }
+  best.total = acc;
+  return best;
+}
+
+/** Weld redundant retrace stubs onto their corridor. A terminus 10-15px
+ *  behind the previous stop yields: corridor edge `f` passing exactly THROUGH
+ *  the terminus position (no node there) plus a short stub edge `e` doubling
+ *  back over `f`'s own geometry. Left alone, octi's planarize treats the
+ *  coincident overlap as a CROSSING and inserts an intersection node — the
+ *  fold becomes graph structure and draws as a phantom hub with spokes (the
+ *  1 Pl / 12 Av terminus "branch" artifact). Fix the structure: split `f` at
+ *  the stub's far node and fold the stub's lines into the now exactly-parallel
+ *  half. The line then renders as an inline collapsed out-and-back and the
+ *  stations sit in geographic order on one straight corridor. */
+function weldRedundantStubs(
+  nodes: Map<string, SupportNode>,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+  dHat: number,
+  nextEdgeId: () => string,
+): void {
+  const eps = dHat / 2;
+  const cp = (p: Pixel): Pixel => p.slice() as Pixel;
+  const hugs = (pts: Pixel[], ref: Pixel[]): boolean =>
+    pts.every((p) => projectArcOnPolyline(ref, p).d <= eps);
+  const swapAdj = (nid: string, drop: string[], add: string[]) => {
+    const arr = (adj.get(nid) ?? []).filter((x) => !drop.includes(x));
+    arr.push(...add);
+    adj.set(nid, arr);
+  };
+
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const eid of [...edges.keys()].sort()) {
+      const e = edges.get(eid);
+      if (!e || polylineLength(e.points) >= dHat) continue;
+      let welded = false;
+      for (const A of [e.from, e.to]) {
+        const B = e.from === A ? e.to : e.from;
+        const aNode = nodes.get(A);
+        if (!aNode) continue;
+        for (const fid of [...(adj.get(B) ?? [])].sort()) {
+          if (fid === eid) continue;
+          const f = edges.get(fid);
+          if (!f || f.from === A || f.to === A) continue;
+          if (!hugs(e.points, f.points)) continue;
+          const proj = projectArcOnPolyline(f.points, aNode.pos);
+          if (proj.d > eps) continue;
+          // A must project interior to f, else there is nothing to split
+          if (proj.arc < 2 || proj.total - proj.arc < 2) continue;
+
+          const head = f.points.slice(0, proj.segIdx + 1).map(cp);
+          const tail = f.points.slice(proj.segIdx + 1).map(cp);
+          head.push(cp(aNode.pos));
+          tail.unshift(cp(aNode.pos));
+          const id1 = nextEdgeId();
+          const id2 = nextEdgeId();
+          const f1: SupportEdge = { id: id1, from: f.from, to: A, points: head, lineIds: new Set(f.lineIds) };
+          const f2: SupportEdge = { id: id2, from: A, to: f.to, points: tail, lineIds: new Set(f.lineIds) };
+          const half = f.from === B ? f1 : f2; // the exactly-parallel A↔B half
+          for (const l of e.lineIds) half.lineIds.add(l);
+
+          edges.delete(fid);
+          edges.delete(eid);
+          edges.set(id1, f1);
+          edges.set(id2, f2);
+          swapAdj(f.from, [fid, eid], [id1]);
+          swapAdj(f.to, [fid, eid], [id2]);
+          swapAdj(A, [eid, fid], [id1, id2]);
+          swapAdj(B, [eid], []);
+          changed = true;
+          welded = true;
+          break;
+        }
+        if (welded) break;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
 export function buildSupportGraph(
   g: TransitGraph,
   groups: StationGroup[],
@@ -1105,6 +1206,9 @@ export function buildSupportGraph(
       adj.get(e.from)!.push(e.id);
       adj.get(e.to)!.push(e.id);
     }
+    // Terminus retrace stubs duplicate corridor geometry the anchors just
+    // split — weld them in before traversal reconstruction sees the fold.
+    weldRedundantStubs(nodes, edges, adj, params.dHat, () => 'he' + edgeSeq++);
   }
 
   const lineRefs = new Map<string, LineRef>();
