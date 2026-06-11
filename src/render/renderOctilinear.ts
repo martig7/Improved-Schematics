@@ -7,7 +7,7 @@ import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
-import { offsetPolyline } from './layout/offsets';
+import { offsetPolyline, miterLaneJoin } from './layout/offsets';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -167,8 +167,48 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const poly =
         o === 0 ? base.map((p) => p.slice() as Pixel) : offsetPolyline(base, o, /*simplify*/ false);
       segPath.set(edge.id + '|' + lineId, poly);
-      pushSeg(lineId, poly);
     }
+  }
+
+  // Miter pass: where a line continues across a node, snap the two lane
+  // endpoints to the intersection of their end segments — the lane turns
+  // once at the proper parallel-offset corner instead of stair-stepping
+  // through a connector jog (outer lanes at bundle bends). Near-parallel
+  // ends (a genuine lateral lane jog) and over-limit miters keep the chord
+  // connector below. Endpoints move at most once.
+  const mitered = new Set<string>(); // lineId|node|pairKey
+  const endMoved = new Set<string>(); // edgeId|lineId|end
+  for (const [lineId, traversal] of layout.lineTraversals) {
+    if (!lineById.has(lineId)) continue;
+    for (let i = 1; i < traversal.length; i++) {
+      const a = traversal[i - 1];
+      const b = traversal[i];
+      if (a.edgeId === b.edgeId) continue;
+      const ea = edgeById.get(a.edgeId);
+      const eb = edgeById.get(b.edgeId);
+      if (!ea || !eb) continue;
+      const endA = a.reversed ? ea.from : ea.to;
+      const startB = b.reversed ? eb.to : eb.from;
+      if (endA !== startB) continue;
+      const pA = segPath.get(a.edgeId + '|' + lineId);
+      const pB = segPath.get(b.edgeId + '|' + lineId);
+      if (!pA || !pB) continue;
+      const aAtStart = ea.from === endA;
+      const bAtStart = eb.from === endA;
+      const keyA = a.edgeId + '|' + lineId + '|' + (aAtStart ? 's' : 'e');
+      const keyB = b.edgeId + '|' + lineId + '|' + (bAtStart ? 's' : 'e');
+      if (endMoved.has(keyA) || endMoved.has(keyB)) continue;
+      if (miterLaneJoin(pA, aAtStart, pB, bAtStart, spacing * 4)) {
+        endMoved.add(keyA);
+        endMoved.add(keyB);
+        const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+        mitered.add(lineId + '|' + endA + '|' + pairKey);
+      }
+    }
+  }
+
+  for (const [key, poly] of segPath) {
+    pushSeg(key.slice(key.indexOf('|') + 1), poly);
   }
 
   /** A line's drawn endpoint at a node (offset polylines run from→to). */
@@ -235,7 +275,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       if (endA !== startB) continue; // discontinuity — nothing to bridge
       const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
       const key = lineId + '|' + endA + '|' + pairKey;
-      if (connSeen.has(key)) continue;
+      if (connSeen.has(key) || mitered.has(key)) continue;
       connSeen.add(key);
       const pa = lineEndAt(a.edgeId, lineId, endA);
       const pb = lineEndAt(b.edgeId, lineId, endA);
@@ -256,7 +296,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   ) {
     console.error(
       `[ribbons] per-edge: ${segPath.size} segments across ${layout.edges.length} edges, ` +
-      `${connSeen.size} connector candidates, ${dByLine.size} lines`,
+      `${mitered.size} mitered joins, ${connSeen.size} connector candidates, ${dByLine.size} lines`,
     );
   }
 

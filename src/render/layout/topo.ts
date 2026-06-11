@@ -1161,6 +1161,38 @@ function weldRedundantStubs(
   }
 }
 
+/** Absorb sub-dHat degree-1 stubs hanging off junctions (degree >= 3 with
+ *  the stub). A station 10-15px from a junction it detours from draws as a
+ *  boxy in-and-out knot: the lane bundle is WIDER than the stub is long, and
+ *  every serving line hooks 90° in and out (Harvey Rd). The station re-maps
+ *  to the junction node — within the agreed <= dHat fusion tolerance, and
+ *  separateFusedStations re-splits if it ever lands on another station with
+ *  true separation > dHat. Real termini keep their stubs: their neighbor is
+ *  the degree-2 corridor through the previous station (320 Pl class), not a
+ *  junction. */
+function absorbJunctionStubs(
+  nodes: Map<string, SupportNode>,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+  dHat: number,
+): void {
+  for (const eid of [...edges.keys()].sort()) {
+    const e = edges.get(eid);
+    if (!e || polylineLength(e.points) >= dHat) continue;
+    for (const [A, B] of [[e.from, e.to], [e.to, e.from]] as const) {
+      if ((adj.get(A)?.length ?? 0) !== 1) continue;
+      if ((adj.get(B)?.length ?? 0) < 3) continue;
+      edges.delete(eid);
+      adj.delete(A);
+      nodes.delete(A);
+      const arrB = adj.get(B)!;
+      const i = arrB.indexOf(eid);
+      if (i >= 0) arrB.splice(i, 1);
+      break;
+    }
+  }
+}
+
 export function buildSupportGraph(
   g: TransitGraph,
   groups: StationGroup[],
@@ -1209,6 +1241,8 @@ export function buildSupportGraph(
     // Terminus retrace stubs duplicate corridor geometry the anchors just
     // split — weld them in before traversal reconstruction sees the fold.
     weldRedundantStubs(nodes, edges, adj, params.dHat, () => 'he' + edgeSeq++);
+    // Sub-dHat stubs at junctions fold into the junction node entirely.
+    absorbJunctionStubs(nodes, edges, adj, params.dHat);
   }
 
   const lineRefs = new Map<string, LineRef>();

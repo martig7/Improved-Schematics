@@ -17,6 +17,52 @@ function perp(v: Pixel): Pixel {
 }
 
 /**
+ * Miter-join two lane polylines that meet at a node: move both endpoints to
+ * the intersection of their end segments, so a lane continuing around a
+ * corner turns once at the proper parallel-offset corner instead of
+ * stair-stepping through a connector jog. Mutates the endpoint points in
+ * place. Returns false (and leaves both untouched) when the segments are
+ * near-parallel (a genuine lateral lane jog — the chord connector is right),
+ * when the miter point lies beyond `limit` from either endpoint (too-sharp
+ * corner), or when it would fold a segment back on itself.
+ */
+export function miterLaneJoin(
+  polyA: Pixel[],
+  aAtStart: boolean,
+  polyB: Pixel[],
+  bAtStart: boolean,
+  limit: number,
+): boolean {
+  if (polyA.length < 2 || polyB.length < 2) return false;
+  const qa = aAtStart ? polyA[0] : polyA[polyA.length - 1];
+  const qa1 = aAtStart ? polyA[1] : polyA[polyA.length - 2];
+  const qb = bAtStart ? polyB[0] : polyB[polyB.length - 1];
+  const qb1 = bAtStart ? polyB[1] : polyB[polyB.length - 2];
+
+  const d1: Pixel = [qa[0] - qa1[0], qa[1] - qa1[1]];
+  const d2: Pixel = [qb[0] - qb1[0], qb[1] - qb1[1]];
+  const denom = d1[0] * d2[1] - d1[1] * d2[0];
+  const scale = Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]);
+  if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return false; // parallel
+
+  const t = ((qb1[0] - qa1[0]) * d2[1] - (qb1[1] - qa1[1]) * d2[0]) / denom;
+  const x = qa1[0] + t * d1[0];
+  const y = qa1[1] + t * d1[1];
+
+  if (Math.hypot(x - qa[0], y - qa[1]) > limit) return false;
+  if (Math.hypot(x - qb[0], y - qb[1]) > limit) return false;
+  // the moved endpoint must stay forward of the previous vertex
+  if ((x - qa1[0]) * d1[0] + (y - qa1[1]) * d1[1] <= 0) return false;
+  if ((x - qb1[0]) * d2[0] + (y - qb1[1]) * d2[1] <= 0) return false;
+
+  qa[0] = x;
+  qa[1] = y;
+  qb[0] = x;
+  qb[1] = y;
+  return true;
+}
+
+/**
  * Assign each line a stable signed lane offset, taken from its index in the
  * line order of its most-canonical (longest, then lowest-id) edge.
  * Returns lineId -> offset (pixels).
