@@ -1490,17 +1490,39 @@ export function buildSupportGraph(
   }
 
   const stopLinesByGroup = new Map<string, Set<string>>();
+  const nodeServesLine = (nid: string, lineId: string): boolean =>
+    (adj.get(nid) ?? []).some((eid) => edges.get(eid)?.lineIds.has(lineId));
   for (const e of g.edges) {
     for (const [lineId, flags] of e.stops) {
       const place = (groupId: string, isStop: boolean) => {
         if (!isStop) return;
-        const sn = groupSupportNode.get(groupId) ?? mapToSupport(groupId);
-        if (sn) {
-          stopAt.add(lineId + '|' + sn);
-          let s = stopLinesByGroup.get(groupId);
-          if (!s) stopLinesByGroup.set(groupId, (s = new Set()));
-          s.add(lineId);
+        let sn = groupSupportNode.get(groupId) ?? mapToSupport(groupId);
+        if (!sn) return;
+        // Lines through one station can ride DIVERGED corridors: the group's
+        // node may sit on a segment this line never reaches (307 Pl: the
+        // anchor is on the green-only corridor; the cyan terminates at the
+        // junction next to it). A flag on a line-less node can never render —
+        // re-home it to the nearest node the line actually serves.
+        if (!nodeServesLine(sn, lineId)) {
+          const gp = g.nodes.get(groupId)?.pos ?? nodes.get(sn)?.pos;
+          if (gp) {
+            let bestN: string | null = null;
+            let bestD = params.stationCandidateRadius * 2;
+            for (const [nid, n] of nodes) {
+              if (!nodeServesLine(nid, lineId)) continue;
+              const d = dist(n.pos, gp);
+              if (d < bestD) {
+                bestD = d;
+                bestN = nid;
+              }
+            }
+            if (bestN) sn = bestN;
+          }
         }
+        stopAt.add(lineId + '|' + sn);
+        let s = stopLinesByGroup.get(groupId);
+        if (!s) stopLinesByGroup.set(groupId, (s = new Set()));
+        s.add(lineId);
       };
       place(e.from, flags.atFrom);
       place(e.to, flags.atTo);

@@ -82,6 +82,39 @@ export function curveLaneJoin(
 }
 
 /**
+ * Drift a lane's end to `target`, fading the lateral shift to zero over
+ * `taperLen` of arc back along the polyline (smoothstep). Where a line's lane
+ * slot changes across a node (bundle composition shifts), this absorbs the
+ * jog into a long gentle slant along the edge instead of a localized S-wiggle
+ * at the node. Mutates the polyline in place.
+ */
+export function taperLaneEnd(
+  poly: Pixel[],
+  atStart: boolean,
+  target: Pixel,
+  taperLen: number,
+): void {
+  if (poly.length < 2 || taperLen <= 0) return;
+  const end = atStart ? poly[0] : poly[poly.length - 1];
+  const dx = target[0] - end[0];
+  const dy = target[1] - end[1];
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;
+  let acc = 0;
+  let prev = end;
+  const n = poly.length;
+  for (let k = 0; k < n; k++) {
+    const p = atStart ? poly[k] : poly[n - 1 - k];
+    acc += Math.hypot(p[0] - prev[0], p[1] - prev[1]);
+    prev = [p[0], p[1]];
+    const w = 1 - acc / taperLen;
+    if (w <= 0) break;
+    const s = w * w * (3 - 2 * w); // smoothstep
+    p[0] += dx * s;
+    p[1] += dy * s;
+  }
+}
+
+/**
  * Assign each line a stable signed lane offset, taken from its index in the
  * line order of its most-canonical (longest, then lowest-id) edge.
  * Returns lineId -> offset (pixels).

@@ -7,7 +7,7 @@ import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
-import { offsetPolyline, curveLaneJoin } from './layout/offsets';
+import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -247,7 +247,41 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             (join.a[1] + 2 * join.apex[1] + join.b[1]) / 4,
           ]);
         }
+        continue;
       }
+      // Near-parallel continuation with a lateral lane jog (bundle
+      // composition changes across the node): absorb the jog into a long
+      // drift along both edges instead of an S-wiggle at the node — both
+      // lane ends taper to the shared midpoint.
+      const qa = aAtStart ? pA[0] : pA[pA.length - 1];
+      const qa1 = aAtStart ? pA[1] : pA[pA.length - 2];
+      const qb = bAtStart ? pB[0] : pB[pB.length - 1];
+      const qb1 = bAtStart ? pB[1] : pB[pB.length - 2];
+      const gap = Math.hypot(qb[0] - qa[0], qb[1] - qa[1]);
+      if (gap < 0.5 || gap > spacing * 8) continue;
+      const lenA = Math.hypot(qa[0] - qa1[0], qa[1] - qa1[1]);
+      const lenB = Math.hypot(qb[0] - qb1[0], qb[1] - qb1[1]);
+      if (lenA < 1e-6 || lenB < 1e-6) continue;
+      // directions: A pointing INTO the node, B pointing OUT
+      const dirA: Pixel = [(qa[0] - qa1[0]) / lenA, (qa[1] - qa1[1]) / lenA];
+      const dirB: Pixel = [(qb1[0] - qb[0]) / lenB, (qb1[1] - qb[1]) / lenB];
+      const dot = dirA[0] * dirB[0] + dirA[1] * dirB[1];
+      if (dot < 0.85) continue; // genuine corner the join rejected — keep S connector
+      const polyLenOf = (poly: Pixel[]): number => {
+        let L = 0;
+        for (let i = 1; i < poly.length; i++) L += Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
+        return L;
+      };
+      const taperA = Math.min(spacing * 8, polyLenOf(pA) * 0.45);
+      const taperB = Math.min(spacing * 8, polyLenOf(pB) * 0.45);
+      if (taperA < gap || taperB < gap) continue; // no room — keep S connector
+      const mid: Pixel = [(qa[0] + qb[0]) / 2, (qa[1] + qb[1]) / 2];
+      taperLaneEnd(pA, aAtStart, mid, taperA);
+      taperLaneEnd(pB, bAtStart, mid, taperB);
+      endMoved.add(keyA);
+      endMoved.add(keyB);
+      const pairKey2 = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+      mitered.add(lineId + '|' + endA + '|' + pairKey2);
     }
   }
 
