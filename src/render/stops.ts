@@ -124,16 +124,26 @@ export function renderStops(
     // Stadium hull SURROUNDING the dots: border line underneath, fill line on
     // top, dots drawn over the fill. Round caps extend the hull past the
     // extreme dots; widths leave the dots a 1.5px margin inside the fill.
+    // Marks can sit off the axis chord (diverged-corridor stations keep dots
+    // on their own lanes) — widen the hull by the lateral extent so every
+    // dot always fits inside.
+    const axLen = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const nx = -(b[1] - a[1]) / axLen;
+    const ny = (b[0] - a[0]) / axLen;
+    let lat = 0;
+    for (const m of marks) {
+      lat = Math.max(lat, Math.abs((m.pos[0] - a[0]) * nx + (m.pos[1] - a[1]) * ny));
+    }
     const x1 = a[0].toFixed(1);
     const y1 = a[1].toFixed(1);
     const x2 = b[0].toFixed(1);
     const y2 = b[1].toFixed(1);
     out.push(wrap((a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
       '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + stroke + '" stroke-width="' + (2 * r + 6).toFixed(1) +
+      '" stroke="' + stroke + '" stroke-width="' + (2 * r + 6 + 2 * lat).toFixed(1) +
       '" stroke-linecap="round"/>' +
       '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + fill + '" stroke-width="' + (2 * r + 3).toFixed(1) +
+      '" stroke="' + fill + '" stroke-width="' + (2 * r + 3 + 2 * lat).toFixed(1) +
       '" stroke-linecap="round"' + attrs + '/>' +
       dots,
     ));

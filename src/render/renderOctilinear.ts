@@ -571,38 +571,142 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       if (out && out.length >= 2) segPath.set(key, atStart ? out : out.reverse());
     };
-    // Mega-box dots are cosmetic (the lanes hide beneath the box), so lay
-    // them out evenly along the marks' axis — a clean NYC-style bullet row
-    // instead of whatever overlapping scatter the lane joins landed on.
-    // Done BEFORE boxOf is consumed so the box and collision slides see the
-    // final dot positions.
-    for (const s of gathered) {
-      if (s.marks.length < 2 || !boxOf(s).mega) continue;
-      let ai = 0, bi = 0, span = 0;
-      for (let i = 0; i < s.marks.length; i++) {
-        for (let j = i + 1; j < s.marks.length; j++) {
-          const d = Math.hypot(
-            s.marks[i].pos[0] - s.marks[j].pos[0],
-            s.marks[i].pos[1] - s.marks[j].pos[1],
-          );
-          if (d > span) { span = d; ai = i; bi = j; }
-        }
-      }
-      let ux = 1, uy = 0;
-      if (span > 1e-6) {
-        ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
-        uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
-      }
-      const cx = s.marks.reduce((acc, m) => acc + m.pos[0], 0) / s.marks.length;
-      const cy = s.marks.reduce((acc, m) => acc + m.pos[1], 0) / s.marks.length;
-      const order = s.marks
+    // Dot layout pass (user spec). Mega boxes: marks group PER BUNDLE —
+    // marks whose lanes share a direction axis and sit near one another are
+    // one bundle crossing the box; each group lays out across ITS bundle
+    // (cross-section row through the group's centroid) instead of one global
+    // row. Thin capsules: dots stay on their lanes but get a minimum
+    // spacing along the marker axis so near-coincident marks (perpendicular
+    // crossings — Kew Gardens Rd) never stack their bullets. Done BEFORE
+    // boxOf is consumed so the box and collision slides see final positions.
+    const respaceAlong = (
+      marks: StMarks['marks'],
+      ux: number,
+      uy: number,
+      step: number,
+      collapse: boolean, // also kill scatter perpendicular to the row
+    ) => {
+      const cx = marks.reduce((acc, m) => acc + m.pos[0], 0) / marks.length;
+      const cy = marks.reduce((acc, m) => acc + m.pos[1], 0) / marks.length;
+      const order = marks
         .map((m, i) => ({ i, t: (m.pos[0] - cx) * ux + (m.pos[1] - cy) * uy }))
         .sort((p, q) => p.t - q.t);
-      const step = 2 * r + 1.6;
+      const ts = order.map((o) => o.t);
+      for (let k = 1; k < ts.length; k++) ts[k] = Math.max(ts[k], ts[k - 1] + step);
+      const shift =
+        order.reduce((acc, o) => acc + o.t, 0) / order.length -
+        ts.reduce((acc, t) => acc + t, 0) / ts.length;
       order.forEach((o, k) => {
-        const t = (k - (order.length - 1) / 2) * step;
-        s.marks[o.i].pos = [cx + ux * t, cy + uy * t];
+        const t = ts[k] + shift;
+        const mk = marks[o.i];
+        if (collapse) mk.pos = [cx + ux * t, cy + uy * t];
+        else {
+          const dt = t - o.t;
+          mk.pos = [mk.pos[0] + ux * dt, mk.pos[1] + uy * dt];
+        }
       });
+    };
+    for (const s of gathered) {
+      if (s.marks.length < 2) continue;
+      if (boxOf(s).mega) {
+        // bundle grouping: quantized lane-direction axis + spatial chaining
+        const n = s.marks.length;
+        const bucket = s.marks.map((mk) => {
+          const d = laneDirAt(mk.lineId, mk.flagNode);
+          if (!d) return -1;
+          const a = ((Math.atan2(d[1], d[0]) % Math.PI) + Math.PI) % Math.PI;
+          return Math.round(a / (Math.PI / 4)) % 4;
+        });
+        const parent = s.marks.map((_, i) => i);
+        const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            if (bucket[i] !== bucket[j]) continue;
+            const d = Math.hypot(
+              s.marks[i].pos[0] - s.marks[j].pos[0],
+              s.marks[i].pos[1] - s.marks[j].pos[1],
+            );
+            if (d < spacing * 2.5) parent[find(i)] = find(j);
+          }
+        }
+        const groups = new Map<number, number[]>();
+        for (let i = 0; i < n; i++) {
+          const g = find(i);
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g)!.push(i);
+        }
+        const rows: Array<{ idx: number[]; dir: Pixel }> = [];
+        for (const idx of groups.values()) {
+          const dir = laneDirAt(s.marks[idx[0]].lineId, s.marks[idx[0]].flagNode) ?? [1, 0];
+          rows.push({ idx, dir: [dir[0], dir[1]] });
+          if (idx.length < 2) continue;
+          // row runs ACROSS the bundle (the lanes' cross-section)
+          respaceAlong(idx.map((i) => s.marks[i]), -dir[1], dir[0], 2 * r + 1.6, true);
+        }
+        // Bundles CROSS inside the box, so rows from different bundles can
+        // land on each other — slide the smaller row along its own bundle
+        // direction (stays on its lanes, purely cosmetic under the box)
+        // until every cross-row dot pair clears.
+        const minD = 2 * r + 1.6;
+        for (let iter = 0; iter < 12; iter++) {
+          let movedAny = false;
+          for (let gi = 0; gi < rows.length; gi++) {
+            for (let gj = gi + 1; gj < rows.length; gj++) {
+              let dmin = Infinity;
+              for (const i of rows[gi].idx) {
+                for (const j of rows[gj].idx) {
+                  dmin = Math.min(dmin, Math.hypot(
+                    s.marks[i].pos[0] - s.marks[j].pos[0],
+                    s.marks[i].pos[1] - s.marks[j].pos[1],
+                  ));
+                }
+              }
+              if (dmin >= minD - 0.05) continue;
+              const small = rows[gi].idx.length <= rows[gj].idx.length ? rows[gi] : rows[gj];
+              const big = small === rows[gi] ? rows[gj] : rows[gi];
+              const cAt = (g: { idx: number[] }): Pixel => [
+                g.idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / g.idx.length,
+                g.idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / g.idx.length,
+              ];
+              const sc = cAt(small);
+              const bc = cAt(big);
+              const along = (sc[0] - bc[0]) * small.dir[0] + (sc[1] - bc[1]) * small.dir[1];
+              const sign = along >= 0 ? 1 : -1;
+              for (const i of small.idx) {
+                s.marks[i].pos = [
+                  s.marks[i].pos[0] + small.dir[0] * sign * 2,
+                  s.marks[i].pos[1] + small.dir[1] * sign * 2,
+                ];
+              }
+              movedAny = true;
+            }
+          }
+          if (!movedAny) break;
+        }
+      } else {
+        // marker axis: farthest pair; near-coincident marks fall back to the
+        // first lane's cross-section
+        let ai = 0, bi = 0, span = 0;
+        for (let i = 0; i < s.marks.length; i++) {
+          for (let j = i + 1; j < s.marks.length; j++) {
+            const d = Math.hypot(
+              s.marks[i].pos[0] - s.marks[j].pos[0],
+              s.marks[i].pos[1] - s.marks[j].pos[1],
+            );
+            if (d > span) { span = d; ai = i; bi = j; }
+          }
+        }
+        let ux: number, uy: number;
+        if (span > 1) {
+          ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
+          uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
+        } else {
+          const dir = laneDirAt(s.marks[0].lineId, s.marks[0].flagNode) ?? [1, 0];
+          ux = -dir[1];
+          uy = dir[0];
+        }
+        respaceAlong(s.marks, ux, uy, 2 * r, false);
+      }
     }
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];

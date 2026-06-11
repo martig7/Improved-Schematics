@@ -45,7 +45,7 @@ const svg = generateSchematicSVG({
     width: 2700,
     height: 2700,
     showStations: true,
-    showLabels: false,
+    showLabels: process.env.IS_LABELS === '1',
     dark: process.env.IS_DARK === '1',
   },
 });
