@@ -84,6 +84,9 @@ export interface Layout {
 export interface Visit {
   groupId: string;
   isStop: boolean;
+  /** Service break: the leg AFTER this visit was suppressed (loop-closure
+   *  deadhead) — no edge may be painted between this visit and the next. */
+  breakAfter?: boolean;
 }
 
 /** A placed stop marker for a line at a node (used by renderStops/placeLabels). */

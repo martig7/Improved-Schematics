@@ -1370,18 +1370,32 @@ export function buildSupportGraph(
 
   const lineTraversals = new Map<string, TraversalStep[]>();
   for (const [lineId, origSteps] of g.lineTraversals) {
-    const graphNodes: string[] = [];
+    // null = deliberate service break (a suppressed loop-closure leg left a
+    // discontinuity in the graph traversal) — each run reconstructs on its
+    // own; pathing or heal-bridging ACROSS a break would resurrect the
+    // suppressed deadhead ink.
+    const graphNodes: (string | null)[] = [];
     for (const step of origSteps) {
       const e = g.edges.find((x) => x.id === step.edgeId);
       if (!e) continue;
       const fromId = step.reversed ? e.to : e.from;
       const toId = step.reversed ? e.from : e.to;
       if (graphNodes.length === 0) graphNodes.push(fromId);
+      else if (graphNodes[graphNodes.length - 1] !== fromId) {
+        graphNodes.push(null);
+        graphNodes.push(fromId);
+      }
       graphNodes.push(toId);
     }
 
-    const supportNodes: string[] = [];
+    const supportNodes: (string | null)[] = [];
     for (const gn of graphNodes) {
+      if (gn === null) {
+        if (supportNodes.length > 0 && supportNodes[supportNodes.length - 1] !== null) {
+          supportNodes.push(null);
+        }
+        continue;
+      }
       const sn = mapToSupportForLine(gn, lineId);
       if (!sn) continue;
       if (supportNodes.length === 0 || supportNodes[supportNodes.length - 1] !== sn) {
@@ -1390,10 +1404,20 @@ export function buildSupportGraph(
     }
 
     const steps: TraversalStep[] = [];
-    let curNode: string | null = supportNodes[0] ?? null;
+    let curNode: string | null = null;
     let stalled = false;
-    for (let i = 0; curNode && i < supportNodes.length - 1; i++) {
-      const target = supportNodes[i + 1];
+    for (let i = 0; i < supportNodes.length; i++) {
+      const target = supportNodes[i];
+      if (target === null) {
+        // service break: the next run starts fresh
+        curNode = null;
+        stalled = false;
+        continue;
+      }
+      if (curNode === null) {
+        curNode = target;
+        continue;
+      }
       if (curNode === target) {
         stalled = false;
         continue;

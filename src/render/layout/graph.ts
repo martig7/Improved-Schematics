@@ -296,7 +296,33 @@ export function walkRouteVisits(
 
   const combos = route.stCombos ?? [];
   if (combos.length > 0) {
+    // Closing-leg suppression: a loop-closure deadhead (a combo many times
+    // longer than the route's median leg, with no reverse counterpart at
+    // group level — every genuine service leg of a round trip has one)
+    // paints the line across half the map without serving anything: the NYC
+    // H's 50km "Library Av -> Park Av" hop drew a phantom brown line through
+    // 27 St / 92 St. Skip those combos and mark a service break so no edge
+    // is painted across the gap.
+    const dists = combos.map((c) => c.distance ?? 0).sort((x, y) => x - y);
+    const median = dists[Math.floor(dists.length / 2)] ?? 0;
+    const gFwd = new Set<string>();
+    for (const c of combos) {
+      gFwd.add(
+        (stNodeToGroup.get(c.startStNodeId) ?? '') + '>' + (stNodeToGroup.get(c.endStNodeId) ?? ''),
+      );
+    }
+    const isClosingLeg = (c: (typeof combos)[number]): boolean =>
+      (c.distance ?? 0) > 10000 &&
+      median > 0 &&
+      (c.distance ?? 0) > 8 * median &&
+      !gFwd.has(
+        (stNodeToGroup.get(c.endStNodeId) ?? '') + '>' + (stNodeToGroup.get(c.startStNodeId) ?? ''),
+      );
     for (const combo of combos) {
+      if (isClosingLeg(combo)) {
+        if (visits.length > 0) visits[visits.length - 1].breakAfter = true;
+        continue;
+      }
       push(stNodeToGroup.get(combo.startStNodeId), true);
       for (const seg of combo.path ?? []) push(trackToGroup.get(seg.trackId), false);
       push(stNodeToGroup.get(combo.endStNodeId), true);
@@ -374,6 +400,7 @@ export function buildTransitGraph(
     for (let i = 0; i < visits.length - 1; i++) {
       const a = visits[i];
       const b = visits[i + 1];
+      if (a.breakAfter) continue; // service break — no edge across the gap
       if (a.groupId === b.groupId) continue;
       const key = groupEdgeKey(a.groupId, b.groupId);
       let edge = edgeMap.get(key);
