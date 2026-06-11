@@ -57,7 +57,6 @@ export function SchematicPanel() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const strokeNodes = useRef<Scaled[]>([]);
   const labelGroups = useRef<Element[]>([]);
-  const stopGroups = useRef<Array<{ el: Element; ax: number; ay: number }>>([]);
   const viewRef = useRef<View | null>(null);
   const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
 
@@ -154,15 +153,6 @@ export function SchematicPanel() {
       // Labels are pinned to their dot; counter-scale keeps text + offset constant size.
       const lblTransform = `scale(${inv})`;
       for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
-      // Station markers counter-scale as WHOLE groups around their anchor —
-      // geometry included — so capsules/dots keep a constant on-screen size
-      // instead of squashing as the map zooms out.
-      for (const s of stopGroups.current) {
-        s.el.setAttribute(
-          'transform',
-          `translate(${s.ax * (1 - inv)} ${s.ay * (1 - inv)}) scale(${inv})`,
-        );
-      }
     }
   }, []);
 
@@ -205,8 +195,12 @@ export function SchematicPanel() {
       // If we counter-scaled them too, lane spacing (baked into geometry, in
       // world units) would stay put while stroke width shrank → visible gaps
       // between bundled lines as the user zooms in.
-      // Stop markers scale via their group transform — exclude them from the
-      // stroke counter-scaling or they would be counter-scaled twice.
+      // Station markers (.imp-stop) are pure map objects: geometry AND stroke
+      // stay in world units so capsules/dots scale exactly with the route
+      // lines at every zoom. (Counter-scaling their strokes made capsules
+      // look skinny next to fattening lines when zoomed in; counter-scaling
+      // the whole marker made them gigantic relative to the map when zoomed
+      // out.) Only rings/brackets/grid outside both groups counter-scale.
       strokeNodes.current = [...svgEl.querySelectorAll('[stroke-width]')]
         .filter((el) => !el.closest('.edges') && !el.closest('.imp-stop'))
         .map((el) => ({
@@ -214,11 +208,6 @@ export function SchematicPanel() {
           base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
         }));
       labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
-      stopGroups.current = [...svgEl.querySelectorAll('.imp-stop')].map((el) => ({
-        el,
-        ax: parseFloat(el.getAttribute('data-ax') || '0') || 0,
-        ay: parseFloat(el.getAttribute('data-ay') || '0') || 0,
-      }));
     }
     // Always re-fit when the SVG (and therefore its bounds) changes.
     fit();
@@ -303,7 +292,7 @@ export function SchematicPanel() {
         <span style={{ flex: 1 }} />
         {/* Build marker: proves which bundle the game actually loaded. */}
         <span style={{ opacity: 0.35, fontSize: 10 }}>
-          v0.2.2{dumpStatus ? ` · ${dumpStatus}` : ''}
+          v0.2.3{dumpStatus ? ` · ${dumpStatus}` : ''}
         </span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
