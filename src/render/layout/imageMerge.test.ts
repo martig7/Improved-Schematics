@@ -114,3 +114,23 @@ test('separateFusedStations clamps a near-node projection to a visible arc', () 
   const ms = h.nodes.get(g2.nodeId)!;
   assert.ok(ms.pos[0] >= 108 - 1e-6, `split point pushed >= 8px from N (got ${ms.pos})`);
 });
+
+test('separateFusedStations trims terminating lines back to the split node', () => {
+  // L2 terminates at the fused node N arriving from B: its traversal
+  // turns around at N. After g2 splits onto e2 (toward B), L2 must end at
+  // the new node — not overshoot through the keeper.
+  const { h, img } = fusedFixture([140, 10]);
+  h.lineTraversals.set('L2', [
+    { edgeId: 'e2', reversed: true },  // B -> N
+    { edgeId: 'e2', reversed: false }, // N -> B (turnaround)
+  ]);
+  separateFusedStations(h, img, 16);
+  const g2 = h.stations.get('g2')!;
+  assert.notEqual(g2.nodeId, 'N');
+  const keeperHalf = h.adj.get('N')!.find((id) => id.startsWith('e2'));
+  const steps = h.lineTraversals.get('L2')!;
+  assert.ok(
+    !steps.some((s) => s.edgeId === keeperHalf),
+    `terminating line no longer reaches the keeper (got ${JSON.stringify(steps)})`,
+  );
+});

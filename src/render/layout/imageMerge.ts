@@ -540,6 +540,49 @@ export function separateFusedStations(
         if (!remaining.has(l)) h.stopAt.delete(l + '|' + nid);
         st.stopNodes?.set(l, newNid);
       }
+
+      // Lines that STOPPED at the fused node and moved with the split must
+      // also stop TRAVERSING to it: reconstruction ran before the split, so a
+      // line TERMINATING here retraces through the keeper node and its drawn
+      // lanes overshoot the new marker by the split distance (Court's grays
+      // pierced their capsule). Remove immediate out-and-back step pairs over
+      // the keeper-side half; lines genuinely continuing past the keeper
+      // traverse it once and are untouched.
+      const keeperHalf = e.from === nid ? idA : e.to === nid ? idB : null;
+      if (keeperHalf) {
+        for (const l of movedLines) {
+          const steps = h.lineTraversals.get(l);
+          if (!steps) continue;
+          const out: TraversalStep[] = [];
+          for (let i = 0; i < steps.length; i++) {
+            const s1 = steps[i];
+            const s2 = steps[i + 1];
+            if (
+              s2 &&
+              s1.edgeId === keeperHalf &&
+              s2.edgeId === keeperHalf &&
+              s1.reversed !== s2.reversed
+            ) {
+              i++; // drop the out-and-back pair
+              continue;
+            }
+            out.push(s1);
+          }
+          // routes that START or END at the old fused node leave a single
+          // keeper-half step at the boundary — trim it as well
+          const eH = h.edges.get(keeperHalf);
+          if (eH && out.length && out[0].edgeId === keeperHalf) {
+            const startNode = out[0].reversed ? eH.to : eH.from;
+            if (startNode === nid) out.shift();
+          }
+          if (eH && out.length && out[out.length - 1].edgeId === keeperHalf) {
+            const last = out[out.length - 1];
+            const endNode = last.reversed ? eH.from : eH.to;
+            if (endNode === nid) out.pop();
+          }
+          h.lineTraversals.set(l, out);
+        }
+      }
     }
   }
 }
