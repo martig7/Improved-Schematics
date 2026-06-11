@@ -548,6 +548,34 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     const routed = image.paths.get(e.id);
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
   }
+  // Remove mid-route out-and-back spur steps from line traversals: the merge
+  // can pin a line's course onto a neighbouring corridor it merely crosses
+  // for a few px (the 9 poking into the red trunk south of Butler St),
+  // leaving an immediate edge+reverse pair in the traversal whose drawn lane
+  // dead-ends as a stub. Drop such pairs when the line has no stop at the
+  // spur's far node — a terminus retrace keeps its steps (its flag is set).
+  {
+    const eById = new Map(layout.edges.map((e) => [e.id, e]));
+    for (const [lineId, trav] of layout.lineTraversals) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let i = 0; i + 1 < trav.length; i++) {
+          const a = trav[i];
+          const b = trav[i + 1];
+          if (a.edgeId !== b.edgeId || a.reversed === b.reversed) continue;
+          const e = eById.get(a.edgeId);
+          if (!e) continue;
+          const stop = e.stops.get(lineId);
+          const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
+          if (flagAtFar) continue;
+          trav.splice(i, 2);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
   orderLines(layout);
   // capsule rule counts only SERVED members: a routeless platform in a
   // group must not promote it to an interchange capsule
@@ -559,29 +587,22 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   // Nodes visually covered by a mega-station box: crossings there are
   // hidden, so untangle treats them as free (user rule) — unavoidable
   // crossings migrate under the boxes instead of showing on open track.
-  // Mirrors the renderer's mega rule (served members > 1, line degree >= 8)
-  // and covers neighbouring nodes inside the box's estimated footprint.
+  // Mirrors the renderer's mega rule (served members > 1, line degree >= 8).
+  // CONSERVATIVE: only the mega node itself — an order flip at a node
+  // renders its weave along the APPROACHING edges, so freeing neighbours
+  // "inside the footprint" leaked visible crossings onto open track just
+  // outside the box.
   const freeCrossNodes = (() => {
     const out = new Set<string>();
     const ldeg = new Map<string, number>();
-    let maxLines = new Map<string, number>();
     for (const e of layout.edges) {
       ldeg.set(e.from, (ldeg.get(e.from) ?? 0) + e.lines.length);
       ldeg.set(e.to, (ldeg.get(e.to) ?? 0) + e.lines.length);
-      maxLines.set(e.from, Math.max(maxLines.get(e.from) ?? 0, e.lines.length));
-      maxLines.set(e.to, Math.max(maxLines.get(e.to) ?? 0, e.lines.length));
     }
-    const spacing = 3.5 + 1.5; // LINE_WIDTH + LINE_GAP (renderer lane pitch)
     for (const st of supportM.stations.values()) {
       if ((servedMembers.get(st.id) ?? st.members ?? 1) <= 1) continue;
       if ((ldeg.get(st.nodeId) ?? 0) < 8) continue;
-      const c = nodePx.get(st.nodeId);
-      if (!c) continue;
-      const half = ((maxLines.get(st.nodeId) ?? 2) * spacing) / 2 + 14;
       out.add(st.nodeId);
-      for (const [nid, p] of nodePx) {
-        if (Math.abs(p[0] - c[0]) <= half && Math.abs(p[1] - c[1]) <= half) out.add(nid);
-      }
     }
     return out;
   })();

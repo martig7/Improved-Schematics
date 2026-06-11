@@ -296,6 +296,60 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
   }
 
+  // Jog-dominated sliver suppression: merge can leave a line a tiny edge
+  // (one grid sliver) sandwiched between two corridors — the 9's 9px hop
+  // from the red trunk to its Butler St anchor. The lane piece on such an
+  // edge sits laterally offset from BOTH neighbours' lane endpoints, and
+  // the two connectors needed to reach it cost more ink than the piece
+  // itself (the dangling-stub artifact). Don't draw a short piece whose
+  // end jogs sum to more than its own length — the node connectors bridge
+  // the neighbours directly. Micro edges of a dense corridor keep their
+  // pieces: their lanes continue at the same slots, so the jogs are ~0.
+  const suppressed = new Set<string>(); // edgeId|lineId
+  {
+    const arcOf = (poly: Pixel[]): number => {
+      let acc = 0;
+      for (let i = 1; i < poly.length; i++) {
+        acc += Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
+      }
+      return acc;
+    };
+    for (const [lineId, traversal] of layout.lineTraversals) {
+      if (!lineById.has(lineId)) continue;
+      const endAt = (eid: string, nd: string): Pixel | null => {
+        const p = segPath.get(eid + '|' + lineId);
+        const ee = edgeById.get(eid);
+        if (!p || !ee) return null;
+        return ee.from === nd ? p[0] : ee.to === nd ? p[p.length - 1] : null;
+      };
+      for (let i = 0; i < traversal.length; i++) {
+        const step = traversal[i];
+        const e = edgeById.get(step.edgeId);
+        if (!e) continue;
+        const key = e.id + '|' + lineId;
+        if (suppressed.has(key)) continue;
+        const poly = segPath.get(key);
+        if (!poly) continue;
+        const arc = arcOf(poly);
+        if (arc >= spacing * 2.5) continue;
+        const nodeA = step.reversed ? e.to : e.from;
+        const nodeB = step.reversed ? e.from : e.to;
+        let jog = 0;
+        for (const [k, nd] of [[i - 1, nodeA], [i + 1, nodeB]] as Array<[number, string]>) {
+          if (k < 0 || k >= traversal.length) continue;
+          const ee = edgeById.get(traversal[k].edgeId);
+          if (!ee || ee.id === e.id) continue;
+          const mine = endAt(e.id, nd);
+          const theirs = endAt(ee.id, nd);
+          if (mine && theirs) jog += Math.hypot(mine[0] - theirs[0], mine[1] - theirs[1]);
+        }
+        if (jog <= arc * 0.6) continue;
+        suppressed.add(key);
+        segPath.delete(key);
+      }
+    }
+  }
+
   // Join pass: where a line continues across a node, trim the two lane ends
   // back from the intersection of their end segments and bridge them with a
   // quadratic through the corner apex — the lane sweeps around the node like
@@ -751,6 +805,54 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         break; // resolved (or gave up) against the first overlapping mega
       }
     }
+
+    // Small-vs-small collisions: a slid pill can land on a neighbouring dot
+    // (Court's 2/4 pill over the W dot east of the Tacoma box). Resolve by
+    // sliding the marker with FEWER marks along its own lanes away from the
+    // other — same machinery as the mega backup; the trial must clear the
+    // other marker AND every mega box.
+    {
+      const smalls = gathered.filter((s) => s.marks.length > 0 && !boxOf(s).mega);
+      for (let ai = 0; ai < smalls.length; ai++) {
+        for (let bi = ai + 1; bi < smalls.length; bi++) {
+          const ab = boxOf(smalls[ai]);
+          const bb = boxOf(smalls[bi]);
+          const overlaps = ab.x0 < bb.x1 + 1 && ab.x1 > bb.x0 - 1 && ab.y0 < bb.y1 + 1 && ab.y1 > bb.y0 - 1;
+          if (!overlaps) continue;
+          const S = smalls[ai].marks.length <= smalls[bi].marks.length ? smalls[ai] : smalls[bi];
+          const O = S === smalls[ai] ? smalls[bi] : smalls[ai];
+          const ob = boxOf(O);
+          const center: Pixel = [(ob.x0 + ob.x1) / 2, (ob.y0 + ob.y1) / 2];
+          for (let d = 4; d <= 32; d += 4) {
+            const moved = S.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
+            if (moved.some((p) => !p)) break;
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (const t of moved) {
+              x0 = Math.min(x0, t!.p[0]); y0 = Math.min(y0, t!.p[1]);
+              x1 = Math.max(x1, t!.p[0]); y1 = Math.max(y1, t!.p[1]);
+            }
+            const pad = r + 3;
+            const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
+              x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
+            if (!clearOf(ob) || !megas.every((m) => clearOf(boxOf(m)))) continue;
+            for (let i = 0; i < S.marks.length; i++) {
+              const mk = S.marks[i];
+              mk.pos = moved[i]!.p;
+              let incident = 0;
+              for (const e of layout.edges) {
+                if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+                if (!segPath.has(e.id + '|' + mk.lineId)) continue;
+                if (!drawsOn(mk.lineId, e.id)) continue;
+                incident++;
+              }
+              if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
+            }
+            slid.push({ nodeId: S.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
+            break;
+          }
+        }
+      }
+    }
     if (
       slid.length > 0 &&
       typeof process !== 'undefined' &&
@@ -789,21 +891,45 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const connSeen = new Set<string>();
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
-    for (let i = 1; i < traversal.length; i++) {
-      const a = traversal[i - 1];
+    let prevIdx = -1;
+    for (let i = 0; i < traversal.length; i++) {
+      if (!segPath.has(traversal[i].edgeId + '|' + lineId)) continue; // undrawn/suppressed
+      if (prevIdx < 0) {
+        prevIdx = i;
+        continue;
+      }
+      const a = traversal[prevIdx];
       const b = traversal[i];
+      // a gap of SUPPRESSED slivers between two drawn lanes still bridges:
+      // the guest line crosses the host bundle in one stroke
+      let bridging = false;
+      if (i > prevIdx + 1) {
+        bridging = true;
+        for (let k = prevIdx + 1; k < i; k++) {
+          if (!suppressed.has(traversal[k].edgeId + '|' + lineId)) {
+            bridging = false;
+            break;
+          }
+        }
+        if (!bridging) {
+          prevIdx = i;
+          continue;
+        }
+      }
+      prevIdx = i;
       const ea = edgeById.get(a.edgeId);
       const eb = edgeById.get(b.edgeId);
       if (!ea || !eb) continue;
       const endA = a.reversed ? ea.from : ea.to;
       const startB = b.reversed ? eb.to : eb.from;
-      if (endA !== startB) continue; // discontinuity — nothing to bridge
+      if (!bridging && endA !== startB) continue; // discontinuity — nothing to bridge
       const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
-      const key = lineId + '|' + endA + '|' + pairKey;
-      if (connSeen.has(key) || mitered.has(key)) continue;
+      const key = lineId + '|' + endA + '>' + startB + '|' + pairKey;
+      const miterKey = lineId + '|' + endA + '|' + pairKey;
+      if (connSeen.has(key) || mitered.has(miterKey)) continue;
       connSeen.add(key);
       const pa = lineEndAt(a.edgeId, lineId, endA);
-      const pb = lineEndAt(b.edgeId, lineId, endA);
+      const pb = lineEndAt(b.edgeId, lineId, startB);
       if (!pa || !pb) continue;
       const gap = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
       if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
@@ -816,7 +942,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const polyA = segPath.get(a.edgeId + '|' + lineId)!;
       const polyB = segPath.get(b.edgeId + '|' + lineId)!;
       const prevA = ea.from === endA ? polyA[1] : polyA[polyA.length - 2];
-      const nextB = eb.from === endA ? polyB[1] : polyB[polyB.length - 2];
+      const nextB = eb.from === startB ? polyB[1] : polyB[polyB.length - 2];
       const unitTo = (from: Pixel, to: Pixel): Pixel => {
         const len = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
         return [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
@@ -836,14 +962,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const tLen = Math.hypot(tx, ty) || 1;
       const lon = Math.abs(((pb[0] - pa[0]) * tx + (pb[1] - pa[1]) * ty) / tLen);
       const k = Math.min(Math.min(spacing * 4, Math.max(gap, spacing * 2)), lon);
-      // the chord must progress along BOTH tangents, else the bezier loops
-      // backward around an endpoint (270-degree balloon)
-      const prog = Math.min(
-        (pb[0] - pa[0]) * dirA[0] + (pb[1] - pa[1]) * dirA[1],
-        (pb[0] - pa[0]) * dirB[0] + (pb[1] - pa[1]) * dirB[1],
-      );
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
-      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5 || prog < 0) {
+      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5) {
         // regressive turn (or no forward progress): tangent-matched control
         // points would bulge the bridge outward — a plain chord across the
         // junction reads as the line passing straight through
