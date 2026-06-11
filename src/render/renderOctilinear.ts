@@ -377,15 +377,20 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
   }
 
-  for (const [key, poly] of segPath) {
-    pushSeg(key.slice(key.indexOf('|') + 1), poly);
-  }
-  for (const jc of joinCurves) {
-    let d = dByLine.get(jc.lineId);
-    if (!d) dByLine.set(jc.lineId, (d = []));
-    d.push('M' + fmt(jc.a), 'Q' + fmt(jc.apex) + ' ' + fmt(jc.b));
-    segments.push({ p1: jc.a, p2: jc.b });
-  }
+  // NOTE: path emission (pushSeg + join curves) happens AFTER the station
+  // marker pass below — sliding a terminus marker clear of a mega box must
+  // also trim the terminating lanes back to the slid marker.
+  const emitLanes = () => {
+    for (const [key, poly] of segPath) {
+      pushSeg(key.slice(key.indexOf('|') + 1), poly);
+    }
+    for (const jc of joinCurves) {
+      let d = dByLine.get(jc.lineId);
+      if (!d) dByLine.set(jc.lineId, (d = []));
+      d.push('M' + fmt(jc.a), 'Q' + fmt(jc.apex) + ' ' + fmt(jc.b));
+      segments.push({ p1: jc.a, p2: jc.b });
+    }
+  };
 
   /** A line's drawn endpoint at a node (offset polylines run from→to). */
   const lineEndAt = (edgeId: string, lineId: string, nodeId: string): Pixel | null => {
@@ -507,8 +512,13 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       return { x0, y0, x1, y1, mega };
     };
-    const lanePointAt = (lineId: string, nodeId: string, awayFrom: Pixel, d: number): Pixel | null => {
-      let best: Pixel | null = null;
+    const lanePointAt = (
+      lineId: string,
+      nodeId: string,
+      awayFrom: Pixel,
+      d: number,
+    ): { p: Pixel; edgeId: string } | null => {
+      let best: { p: Pixel; edgeId: string } | null = null;
       let bestD = -Infinity;
       for (const edge of layout.edges) {
         if (edge.from !== nodeId && edge.to !== nodeId) continue;
@@ -527,9 +537,35 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           acc += seg;
         }
         const dd = Math.hypot(p[0] - awayFrom[0], p[1] - awayFrom[1]);
-        if (dd > bestD) { bestD = dd; best = p; }
+        if (dd > bestD) { bestD = dd; best = { p, edgeId: edge.id }; }
       }
       return best;
+    };
+    /** Trim arc `d` off a lane's end at `nodeId` (terminating lines follow
+     *  their slid marker instead of poking into the mega box). */
+    const trimLaneAt = (edgeId: string, lineId: string, nodeId: string, d: number) => {
+      const key = edgeId + '|' + lineId;
+      const poly = segPath.get(key);
+      const edge = edgeById.get(edgeId);
+      if (!poly || !edge || poly.length < 2) return;
+      const atStart = edge.from === nodeId;
+      const pts = atStart ? poly : [...poly].reverse();
+      let acc = 0;
+      let out: Pixel[] | null = null;
+      for (let i = 1; i < pts.length; i++) {
+        const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        if (acc + seg >= d) {
+          const t = seg > 1e-9 ? (d - acc) / seg : 0;
+          const cut: Pixel = [
+            pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+            pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+          ];
+          out = [cut, ...pts.slice(i).map((q) => [q[0], q[1]] as Pixel)];
+          break;
+        }
+        acc += seg;
+      }
+      if (out && out.length >= 2) segPath.set(key, atStart ? out : out.reverse());
     };
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
@@ -544,7 +580,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         for (let d = 4; d <= 48; d += 4) {
           const moved = s.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
           if (moved.some((p) => !p)) break;
-          const trial = s.marks.map((mk, i) => ({ ...mk, pos: moved[i]! }));
+          const trial = s.marks.map((mk, i) => ({ ...mk, pos: moved[i]!.p }));
           let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
           for (const t of trial) {
             x0 = Math.min(x0, t.pos[0]); y0 = Math.min(y0, t.pos[1]);
@@ -552,7 +588,21 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           const pad = r + 1.5;
           if (x0 - pad >= mb.x1 + 2 || x1 + pad <= mb.x0 - 2 || y0 - pad >= mb.y1 + 2 || y1 + pad <= mb.y0 - 2) {
-            for (let i = 0; i < s.marks.length; i++) s.marks[i].pos = moved[i]!;
+            for (let i = 0; i < s.marks.length; i++) {
+              const mk = s.marks[i];
+              mk.pos = moved[i]!.p;
+              // Lines TERMINATING at the slid station (one drawn incident
+              // lane) must have their ink end at the slid marker, not poke
+              // on into the mega box (Court's grays under the Tacoma box).
+              let incident = 0;
+              for (const e of layout.edges) {
+                if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+                if (!segPath.has(e.id + '|' + mk.lineId)) continue;
+                if (!drawsOn(mk.lineId, e.id)) continue;
+                incident++;
+              }
+              if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
+            }
             slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
@@ -590,6 +640,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
   }
+  emitLanes();
 
   // Node connectors: where a line continues across a node between two edges
   // whose lane slots differ, bridge the lateral jog so the line reads as
