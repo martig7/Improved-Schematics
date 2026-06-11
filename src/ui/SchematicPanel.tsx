@@ -12,6 +12,7 @@
 
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { generateSchematicSVG } from '../render/schematic';
+import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode, WaterCollection } from '../render/types';
 import { generateWater } from '../water/oceanIndex';
 import { modState, PANEL_STORAGE_KEY } from '../state';
@@ -56,6 +57,7 @@ export function SchematicPanel() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const strokeNodes = useRef<Scaled[]>([]);
   const labelGroups = useRef<Element[]>([]);
+  const stopGroups = useRef<Array<{ el: Element; ax: number; ay: number }>>([]);
   const viewRef = useRef<View | null>(null);
   const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
 
@@ -85,6 +87,38 @@ export function SchematicPanel() {
     };
   }, []);
 
+  // One-shot dump of the exact live render inputs, so in-game artifacts can
+  // be reproduced offline bit-for-bit (geojson reconstructions drift from the
+  // live save and the game's station grouping). storage.set silently drops
+  // multi-MB payloads, so deliver as a browser download instead.
+  const dumpedInputs = useRef(false);
+  const [dumpStatus, setDumpStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (mode !== 'smoothed' || dumpedInputs.current) return;
+    dumpedInputs.current = true;
+    try {
+      const payload = JSON.stringify({
+        at: new Date().toISOString(),
+        stationGroups: resolveStationGroupsFromGameState(api.gameState),
+        routes: api.gameState.getRoutes(),
+        tracks: api.gameState.getTracks(),
+        stations: api.gameState.getStations(),
+      });
+      const blob = new Blob([payload], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'improvedschematics-input.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setDumpStatus(`input dump ↓ ${(payload.length / 1e6).toFixed(1)}MB`);
+    } catch (err) {
+      setDumpStatus('dump failed: ' + String(err));
+    }
+  }, [mode]);
+
   const svg = useMemo(() => {
     const routes = api.gameState.getRoutes();
     const tracks = api.gameState.getTracks();
@@ -92,8 +126,7 @@ export function SchematicPanel() {
     // The game exposes its real station groups (spatial-proximity-merged
     // platforms, used by the in-game SchematicMapMenu) via an undocumented
     // method. Falls back to trackGroupId grouping if absent or empty.
-    const gs = (api.gameState as unknown as { getStationGroups?: () => unknown[] }).getStationGroups;
-    const stationGroups = typeof gs === 'function' ? gs.call(api.gameState) : undefined;
+    const stationGroups = resolveStationGroupsFromGameState(api.gameState);
     const dark = api.ui.getResolvedTheme() === 'dark';
     return generateSchematicSVG({
       routes,
@@ -121,6 +154,15 @@ export function SchematicPanel() {
       // Labels are pinned to their dot; counter-scale keeps text + offset constant size.
       const lblTransform = `scale(${inv})`;
       for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
+      // Station markers counter-scale as WHOLE groups around their anchor —
+      // geometry included — so capsules/dots keep a constant on-screen size
+      // instead of squashing as the map zooms out.
+      for (const s of stopGroups.current) {
+        s.el.setAttribute(
+          'transform',
+          `translate(${s.ax * (1 - inv)} ${s.ay * (1 - inv)}) scale(${inv})`,
+        );
+      }
     }
   }, []);
 
@@ -156,11 +198,27 @@ export function SchematicPanel() {
       svgEl.setAttribute('width', '100%');
       svgEl.setAttribute('height', '100%');
       svgEl.style.display = 'block';
-      strokeNodes.current = [...svgEl.querySelectorAll('[stroke-width]')].map((el) => ({
-        el,
-        base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
-      }));
+      // Counter-scale strokes that should stay a constant SCREEN size with
+      // zoom (station rings, transfer brackets, grid overlay). Exclude route
+      // strokes (paths under <g class="edges">) — those need to scale with the
+      // viewport so adjacent lanes stay edge-to-edge flush at every zoom level.
+      // If we counter-scaled them too, lane spacing (baked into geometry, in
+      // world units) would stay put while stroke width shrank → visible gaps
+      // between bundled lines as the user zooms in.
+      // Stop markers scale via their group transform — exclude them from the
+      // stroke counter-scaling or they would be counter-scaled twice.
+      strokeNodes.current = [...svgEl.querySelectorAll('[stroke-width]')]
+        .filter((el) => !el.closest('.edges') && !el.closest('.imp-stop'))
+        .map((el) => ({
+          el,
+          base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
+        }));
       labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
+      stopGroups.current = [...svgEl.querySelectorAll('.imp-stop')].map((el) => ({
+        el,
+        ax: parseFloat(el.getAttribute('data-ax') || '0') || 0,
+        ay: parseFloat(el.getAttribute('data-ay') || '0') || 0,
+      }));
     }
     // Always re-fit when the SVG (and therefore its bounds) changes.
     fit();
@@ -243,6 +301,10 @@ export function SchematicPanel() {
           </button>
         )}
         <span style={{ flex: 1 }} />
+        {/* Build marker: proves which bundle the game actually loaded. */}
+        <span style={{ opacity: 0.35, fontSize: 10 }}>
+          v0.2.2{dumpStatus ? ` · ${dumpStatus}` : ''}
+        </span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
