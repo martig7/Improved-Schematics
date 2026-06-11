@@ -48,6 +48,13 @@ export interface UntanglePens {
   inStatCrossPenSameSeg: number;
   inStatCrossPenDiffSeg: number;
   inStatSplitPen: number;
+  /** NOT in LOOM: penalty per excess same-color boundary in an edge order.
+   *  Same-color service families (express/local pairs: 1/2/3/4 all red)
+   *  should ride adjacent — splitting a family is usually crossing-NEUTRAL,
+   *  so the LOOM objectives alone break these ties arbitrarily (the 1
+   *  stranded east of the blue trunk at 22 St). Kept well below one
+   *  crossing so it never trades a real crossing away locally. */
+  colorFragPen: number;
 }
 
 export const DEFAULT_UNTANGLE_PENS: UntanglePens = {
@@ -57,6 +64,7 @@ export const DEFAULT_UNTANGLE_PENS: UntanglePens = {
   inStatCrossPenSameSeg: 12,
   inStatCrossPenDiffSeg: 3,
   inStatSplitPen: 9,
+  colorFragPen: 0.5,
 };
 
 const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
@@ -72,6 +80,9 @@ function inversions(a: number[]): number {
 export function untangleLineOrder(layout: Layout): void {
   const edges = layout.edges.filter((e) => e.from !== e.to && e.lines.length > 0);
   if (edges.length === 0) return;
+
+  const colorOf = new Map<string, string>();
+  for (const e of edges) for (const l of e.lines) if (!colorOf.has(l.id)) colorOf.set(l.id, l.color);
 
   // ---- layout adjacency + degrees -------------------------------------------
   const incident = new Map<string, LayoutEdge[]>();
@@ -339,8 +350,27 @@ export function untangleLineOrder(layout: Layout): void {
     return same * crossPenSameSeg(nd) + diff * crossPenDiffSeg(nd) + seps * sepPen(nd);
   };
 
+  /** Same-color family fragmentation of an edge order: adjacent different-
+   *  color boundaries beyond the minimum (distinct colors - 1); zero when
+   *  every color forms one contiguous block. Operates on partner-block
+   *  representatives — blocks expand contiguously at write-back. */
+  const colorFrag = (order: string[]): number => {
+    if (order.length < 3) return 0;
+    let boundaries = 0;
+    const distinct = new Set<string>();
+    let prev = '';
+    for (let i = 0; i < order.length; i++) {
+      const c = colorOf.get(order[i]) ?? '';
+      distinct.add(c);
+      if (i > 0 && c !== prev) boundaries++;
+      prev = c;
+    }
+    return boundaries - (distinct.size - 1);
+  };
+
   const edgeScore = (oe: OptEdge, cfg: Cfg): number =>
-    nodeScore(oe.from, cfg) + nodeScore(oe.to, cfg);
+    nodeScore(oe.from, cfg) + nodeScore(oe.to, cfg) +
+    pens.colorFragPen * colorFrag(cfg.get(oe.id)!);
 
   // ---- initial config from current lineOrder ---------------------------------
   const cfg: Cfg = new Map();
@@ -357,10 +387,12 @@ export function untangleLineOrder(layout: Layout): void {
   const DBG =
     typeof process !== 'undefined' &&
     !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
-  const tally = (): { same: number; diff: number; seps: number } => {
+  const tally = (): { same: number; diff: number; seps: number; frag: number } => {
     let same = 0;
     let diff = 0;
     let seps = 0;
+    let frag = 0;
+    for (const oe of optEdges) frag += colorFrag(cfg.get(oe.id)!);
     for (const nd of optAdj.keys()) {
       const adj = optAdj.get(nd) ?? [];
       if (adj.length < 2) continue;
@@ -380,12 +412,12 @@ export function untangleLineOrder(layout: Layout): void {
       }
       same += sameDouble / 2;
     }
-    return { same, diff, seps };
+    return { same, diff, seps, frag };
   };
   if (DBG) {
     const t = tally();
     console.error(
-      `[untangle] optEdges=${optEdges.length} seed: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps}`,
+      `[untangle] optEdges=${optEdges.length} seed: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
     );
   }
 
@@ -452,6 +484,7 @@ export function untangleLineOrder(layout: Layout): void {
     const compScore = (): number => {
       let s = 0;
       for (const nd of compNodes) s += nodeScore(nd, cfg);
+      for (const oe of multi) s += pens.colorFragPen * colorFrag(cfg.get(oe.id)!);
       return s;
     };
 
@@ -487,30 +520,99 @@ export function untangleLineOrder(layout: Layout): void {
       }
       for (let i = 0; i < multi.length; i++) cfg.set(multi[i].id, bestCfg[i]);
     } else {
-      // hill climbing (LOOM HillClimbOptimizer): best improving pair swap
+      // hill climbing (LOOM HillClimbOptimizer): best improving pair swap,
+      // PLUS insertion moves (take line out, reinsert at k) — a line
+      // stranded on the wrong side of another family can rarely cross it by
+      // pairwise swaps (each intermediate state scores worse), but a single
+      // insertion jumps it over in one move.
       nHillClimb++;
-      for (;;) {
-        let bestChange = 0;
-        let bestEdge: OptEdge | null = null;
-        let bestOrder: string[] | null = null;
-        for (const oe of multi) {
-          const order = cfg.get(oe.id)!;
-          const oldScore = edgeScore(oe, cfg);
-          for (let p1 = 0; p1 < order.length; p1++) {
-            for (let p2 = p1 + 1; p2 < order.length; p2++) {
-              [order[p1], order[p2]] = [order[p2], order[p1]];
-              const s = edgeScore(oe, cfg);
-              if (oldScore - s > bestChange) {
-                bestChange = oldScore - s;
-                bestEdge = oe;
-                bestOrder = order.slice();
+      const hillClimb = () => {
+        for (;;) {
+          let bestChange = 0;
+          let bestEdge: OptEdge | null = null;
+          let bestOrder: string[] | null = null;
+          for (const oe of multi) {
+            const order = cfg.get(oe.id)!;
+            const oldScore = edgeScore(oe, cfg);
+            for (let p1 = 0; p1 < order.length; p1++) {
+              for (let p2 = p1 + 1; p2 < order.length; p2++) {
+                [order[p1], order[p2]] = [order[p2], order[p1]];
+                const s = edgeScore(oe, cfg);
+                if (oldScore - s > bestChange) {
+                  bestChange = oldScore - s;
+                  bestEdge = oe;
+                  bestOrder = order.slice();
+                }
+                [order[p1], order[p2]] = [order[p2], order[p1]];
               }
-              [order[p1], order[p2]] = [order[p2], order[p1]];
             }
+            for (let p1 = 0; p1 < order.length; p1++) {
+              for (let p2 = 0; p2 < order.length; p2++) {
+                if (p2 === p1 || p2 === p1 + 1) continue; // no-op insertions
+                const trial = order.slice();
+                const [ln] = trial.splice(p1, 1);
+                trial.splice(p2 > p1 ? p2 - 1 : p2, 0, ln);
+                cfg.set(oe.id, trial);
+                const s = edgeScore(oe, cfg);
+                if (oldScore - s > bestChange) {
+                  bestChange = oldScore - s;
+                  bestEdge = oe;
+                  bestOrder = trial;
+                }
+              }
+            }
+            cfg.set(oe.id, order);
           }
+          if (!bestEdge || !bestOrder) break;
+          cfg.set(bestEdge.id, bestOrder);
         }
-        if (!bestEdge || !bestOrder) break;
-        cfg.set(bestEdge.id, bestOrder);
+      };
+      // Two-basin search: grouping a color family usually needs the SAME
+      // rotation applied across several edges at once — each single-edge
+      // step pays same-seg crossings against still-unfixed neighbours, so
+      // pair/insertion moves never reach the grouped state from the
+      // barycenter seed. Restart the climb from a family-sorted seed
+      // (families by mean slot, stable within family): in that basin a
+      // family only splits when crossings genuinely pay for it. Keep
+      // whichever basin scores better on the full component objective.
+      const famSortOf = (order: string[]): string[] => {
+        const famMean = new Map<string, { sum: number; n: number }>();
+        order.forEach((l, i) => {
+          const c = colorOf.get(l) ?? '';
+          const f = famMean.get(c) ?? { sum: 0, n: 0 };
+          f.sum += i;
+          f.n++;
+          famMean.set(c, f);
+        });
+        const pos = new Map(order.map((l, i) => [l, i]));
+        return order.slice().sort((a, b) => {
+          const ca = colorOf.get(a) ?? '';
+          const cb = colorOf.get(b) ?? '';
+          if (ca !== cb) {
+            const fa = famMean.get(ca)!;
+            const fb = famMean.get(cb)!;
+            return fa.sum / fa.n - fb.sum / fb.n;
+          }
+          return pos.get(a)! - pos.get(b)!;
+        });
+      };
+      hillClimb();
+      const scoreA = compScore();
+      const snapA = new Map(multi.map((oe) => [oe.id, cfg.get(oe.id)!.slice()]));
+      for (const oe of multi) cfg.set(oe.id, famSortOf(cfg.get(oe.id)!));
+      hillClimb();
+      const scoreB = compScore();
+      const keptFamilyBasin = scoreB <= scoreA;
+      if (!keptFamilyBasin) for (const [id, ord] of snapA) cfg.set(id, ord);
+      if (DBG) {
+        const lbls = [...compNodes].map((n) => layout.nodes.get(n)?.label).filter(Boolean);
+        let f = 0;
+        for (const oe of multi) f += colorFrag(cfg.get(oe.id)!);
+        console.error(
+          `[untangle] hill comp: ${multi.length} multi-edges, basins ${scoreA.toFixed(1)}/${scoreB.toFixed(1)} ` +
+          `kept=${keptFamilyBasin ? 'family' : 'barycenter'}, frag=${f}, ` +
+          `stations: ${lbls.slice(0, 6).join(', ')}${lbls.length > 6 ? '…' : ''}`,
+        );
       }
     }
   }
@@ -533,7 +635,7 @@ export function untangleLineOrder(layout: Layout): void {
     const t = tally();
     console.error(
       `[untangle] comps=${nComps} (${nExhaustive} exhaustive, ${nHillClimb} hill) ` +
-      `partners=${partnerBlock.size} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps}`,
+      `partners=${partnerBlock.size} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
     );
   }
 }

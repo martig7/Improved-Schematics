@@ -506,7 +506,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         x0 = Math.min(x0, m.pos[0]); y0 = Math.min(y0, m.pos[1]);
         x1 = Math.max(x1, m.pos[0]); y1 = Math.max(y1, m.pos[1]);
       }
-      const mega = s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 9;
+      const mega = s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 8;
       const pad = mega ? r + 7 : r + 3;
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       if (mega) {
@@ -823,14 +823,24 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       };
       // longer tangents spread the S over more of the corridor (sketch-style
       // sweeps instead of tight Z-jogs)
-      const k = Math.min(spacing * 4, Math.max(gap, spacing * 2));
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
+      // The S only works when the jog makes forward progress along the
+      // travel direction: cap the tangent extension at the chord's
+      // LONGITUDINAL span. A pure lateral jog (lanes of two collinear edges
+      // ending at the same station of the corridor — Flatbush h3497 grays)
+      // has lon ~ 0; tangent-matched controls would balloon a 180-degree
+      // hairpin east of the node, so it degrades to a plain crossover chord.
+      const tx = dirA[0] + dirB[0];
+      const ty = dirA[1] + dirB[1];
+      const tLen = Math.hypot(tx, ty) || 1;
+      const lon = Math.abs(((pb[0] - pa[0]) * tx + (pb[1] - pa[1]) * ty) / tLen);
+      const k = Math.min(Math.min(spacing * 4, Math.max(gap, spacing * 2)), lon);
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
-      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3) {
-        // regressive turn: tangent-matched control points would bulge the
-        // bridge outward — a plain chord across the junction (hidden under
-        // its marker) reads as the line passing straight through
+      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5) {
+        // regressive turn (or no forward progress): tangent-matched control
+        // points would bulge the bridge outward — a plain chord across the
+        // junction reads as the line passing straight through
         d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
       } else {
         const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];

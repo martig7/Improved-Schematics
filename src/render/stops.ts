@@ -85,7 +85,7 @@ export function renderStops(
     // mega eligibility mirrors the pre-dots rule exactly: group-driven
     // capsules (members known) need >1 members; legacy callers need >1 marks
     const megaEligible = members !== undefined ? members > 1 : marks.length > 1;
-    if (megaEligible && (degByNode?.get(nodeId) ?? 0) >= 9) {
+    if (megaEligible && (degByNode?.get(nodeId) ?? 0) >= 8) {
       // Mega capsule for huge interchanges (user rule): the junction's whole
       // footprint becomes the marker — a rounded rectangle covering the
       // marks with padding — so lines may reverse/cross/weave freely
