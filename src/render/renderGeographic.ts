@@ -549,6 +549,42 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
   }
   orderLines(layout);
+  // capsule rule counts only SERVED members: a routeless platform in a
+  // group must not promote it to an interchange capsule
+  const served = servedStationIds(input.stations, input.routes);
+  const servedMembers = new Map<string, number>();
+  for (const g of groups) {
+    servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
+  }
+  // Nodes visually covered by a mega-station box: crossings there are
+  // hidden, so untangle treats them as free (user rule) — unavoidable
+  // crossings migrate under the boxes instead of showing on open track.
+  // Mirrors the renderer's mega rule (served members > 1, line degree >= 8)
+  // and covers neighbouring nodes inside the box's estimated footprint.
+  const freeCrossNodes = (() => {
+    const out = new Set<string>();
+    const ldeg = new Map<string, number>();
+    let maxLines = new Map<string, number>();
+    for (const e of layout.edges) {
+      ldeg.set(e.from, (ldeg.get(e.from) ?? 0) + e.lines.length);
+      ldeg.set(e.to, (ldeg.get(e.to) ?? 0) + e.lines.length);
+      maxLines.set(e.from, Math.max(maxLines.get(e.from) ?? 0, e.lines.length));
+      maxLines.set(e.to, Math.max(maxLines.get(e.to) ?? 0, e.lines.length));
+    }
+    const spacing = 3.5 + 1.5; // LINE_WIDTH + LINE_GAP (renderer lane pitch)
+    for (const st of supportM.stations.values()) {
+      if ((servedMembers.get(st.id) ?? st.members ?? 1) <= 1) continue;
+      if ((ldeg.get(st.nodeId) ?? 0) < 8) continue;
+      const c = nodePx.get(st.nodeId);
+      if (!c) continue;
+      const half = ((maxLines.get(st.nodeId) ?? 2) * spacing) / 2 + 14;
+      out.add(st.nodeId);
+      for (const [nid, p] of nodePx) {
+        if (Math.abs(p[0] - c[0]) <= half && Math.abs(p[1] - c[1]) <= half) out.add(nid);
+      }
+    }
+    return out;
+  })();
   // LOOM untangle: optimize per-corridor line order against crossings and
   // separations at nodes (the barycenter pass above only seeds it).
   // (dev A/B switch: OCTI_NO_UNTANGLE=1 keeps the barycenter order)
@@ -558,7 +594,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
       (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
     )
   ) {
-    untangleLineOrder(layout);
+    untangleLineOrder(layout, { freeCrossNodes });
   }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
@@ -582,13 +618,6 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     transfers,
     gridOverlay: waterOverlay + gridSvg,
     stations: (() => {
-      // capsule rule counts only SERVED members: a routeless platform in a
-      // group must not promote it to an interchange capsule
-      const served = servedStationIds(input.stations, input.routes);
-      const servedMembers = new Map<string, number>();
-      for (const g of groups) {
-        servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
-      }
       return [...supportM.stations.values()].map((st) => ({
         nodeId: st.nodeId,
         members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),

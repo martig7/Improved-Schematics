@@ -65,24 +65,58 @@ export function curveLaneJoin(
   if (Math.hypot(x - qa[0], y - qa[1]) > limit) return null;
   if (Math.hypot(x - qb[0], y - qb[1]) > limit) return null;
 
+  // Inner-corner overshoot: a lane drawn PAST the corner leaves the apex
+  // behind its end (possibly behind several vertices) — rejecting here used
+  // to drop the join to the connector bezier, which balloons 270 degrees
+  // (the 13 St "5 loop"). If the apex lies ON the lane behind the end, cut
+  // the lane back so it ends at the apex, then join normally. Apexes that
+  // are NOT on the lane (genuine reversals) still bail to the chord.
+  const cutBackTo = (poly: Pixel[], atStart: boolean, px: number, py: number): boolean => {
+    const n = poly.length;
+    const maxSegs = Math.min(4, n - 1);
+    for (let s = 0; s < maxSegs; s++) {
+      const i = atStart ? s : n - 1 - s; // outer vertex of this segment
+      const j = atStart ? s + 1 : n - 2 - s; // inner vertex
+      const ax = poly[j][0], ay = poly[j][1];
+      const vx = poly[i][0] - ax, vy = poly[i][1] - ay;
+      const len2 = vx * vx + vy * vy;
+      if (len2 < 1e-12) continue;
+      const u = ((px - ax) * vx + (py - ay) * vy) / len2;
+      if (u < -0.001 || u > 1.001) continue;
+      if (Math.hypot(px - (ax + vx * u), py - (ay + vy * u)) > 1.5) return false; // off the lane
+      if (atStart) poly.splice(0, s + 1, [px, py]);
+      else poly.splice(n - 1 - s, s + 1, [px, py]);
+      return true;
+    }
+    return false;
+  };
+  if ((x - qa1[0]) * d1[0] + (y - qa1[1]) * d1[1] <= 0) {
+    if (!cutBackTo(polyA, aAtStart, x, y) || polyA.length < 2) return null;
+  }
+  if ((x - qb1[0]) * d2[0] + (y - qb1[1]) * d2[1] <= 0) {
+    if (!cutBackTo(polyB, bAtStart, x, y) || polyB.length < 2) return null;
+  }
+  // re-resolve ends after any cutback (the polylines may have been mutated)
+  const ra = aAtStart ? polyA[0] : polyA[polyA.length - 1];
+  const ra1 = aAtStart ? polyA[1] : polyA[polyA.length - 2];
+  const rb = bAtStart ? polyB[0] : polyB[polyB.length - 1];
+  const rb1 = bAtStart ? polyB[1] : polyB[polyB.length - 2];
+
   // directions along each lane toward the apex
-  const la = Math.hypot(x - qa1[0], y - qa1[1]);
-  const lb = Math.hypot(x - qb1[0], y - qb1[1]);
+  const la = Math.hypot(x - ra1[0], y - ra1[1]);
+  const lb = Math.hypot(x - rb1[0], y - rb1[1]);
   if (la < 1e-6 || lb < 1e-6) return null;
-  const ua: Pixel = [(x - qa1[0]) / la, (y - qa1[1]) / la];
-  const ub: Pixel = [(x - qb1[0]) / lb, (y - qb1[1]) / lb];
-  // apex must be forward of both previous vertices
-  if ((x - qa1[0]) * d1[0] + (y - qa1[1]) * d1[1] <= 0) return null;
-  if ((x - qb1[0]) * d2[0] + (y - qb1[1]) * d2[1] <= 0) return null;
+  const ua: Pixel = [(x - ra1[0]) / la, (y - ra1[1]) / la];
+  const ub: Pixel = [(x - rb1[0]) / lb, (y - rb1[1]) / lb];
 
   // symmetric trim, never eating a whole end segment
   const f = Math.min(radius, la * 0.6, lb * 0.6);
   const a: Pixel = [x - ua[0] * f, y - ua[1] * f];
   const b: Pixel = [x - ub[0] * f, y - ub[1] * f];
-  qa[0] = a[0];
-  qa[1] = a[1];
-  qb[0] = b[0];
-  qb[1] = b[1];
+  ra[0] = a[0];
+  ra[1] = a[1];
+  rb[0] = b[0];
+  rb[1] = b[1];
   return { apex: [x, y], a: [a[0], a[1]], b: [b[0], b[1]] };
 }
 

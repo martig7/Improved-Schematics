@@ -836,8 +836,14 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const tLen = Math.hypot(tx, ty) || 1;
       const lon = Math.abs(((pb[0] - pa[0]) * tx + (pb[1] - pa[1]) * ty) / tLen);
       const k = Math.min(Math.min(spacing * 4, Math.max(gap, spacing * 2)), lon);
+      // the chord must progress along BOTH tangents, else the bezier loops
+      // backward around an endpoint (270-degree balloon)
+      const prog = Math.min(
+        (pb[0] - pa[0]) * dirA[0] + (pb[1] - pa[1]) * dirA[1],
+        (pb[0] - pa[0]) * dirB[0] + (pb[1] - pa[1]) * dirB[1],
+      );
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
-      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5) {
+      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5 || prog < 0) {
         // regressive turn (or no forward progress): tangent-matched control
         // points would bulge the bridge outward — a plain chord across the
         // junction reads as the line passing straight through

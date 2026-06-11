@@ -77,7 +77,16 @@ function inversions(a: number[]): number {
   return inv;
 }
 
-export function untangleLineOrder(layout: Layout): void {
+export interface UntangleOpts {
+  /** Nodes whose marker (mega-station box) visually covers the junction:
+   *  crossings and separations there are hidden under the box, so they cost
+   *  nothing (user rule) — the optimizer prefers moving unavoidable
+   *  crossings inside boxes instead of exposing them on open track. */
+  freeCrossNodes?: Set<string>;
+}
+
+export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void {
+  const freeCross = opts.freeCrossNodes ?? new Set<string>();
   const edges = layout.edges.filter((e) => e.from !== e.to && e.lines.length > 0);
   if (edges.length === 0) return;
 
@@ -245,6 +254,7 @@ export function untangleLineOrder(layout: Layout): void {
   const inStatSplitPenDegTwo = maxDeg * Math.max(pens.splitPen, pens.inStatSplitPen);
 
   const crossPenSameSeg = (nd: string): number => {
+    if (freeCross.has(nd)) return 0;
     const deg = nodeDeg(nd);
     if (deg === 1) return 0;
     if (isStation(nd)) {
@@ -254,12 +264,14 @@ export function untangleLineOrder(layout: Layout): void {
     return pens.sameSegCrossPen * deg;
   };
   const crossPenDiffSeg = (nd: string): number => {
+    if (freeCross.has(nd)) return 0;
     const deg = nodeDeg(nd);
     if (deg === 1) return 0;
     if (isStation(nd)) return pens.inStatCrossPenDiffSeg * deg;
     return pens.diffSegCrossPen * deg;
   };
   const sepPen = (nd: string): number => {
+    if (freeCross.has(nd)) return 0;
     const deg = nodeDeg(nd);
     if (deg === 1) return 0;
     if (isStation(nd)) {
