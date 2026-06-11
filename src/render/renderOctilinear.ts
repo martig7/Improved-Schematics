@@ -189,18 +189,105 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     return s ? s.has(edgeId) : true;
   };
 
+  // Drawn lane order per edge (lineOrder filtered to actually-drawn lines)
+  // and centered slot offsets.
+  const orderOf = new Map<string, string[]>();
+  const slotOf = new Map<string, number>(); // edgeId|lineId -> centered offset px
   for (const edge of layout.edges) {
-    const base = edgePolyline(edge);
-    if (base.length < 2) continue;
     const order = (edge.lineOrder.length > 0 ? edge.lineOrder : edge.lines.map((l) => l.id)).filter(
       (lineId) => lineById.has(lineId) && drawsOn(lineId, edge.id),
     );
+    orderOf.set(edge.id, order);
     const center = (order.length - 1) / 2;
+    order.forEach((lineId, i) => slotOf.set(edge.id + '|' + lineId, (i - center) * spacing));
+  }
+
+  // Lane-continuity bias: a join/leave changes the bundle's cardinality and
+  // RECENTERS it, wobbling every continuing line by half a slot — packed
+  // junction runs (downtown trunk: six nodes in ~70px) read as a braid even
+  // with zero ordering changes. Give each edge one scalar lateral bias so
+  // continuing lines keep their lateral position across nodes; the bundle
+  // rides slightly off the corridor centerline (clamped to ~one slot), which
+  // is invisible, instead of recentering at every composition change.
+  // Sign care: lateral offsets apply along the from→to normal; traversing an
+  // edge reversed flips the travel-frame sign.
+  const biasOf = new Map<string, number>();
+  {
+    interface Cnstr { eA: string; sA: number; slotA: number; eB: string; sB: number; slotB: number }
+    const constraints: Cnstr[] = [];
+    for (const [lineId, traversal] of layout.lineTraversals) {
+      if (!lineById.has(lineId)) continue;
+      for (let i = 1; i < traversal.length; i++) {
+        const a = traversal[i - 1];
+        const b = traversal[i];
+        if (a.edgeId === b.edgeId) continue;
+        const ea = edgeById.get(a.edgeId);
+        const eb = edgeById.get(b.edgeId);
+        if (!ea || !eb) continue;
+        const endA = a.reversed ? ea.from : ea.to;
+        const startB = b.reversed ? eb.to : eb.from;
+        if (endA !== startB) continue;
+        const slotA = slotOf.get(a.edgeId + '|' + lineId);
+        const slotB = slotOf.get(b.edgeId + '|' + lineId);
+        if (slotA === undefined || slotB === undefined) continue;
+        constraints.push({
+          eA: a.edgeId,
+          sA: a.reversed ? -1 : 1,
+          slotA,
+          eB: b.edgeId,
+          sB: b.reversed ? -1 : 1,
+          slotB,
+        });
+      }
+    }
+    const byEdge = new Map<string, Cnstr[]>();
+    for (const c of constraints) {
+      if (!byEdge.has(c.eA)) byEdge.set(c.eA, []);
+      if (!byEdge.has(c.eB)) byEdge.set(c.eB, []);
+      byEdge.get(c.eA)!.push(c);
+      byEdge.get(c.eB)!.push(c);
+    }
+    const maxBias = spacing;
+    const edgeIds = [...byEdge.keys()].sort();
+    for (let pass = 0; pass < 12; pass++) {
+      let moved = 0;
+      for (const eid of edgeIds) {
+        let sum = 0;
+        let n = 0;
+        for (const c of byEdge.get(eid)!) {
+          if (c.eA === eid) {
+            // sA*(slotA + bA) = sB*(slotB + bB)  =>  bA = sA*K - slotA
+            const k = c.sB * (c.slotB + (biasOf.get(c.eB) ?? 0));
+            sum += c.sA * k - c.slotA;
+            n++;
+          } else {
+            const k = c.sA * (c.slotA + (biasOf.get(c.eA) ?? 0));
+            sum += c.sB * k - c.slotB;
+            n++;
+          }
+        }
+        if (n === 0) continue;
+        const target = Math.max(-maxBias, Math.min(maxBias, sum / n));
+        const cur = biasOf.get(eid) ?? 0;
+        if (Math.abs(target - cur) > 0.05) moved++;
+        biasOf.set(eid, target);
+      }
+      if (moved === 0) break;
+    }
+  }
+
+  for (const edge of layout.edges) {
+    const base = edgePolyline(edge);
+    if (base.length < 2) continue;
+    const order = orderOf.get(edge.id) ?? [];
+    const bias = biasOf.get(edge.id) ?? 0;
     for (let i = 0; i < order.length; i++) {
       const lineId = order[i];
-      const o = (i - center) * spacing;
+      const o = (slotOf.get(edge.id + '|' + lineId) ?? 0) + bias;
       const poly =
-        o === 0 ? base.map((p) => p.slice() as Pixel) : offsetPolyline(base, o, /*simplify*/ false);
+        Math.abs(o) < 1e-9
+          ? base.map((p) => p.slice() as Pixel)
+          : offsetPolyline(base, o, /*simplify*/ false);
       segPath.set(edge.id + '|' + lineId, poly);
     }
   }
