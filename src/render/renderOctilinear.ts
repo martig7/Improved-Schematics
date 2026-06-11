@@ -439,16 +439,23 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       return null;
     };
+    interface StMarks {
+      nodeId: string;
+      members: number;
+      marks: Array<{ lineId: string; color: string; flagNode: string; pos: Pixel }>;
+      flagNodes: Set<string>;
+    }
+    const gathered: StMarks[] = [];
     for (const st of args.stations) {
       membersByNode!.set(st.nodeId, st.members);
-      const marks: Array<{ lineId: string; color: string; pos: Pixel }> = [];
+      const marks: StMarks['marks'] = [];
       const flagNodes = new Set<string>();
       for (const [lineId, flagNode] of st.stopNodes) {
         const line = lineById.get(lineId);
         if (!line) continue;
         const p = drawnEndAt.get(flagNode + '|' + lineId);
         if (!p) continue;
-        marks.push({ lineId, color: line.color, pos: [p[0], p[1]] });
+        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]] });
         flagNodes.add(flagNode);
       }
       // All marks at one node: their longitudinal scatter is a join-curve
@@ -468,7 +475,104 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
         }
       }
-      for (const m of marks) addStop(m.lineId, m.color, st.nodeId, m.pos);
+      gathered.push({ nodeId: st.nodeId, members: st.members, marks, flagNodes });
+    }
+
+    // ---- marker collision backup ------------------------------------------
+    // A mega box swallows nearby small markers (Court's pill under the
+    // Tacoma Av box). Detect overlaps and SLIDE the smaller station's marks
+    // along their own lanes, away from the box, until its marker sits clear.
+    const ldegOf = (nid: string): number => {
+      let n = 0;
+      for (const e of layout.edges) {
+        if (e.from !== nid && e.to !== nid) continue;
+        n += (orderOf.get(e.id) ?? e.lines.map((l) => l.id)).length;
+      }
+      return n;
+    };
+    const r = LINE_WIDTH * 0.7;
+    const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const m of s.marks) {
+        x0 = Math.min(x0, m.pos[0]); y0 = Math.min(y0, m.pos[1]);
+        x1 = Math.max(x1, m.pos[0]); y1 = Math.max(y1, m.pos[1]);
+      }
+      const mega = s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 9;
+      const pad = mega ? r + 7 : r + 1.5;
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+      if (mega) {
+        const minSide = 2 * r + 3;
+        if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
+        if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
+      }
+      return { x0, y0, x1, y1, mega };
+    };
+    const lanePointAt = (lineId: string, nodeId: string, awayFrom: Pixel, d: number): Pixel | null => {
+      let best: Pixel | null = null;
+      let bestD = -Infinity;
+      for (const edge of layout.edges) {
+        if (edge.from !== nodeId && edge.to !== nodeId) continue;
+        const poly = segPath.get(edge.id + '|' + lineId);
+        if (!poly || poly.length < 2) continue;
+        const pts = edge.from === nodeId ? poly : [...poly].reverse();
+        let acc = 0;
+        let p: Pixel = pts[pts.length - 1];
+        for (let i = 1; i < pts.length; i++) {
+          const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+          if (acc + seg >= d) {
+            const t = seg > 1e-9 ? (d - acc) / seg : 0;
+            p = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+            break;
+          }
+          acc += seg;
+        }
+        const dd = Math.hypot(p[0] - awayFrom[0], p[1] - awayFrom[1]);
+        if (dd > bestD) { bestD = dd; best = p; }
+      }
+      return best;
+    };
+    const megas = gathered.filter((s) => boxOf(s).mega);
+    const slid: Array<{ nodeId: string; at: Pixel }> = [];
+    for (const s of gathered) {
+      const sb = boxOf(s);
+      if (sb.mega || s.marks.length === 0) continue;
+      for (const m of megas) {
+        const mb = boxOf(m);
+        const overlaps = sb.x0 < mb.x1 + 2 && sb.x1 > mb.x0 - 2 && sb.y0 < mb.y1 + 2 && sb.y1 > mb.y0 - 2;
+        if (!overlaps) continue;
+        const center: Pixel = [(mb.x0 + mb.x1) / 2, (mb.y0 + mb.y1) / 2];
+        for (let d = 4; d <= 48; d += 4) {
+          const moved = s.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
+          if (moved.some((p) => !p)) break;
+          const trial = s.marks.map((mk, i) => ({ ...mk, pos: moved[i]! }));
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const t of trial) {
+            x0 = Math.min(x0, t.pos[0]); y0 = Math.min(y0, t.pos[1]);
+            x1 = Math.max(x1, t.pos[0]); y1 = Math.max(y1, t.pos[1]);
+          }
+          const pad = r + 1.5;
+          if (x0 - pad >= mb.x1 + 2 || x1 + pad <= mb.x0 - 2 || y0 - pad >= mb.y1 + 2 || y1 + pad <= mb.y0 - 2) {
+            for (let i = 0; i < s.marks.length; i++) s.marks[i].pos = moved[i]!;
+            slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
+            break;
+          }
+        }
+        break; // resolved (or gave up) against the first overlapping mega
+      }
+    }
+    if (
+      slid.length > 0 &&
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    ) {
+      for (const s of slid) {
+        const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
+        console.error(`[stops] slid "${label}" clear of mega box at (${s.at[0].toFixed(0)},${s.at[1].toFixed(0)})`);
+      }
+    }
+
+    for (const s of gathered) {
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos);
     }
   } else {
     for (const edge of layout.edges) {
