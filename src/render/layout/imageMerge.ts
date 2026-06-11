@@ -355,6 +355,17 @@ export function separateFusedStations(
       // split (a 9px hop to an adjacent junction must not win "best" and then
       // bail — the true position usually projects cleanly onto the corridor
       // just past it; Lake Av sits beyond the 83 Av junction 9px away).
+      // A candidate must CARRY one of the station's serving lines: the stop
+      // flag only renders on an edge that carries the line, so splitting onto
+      // a foreign corridor makes the station vanish entirely (no marker, no
+      // label). With no valid candidate the pair stays fused — a shared
+      // capsule beats a disappeared station.
+      const serves = (e: SupportEdge): boolean => {
+        const lines = st.stopLines;
+        if (!lines || lines.size === 0) return true;
+        for (const l of lines) if (e.lineIds.has(l)) return true;
+        return false;
+      };
       const candEdges = new Set<string>();
       const visited = new Set<string>([nid]);
       const frontier = [nid];
@@ -366,9 +377,9 @@ export function separateFusedStations(
           if (!e || !pts || pts.length < 2) continue;
           let arc = 0;
           for (let i = 1; i < pts.length; i++) arc += dist(pts[i - 1], pts[i]);
-          if (arc >= 2 * MIN_SPLIT_ARC) {
+          if (arc >= 2 * MIN_SPLIT_ARC && serves(e)) {
             candEdges.add(eid);
-          } else {
+          } else if (arc < 2 * MIN_SPLIT_ARC) {
             // too short to split: hop across it and consider the far side
             const other = e.from === cur ? e.to : e.from;
             if (!visited.has(other)) {
@@ -378,6 +389,7 @@ export function separateFusedStations(
           }
         }
       }
+      const candidates: Array<NonNullable<typeof best>> = [];
       for (const eid of candEdges) {
         const e = h.edges.get(eid)!;
         const pts = img.paths.get(eid) ?? e.points;
@@ -387,6 +399,7 @@ export function separateFusedStations(
           arc += dist(pts[i - 1], pts[i]);
           arcs.push(arc);
         }
+        let bestOnEdge: NonNullable<typeof best> | null = null;
         for (let i = 1; i < pts.length; i++) {
           const a = pts[i - 1];
           const b = pts[i];
@@ -399,38 +412,55 @@ export function separateFusedStations(
           const p: Pixel = [a[0] + vx * t, a[1] + vy * t];
           const d = dist(st.truePos!, p);
           const arcAt = arcs[i - 1] + Math.sqrt(c2) * t;
-          if (best && d >= best.d) continue;
-          best = { eid, segIdx: i - 1, t, p, d, arcFromSplit: arcAt, arcTotal: arc };
+          if (bestOnEdge && d >= bestOnEdge.d) continue;
+          bestOnEdge = { eid, segIdx: i - 1, t, p, d, arcFromSplit: arcAt, arcTotal: arc };
         }
+        if (bestOnEdge) candidates.push(bestOnEdge);
       }
-      if (!best) continue;
-      // keep the split point a minimum arc from both edge ends so the two
-      // markers actually separate (a mostly-perpendicular true offset
-      // projects right next to the shared node otherwise)
-      const arc = Math.max(MIN_SPLIT_ARC, Math.min(best.arcTotal - MIN_SPLIT_ARC, best.arcFromSplit));
+      // same-side candidates first (the marker should sit on the side of the
+      // node its true position lies on), then by projection distance
+      const side = (c: (typeof candidates)[number]): number => {
+        const dx = st.truePos![0] - nodePos[0];
+        const dy = st.truePos![1] - nodePos[1];
+        return (c.p[0] - nodePos[0]) * dx + (c.p[1] - nodePos[1]) * dy > 0 ? 0 : 1;
+      };
+      candidates.sort((x, y) => side(x) - side(y) || x.d - y.d);
 
-      const e = h.edges.get(best.eid)!;
-      const pts = (img.paths.get(best.eid) ?? e.points).map((p) => p.slice() as Pixel);
-      // locate the clamped arc on the polyline
+      // try candidates closest-first until one yields a split point with real
+      // visual separation from the fused node (an edge can pass right next to
+      // it mid-arc, where the end clamps don't help)
       let segIdx = 0;
-      let t = 0;
-      let splitP: Pixel = pts[0];
-      {
+      let splitP: Pixel | null = null;
+      for (const cand of candidates) {
+        const arc = Math.max(MIN_SPLIT_ARC, Math.min(cand.arcTotal - MIN_SPLIT_ARC, cand.arcFromSplit));
+        const pts = img.paths.get(cand.eid) ?? h.edges.get(cand.eid)!.points;
         let acc = 0;
+        let sIdx = 0;
+        let sT = 0;
+        let sP: Pixel = pts[0];
         for (let i = 1; i < pts.length; i++) {
           const segLen = dist(pts[i - 1], pts[i]);
           if (acc + segLen >= arc || i === pts.length - 1) {
-            segIdx = i - 1;
-            t = segLen > 1e-9 ? Math.min(1, Math.max(0, (arc - acc) / segLen)) : 0;
-            splitP = [
-              pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
-              pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+            sIdx = i - 1;
+            sT = segLen > 1e-9 ? Math.min(1, Math.max(0, (arc - acc) / segLen)) : 0;
+            sP = [
+              pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * sT,
+              pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * sT,
             ];
             break;
           }
           acc += segLen;
         }
+        if (dist(sP, nodePos) < MIN_SPLIT_ARC) continue;
+        best = cand;
+        segIdx = sIdx;
+        splitP = sP;
+        break;
       }
+      if (!best || !splitP) continue;
+
+      const e = h.edges.get(best.eid)!;
+      const pts = (img.paths.get(best.eid) ?? e.points).map((p) => p.slice() as Pixel);
 
       const head = pts.slice(0, segIdx + 1);
       const tail = pts.slice(segIdx + 1);

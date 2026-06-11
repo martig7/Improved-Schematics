@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCanonicalOffsets, offsetPolyline, miterLaneJoin } from './offsets';
+import { computeCanonicalOffsets, offsetPolyline, curveLaneJoin } from './offsets';
 import { LINE_WIDTH, LINE_GAP } from '../constants';
 import type { Layout, LayoutEdge, LineRef, Pixel } from './types';
 
@@ -78,28 +78,32 @@ test('offsetPolyline shifts a straight horizontal line perpendicularly', () => {
   assert.ok(Math.abs(out[0][0]) < 1e-6); // x unchanged
 });
 
-test('miterLaneJoin snaps a corner lane pair to the segment intersection', () => {
+test('curveLaneJoin trims a corner pair and reports the apex', () => {
   const polyA: Pixel[] = [[0, 2], [9, 2]];    // heading +x, ends short of the corner
   const polyB: Pixel[] = [[12, 3], [12, 10]]; // heading +y, starts past the corner
-  const ok = miterLaneJoin(polyA, false, polyB, true, 20);
-  assert.equal(ok, true);
-  assert.deepEqual(polyA[1], [12, 2]);
-  assert.deepEqual(polyB[0], [12, 2]);
+  const join = curveLaneJoin(polyA, false, polyB, true, 6, 20);
+  assert.ok(join, 'join produced');
+  assert.deepEqual(join!.apex, [12, 2]);
+  // trimmed endpoints sit `f` back from the apex along each lane
+  assert.deepEqual(polyA[1], join!.a);
+  assert.deepEqual(polyB[0], join!.b);
+  assert.ok(polyA[1][0] < 12 && Math.abs(polyA[1][1] - 2) < 1e-9, `A trimmed back (${polyA[1]})`);
+  assert.ok(polyB[0][1] > 2 && Math.abs(polyB[0][0] - 12) < 1e-9, `B trimmed back (${polyB[0]})`);
 });
 
-test('miterLaneJoin leaves parallel lane jogs to the connector', () => {
+test('curveLaneJoin leaves parallel lane jogs to the connector', () => {
   const polyA: Pixel[] = [[0, 0], [10, 0]];
   const polyB: Pixel[] = [[10, 5.5], [20, 5.5]];
-  const ok = miterLaneJoin(polyA, false, polyB, true, 20);
-  assert.equal(ok, false);
+  const join = curveLaneJoin(polyA, false, polyB, true, 6, 20);
+  assert.equal(join, null);
   assert.deepEqual(polyA[1], [10, 0]);
   assert.deepEqual(polyB[0], [10, 5.5]);
 });
 
-test('miterLaneJoin rejects miters beyond the limit', () => {
+test('curveLaneJoin rejects corners beyond the limit', () => {
   // near-collinear: intersection lies far beyond both endpoints
   const polyA: Pixel[] = [[0, 0], [10, 0]];
   const polyB: Pixel[] = [[12, 2], [22, 1]];
-  const ok = miterLaneJoin(polyA, false, polyB, true, 5);
-  assert.equal(ok, false);
+  const join = curveLaneJoin(polyA, false, polyB, true, 6, 5);
+  assert.equal(join, null);
 });

@@ -16,24 +16,32 @@ function perp(v: Pixel): Pixel {
   return [-v[1], v[0]];
 }
 
+export interface LaneJoin {
+  apex: Pixel; // the sharp corner the two lane lines would meet at
+  a: Pixel;    // lane A's new (trimmed) endpoint
+  b: Pixel;    // lane B's new (trimmed) endpoint
+}
+
 /**
- * Miter-join two lane polylines that meet at a node: move both endpoints to
- * the intersection of their end segments, so a lane continuing around a
- * corner turns once at the proper parallel-offset corner instead of
- * stair-stepping through a connector jog. Mutates the endpoint points in
- * place. Returns false (and leaves both untouched) when the segments are
- * near-parallel (a genuine lateral lane jog — the chord connector is right),
- * when the miter point lies beyond `limit` from either endpoint (too-sharp
- * corner), or when it would fold a segment back on itself.
+ * Curve-join two lane polylines that meet at a node: trim both ends back
+ * from the intersection of their end segments and report the apex, so the
+ * renderer can bridge them with a quadratic through the corner — a lane
+ * continuing around a corner sweeps like an interior fillet instead of
+ * snapping to a sharp miter point. Mutates the endpoint points in place.
+ * Returns null (and leaves both untouched) when the segments are
+ * near-parallel (a genuine lateral lane jog — the S connector is right),
+ * when the apex lies beyond `limit` from either endpoint (too-sharp
+ * corner), or when trimming would fold a segment back on itself.
  */
-export function miterLaneJoin(
+export function curveLaneJoin(
   polyA: Pixel[],
   aAtStart: boolean,
   polyB: Pixel[],
   bAtStart: boolean,
+  radius: number,
   limit: number,
-): boolean {
-  if (polyA.length < 2 || polyB.length < 2) return false;
+): LaneJoin | null {
+  if (polyA.length < 2 || polyB.length < 2) return null;
   const qa = aAtStart ? polyA[0] : polyA[polyA.length - 1];
   const qa1 = aAtStart ? polyA[1] : polyA[polyA.length - 2];
   const qb = bAtStart ? polyB[0] : polyB[polyB.length - 1];
@@ -43,23 +51,34 @@ export function miterLaneJoin(
   const d2: Pixel = [qb[0] - qb1[0], qb[1] - qb1[1]];
   const denom = d1[0] * d2[1] - d1[1] * d2[0];
   const scale = Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]);
-  if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return false; // parallel
+  if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return null; // parallel
 
   const t = ((qb1[0] - qa1[0]) * d2[1] - (qb1[1] - qa1[1]) * d2[0]) / denom;
   const x = qa1[0] + t * d1[0];
   const y = qa1[1] + t * d1[1];
 
-  if (Math.hypot(x - qa[0], y - qa[1]) > limit) return false;
-  if (Math.hypot(x - qb[0], y - qb[1]) > limit) return false;
-  // the moved endpoint must stay forward of the previous vertex
-  if ((x - qa1[0]) * d1[0] + (y - qa1[1]) * d1[1] <= 0) return false;
-  if ((x - qb1[0]) * d2[0] + (y - qb1[1]) * d2[1] <= 0) return false;
+  if (Math.hypot(x - qa[0], y - qa[1]) > limit) return null;
+  if (Math.hypot(x - qb[0], y - qb[1]) > limit) return null;
 
-  qa[0] = x;
-  qa[1] = y;
-  qb[0] = x;
-  qb[1] = y;
-  return true;
+  // directions along each lane toward the apex
+  const la = Math.hypot(x - qa1[0], y - qa1[1]);
+  const lb = Math.hypot(x - qb1[0], y - qb1[1]);
+  if (la < 1e-6 || lb < 1e-6) return null;
+  const ua: Pixel = [(x - qa1[0]) / la, (y - qa1[1]) / la];
+  const ub: Pixel = [(x - qb1[0]) / lb, (y - qb1[1]) / lb];
+  // apex must be forward of both previous vertices
+  if ((x - qa1[0]) * d1[0] + (y - qa1[1]) * d1[1] <= 0) return null;
+  if ((x - qb1[0]) * d2[0] + (y - qb1[1]) * d2[1] <= 0) return null;
+
+  // symmetric trim, never eating a whole end segment
+  const f = Math.min(radius, la * 0.6, lb * 0.6);
+  const a: Pixel = [x - ua[0] * f, y - ua[1] * f];
+  const b: Pixel = [x - ub[0] * f, y - ub[1] * f];
+  qa[0] = a[0];
+  qa[1] = a[1];
+  qb[0] = b[0];
+  qb[1] = b[1];
+  return { apex: [x, y], a: [a[0], a[1]], b: [b[0], b[1]] };
 }
 
 /**

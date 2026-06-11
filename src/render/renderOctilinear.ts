@@ -7,7 +7,7 @@ import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
-import { offsetPolyline, miterLaneJoin } from './layout/offsets';
+import { offsetPolyline, curveLaneJoin } from './layout/offsets';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -133,7 +133,11 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   // exits and 45° course bends read as smooth turns instead of hard elbows
   // (LOOM transitmap renders its lines smoothed the same way). Endpoints are
   // untouched — miter joins and connectors attach exactly as before.
-  const FILLET_R = LINE_WIDTH * 2;
+  // One smoothing radius everywhere (interior fillets + node join curves):
+  // large enough to read as a sweep next to a multi-lane bundle, clamped per
+  // corner to the available segment length.
+  const SMOOTH_R = LINE_WIDTH * 5;
+  const FILLET_R = SMOOTH_R;
   const fmt = (p: Pixel) => p[0].toFixed(1) + ',' + p[1].toFixed(1);
   const pushSeg = (lineId: string, poly: Pixel[]) => {
     let d = dByLine.get(lineId);
@@ -196,14 +200,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
   }
 
-  // Miter pass: where a line continues across a node, snap the two lane
-  // endpoints to the intersection of their end segments — the lane turns
-  // once at the proper parallel-offset corner instead of stair-stepping
-  // through a connector jog (outer lanes at bundle bends). Near-parallel
-  // ends (a genuine lateral lane jog) and over-limit miters keep the chord
-  // connector below. Endpoints move at most once.
+  // Join pass: where a line continues across a node, trim the two lane ends
+  // back from the intersection of their end segments and bridge them with a
+  // quadratic through the corner apex — the lane sweeps around the node like
+  // an interior fillet instead of snapping to a sharp miter point (the user's
+  // "90 degree bends at bundle ends"). Near-parallel ends (a genuine lateral
+  // lane jog) and over-limit corners keep the S connector below. Endpoints
+  // move at most once. Stops at join nodes draw at the curve's midpoint (on
+  // the line), not the trimmed endpoint.
   const mitered = new Set<string>(); // lineId|node|pairKey
   const endMoved = new Set<string>(); // edgeId|lineId|end
+  const joinCurves: Array<{ lineId: string; a: Pixel; apex: Pixel; b: Pixel }> = [];
+  const joinStopPos = new Map<string, Pixel>(); // nodeId|lineId -> on-curve position
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     for (let i = 1; i < traversal.length; i++) {
@@ -224,17 +232,33 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const keyA = a.edgeId + '|' + lineId + '|' + (aAtStart ? 's' : 'e');
       const keyB = b.edgeId + '|' + lineId + '|' + (bAtStart ? 's' : 'e');
       if (endMoved.has(keyA) || endMoved.has(keyB)) continue;
-      if (miterLaneJoin(pA, aAtStart, pB, bAtStart, spacing * 4)) {
+      const join = curveLaneJoin(pA, aAtStart, pB, bAtStart, SMOOTH_R, spacing * 4);
+      if (join) {
         endMoved.add(keyA);
         endMoved.add(keyB);
         const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
         mitered.add(lineId + '|' + endA + '|' + pairKey);
+        joinCurves.push({ lineId, a: join.a, apex: join.apex, b: join.b });
+        const stopKey = endA + '|' + lineId;
+        if (!joinStopPos.has(stopKey)) {
+          // quadratic midpoint Q(0.5) = (a + 2*apex + b) / 4 — on the curve
+          joinStopPos.set(stopKey, [
+            (join.a[0] + 2 * join.apex[0] + join.b[0]) / 4,
+            (join.a[1] + 2 * join.apex[1] + join.b[1]) / 4,
+          ]);
+        }
       }
     }
   }
 
   for (const [key, poly] of segPath) {
     pushSeg(key.slice(key.indexOf('|') + 1), poly);
+  }
+  for (const jc of joinCurves) {
+    let d = dByLine.get(jc.lineId);
+    if (!d) dByLine.set(jc.lineId, (d = []));
+    d.push('M' + fmt(jc.a), 'Q' + fmt(jc.apex) + ' ' + fmt(jc.b));
+    segments.push({ p1: jc.a, p2: jc.b });
   }
 
   /** A line's drawn endpoint at a node (offset polylines run from→to). */
@@ -252,6 +276,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   // POSITION resolves from any DRAWN edge of the line at that node: the flag
   // itself may sit on a filtered-out remnant edge (tail past a terminus).
   const drawnEndAt = new Map<string, Pixel>(); // nodeId|lineId -> ribbon endpoint
+  for (const [key, p] of joinStopPos) drawnEndAt.set(key, p);
   for (const edge of layout.edges) {
     for (const l of edge.lines) {
       for (const nodeId of [edge.from, edge.to]) {
@@ -322,7 +347,9 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const len = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
         return [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
       };
-      const k = Math.min(gap, spacing * 2);
+      // longer tangents spread the S over more of the corridor (sketch-style
+      // sweeps instead of tight Z-jogs)
+      const k = Math.min(spacing * 4, Math.max(gap, spacing * 2));
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
       const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];
