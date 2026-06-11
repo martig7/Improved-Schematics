@@ -425,14 +425,50 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
+    const laneDirAt = (lineId: string, nodeId: string): Pixel | null => {
+      for (const edge of layout.edges) {
+        if (edge.from !== nodeId && edge.to !== nodeId) continue;
+        const poly = segPath.get(edge.id + '|' + lineId);
+        if (!poly || poly.length < 2) continue;
+        const atStart = edge.from === nodeId;
+        const a = atStart ? poly[0] : poly[poly.length - 1];
+        const b = atStart ? poly[1] : poly[poly.length - 2];
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (len < 1e-6) continue;
+        return [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+      }
+      return null;
+    };
     for (const st of args.stations) {
       membersByNode!.set(st.nodeId, st.members);
+      const marks: Array<{ lineId: string; color: string; pos: Pixel }> = [];
+      const flagNodes = new Set<string>();
       for (const [lineId, flagNode] of st.stopNodes) {
         const line = lineById.get(lineId);
         if (!line) continue;
         const p = drawnEndAt.get(flagNode + '|' + lineId);
-        if (p) addStop(lineId, line.color, st.nodeId, p);
+        if (!p) continue;
+        marks.push({ lineId, color: line.color, pos: [p[0], p[1]] });
+        flagNodes.add(flagNode);
       }
+      // All marks at one node: their longitudinal scatter is a join-curve
+      // artifact (each lane trims/curves differently), and the farthest-pair
+      // capsule axis would run ALONG the bundle — lines visibly piercing a
+      // lengthwise pill (Court). Project marks onto the bundle cross-section
+      // so the capsule spans ACROSS the lanes. Multi-node stations (diverged
+      // corridors) keep their true spanning marks.
+      if (marks.length > 1 && flagNodes.size === 1) {
+        const dir = laneDirAt(marks[0].lineId, [...flagNodes][0]);
+        if (dir) {
+          const cx = marks.reduce((s, m) => s + m.pos[0], 0) / marks.length;
+          const cy = marks.reduce((s, m) => s + m.pos[1], 0) / marks.length;
+          for (const m of marks) {
+            const lon = (m.pos[0] - cx) * dir[0] + (m.pos[1] - cy) * dir[1];
+            m.pos = [m.pos[0] - lon * dir[0], m.pos[1] - lon * dir[1]];
+          }
+        }
+      }
+      for (const m of marks) addStop(m.lineId, m.color, st.nodeId, m.pos);
     }
   } else {
     for (const edge of layout.edges) {
