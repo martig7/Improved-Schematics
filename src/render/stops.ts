@@ -64,7 +64,7 @@ export function renderStops(
       continue;
     }
 
-    if ((degByNode?.get(nodeId) ?? 0) >= 4) {
+    if ((degByNode?.get(nodeId) ?? 0) >= 9) {
       // Mega capsule for huge interchanges (user rule): the junction's whole
       // footprint becomes the marker — a rounded rectangle covering the
       // marks with padding — so lines may reverse/cross/weave freely

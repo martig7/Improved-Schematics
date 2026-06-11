@@ -581,10 +581,14 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
 
+  // LINE degree: total drawn lines across the node's incident edges — the
+  // mega-capsule trigger. Two 3-line bundles crossing perpendicular = 12;
+  // a thin capsule only fails when the bundles are this large.
   const degByNode = new Map<string, number>();
   for (const e of layout.edges) {
-    degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + 1);
-    degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + 1);
+    const n = (orderOf.get(e.id) ?? e.lines.map((l) => l.id)).length;
+    degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + n);
+    degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
   }
   const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
