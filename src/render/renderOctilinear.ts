@@ -530,14 +530,21 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const k = Math.min(spacing * 4, Math.max(gap, spacing * 2));
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
-      const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];
-      const c2: Pixel = [pb[0] - dirB[0] * k, pb[1] - dirB[1] * k];
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
-      d.push(
-        'C' + c1[0].toFixed(1) + ',' + c1[1].toFixed(1) + ' ' +
-        c2[0].toFixed(1) + ',' + c2[1].toFixed(1) + ' ' +
-        pb[0].toFixed(1) + ',' + pb[1].toFixed(1),
-      );
+      if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3) {
+        // regressive turn: tangent-matched control points would bulge the
+        // bridge outward — a plain chord across the junction (hidden under
+        // its marker) reads as the line passing straight through
+        d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
+      } else {
+        const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];
+        const c2: Pixel = [pb[0] - dirB[0] * k, pb[1] - dirB[1] * k];
+        d.push(
+          'C' + c1[0].toFixed(1) + ',' + c1[1].toFixed(1) + ' ' +
+          c2[0].toFixed(1) + ',' + c2[1].toFixed(1) + ' ' +
+          pb[0].toFixed(1) + ',' + pb[1].toFixed(1),
+        );
+      }
       segments.push({ p1: pa, p2: pb });
     }
   }

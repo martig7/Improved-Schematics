@@ -474,9 +474,9 @@ interface MergeInput {
  * Endpoints are always preserved. Genuine V-corners survive: the cut needs
  * the legs to stay within eps after `minArc` of travel, not merely touch.
  */
-export function cutPolylineFolds(pts: Pixel[], eps: number): Pixel[] {
+export function cutPolylineFolds(pts: Pixel[], eps: number, minArcOverride?: number): Pixel[] {
   if (pts.length < 4) return pts;
-  const minArc = Math.max(4 * eps, 24);
+  const minArc = minArcOverride ?? Math.max(4 * eps, 24);
   let out = pts;
   for (let pass = 0; pass < 8; pass++) {
     const arcs: number[] = [0];

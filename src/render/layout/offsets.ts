@@ -52,6 +52,11 @@ export function curveLaneJoin(
   const denom = d1[0] * d2[1] - d1[1] * d2[0];
   const scale = Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]);
   if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return null; // parallel
+  // regressive turn (> ~107°): the lane-line intersection lies BEHIND the
+  // corner and the "join" would loop out and back (the Republican St yellow
+  // hook). d1 points INTO the node, d2 points INTO the node from the other
+  // side — alignment means the line nearly reverses. Leave it to the chord.
+  if (d1[0] * d2[0] + d1[1] * d2[1] > 0.3 * scale) return null;
 
   const t = ((qb1[0] - qa1[0]) * d2[1] - (qb1[1] - qa1[1]) * d2[0]) / denom;
   const x = qa1[0] + t * d1[0];

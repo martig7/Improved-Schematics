@@ -19,6 +19,7 @@ import {
   SOFT_INF,
   type Penalties,
 } from './gridGraph';
+import { cutPolylineFolds } from './topo';
 
 export interface OctiOptions {
   /** Geographic-course enforcement penalty (LOOM's -G enfGeoPen). A grid edge
@@ -1284,13 +1285,65 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     }
   }
 
-  const finish = (imgP: Image): Image =>
-    pinStationTermini(expandContraction(contractSplits(imgP, hK, splits), h, merged), h);
+  const finish = (imgP: Image): Image => {
+    const joined = expandContraction(contractSplits(imgP, hK, splits), h, merged);
+    // Drawn-level detour excision runs on the REJOINED edge paths: planarize
+    // splits edges at crossings into straight sub-paths, so a port-congestion
+    // hook around a saturated junction cluster (the Republican St yellow:
+    // sub-cell node pairs can't be grid-adjacent and detour multi-hop) only
+    // exists once contractSplits stitches them back together. A path that
+    // returns within ~3/4 cell of itself after 1.5+ cells of arc is excised;
+    // the bridge lands inside the cluster, under the interchange marker.
+    // Stations are h-level NODES (path endpoints, preserved by the cut).
+    const paths = new Map(joined.paths);
+    let cuts = 0;
+    for (const [id, p] of paths) {
+      if (p.length < 3) continue;
+      // sub-cell span with a multi-hop detour: replace with the chord
+      const span = dist(p[0], p[p.length - 1]);
+      if (span < dg * 1.2 && polyLen(p) > Math.max(2 * span, dg * 0.75)) {
+        paths.set(id, [p[0], p[p.length - 1]]);
+        cuts++;
+        continue;
+      }
+      if (p.length <= 3) continue;
+      // minArc one cell: the return-distance guard (eps = 3/4 cell) already
+      // protects genuine U-turns — any real grid U returns a full cell away
+      const cut = cutPolylineFolds(p, dg * 0.75, dg);
+      if (cut.length !== p.length) {
+        cuts++;
+        paths.set(id, cut);
+      }
+    }
+    if (DBG && cuts) console.error(`[octi] drawn-level detour cuts: ${cuts}`);
+    const traceP =
+      typeof process !== 'undefined'
+        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_PATHS
+        : undefined;
+    if (traceP) {
+      const [tx, ty] = traceP.split(',').map(Number);
+      for (const [id, p] of paths) {
+        if (p.some((q) => Math.hypot(q[0] - tx, q[1] - ty) < 30)) {
+          console.error(`[octi] path ${id}: ${p.map((q) => `(${q[0].toFixed(0)},${q[1].toFixed(0)})`).join(' ')}`);
+        }
+      }
+    }
+    return pinStationTermini({ placement: joined.placement, paths, cellSize: joined.cellSize }, h);
+  };
 
   for (let attempt = 0; ; attempt++) {
     const grid = new OctiGridGraph(bounds(h), dg, pens);
     const result = tryDraw(hC, grid, opts, info);
-    if (result) return finish(expandImage(result, hP, hC, info));
+    if (result) {
+      // Drawn-level detour-loop excision: a routed path that returns within
+      // ~3/4 cell of itself after 3+ cells of arc is a port-congestion
+      // detour around a saturated junction (the Republican St yellow loop —
+      // the router prefers a multi-cell loop over a SOFT_INF violation).
+      // Excise it; the short bridge lands at the junction, under its
+      // marker, and the line reads as passing straight through. Genuine
+      // terminal loops are multi-edge cycles and are untouched.
+      return finish(expandImage(result, hP, hC, info));
+    }
     if (attempt >= MAX_STALL_RETRIES) {
       // Fallback: snap each skeleton node to its nearest base centre; direct
       // segments; stations redistributed along them as usual.
