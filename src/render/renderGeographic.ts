@@ -26,6 +26,7 @@ import {
 } from './transfers';
 import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
+import { untangleLineOrder } from './layout/untangle';
 
 export interface GeoInput {
   routes: Route[];
@@ -547,6 +548,17 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
   }
   orderLines(layout);
+  // LOOM untangle: optimize per-corridor line order against crossings and
+  // separations at nodes (the barycenter pass above only seeds it).
+  // (dev A/B switch: OCTI_NO_UNTANGLE=1 keeps the barycenter order)
+  if (
+    !(
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
+    )
+  ) {
+    untangleLineOrder(layout);
+  }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
