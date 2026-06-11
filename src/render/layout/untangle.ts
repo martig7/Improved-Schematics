@@ -160,6 +160,44 @@ export function untangleLineOrder(layout: Layout): void {
   const connOccurs = (line: string, nd: string, a: OptEdge, b: OptEdge): boolean =>
     !linesWithTrav.has(line) || connPairs.has(pairKey(line, nd, a.id, b.id));
 
+  // ---- partner lines (LOOM OptGraph::partnerLines) ---------------------------
+  // Lines riding IDENTICAL opt-edge sets always travel together: collapse
+  // each group to its representative and optimize it as ONE slot — partners
+  // can never profit from internal reordering, and as a block they are never
+  // separated by a third line (the aesthetic ideal). The block expands in
+  // place at write-back. Cardinality often drops to 1, which both shrinks the
+  // solution space and decomposes components below.
+  const partnerBlock = new Map<string, string[]>(); // representative -> members
+  {
+    const edgesOfLine = new Map<string, number[]>();
+    for (const oe of optEdges) {
+      for (const l of oe.lines) {
+        if (!edgesOfLine.has(l)) edgesOfLine.set(l, []);
+        edgesOfLine.get(l)!.push(oe.id);
+      }
+    }
+    const bySig = new Map<string, string[]>();
+    for (const [l, ids] of edgesOfLine) {
+      const sig = ids.sort((a, b) => a - b).join('.');
+      if (!bySig.has(sig)) bySig.set(sig, []);
+      bySig.get(sig)!.push(l);
+    }
+    const drop = new Set<string>();
+    for (const members of bySig.values()) {
+      if (members.length < 2) continue;
+      members.sort();
+      partnerBlock.set(members[0], members);
+      for (const m of members.slice(1)) drop.add(m);
+    }
+    if (drop.size > 0) {
+      for (const oe of optEdges) {
+        if (oe.lines.some((l) => drop.has(l))) {
+          oe.lines = oe.lines.filter((l) => !drop.has(l));
+        }
+      }
+    }
+  }
+
   // ---- circular edge order per node (departure angles, corridor scale) ------
   const TANGENT_WALK = 20; // px; noise-scale tangents mirror orders (octi lesson)
   const angleAt = (oe: OptEdge, nd: string): number => {
@@ -351,11 +389,18 @@ export function untangleLineOrder(layout: Layout): void {
     );
   }
 
-  // ---- connected components ---------------------------------------------------
+  // ---- connected components (LOOM splitSingleLineEdgs, semantically) ---------
+  // A cardinality-1 edge has no ordering variables, so it cannot couple its
+  // two endpoints — components form over MULTI-line edges only. This is
+  // LOOM's single-line edge cut without the graph surgery: the network
+  // decomposes into many small components, most of which fall under the
+  // exhaustive-solver threshold (global optima instead of one big hill
+  // climb). Card-1 edges keep their trivial ordering and still contribute
+  // their fixed marks to neighbours' node scores via optAdj.
   const compOf = new Map<number, number>();
   let nComps = 0;
   for (const oe of optEdges) {
-    if (compOf.has(oe.id)) continue;
+    if (oe.lines.length < 2 || compOf.has(oe.id)) continue;
     const comp = nComps++;
     const stack = [oe];
     compOf.set(oe.id, comp);
@@ -363,6 +408,7 @@ export function untangleLineOrder(layout: Layout): void {
       const cur = stack.pop()!;
       for (const nd of [cur.from, cur.to]) {
         for (const nb of optAdj.get(nd) ?? []) {
+          if (nb.lines.length < 2) continue;
           if (!compOf.has(nb.id)) {
             compOf.set(nb.id, comp);
             stack.push(nb);
@@ -372,7 +418,10 @@ export function untangleLineOrder(layout: Layout): void {
     }
   }
   const comps: OptEdge[][] = Array.from({ length: nComps }, () => []);
-  for (const oe of optEdges) comps[compOf.get(oe.id)!].push(oe);
+  for (const oe of optEdges) {
+    const c = compOf.get(oe.id);
+    if (c !== undefined) comps[c].push(oe);
+  }
 
   const factorial = (n: number): number => {
     let f = 1;
@@ -389,6 +438,8 @@ export function untangleLineOrder(layout: Layout): void {
     return out;
   };
 
+  let nExhaustive = 0;
+  let nHillClimb = 0;
   for (const comp of comps) {
     const multi = comp.filter((oe) => oe.lines.length > 1);
     if (multi.length === 0) continue;
@@ -412,6 +463,7 @@ export function untangleLineOrder(layout: Layout): void {
 
     if (solSpace < EXHAUSTIVE_SOL_SPACE) {
       // exhaustive (LOOM ExhaustiveOptimizer)
+      nExhaustive++;
       const perms = multi.map((oe) => permutations(cfg.get(oe.id)!));
       const idx = new Array(multi.length).fill(0);
       let best = compScore();
@@ -436,6 +488,7 @@ export function untangleLineOrder(layout: Layout): void {
       for (let i = 0; i < multi.length; i++) cfg.set(multi[i].id, bestCfg[i]);
     } else {
       // hill climbing (LOOM HillClimbOptimizer): best improving pair swap
+      nHillClimb++;
       for (;;) {
         let bestChange = 0;
         let bestEdge: OptEdge | null = null;
@@ -462,18 +515,25 @@ export function untangleLineOrder(layout: Layout): void {
     }
   }
 
-  // ---- write back -------------------------------------------------------------
+  // ---- write back (partner blocks expand in place) ----------------------------
   for (const oe of optEdges) {
     const order = cfg.get(oe.id)!;
+    const expanded: string[] = [];
+    for (const l of order) {
+      const block = partnerBlock.get(l);
+      if (block) expanded.push(...block);
+      else expanded.push(l);
+    }
     for (const part of oe.parts) {
-      part.edge.lineOrder = part.rev ? [...order].reverse() : [...order];
+      part.edge.lineOrder = part.rev ? [...expanded].reverse() : [...expanded];
     }
   }
 
   if (DBG) {
     const t = tally();
     console.error(
-      `[untangle] comps=${nComps} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps}`,
+      `[untangle] comps=${nComps} (${nExhaustive} exhaustive, ${nHillClimb} hill) ` +
+      `partners=${partnerBlock.size} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps}`,
     );
   }
 }

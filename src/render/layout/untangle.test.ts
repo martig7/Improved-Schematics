@@ -116,3 +116,27 @@ test('untangle: deterministic and preserves line membership', () => {
     assert.deepEqual([...e.lineOrder].sort(), e.lines.map((l) => l.id).sort());
   }
 });
+
+test('untangle: partner lines stay adjacent as a block', () => {
+  // P1+P2 ride the identical edge set (partners); X crosses the trunk and
+  // must never be ordered between them.
+  const layout = makeLayout(
+    [['r', 0, 0], ['n', 20, 0], ['pe', 30, -10], ['qe', 30, 10]],
+    [
+      { id: 't', from: 'r', to: 'n', lines: ['P1', 'X', 'P2'], order: ['P1', 'X', 'P2'] },
+      { id: 'p', from: 'n', to: 'pe', lines: ['P1', 'P2'], order: ['P1', 'P2'] },
+      { id: 'q', from: 'n', to: 'qe', lines: ['X'] },
+    ],
+    {
+      P1: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      P2: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      X: [{ edgeId: 't', reversed: false }, { edgeId: 'q', reversed: false }],
+    },
+  );
+  untangleLineOrder(layout);
+  const t = layout.edges.find((e) => e.id === 't')!;
+  const i1 = t.lineOrder.indexOf('P1');
+  const i2 = t.lineOrder.indexOf('P2');
+  assert.equal(Math.abs(i1 - i2), 1, `partners adjacent on the trunk (got ${t.lineOrder})`);
+  assert.equal(t.lineOrder.length, 3, 'all lines present after block expansion');
+});
