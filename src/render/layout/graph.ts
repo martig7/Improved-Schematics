@@ -4,7 +4,7 @@
 // edgeKey_1.js, projectFactory.js); buildStationGroups is new glue that derives
 // the game's interchange groups from Station.trackGroupId.
 
-import type { Station, Route } from '../../types/game-state';
+import type { Station, Route, Track } from '../../types/game-state';
 import type { Coordinate } from '../../types/core';
 import type {
   StationGroup,
@@ -43,6 +43,29 @@ export function buildStationGroups(stations: Station[]): StationGroup[] {
   return groups;
 }
 
+/** Coerce API stationGroups (array, Map, or id→group record) into a list. */
+export function normalizeApiStationGroups(raw: unknown): unknown[] | null {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) return raw;
+  if (raw instanceof Map) return [...raw.values()];
+  if (typeof raw === 'object') {
+    const vals = Object.values(raw as Record<string, unknown>);
+    if (vals.length > 0 && vals.every((v) => v && typeof v === 'object')) return vals;
+  }
+  return null;
+}
+
+/** Read station groups from live gameState (getStationGroups() or state field). */
+export function resolveStationGroupsFromGameState(gameState: unknown): unknown[] | undefined {
+  if (!gameState || typeof gameState !== 'object') return undefined;
+  const gs = gameState as Record<string, unknown>;
+  if (typeof gs.getStationGroups === 'function') {
+    const list = normalizeApiStationGroups((gs.getStationGroups as () => unknown).call(gameState));
+    if (list?.length) return list;
+  }
+  return normalizeApiStationGroups(gs.stationGroups) ?? undefined;
+}
+
 /**
  * Get the game's real `stationGroups` from the store — the same data the
  * in-game SchematicMapMenu uses (spatial proximity merges overlapping platforms,
@@ -55,7 +78,8 @@ export function getOrBuildStationGroups(
   stations: Station[],
   apiGroups: unknown[] | undefined | null,
 ): StationGroup[] {
-  if (!Array.isArray(apiGroups) || apiGroups.length === 0) {
+  const normalized = apiGroups ? normalizeApiStationGroups(apiGroups) : null;
+  if (!normalized || normalized.length === 0) {
     return buildStationGroups(stations);
   }
 
@@ -63,13 +87,17 @@ export function getOrBuildStationGroups(
   for (const s of stations) stationById.set(s.id, s);
 
   const groups: StationGroup[] = [];
-  for (const raw of apiGroups) {
+  for (const raw of normalized) {
     if (!raw || typeof raw !== 'object') continue;
     const g = raw as Record<string, unknown>;
     const id = typeof g.id === 'string' ? g.id : undefined;
     const stationIds: string[] = Array.isArray(g.stationIds)
       ? (g.stationIds as unknown[]).filter((x): x is string => typeof x === 'string')
-      : [];
+      : Array.isArray(g.stations)
+        ? (g.stations as unknown[])
+            .map((s) => (typeof s === 'string' ? s : (s as Record<string, unknown>)?.id))
+            .filter((x): x is string => typeof x === 'string')
+        : [];
     if (!id || stationIds.length === 0) continue;
 
     let center: [number, number] | undefined;
@@ -103,6 +131,59 @@ export function getOrBuildStationGroups(
   return groups.length > 0 ? groups : buildStationGroups(stations);
 }
 
+/** Maps from the game's stNodes/tracks to merged station-group ids. */
+export function buildGroupMaps(
+  stations: Station[],
+  groups: StationGroup[],
+): {
+  stationToGroup: Map<string, string>;
+  stNodeToGroup: Map<string, string>;
+  trackToGroup: Map<string, string>;
+} {
+  const stationToGroup = new Map<string, string>();
+  for (const g of groups) {
+    for (const sid of g.stationIds) stationToGroup.set(sid, g.id);
+  }
+  const stNodeToGroup = new Map<string, string>();
+  const trackToGroup = new Map<string, string>();
+  for (const s of stations) {
+    if (s.buildType !== 'constructed') continue;
+    const gid = stationToGroup.get(s.id);
+    if (!gid) continue;
+    for (const n of s.stNodeIds) stNodeToGroup.set(n, gid);
+    for (const t of s.trackIds) trackToGroup.set(t, gid);
+  }
+  return { stationToGroup, stNodeToGroup, trackToGroup };
+}
+
+/** Station ids touched by at least one real route's stop nodes. Stations
+ *  with no service must not count toward a group's member tally (a phantom
+ *  routeless platform otherwise turns its group into an "interchange" and
+ *  draws a capsule — Emerson St). Mirrors buildGroupMaps' constructed-only
+ *  filter. */
+export function servedStationIds(stations: Station[], routes: Route[]): Set<string> {
+  const stNodeToStation = new Map<string, string>();
+  for (const s of stations) {
+    if (s.buildType !== 'constructed') continue;
+    for (const n of s.stNodeIds) stNodeToStation.set(n, s.id);
+  }
+  const served = new Set<string>();
+  const touch = (stNodeId?: string) => {
+    if (!stNodeId) return;
+    const sid = stNodeToStation.get(stNodeId);
+    if (sid) served.add(sid);
+  };
+  for (const r of routes) {
+    if (r.tempParentId) continue;
+    for (const combo of r.stCombos ?? []) {
+      touch(combo.startStNodeId);
+      touch(combo.endStNodeId);
+    }
+    for (const sn of r.stNodes ?? []) touch(sn.id);
+  }
+  return served;
+}
+
 function normalizeColor(c: string | undefined): string {
   if (!c) return '#888888';
   return c.startsWith('#') ? c : '#' + c;
@@ -117,6 +198,83 @@ function projectFactory(lat0: number): (lng: number, lat: number) => [number, nu
   const R = 6371e3;
   const cosLat = Math.cos((lat0 * Math.PI) / 180);
   return (lng, lat) => [(R * lng * Math.PI * cosLat) / 180, (R * lat * Math.PI) / 180];
+}
+
+export function appendTrackCoords(points: Coordinate[], track: Track, reversed: boolean): void {
+  const coords = reversed ? [...track.coords].reverse() : track.coords;
+  for (const c of coords) {
+    const last = points[points.length - 1];
+    if (last && last[0] === c[0] && last[1] === c[1]) continue;
+    points.push(c);
+  }
+}
+
+const CORRIDOR_TOL = 1e-5; // ~1 m in degrees
+
+function distDeg(a: Coordinate, b: Coordinate): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function trackEndpoints(track: Track, reversed: boolean): [Coordinate, Coordinate] {
+  const c = track.coords;
+  if (c.length < 2) return [c[0], c[0]];
+  return reversed ? [c[c.length - 1], c[0]] : [c[0], c[c.length - 1]];
+}
+
+/** Corridor tracks (not owned by any station) are skipped in walkRouteVisits.
+ *  When building geometry, skip parallel forward/back duplicates that share the
+ *  same corridor endpoints; still chain end-to-end mainline segments. */
+function sharesCorridorEndpoints(
+  pending: Coordinate[],
+  track: Track,
+  reversed: boolean,
+  tol: number,
+): boolean {
+  if (pending.length < 2) return false;
+  const [start, end] = trackEndpoints(track, reversed);
+  const p0 = pending[0];
+  const p1 = pending[pending.length - 1];
+  const near = (a: Coordinate, b: Coordinate) => distDeg(a, b) <= tol;
+  return (near(start, p0) && near(end, p1)) || (near(start, p1) && near(end, p0));
+}
+
+function shouldAppendCorridorSegment(pending: Coordinate[], track: Track, reversed: boolean): boolean {
+  if (pending.length < 2) return true;
+  const [start, end] = trackEndpoints(track, reversed);
+  const last = pending[pending.length - 1];
+  const first = pending[0];
+  if (sharesCorridorEndpoints(pending, track, reversed, 2e-4)) return false;
+  if (distDeg(last, start) <= CORRIDOR_TOL) {
+    // Tip-chaining, but reject the return leg of a forward/back pair (B→A after A→B).
+    if (distDeg(end, first) <= 2e-4) return false;
+    return true;
+  }
+  return true;
+}
+
+/** Append stCombo path coords using the same group/corridor rules as walkRouteGeometry.
+ *  Pass `prevSegGroup` across consecutive combos on one route so platform tracks at
+ *  combo boundaries are not re-drawn. */
+export function appendComboPathGeometry(
+  pending: Coordinate[],
+  path: { trackId: string; reversed: boolean }[],
+  trackMap: Map<string, Track>,
+  trackToGroup: Map<string, string>,
+  prevSegGroup?: { value: string | undefined },
+): void {
+  let prev = prevSegGroup?.value;
+  for (const seg of path) {
+    const track = trackMap.get(seg.trackId);
+    if (!track) continue;
+    const g = trackToGroup.get(seg.trackId);
+    if (g) {
+      if (g !== prev) appendTrackCoords(pending, track, seg.reversed);
+      prev = g;
+    } else if (shouldAppendCorridorSegment(pending, track, seg.reversed)) {
+      appendTrackCoords(pending, track, seg.reversed);
+    }
+  }
+  if (prevSegGroup) prevSegGroup.value = prev;
 }
 
 /** Ordered group visits along a route (stops + pass-throughs), de-duplicated. */
@@ -149,29 +307,50 @@ export function walkRouteVisits(
   return visits;
 }
 
+/** Collapse to stop visits only — matches how geographic mode connects stations. */
+export function stopOnlyVisits(visits: Visit[]): Visit[] {
+  const out: Visit[] = [];
+  for (const v of visits) {
+    if (!v.isStop) continue;
+    const last = out[out.length - 1];
+    if (last && last.groupId === v.groupId) continue;
+    out.push({ groupId: v.groupId, isStop: true });
+  }
+  return out;
+}
+
+interface GroupTransition {
+  from: string;
+  to: string;
+  coords: Coordinate[];
+}
+
+/** One combo → corridor polyline between its endpoint station groups. */
+function comboCorridorGeometry(
+  combo: NonNullable<Route['stCombos']>[number],
+  trackMap: Map<string, Track>,
+  trackToGroup: Map<string, string>,
+  stNodeToGroup: Map<string, string>,
+): GroupTransition | null {
+  const from = stNodeToGroup.get(combo.startStNodeId);
+  const to = stNodeToGroup.get(combo.endStNodeId);
+  if (!from || !to || from === to) return null;
+  const coords: Coordinate[] = [];
+  appendComboPathGeometry(coords, combo.path ?? [], trackMap, trackToGroup);
+  return coords.length >= 2 ? { from, to, coords } : null;
+}
+
 export function buildTransitGraph(
   stations: Station[],
   routes: Route[],
   groups: StationGroup[],
+  tracks?: Track[],
 ): TransitGraph {
   if (groups.length === 0) {
     return { nodes: new Map(), edges: [], adj: new Map(), lineTraversals: new Map() };
   }
 
-  const stationToGroup = new Map<string, string>();
-  for (const g of groups) {
-    for (const sid of g.stationIds) stationToGroup.set(sid, g.id);
-  }
-
-  const stNodeToGroup = new Map<string, string>();
-  const trackToGroup = new Map<string, string>();
-  for (const s of stations) {
-    if (s.buildType !== 'constructed') continue;
-    const gid = stationToGroup.get(s.id);
-    if (!gid) continue;
-    for (const n of s.stNodeIds) stNodeToGroup.set(n, gid);
-    for (const t of s.trackIds) trackToGroup.set(t, gid);
-  }
+  const { stNodeToGroup, trackToGroup } = buildGroupMaps(stations, groups);
 
   const meanLat = groups.reduce((acc, g) => acc + g.center[1], 0) / groups.length;
   const project = projectFactory(meanLat);
@@ -221,6 +400,31 @@ export function buildTransitGraph(
   }
 
   const edges = [...edgeMap.values()];
+
+  if (tracks && tracks.length > 0) {
+    const trackMap = new Map<string, Track>();
+    for (const t of tracks) trackMap.set(t.id, t);
+    const geomByDir = new Map<string, Coordinate[]>();
+    for (const route of routes) {
+      if (route.tempParentId) continue;
+      for (const combo of route.stCombos ?? []) {
+        const tr = comboCorridorGeometry(combo, trackMap, trackToGroup, stNodeToGroup);
+        if (!tr) continue;
+        const key = tr.from + '>' + tr.to;
+        if (!geomByDir.has(key)) geomByDir.set(key, tr.coords);
+      }
+    }
+    for (const e of edges) {
+      const fwd = geomByDir.get(e.from + '>' + e.to);
+      if (fwd) {
+        e.geo = fwd;
+        continue;
+      }
+      const rev = geomByDir.get(e.to + '>' + e.from);
+      if (rev) e.geo = [...rev].reverse();
+    }
+  }
+
   const adj = new Map<string, string[]>();
   for (const id of nodes.keys()) adj.set(id, []);
   for (const e of edges) {

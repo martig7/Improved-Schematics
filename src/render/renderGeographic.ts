@@ -10,7 +10,7 @@ import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cel
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, type Projection } from './projection';
 import { extractRouteLines } from './routes';
-import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
+import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './layout/graph';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
@@ -579,11 +579,20 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     showLabels: opts.showLabels,
     transfers,
     gridOverlay: waterOverlay + gridSvg,
-    stations: [...supportM.stations.values()].map((st) => ({
-      nodeId: st.nodeId,
-      members: st.members ?? 1,
-      stopNodes: st.stopNodes ?? new Map<string, string>(),
-    })),
+    stations: (() => {
+      // capsule rule counts only SERVED members: a routeless platform in a
+      // group must not promote it to an interchange capsule
+      const served = servedStationIds(input.stations, input.routes);
+      const servedMembers = new Map<string, number>();
+      for (const g of groups) {
+        servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
+      }
+      return [...supportM.stations.values()].map((st) => ({
+        nodeId: st.nodeId,
+        members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),
+        stopNodes: st.stopNodes ?? new Map<string, string>(),
+      }));
+    })(),
   });
 }
 
