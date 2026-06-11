@@ -13,6 +13,7 @@ export function renderStops(
   stopsByNode: Map<string, StopMark[]>,
   dark: boolean,
   membersByNode?: Map<string, number>,
+  degByNode?: Map<string, number>,
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
@@ -59,6 +60,32 @@ export function renderStops(
       out.push(wrap(cx, cy,
         '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) +
         '" fill="' + fill + '" stroke="' + ring + '" stroke-width="1.5"' + attrs + '/>',
+      ));
+      continue;
+    }
+
+    if ((degByNode?.get(nodeId) ?? 0) >= 4) {
+      // Mega capsule for huge interchanges (user rule): the junction's whole
+      // footprint becomes the marker — a rounded rectangle covering the
+      // marks with padding — so lines may reverse/cross/weave freely
+      // underneath it and read as passing straight through the station.
+      // generous padding: connector chords and lane reversals at the junction
+      // happen within ~half a grid cell of the marks — cover them
+      const pad = r + 7;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const mk of marks) {
+        x0 = Math.min(x0, mk.pos[0]); y0 = Math.min(y0, mk.pos[1]);
+        x1 = Math.max(x1, mk.pos[0]); y1 = Math.max(y1, mk.pos[1]);
+      }
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+      const minSide = 2 * r + 3;
+      if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
+      if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
+      out.push(wrap((x0 + x1) / 2, (y0 + y1) / 2,
+        '<rect x="' + x0.toFixed(1) + '" y="' + y0.toFixed(1) +
+        '" width="' + (x1 - x0).toFixed(1) + '" height="' + (y1 - y0).toFixed(1) +
+        '" rx="' + (r + 1.5).toFixed(1) + '" fill="' + fill +
+        '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>',
       ));
       continue;
     }

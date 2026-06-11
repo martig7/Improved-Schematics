@@ -581,7 +581,12 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
 
-  const stopParts = renderStops(stopsByNode, dark, membersByNode);
+  const degByNode = new Map<string, number>();
+  for (const e of layout.edges) {
+    degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + 1);
+    degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + 1);
+  }
+  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
