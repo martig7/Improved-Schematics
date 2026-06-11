@@ -284,8 +284,29 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
+      // Tangent-matched cubic instead of a straight chord: a lateral lane jog
+      // reads as a smooth S through the node, not a crimp (LOOM transitmap's
+      // inner node geometries). Control points extend along each lane's end
+      // direction; for near-parallel ends this is the classic S-curve.
+      const polyA = segPath.get(a.edgeId + '|' + lineId)!;
+      const polyB = segPath.get(b.edgeId + '|' + lineId)!;
+      const prevA = ea.from === endA ? polyA[1] : polyA[polyA.length - 2];
+      const nextB = eb.from === endA ? polyB[1] : polyB[polyB.length - 2];
+      const unitTo = (from: Pixel, to: Pixel): Pixel => {
+        const len = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
+        return [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
+      };
+      const k = Math.min(gap, spacing * 2);
+      const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
+      const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
+      const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];
+      const c2: Pixel = [pb[0] - dirB[0] * k, pb[1] - dirB[1] * k];
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
-      d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
+      d.push(
+        'C' + c1[0].toFixed(1) + ',' + c1[1].toFixed(1) + ' ' +
+        c2[0].toFixed(1) + ',' + c2[1].toFixed(1) + ' ' +
+        pb[0].toFixed(1) + ',' + pb[1].toFixed(1),
+      );
       segments.push({ p1: pa, p2: pb });
     }
   }

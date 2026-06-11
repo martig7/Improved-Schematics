@@ -1176,18 +1176,47 @@ function absorbJunctionStubs(
   adj: Map<string, string[]>,
   dHat: number,
 ): void {
+  const DBG =
+    typeof process !== 'undefined' &&
+    !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
   for (const eid of [...edges.keys()].sort()) {
     const e = edges.get(eid);
-    if (!e || polylineLength(e.points) >= dHat) continue;
+    if (!e) continue;
+    // Short stubs absorb outright. Additionally, near-zero-span stubs whose
+    // polyline is a merge-noise zigzag (nodes 2px apart under a 20px fold —
+    // Harvey Rd) absorb despite the inflated length: that footprint is what
+    // octi blows up to a full drawn cell. Wider-span stubs with long
+    // geometry are genuinely extended structures — absorbing them measurably
+    // degraded NYC's interchange layout, so they keep their nodes.
+    const span = dist(e.points[0], e.points[e.points.length - 1]);
+    const len = polylineLength(e.points);
+    if (len >= dHat && !(span < dHat / 2 && len < 2 * dHat)) continue;
     for (const [A, B] of [[e.from, e.to], [e.to, e.from]] as const) {
       if ((adj.get(A)?.length ?? 0) !== 1) continue;
       if ((adj.get(B)?.length ?? 0) < 3) continue;
+      // Only absorb DETOUR stops: every line on the stub must continue
+      // through the junction (arrive + depart on other edges at B). A line
+      // that ends in the stub marks a real terminus — keep its node.
+      let allContinue = true;
+      for (const l of e.lineIds) {
+        let cnt = 0;
+        for (const fid of adj.get(B) ?? []) {
+          if (fid === eid) continue;
+          if (edges.get(fid)?.lineIds.has(l)) cnt++;
+        }
+        if (cnt < 2) {
+          allContinue = false;
+          break;
+        }
+      }
+      if (!allContinue) continue;
       edges.delete(eid);
       adj.delete(A);
       nodes.delete(A);
       const arrB = adj.get(B)!;
       const i = arrB.indexOf(eid);
       if (i >= 0) arrB.splice(i, 1);
+      if (DBG) console.error(`[topo] absorb ${eid} ${A} -> ${B} (span ${span.toFixed(1)})`);
       break;
     }
   }
