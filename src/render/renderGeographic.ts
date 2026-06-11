@@ -379,6 +379,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
     height,
     dark,
     showLabels: opts.showLabels,
+    showStations: opts.showStations,
     transfers,
     gridOverlay: waterOverlay,
   });
@@ -577,6 +578,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     height,
     dark,
     showLabels: opts.showLabels,
+    showStations: opts.showStations,
     transfers,
     gridOverlay: waterOverlay + gridSvg,
     stations: (() => {

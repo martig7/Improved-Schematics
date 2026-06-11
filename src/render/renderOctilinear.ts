@@ -17,6 +17,7 @@ import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
 export interface OctiOptions {
   dark?: boolean;
   showLabels?: boolean;
+  showStations?: boolean;
   water?: WaterCollection;
   transfers?: TransferPair[];
 }
@@ -92,6 +93,9 @@ export interface RenderRibbonsArgs {
   height: number;
   dark: boolean;
   showLabels: boolean;
+  /** Stations toggle: when false, the line-name bullets inside stop dots are
+   *  hidden (markers themselves always render in ribbon modes). */
+  showStations?: boolean;
   water?: WaterCollection;
   transfers?: TransferPair[];
   /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
@@ -118,7 +122,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
-  const lineById = new Map<string, { id: string; color: string }>();
+  const lineById = new Map<string, { id: string; label?: string; color: string }>();
   for (const e of layout.edges) for (const l of e.lines) if (!lineById.has(l.id)) lineById.set(l.id, l);
 
   // --- per-edge bundle drawing (LOOM transitmap model) -----------------------
@@ -423,7 +427,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
-    stopsByNode.get(nodeId)!.push({ lineId, color, pos });
+    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
   if (args.stations) {
@@ -503,7 +507,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         x1 = Math.max(x1, m.pos[0]); y1 = Math.max(y1, m.pos[1]);
       }
       const mega = s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 9;
-      const pad = mega ? r + 7 : r + 1.5;
+      const pad = mega ? r + 7 : r + 3;
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       if (mega) {
         const minSide = 2 * r + 3;
@@ -567,6 +571,39 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       if (out && out.length >= 2) segPath.set(key, atStart ? out : out.reverse());
     };
+    // Mega-box dots are cosmetic (the lanes hide beneath the box), so lay
+    // them out evenly along the marks' axis — a clean NYC-style bullet row
+    // instead of whatever overlapping scatter the lane joins landed on.
+    // Done BEFORE boxOf is consumed so the box and collision slides see the
+    // final dot positions.
+    for (const s of gathered) {
+      if (s.marks.length < 2 || !boxOf(s).mega) continue;
+      let ai = 0, bi = 0, span = 0;
+      for (let i = 0; i < s.marks.length; i++) {
+        for (let j = i + 1; j < s.marks.length; j++) {
+          const d = Math.hypot(
+            s.marks[i].pos[0] - s.marks[j].pos[0],
+            s.marks[i].pos[1] - s.marks[j].pos[1],
+          );
+          if (d > span) { span = d; ai = i; bi = j; }
+        }
+      }
+      let ux = 1, uy = 0;
+      if (span > 1e-6) {
+        ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
+        uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
+      }
+      const cx = s.marks.reduce((acc, m) => acc + m.pos[0], 0) / s.marks.length;
+      const cy = s.marks.reduce((acc, m) => acc + m.pos[1], 0) / s.marks.length;
+      const order = s.marks
+        .map((m, i) => ({ i, t: (m.pos[0] - cx) * ux + (m.pos[1] - cy) * uy }))
+        .sort((p, q) => p.t - q.t);
+      const step = 2 * r + 1.6;
+      order.forEach((o, k) => {
+        const t = (k - (order.length - 1) / 2) * step;
+        s.marks[o.i].pos = [cx + ux * t, cy + uy * t];
+      });
+    }
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
     for (const s of gathered) {
@@ -586,7 +623,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             x0 = Math.min(x0, t.pos[0]); y0 = Math.min(y0, t.pos[1]);
             x1 = Math.max(x1, t.pos[0]); y1 = Math.max(y1, t.pos[1]);
           }
-          const pad = r + 1.5;
+          const pad = r + 3;
           if (x0 - pad >= mb.x1 + 2 || x1 + pad <= mb.x0 - 2 || y0 - pad >= mb.y1 + 2 || y1 + pad <= mb.y0 - 2) {
             for (let i = 0; i < s.marks.length; i++) {
               const mk = s.marks[i];
@@ -745,7 +782,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + n);
     degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
   }
-  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode);
+  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
@@ -843,6 +880,7 @@ export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string
     height,
     dark,
     showLabels,
+    showStations: opts.showStations,
     water: opts.water,
     transfers: opts.transfers,
   });

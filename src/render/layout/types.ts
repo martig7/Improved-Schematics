@@ -91,6 +91,8 @@ export interface StopMark {
   lineId: string;
   color: string;
   pos: Pixel;
+  /** Line display name (route bullet) printed inside the stop dot. */
+  name?: string;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

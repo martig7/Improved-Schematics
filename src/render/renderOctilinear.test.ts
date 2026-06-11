@@ -46,6 +46,7 @@ test('renderOctilinear includes a water backdrop when water is supplied', () => 
 });
 
 test('renderOctilinear omits labels when showLabels is false', () => {
-  const svg = renderOctilinear(laidOut(), { showLabels: false });
+  // stations toggle off too: stop-dot name bullets are also <text> elements
+  const svg = renderOctilinear(laidOut(), { showLabels: false, showStations: false });
   assert.doesNotMatch(svg, /<text /);
 });

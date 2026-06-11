@@ -1,9 +1,10 @@
-// Per-station markers. The capsule rule is DATA-driven (user-set): a station
-// group with multiple member stations renders as an oriented capsule
-// (stadium hull along its lane-fan axis, LOOM transitmap style); a single
-// station renders as a dot — never a capsule — even when several lines stop
-// at it (the dot sits at the centre of its marks). Legacy callers without
-// member data fall back to the old geometric rule (2+ marks = capsule).
+// Per-station markers, NYC-subway-map style: EVERY stopping line gets a dot
+// on its own lane in all cases, and the capsule is an outline that SURROUNDS
+// the dots (real-map Canal St model) rather than replacing them — so a
+// capsule can never mislead about which lines actually stop. Capsule iff the
+// station has multiple member stations (group) OR multiple stopping lines at
+// one station (express/local pairs). Each dot prints its line's name (route
+// bullet) inside, upright, toggled by the stations toggle.
 
 import type { StopMark } from './layout/types';
 import { LINE_WIDTH } from './constants';
@@ -14,11 +15,13 @@ export function renderStops(
   dark: boolean,
   membersByNode?: Map<string, number>,
   degByNode?: Map<string, number>,
+  showNames?: boolean,
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
+  const nameFill = dark ? '#ffffff' : '#111111';
 
   // Each marker is wrapped in an anchored group (class imp-stop, data-ax/-ay
   // = the marker's anchor point); markers are pure map objects (no panel
@@ -27,10 +30,28 @@ export function renderStops(
     '<g class="imp-stop" data-ax="' + ax.toFixed(1) + '" data-ay="' + ay.toFixed(1) + '">' +
     inner + '</g>';
 
+  // One dot per stopping line: hollow disc on the line's own lane, ring in
+  // the line's color, route bullet centered inside (always upright/north-up).
+  const dotOf = (mk: StopMark): string => {
+    let s =
+      '<circle cx="' + mk.pos[0].toFixed(1) + '" cy="' + mk.pos[1].toFixed(1) +
+      '" r="' + r.toFixed(1) + '" fill="' + fill + '" stroke="' + escapeXml(mk.color) +
+      '" stroke-width="1.5" data-line="' + escapeXml(mk.lineId) + '"/>';
+    if (showNames && mk.name) {
+      const fs = mk.name.length <= 1 ? r * 1.7 : Math.min(r * 1.7, (2 * r * 0.92) / (0.6 * mk.name.length));
+      s +=
+        '<text x="' + mk.pos[0].toFixed(1) + '" y="' + (mk.pos[1] + fs * 0.36).toFixed(1) +
+        '" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif"' +
+        ' font-size="' + fs.toFixed(2) + '" font-weight="bold" fill="' + nameFill + '">' +
+        escapeXml(mk.name) + '</text>';
+    }
+    return s;
+  };
+
   for (const [nodeId, marks] of stopsByNode) {
     if (marks.length === 0) continue;
     const members = membersByNode?.get(nodeId);
-    const capsule = members !== undefined ? members > 1 : marks.length > 1;
+    const capsule = marks.length > 1 || (members !== undefined && members > 1);
 
     // Farthest pair of marks defines the marker axis (marks per station are
     // the lane fan across a bundle, so they are near-collinear).
@@ -51,20 +72,20 @@ export function renderStops(
     const lineIds = marks.map((m) => m.lineId).join(',');
     const attrs =
       ' data-stops="' + escapeXml(lineIds) + '" data-station-id="' + escapeXml(nodeId) + '"';
+    const dots = marks.map(dotOf).join('');
 
     if (!capsule) {
-      // single station: one dot at the centre of its marks
-      const cx = (a[0] + b[0]) / 2;
-      const cy = (a[1] + b[1]) / 2;
-      const ring = marks.length === 1 ? escapeXml(marks[0].color) : stroke;
-      out.push(wrap(cx, cy,
-        '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) +
-        '" fill="' + fill + '" stroke="' + ring + '" stroke-width="1.5"' + attrs + '/>',
+      // single line at a single station: just its dot
+      out.push(wrap(a[0], a[1],
+        '<g' + attrs + '>' + dots + '</g>',
       ));
       continue;
     }
 
-    if ((degByNode?.get(nodeId) ?? 0) >= 9) {
+    // mega eligibility mirrors the pre-dots rule exactly: group-driven
+    // capsules (members known) need >1 members; legacy callers need >1 marks
+    const megaEligible = members !== undefined ? members > 1 : marks.length > 1;
+    if (megaEligible && (degByNode?.get(nodeId) ?? 0) >= 9) {
       // Mega capsule for huge interchanges (user rule): the junction's whole
       // footprint becomes the marker — a rounded rectangle covering the
       // marks with padding — so lines may reverse/cross/weave freely
@@ -85,33 +106,36 @@ export function renderStops(
         '<rect x="' + x0.toFixed(1) + '" y="' + y0.toFixed(1) +
         '" width="' + (x1 - x0).toFixed(1) + '" height="' + (y1 - y0).toFixed(1) +
         '" rx="' + (r + 1.5).toFixed(1) + '" fill="' + fill +
-        '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>',
+        '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>' + dots,
       ));
       continue;
     }
 
     if (best < 1e-3) {
-      // interchange whose marks coincide: capsule degenerates to a circle
+      // marks coincide: capsule degenerates to a ring around the (stacked) dot
       out.push(wrap(a[0], a[1],
-        '<circle cx="' + a[0].toFixed(1) + '" cy="' + a[1].toFixed(1) + '" r="' + r.toFixed(1) +
-        '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.5"' + attrs + '/>',
+        '<circle cx="' + a[0].toFixed(1) + '" cy="' + a[1].toFixed(1) + '" r="' + (r + 3).toFixed(1) +
+        '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.5"' + attrs + '/>' +
+        dots,
       ));
       continue;
     }
 
-    // Stadium: border line underneath, fill line on top. Round caps extend the
-    // hull by r past the extreme marks, mirroring the single-stop radius.
+    // Stadium hull SURROUNDING the dots: border line underneath, fill line on
+    // top, dots drawn over the fill. Round caps extend the hull past the
+    // extreme dots; widths leave the dots a 1.5px margin inside the fill.
     const x1 = a[0].toFixed(1);
     const y1 = a[1].toFixed(1);
     const x2 = b[0].toFixed(1);
     const y2 = b[1].toFixed(1);
     out.push(wrap((a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
       '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + stroke + '" stroke-width="' + (2 * r + 3).toFixed(1) +
+      '" stroke="' + stroke + '" stroke-width="' + (2 * r + 6).toFixed(1) +
       '" stroke-linecap="round"/>' +
       '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + fill + '" stroke-width="' + (2 * r).toFixed(1) +
-      '" stroke-linecap="round"' + attrs + '/>',
+      '" stroke="' + fill + '" stroke-width="' + (2 * r + 3).toFixed(1) +
+      '" stroke-linecap="round"' + attrs + '/>' +
+      dots,
     ));
   }
   return out;
