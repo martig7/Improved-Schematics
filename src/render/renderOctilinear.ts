@@ -128,14 +128,40 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const spacing = LINE_WIDTH + LINE_GAP;
   const segPath = new Map<string, Pixel[]>(); // edge.id|lineId -> offset polyline
   const dByLine = new Map<string, string[]>();
+  // Corner fillets: every interior bend of a lane polyline is rounded with a
+  // small quadratic (control point = the original vertex), so 90° bundle
+  // exits and 45° course bends read as smooth turns instead of hard elbows
+  // (LOOM transitmap renders its lines smoothed the same way). Endpoints are
+  // untouched — miter joins and connectors attach exactly as before.
+  const FILLET_R = LINE_WIDTH * 2;
+  const fmt = (p: Pixel) => p[0].toFixed(1) + ',' + p[1].toFixed(1);
   const pushSeg = (lineId: string, poly: Pixel[]) => {
     let d = dByLine.get(lineId);
     if (!d) dByLine.set(lineId, (d = []));
-    d.push('M' + poly[0][0].toFixed(1) + ',' + poly[0][1].toFixed(1));
-    for (let k = 1; k < poly.length; k++) {
-      segments.push({ p1: poly[k - 1], p2: poly[k] });
-      d.push('L' + poly[k][0].toFixed(1) + ',' + poly[k][1].toFixed(1));
+    for (let k = 1; k < poly.length; k++) segments.push({ p1: poly[k - 1], p2: poly[k] });
+    d.push('M' + fmt(poly[0]));
+    for (let k = 1; k < poly.length - 1; k++) {
+      const a = poly[k - 1];
+      const v = poly[k];
+      const b = poly[k + 1];
+      const l1 = Math.hypot(v[0] - a[0], v[1] - a[1]);
+      const l2 = Math.hypot(b[0] - v[0], b[1] - v[1]);
+      if (l1 < 1e-6 || l2 < 1e-6) continue;
+      const u1: Pixel = [(v[0] - a[0]) / l1, (v[1] - a[1]) / l1];
+      const u2: Pixel = [(b[0] - v[0]) / l2, (b[1] - v[1]) / l2];
+      const cross = u1[0] * u2[1] - u1[1] * u2[0];
+      const dot = u1[0] * u2[0] + u1[1] * u2[1];
+      if (Math.abs(cross) < 0.05 && dot > 0) {
+        d.push('L' + fmt(v)); // effectively straight
+        continue;
+      }
+      const f = Math.min(FILLET_R, l1 / 2, l2 / 2);
+      d.push(
+        'L' + fmt([v[0] - u1[0] * f, v[1] - u1[1] * f]),
+        'Q' + fmt(v) + ' ' + fmt([v[0] + u2[0] * f, v[1] + u2[1] * f]),
+      );
     }
+    d.push('L' + fmt(poly[poly.length - 1]));
   };
 
   // A line draws on an edge only if its traversal actually uses that edge —

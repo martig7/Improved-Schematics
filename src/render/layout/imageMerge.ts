@@ -351,10 +351,36 @@ export function separateFusedStations(
         arcFromSplit: number;
         arcTotal: number;
       } | null = null;
-      for (const eid of h.adj.get(nid) ?? []) {
-        const e = h.edges.get(eid);
-        const pts = img.paths.get(eid) ?? e?.points;
-        if (!e || !pts || pts.length < 2) continue;
+      // Candidate edges: those at the node, HOPPING OVER edges too short to
+      // split (a 9px hop to an adjacent junction must not win "best" and then
+      // bail — the true position usually projects cleanly onto the corridor
+      // just past it; Lake Av sits beyond the 83 Av junction 9px away).
+      const candEdges = new Set<string>();
+      const visited = new Set<string>([nid]);
+      const frontier = [nid];
+      while (frontier.length) {
+        const cur = frontier.pop()!;
+        for (const eid of h.adj.get(cur) ?? []) {
+          const e = h.edges.get(eid);
+          const pts = img.paths.get(eid) ?? e?.points;
+          if (!e || !pts || pts.length < 2) continue;
+          let arc = 0;
+          for (let i = 1; i < pts.length; i++) arc += dist(pts[i - 1], pts[i]);
+          if (arc >= 2 * MIN_SPLIT_ARC) {
+            candEdges.add(eid);
+          } else {
+            // too short to split: hop across it and consider the far side
+            const other = e.from === cur ? e.to : e.from;
+            if (!visited.has(other)) {
+              visited.add(other);
+              frontier.push(other);
+            }
+          }
+        }
+      }
+      for (const eid of candEdges) {
+        const e = h.edges.get(eid)!;
+        const pts = img.paths.get(eid) ?? e.points;
         let arc = 0;
         const arcs: number[] = [0];
         for (let i = 1; i < pts.length; i++) {
@@ -378,8 +404,6 @@ export function separateFusedStations(
         }
       }
       if (!best) continue;
-      // edge too short for a sliver-free split: leave the station fused
-      if (best.arcTotal < 2 * MIN_SPLIT_ARC) continue;
       // keep the split point a minimum arc from both edge ends so the two
       // markers actually separate (a mostly-perpendicular true offset
       // projects right next to the shared node otherwise)
