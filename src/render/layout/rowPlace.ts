@@ -205,6 +205,16 @@ export function solveRows(
   // Orientation bit 0 = forward (members ascending along u: head=a, tail=b);
   // bit 1 = reversed. The pair joins row p's TAIL to row q's HEAD.
   const pairEval = (P: RowState, op: number, Q: RowState, oq: number): PairRes | null => {
+    // cross-row dot floor at PAIR level (spec §2.2: station-level checks cover
+    // NON-adjacent rows — adjacent floors must hold here). Without it the
+    // ext-minimizing argmin can pull facing dots of a 45° pair to ~0.77*minGap
+    // (corner still clears both), and the station post-check then nulls the
+    // whole solve to mega even though feasible configurations exist.
+    for (const p of P.dots) {
+      for (const q of Q.dots) {
+        if (Math.hypot(p[0] - q[0], p[1] - q[1]) < minGap) return null;
+      }
+    }
     const e1 = op ? P.a : P.b;
     const o1x = (op ? -1 : 1) * P.u[0]; // outward direction at p's tail
     const o1y = (op ? -1 : 1) * P.u[1];
@@ -362,9 +372,9 @@ export function solveRows(
   const win: DPResult = best;
 
   // ---- step 4: station-level post-checks (violation ⇒ mega signal) ---------
-  // all-pairs dot floors across rows (non-adjacent included — the pair check
-  // only guarded corners); 1e-9 slack so re-checking pair-level accepts is
-  // float-stable
+  // all-pairs dot floors across rows — adjacent pairs already floored in
+  // pairEval, so this guards NON-adjacent rows; 1e-9 slack so re-checking
+  // pair-level accepts is float-stable
   for (let i = 0; i < g; i++) {
     for (let j = i + 1; j < g; j++) {
       for (const p of win.states[i].dots) {

@@ -72,6 +72,32 @@ test('V-not-T: corner extends beyond both rows, never pokes a side', () => {
   assert.ok(d2 > 1, `corner does not extend row 2 (dot ${d2})`);
 });
 
+test('45-degree pair: cross-row dot floor holds at pair level (no false mega)', () => {
+  // vertical rest row (horizontal lanes) meets a 135° rest row (45° lanes) at
+  // a 45° corner. Minimizing extension alone pulls the facing ends to
+  // ext≈minGap each, where the facing DOTS sit ~0.77*minGap apart — closer
+  // than the floor while the corner still clears both. The pair-level
+  // cross-row dot floor must veto those states so the DP lands on a slid-out
+  // feasible configuration instead of nulling at the station post-check
+  // (review finding: spurious mega fallbacks on every multi-bundle save)
+  const H = PITCH / Math.SQRT2; // perpendicular pitch projected onto 45° lanes
+  const curves = [
+    lane(0, 0),
+    lane(PITCH, 0),
+    through([[12 - 50, -50], [12 + 50, 50]], [12, 0]),
+    through([[12 - H - 50, H - 50], [12 - H + 50, H + 50]], [12 - H, H]),
+  ];
+  const sol = solveRows(curves, [[0, 1], [2, 3]], OPTS);
+  assert.ok(sol, 'a feasible configuration exists — must not signal mega');
+  assert.equal(sol.cornerAfter.size, 1);
+  for (let i = 0; i < 4; i++) {
+    for (let j = i + 1; j < 4; j++) {
+      const d = Math.hypot(sol.pos[i][0] - sol.pos[j][0], sol.pos[i][1] - sol.pos[j][1]);
+      assert.ok(d >= MINGAP - 1e-6, `dot floor violated across rows: ${i}-${j} at ${d}`);
+    }
+  }
+});
+
 test('parallel-collinear: same-line bundles join end-to-end at the gap midpoint', () => {
   // two single-lane bundles on the SAME horizontal line, anchors 20px apart.
   // arcLimit/extCap pinched so the collinear join is the only feasible
