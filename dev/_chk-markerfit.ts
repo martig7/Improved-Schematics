@@ -7,6 +7,22 @@ import { readFileSync } from 'fs';
 const file = process.argv[2] ?? 'dev/_dumpnyc.svg';
 const svg = readFileSync(file, 'utf-8');
 
+// spine-capsule markers: ONE <path d="M x y L x y ..."> per marker, stroked
+// twice (border 2r+6, fill 2r+3). Parse each path into stadium segments with
+// half = stroke-width/2 — same containment arithmetic as the old <line> hulls.
+const pathSegs = (innerSvg: string) => {
+  const segs: Array<{ a: [number, number]; b: [number, number]; half: number }> = [];
+  for (const pm of innerSvg.matchAll(/<path d="M ([-\d. L]+)"[^>]*stroke-width="([\d.-]+)"/g)) {
+    const nums = pm[1].split(/[ L]+/).filter((x) => x.length).map(Number);
+    const half = +pm[2] / 2;
+    if (nums.length === 2) segs.push({ a: [nums[0], nums[1]], b: [nums[0], nums[1]], half });
+    for (let i = 3; i < nums.length; i += 2) {
+      segs.push({ a: [nums[i - 3], nums[i - 2]], b: [nums[i - 1], nums[i]], half });
+    }
+  }
+  return segs;
+};
+
 const re = /<g class="imp-stop" data-ax="([\d.-]+)" data-ay="([\d.-]+)">(.*?)<\/g>/g;
 let m: RegExpExecArray | null;
 let checked = 0;
@@ -19,6 +35,8 @@ while ((m = re.exec(svg))) {
 
   const rect = inner.match(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)" height="([\d.-]+)"/);
   const lines = [...inner.matchAll(/<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)" stroke="[^"]*" stroke-width="([\d.-]+)"/g)];
+  const lineSegs = lines.map((b) => ({ a: [+b[1], +b[2]] as [number, number], b: [+b[3], +b[4]] as [number, number], half: +b[5] / 2 }));
+  const allSegs = [...lineSegs, ...pathSegs(inner)];
   const station = (inner.match(/data-station-id="([^"]+)"/) ?? [])[1] ?? '?';
 
   let worst = 0;
@@ -31,13 +49,13 @@ while ((m = re.exec(svg))) {
         y0 + d.out - d.y, d.y - (y1 - d.out),
       );
     }
-  } else if (lines.length > 0) {
+  } else if (allSegs.length > 0) {
     // multi-angle capsules: a dot fits if it sits inside ANY of the
-    // marker's stadium segments (each line with its own half-width)
+    // marker's stadium segments (each line/path segment, own half-width)
     for (const d of dots) {
       let bestOver = Infinity;
-      for (const b of lines) {
-        const ax = +b[1], ay = +b[2], bx = +b[3], by = +b[4], half = +b[5] / 2;
+      for (const sg of allSegs) {
+        const ax = sg.a[0], ay = sg.a[1], bx = sg.b[0], by = sg.b[1], half = sg.half;
         const vx = bx - ax, vy = by - ay;
         const len2 = vx * vx + vy * vy;
         const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((d.x - ax) * vx + (d.y - ay) * vy) / len2)) : 0;
@@ -77,8 +95,11 @@ console.log(`${checked} capsules checked, ${bad} bad (overflow/stacked)`);
   let mm: RegExpExecArray | null;
   while ((mm = re2.exec(svg2))) {
     const inner = mm[3];
-    const lines = [...inner.matchAll(/<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)" stroke="[^"]*" stroke-width="([\d.-]+)"/g)]
-      .map((l) => ({ a: [+l[1], +l[2]] as [number, number], b: [+l[3], +l[4]] as [number, number], half: +l[5] / 2 }));
+    const lines = [
+      ...[...inner.matchAll(/<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)" stroke="[^"]*" stroke-width="([\d.-]+)"/g)]
+        .map((l) => ({ a: [+l[1], +l[2]] as [number, number], b: [+l[3], +l[4]] as [number, number], half: +l[5] / 2 })),
+      ...pathSegs(inner),
+    ];
     const dots = [...inner.matchAll(/<circle cx="([\d.-]+)" cy="([\d.-]+)" r="([\d.-]+)"/g)]
       .map((c) => ({ x: +c[1], y: +c[2], r: +c[3] + 0.75 }));
     hulls.push({ ax: +mm[1], ay: +mm[2], lines, dots });
