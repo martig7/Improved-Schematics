@@ -102,6 +102,9 @@ export interface StopMark {
    *  bundle; each segment renders its own octilinear capsule part (real-NYC
    *  Atlantic Av-Barclays style multi-angle marker). */
   seg?: number;
+  /** Chain position within the station's marker (dots-on-lanes model):
+   *  dots sorted by this index form the capsule spine. */
+  chain?: number;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------
