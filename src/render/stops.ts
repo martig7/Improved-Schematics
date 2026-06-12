@@ -164,7 +164,6 @@ export function renderStops(
     // meet halfway; anything else (parallel offset rows, an absurdly far
     // P) falls back to a short bridge.
     const joints: Array<[Pixel, Pixel]> = [];
-    const elbows: Array<{ p: Pixel; da: Pixel; db: Pixel; w: number }> = [];
     const axisDirOf = (g: SegGeom, marks0: StopMark): Pixel => {
       const len = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);
       if (len > 1e-6) return [(g.b[0] - g.a[0]) / len, (g.b[1] - g.a[1]) / len];
@@ -192,44 +191,24 @@ export function renderStops(
         const px = A.c[0] + uA[0] * t;
         const py = A.c[1] + uA[1] * t;
         const sB = (px - B.c[0]) * uB[0] + (py - B.c[1]) * uB[1];
-        let movedCount = 0;
         const extend = (g: SegGeom, u: Pixel, along: number): boolean => {
           const halfLen = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]) / 2;
           const ext = Math.abs(along) - halfLen;
           if (ext > maxExt) return false;
           if (ext <= 0) return true; // P inside the row: hulls already meet
           const tip: Pixel = [px, py];
-          // move the endpoint nearer P onto P
+          // move the endpoint nearer P onto P — the round caps of both
+          // segments meet there (smooth ends; no filled corner, per user)
           const dA = Math.hypot(g.a[0] - px, g.a[1] - py);
           const dB = Math.hypot(g.b[0] - px, g.b[1] - py);
           if (dA <= dB) g.a = tip;
           else g.b = tip;
-          movedCount++;
           return true;
         };
         // tentatively extend both; roll back to a bridge if either is too far
         const aSnap: [Pixel, Pixel] = [A.a, A.b];
         const bSnap: [Pixel, Pixel] = [B.a, B.b];
-        if (extend(A, uA, t) && extend(B, uB, sB)) {
-          // CORNER WEDGE (user rule: the curved tips connect as ONE smooth
-          // corner): two short arms into P with a MITER join — the join
-          // itself forms the closing shape, a triangle at 45 deg elbows
-          // and a square at 90 deg. Only true elbows (both tips extended)
-          // need it; T-joints already tuck a cap under the through-bar.
-          if (movedCount === 2) {
-            const armDir = (g: SegGeom, u: Pixel): Pixel => {
-              const sgn = (g.c[0] - px) * u[0] + (g.c[1] - py) * u[1] >= 0 ? 1 : -1;
-              return [u[0] * sgn, u[1] * sgn];
-            };
-            elbows.push({
-              p: [px, py],
-              da: armDir(A, uA),
-              db: armDir(B, uB),
-              w: Math.min(A.w, B.w),
-            });
-          }
-          continue;
-        }
+        if (extend(A, uA, t) && extend(B, uB, sB)) continue;
         A.a = aSnap[0]; A.b = aSnap[1];
         B.a = bSnap[0]; B.b = bSnap[1];
       } else {
@@ -262,29 +241,14 @@ export function renderStops(
       '" x2="' + q[0].toFixed(1) + '" y2="' + q[1].toFixed(1) +
       '" stroke="' + color + '" stroke-width="' + w.toFixed(1) +
       '" stroke-linecap="round"' + (withAttrs ? attrs : '') + '/>';
-    const wedgeSvg = (e: { p: Pixel; da: Pixel; db: Pixel; w: number }, color: string, w: number): string => {
-      const ax = e.p[0] + e.da[0] * e.w;
-      const ay = e.p[1] + e.da[1] * e.w;
-      const bx = e.p[0] + e.db[0] * e.w;
-      const by = e.p[1] + e.db[1] * e.w;
-      return (
-        '<path d="M ' + ax.toFixed(1) + ',' + ay.toFixed(1) +
-        ' L ' + e.p[0].toFixed(1) + ',' + e.p[1].toFixed(1) +
-        ' L ' + bx.toFixed(1) + ',' + by.toFixed(1) +
-        '" fill="none" stroke="' + color + '" stroke-width="' + w.toFixed(1) +
-        '" stroke-linejoin="miter" stroke-miterlimit="5" stroke-linecap="butt"/>'
-      );
-    };
     let inner = '';
     for (const g of segGeoms) inner += lineSvg(g.a, g.b, stroke, g.w + 3, false);
-    for (const e of elbows) inner += wedgeSvg(e, stroke, e.w + 3);
     for (const [p, q] of joints) inner += lineSvg(p, q, stroke, 2 * r + 6, false);
     let first = true;
     for (const g of segGeoms) {
       inner += lineSvg(g.a, g.b, fill, g.w, first);
       first = false;
     }
-    for (const e of elbows) inner += wedgeSvg(e, fill, e.w);
     for (const [p, q] of joints) inner += lineSvg(p, q, fill, 2 * r + 3, false);
     const cx = segGeoms.reduce((acc, g) => acc + g.c[0], 0) / segGeoms.length;
     const cy = segGeoms.reduce((acc, g) => acc + g.c[1], 0) / segGeoms.length;
