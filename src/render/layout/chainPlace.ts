@@ -151,6 +151,19 @@ export const rdpSimplify = (pts: Pixel[], eps: number): Pixel[] => {
   return pts.filter((_, i) => keep[i]);
 };
 
+/** Octilinear shape grammar (spec §2.3): near-pitch chain pairs must point
+ *  within OCT_TOL of a 45° multiple; farther pairs render as elbows. 7° is
+ *  the tightest tolerance honest to the 0.5px state grid (atan(0.5/ρ)≈5.2°). */
+export const OCT_TOL = (7 * Math.PI) / 180;
+export const ELBOW_MIN_F = 1.5; // × pitch: min length for a direction-free pair
+const QUARTER = Math.PI / 4;
+
+/** Distance (radians) from `ang` to the nearest multiple of 45°. */
+export const octOff = (ang: number): number => {
+  const m = ((ang % QUARTER) + QUARTER) % QUARTER; // ∈ [0, QUARTER)
+  return Math.min(m, QUARTER - m);
+};
+
 export interface ChainOpts {
   pitch: number;    // ρ — lane pitch, the pair-distance target (NOT 2r)
   minGap: number;   // hard non-overlap floor (2r − 0.05)
@@ -160,12 +173,21 @@ export interface ChainOpts {
   /** Spec §6 inter-station mask: states whose position is vetoed (e.g.
    *  too close to an already-placed neighboring marker) are infeasible. */
   blocked?: (p: Pixel) => boolean;
+  /** Spec §4 repair escape hatch: drop the P5 shape clause for this solve.
+   *  Used by repair phase 2 when strict-octilinear rounds cannot clear
+   *  non-adjacent collisions — collision-freedom outranks octilinearity
+   *  when both cannot hold. */
+  relaxOct?: boolean;
 }
 
 export interface ChainSolution {
   order: number[]; // station-wide visiting order (indices into curves)
   t: number[];     // chosen arc parameter per curve index
   pos: Pixel[];    // curvePoint(curves[i], t[i]) per curve index
+  /** True only for the anchor fallback (no feasible chain at all): floors
+   *  and vetoes are NOT honored — callers must not treat it as a solution
+   *  of equal standing (e.g. repair-round selection by collision count). */
+  degraded?: boolean;
 }
 
 /** Exact minimizer of the spec §2.3 chain energy by DP over discretized
@@ -256,64 +278,105 @@ export const solveChain = (
   });
   const statePos = order.map((i, k) => states[k].map((t) => curvePoint(curves[i], t)));
   const vetoed = (p: Pixel): boolean => (o.blocked ? o.blocked(p) : false);
-  let prevCost = states[0].map(
-    (t, s0) => (vetoed(statePos[0][s0]) ? Infinity :
-      anchorW * (t - curves[order[0]].anchorT) ** 2),
-  );
-  const back: Int32Array[] = [];
-  for (let k = 1; k < order.length; k++) {
-    const i = order[k];
-    const isLink = groupOf[i] !== groupOf[order[k - 1]];
-    const pj = statePos[k - 1];
-    const cost = new Array<number>(states[k].length).fill(Infinity);
-    const bk = new Int32Array(states[k].length).fill(-1);
-    for (let s = 0; s < states[k].length; s++) {
-      const p = statePos[k][s];
-      if (vetoed(p)) { cost[s] = Infinity; bk[s] = -1; continue; }
-      let best = Infinity;
-      let arg = -1;
-      for (let s2 = 0; s2 < pj.length; s2++) {
-        if (prevCost[s2] >= best) continue; // pair cost ≥ 0: sound pruning
-        const d = Math.hypot(p[0] - pj[s2][0], p[1] - pj[s2][1]);
-        if (d < o.minGap) continue;
-        // intra: |d² − ρ²| — EXACTLY Δt² on parallel lanes (quadratic in
-        // stagger; (d−ρ)² is quartic there and loses to the anchors —
-        // brute-force verified). links: one-sided quadratic in excess.
-        const ex = d - o.pitch;
-        const pc = isLink
-          ? (ex > 0 ? linkW * ex * ex : 0)
-          : Math.abs(d * d - o.pitch * o.pitch);
-        const c2 = prevCost[s2] + pc;
-        if (c2 < best) { best = c2; arg = s2; }
+  const run = (useOct: boolean, useBlocked: boolean): { t: number[]; pos: Pixel[] } | null => {
+    let prevCost = states[0].map(
+      (t, s0) => (useBlocked && vetoed(statePos[0][s0]) ? Infinity :
+        anchorW * (t - curves[order[0]].anchorT) ** 2),
+    );
+    const back: Int32Array[] = [];
+    for (let k = 1; k < order.length; k++) {
+      const i = order[k];
+      const isLink = groupOf[i] !== groupOf[order[k - 1]];
+      const pj = statePos[k - 1];
+      const cost = new Array<number>(states[k].length).fill(Infinity);
+      const bk = new Int32Array(states[k].length).fill(-1);
+      for (let s = 0; s < states[k].length; s++) {
+        const p = statePos[k][s];
+        if (useBlocked && vetoed(p)) { cost[s] = Infinity; bk[s] = -1; continue; }
+        let best = Infinity;
+        let arg = -1;
+        for (let s2 = 0; s2 < pj.length; s2++) {
+          if (prevCost[s2] >= best) continue; // pair cost ≥ 0: sound pruning
+          const d = Math.hypot(p[0] - pj[s2][0], p[1] - pj[s2][1]);
+          if (d < o.minGap) continue;
+          // octilinearity (spec §2.3, P5): near-pitch pairs must be octilinear;
+          // off-axis pairs must stretch into elbow range (rendered as two
+          // octilinear legs). Pairwise in the endpoint states — DP stays exact.
+          if (useOct && d < ELBOW_MIN_F * o.pitch &&
+              octOff(Math.atan2(p[1] - pj[s2][1], p[0] - pj[s2][0])) > OCT_TOL) {
+            continue;
+          }
+          // intra: |d² − ρ²| — EXACTLY Δt² on parallel lanes (quadratic in
+          // stagger; (d−ρ)² is quartic there and loses to the anchors —
+          // brute-force verified). links: one-sided quadratic in excess.
+          const ex = d - o.pitch;
+          const pc = isLink
+            ? (ex > 0 ? linkW * ex * ex : 0)
+            : Math.abs(d * d - o.pitch * o.pitch);
+          const c2 = prevCost[s2] + pc;
+          if (c2 < best) { best = c2; arg = s2; }
+        }
+        cost[s] = best + anchorW * (states[k][s] - curves[i].anchorT) ** 2;
+        bk[s] = arg;
       }
-      cost[s] = best + anchorW * (states[k][s] - curves[i].anchorT) ** 2;
-      bk[s] = arg;
+      back.push(bk);
+      prevCost = cost;
     }
-    back.push(bk);
-    prevCost = cost;
+    let s = 0;
+    for (let i2 = 1; i2 < prevCost.length; i2++) {
+      if (prevCost[i2] < prevCost[s]) s = i2;
+    }
+    if (!isFinite(prevCost[s])) return null;
+    const chosen = new Array<number>(order.length).fill(0);
+    chosen[order.length - 1] = s;
+    for (let k = order.length - 1; k >= 1; k--) {
+      s = back[k - 1][s];
+      if (s < 0) s = 0;
+      chosen[k - 1] = s;
+    }
+    const t = new Array<number>(n).fill(0);
+    const pos: Pixel[] = new Array(n);
+    for (let k = 0; k < order.length; k++) {
+      const i = order[k];
+      t[i] = states[k][chosen[k]];
+      pos[i] = statePos[k][chosen[k]];
+    }
+    return { t, pos };
+  };
+  // Degradation ladder: each rung drops exactly ONE constraint, MASK FIRST.
+  // The inter-station mask (§6) is an approximation mechanism whose
+  // violations are caught downstream by the hull pass and the overlap gate;
+  // octilinearity is a hard user rule (spec §2.3/P5) and the intra-chain
+  // floor is what keeps bullets readable. So feasibility is recovered by
+  // un-masking first, de-octilinearizing second, and only then (anchor
+  // fallback) surrendering floors:
+  //   1. strict:        octilinearity (P5) + inter-station mask (§6) + floor
+  //   2. P5, no mask:   when neighboring stations' vetoes blanket the whole
+  //      window, solving floor+shape without the mask is sound — §6
+  //      separation is ALSO owned by the post-hoc hull pass and the
+  //      markerfit gate, their designed role when the DP cannot honor it.
+  //   3. mask, no P5:   when crowding makes the octilinear chain infeasible
+  //      (e.g. a dense corridor rotated ~22° off the grid, where no
+  //      near-pitch pair can be octilinear), re-solve without the shape
+  //      clause but still honoring neighbors.
+  //   4. no P5, no mask: floor only. On-lane placement and the intra-station
+  //      floor still hold, which the anchor fallback below cannot promise
+  //      (it can stack a station's own dots ~1px apart).
+  //   5. anchors: last resort, honors nothing; flagged `degraded`.
+  // (`relaxOct` enters the ladder at rung 3; unmasked rungs are skipped when
+  // no mask exists, since they would just repeat the masked ones. Fixed
+  // order, no randomness — deterministic.)
+  const rungs: ReadonlyArray<readonly [boolean, boolean]> = [
+    ...(o.relaxOct ? [] : [[true, true] as const]),
+    ...(o.relaxOct || !o.blocked ? [] : [[true, false] as const]),
+    [false, true] as const,
+    ...(o.blocked ? [[false, false] as const] : []),
+  ];
+  for (const [useOct, useBlocked] of rungs) {
+    const sol = run(useOct, useBlocked);
+    if (sol) return { order, t: sol.t, pos: sol.pos };
   }
-  let s = 0;
-  for (let i2 = 1; i2 < prevCost.length; i2++) {
-    if (prevCost[i2] < prevCost[s]) s = i2;
-  }
-  if (!isFinite(prevCost[s])) {
-    // no feasible chain in the window (extreme floor conflicts): degrade
-    // gracefully to anchors — dots stay on their lanes either way
-    return { order, t: curves.map((c) => c.anchorT), pos: anchorPos };
-  }
-  const chosen = new Array<number>(order.length).fill(0);
-  chosen[order.length - 1] = s;
-  for (let k = order.length - 1; k >= 1; k--) {
-    s = back[k - 1][s];
-    if (s < 0) s = 0;
-    chosen[k - 1] = s;
-  }
-  const t = new Array<number>(n).fill(0);
-  const pos: Pixel[] = new Array(n);
-  for (let k = 0; k < order.length; k++) {
-    const i = order[k];
-    t[i] = states[k][chosen[k]];
-    pos[i] = statePos[k][chosen[k]];
-  }
-  return { order, t, pos };
+  // no feasible chain in the window (extreme floor conflicts): degrade
+  // gracefully to anchors — dots stay on their lanes either way
+  return { order, t: curves.map((c) => c.anchorT), pos: anchorPos, degraded: true };
 };
