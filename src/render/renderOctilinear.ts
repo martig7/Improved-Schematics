@@ -642,9 +642,34 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     ) => {
       const cx = marks.reduce((acc, m) => acc + m.pos[0], 0) / marks.length;
       const cy = marks.reduce((acc, m) => acc + m.pos[1], 0) / marks.length;
-      const order = marks
-        .map((m, i) => ({ i, t: (m.pos[0] - cx) * ux + (m.pos[1] - cy) * uy }))
-        .sort((p, q) => p.t - q.t);
+      const order = marks.map((m, i) => ({
+        i,
+        t: (m.pos[0] - cx) * ux + (m.pos[1] - cy) * uy,
+        c: m.color,
+      }));
+      if (collapse) {
+        // mega-box rows are cosmetic: keep color families contiguous (by
+        // family mean position), members in lane order within the family
+        const fam = new Map<string, { sum: number; n: number }>();
+        for (const o of order) {
+          const f = fam.get(o.c) ?? { sum: 0, n: 0 };
+          f.sum += o.t;
+          f.n++;
+          fam.set(o.c, f);
+        }
+        order.sort((p, q) => {
+          if (p.c !== q.c) {
+            const fp = fam.get(p.c)!;
+            const fq = fam.get(q.c)!;
+            const d = fp.sum / fp.n - fq.sum / fq.n;
+            if (d !== 0) return d;
+            return p.c < q.c ? -1 : 1;
+          }
+          return p.t - q.t;
+        });
+      } else {
+        order.sort((p, q) => p.t - q.t);
+      }
       const ts = order.map((o) => o.t);
       for (let k = 1; k < ts.length; k++) ts[k] = Math.max(ts[k], ts[k - 1] + step);
       const shift =

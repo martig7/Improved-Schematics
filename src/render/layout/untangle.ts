@@ -69,6 +69,15 @@ export const DEFAULT_UNTANGLE_PENS: UntanglePens = {
 
 const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
 
+/** Corner discount for same-segment crossing penalties (user rule:
+ *  crossings prefer corners). `dot` is the dot product of the two unit
+ *  tangents pointing AWAY from the node — continuing straight through means
+ *  opposite tangents (dot -> -1, full price); a 45° bend halves the price;
+ *  a 90°+ corner makes the swap nearly free (the turn's own rotation
+ *  absorbs the crossing, like the 2/3 cross on the real NYC map). */
+export const cornerTurnFactor = (dot: number): number =>
+  dot < -0.92 ? 1 : dot < -0.38 ? 0.5 : 0.15;
+
 function inversions(a: number[]): number {
   let inv = 0;
   for (let i = 0; i < a.length; i++) {
@@ -155,6 +164,42 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       optAdj.get(nd)!.push(oe);
     }
   }
+
+  // ---- corner-aware crossing weights ----------------------------------------
+  // Unit tangent of the opt edge's drawn course at node nd, pointing AWAY
+  // from nd (taken from the underlying layout edge of the chain that
+  // touches nd).
+  const tangentAt = (oe: OptEdge, nd: string): [number, number] | null => {
+    for (const cand of [oe.parts[0], oe.parts[oe.parts.length - 1]]) {
+      const e = cand.edge;
+      const path = e.path as unknown as Array<[number, number]>;
+      if (!path || path.length < 2) continue;
+      if (e.from === nd) {
+        const dx = path[1][0] - path[0][0];
+        const dy = path[1][1] - path[0][1];
+        const len = Math.hypot(dx, dy) || 1;
+        return [dx / len, dy / len];
+      }
+      if (e.to === nd) {
+        const dx = path[path.length - 2][0] - path[path.length - 1][0];
+        const dy = path[path.length - 2][1] - path[path.length - 1][1];
+        const len = Math.hypot(dx, dy) || 1;
+        return [dx / len, dy / len];
+      }
+    }
+    return null;
+  };
+  const cornerCache = new Map<string, number>();
+  const cornerFactor = (nd: string, a: OptEdge, b: OptEdge): number => {
+    const key = nd + '|' + (a.id < b.id ? a.id + '.' + b.id : b.id + '.' + a.id);
+    let f = cornerCache.get(key);
+    if (f !== undefined) return f;
+    const ta = tangentAt(a, nd);
+    const tb = tangentAt(b, nd);
+    f = !ta || !tb ? 1 : cornerTurnFactor(ta[0] * tb[0] + ta[1] * tb[1]);
+    cornerCache.set(key, f);
+    return f;
+  };
 
   // ---- connOccurs from traversals --------------------------------------------
   // (line, node, optEdge pair) actually connected by service. Lines with no
@@ -342,13 +387,15 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   const nodeScore = (nd: string, cfg: Cfg): number => {
     const adj = optAdj.get(nd) ?? [];
     if (adj.length < 2) return 0;
-    let sameDouble = 0;
+    let sameDouble = 0; // raw count (feeds the diff-seg correction)
+    let sameWeighted = 0; // corner-discounted (feeds the score)
     let seps = 0;
     for (const ea of adj) {
       for (const eb of adj) {
         if (ea === eb) continue;
         const r = crossSepsPair(nd, ea, eb, cfg);
         sameDouble += r.cross;
+        sameWeighted += r.cross * cornerFactor(nd, ea, eb);
         seps += r.seps;
       }
     }
@@ -358,8 +405,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       diff -= sameDouble;
       if (diff < 0) diff = 0;
     }
-    const same = sameDouble / 2;
-    return same * crossPenSameSeg(nd) + diff * crossPenDiffSeg(nd) + seps * sepPen(nd);
+    return (sameWeighted / 2) * crossPenSameSeg(nd) + diff * crossPenDiffSeg(nd) + seps * sepPen(nd);
   };
 
   /** Same-color family fragmentation of an edge order: adjacent different-
