@@ -495,6 +495,47 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
+    /** The drawn lane polyline of a line at a node, oriented node-outward. */
+    const lanePolyAt = (lineId: string, nodeId: string): Pixel[] | null => {
+      for (const edge of layout.edges) {
+        if (edge.from !== nodeId && edge.to !== nodeId) continue;
+        const poly = segPath.get(edge.id + '|' + lineId);
+        if (!poly || poly.length < 2) continue;
+        return edge.from === nodeId ? poly : [...poly].reverse();
+      }
+      return null;
+    };
+    /** Seat a mark ON its lane at the capsule's cross-section: intersect the
+     *  lane polyline with the cross line (point c, direction u), taking the
+     *  crossing nearest the node. Join curves displace lane ENDPOINTS into
+     *  the corner (the 22 St BADC row read one pitch off its lanes) — the
+     *  intersection recovers where the lane actually runs at that height. */
+    const seatOnLane = (
+      mk: { lineId: string; flagNode: string; pos: Pixel },
+      c: Pixel,
+      u: Pixel,
+    ): boolean => {
+      const poly = lanePolyAt(mk.lineId, mk.flagNode);
+      if (!poly) return false;
+      const nx = -u[1];
+      const ny = u[0];
+      let prevF = (poly[0][0] - c[0]) * nx + (poly[0][1] - c[1]) * ny;
+      for (let i = 1; i < poly.length; i++) {
+        const f = (poly[i][0] - c[0]) * nx + (poly[i][1] - c[1]) * ny;
+        if ((prevF <= 0 && f >= 0) || (prevF >= 0 && f <= 0)) {
+          const t = Math.abs(f - prevF) > 1e-9 ? prevF / (prevF - f) : 0;
+          const px = poly[i - 1][0] + (poly[i][0] - poly[i - 1][0]) * t;
+          const py = poly[i - 1][1] + (poly[i][1] - poly[i - 1][1]) * t;
+          if (Math.hypot(px - c[0], py - c[1]) < 40) {
+            mk.pos = [px, py];
+            return true;
+          }
+          return false;
+        }
+        prevF = f;
+      }
+      return false;
+    };
     const laneDirAt = (lineId: string, nodeId: string): Pixel | null => {
       for (const edge of layout.edges) {
         if (edge.from !== nodeId && edge.to !== nodeId) continue;
@@ -882,8 +923,12 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             const cy = idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / idx.length;
             for (const i of idx) {
               const mk = s.marks[i];
-              const t = (mk.pos[0] - cx) * ux + (mk.pos[1] - cy) * uy;
-              mk.pos = [cx + ux * t, cy + uy * t];
+              // seat the dot ON its lane at this cross-section; fall back
+              // to projecting the (possibly join-displaced) mark
+              if (!seatOnLane(mk, [cx, cy], [ux, uy])) {
+                const t = (mk.pos[0] - cx) * ux + (mk.pos[1] - cy) * uy;
+                mk.pos = [cx + ux * t, cy + uy * t];
+              }
             }
             respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
           } else {
@@ -1003,6 +1048,11 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
                 s.marks[i].pos[1] + B.v[1] * bestS,
               ];
             }
+            // a slide is a straight translation: on bending lanes the dots
+            // drift off — re-seat each on its lane at the new cross line
+            const cB2 = centroidOf(B.idx);
+            for (const i of B.idx) seatOnLane(s.marks[i], cB2, B.u);
+            respaceAlong(B.idx.map((i) => s.marks[i]), B.u[0], B.u[1], 2 * r, false);
           } else if (bestS === null) {
             // no collision-free slide at all: push apart along the bundle
             // until dots clear (old fallback)
