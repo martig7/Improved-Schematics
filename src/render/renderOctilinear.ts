@@ -1000,6 +1000,24 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           return true;
         };
+        const dotsClear2 = (idxA: number[], offA: Pixel, idxB: number[], offB: Pixel): boolean => {
+          const posOf = (i: number): Pixel => {
+            if (idxA.includes(i)) return [s.marks[i].pos[0] + offA[0], s.marks[i].pos[1] + offA[1]];
+            if (idxB.includes(i)) return [s.marks[i].pos[0] + offB[0], s.marks[i].pos[1] + offB[1]];
+            return s.marks[i].pos;
+          };
+          for (let i = 0; i < s.marks.length; i++) {
+            const si = idxA.includes(i) ? 0 : idxB.includes(i) ? 1 : 2;
+            const pi = posOf(i);
+            for (let j = i + 1; j < s.marks.length; j++) {
+              const sj = idxA.includes(j) ? 0 : idxB.includes(j) ? 1 : 2;
+              if (si === sj && si !== 2) continue; // same segment: PAV handles
+              const pj = posOf(j);
+              if (Math.hypot(pi[0] - pj[0], pi[1] - pj[1]) < 2 * r - 0.05) return false;
+            }
+          }
+          return true;
+        };
         for (let bI = 1; bI < segInfos.length; bI++) {
           const B = segInfos[bI];
           const cB0 = centroidOf(B.idx);
@@ -1011,51 +1029,70 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             if (d < bestD) { bestD = d; aI = j; }
           }
           const A = segInfos[aI];
-          const cA = centroidOf(A.idx);
-          const halfA = halfLenOf(A.idx, cA, A.u);
+          const cA0 = centroidOf(A.idx);
+          const halfA = halfLenOf(A.idx, cA0, A.u);
+          const halfB = halfLenOf(B.idx, cB0, B.u);
           const denom = A.u[0] * B.u[1] - A.u[1] * B.u[0];
-          const maxSlide = spacing * 1.5;
-          let bestS: number | null = null;
+          // END-TO-END constraint (user design): the elbow point P must sit
+          // AT OR BEYOND the end of BOTH rows — a P inside a row makes the
+          // other segment poke into its side (a T, not a corner). Sliding A
+          // along its bundle moves P along B's axis and vice versa, so the
+          // 2-D slide search can usually place P off both ends; extension
+          // covers whatever the slide bounds cannot.
+          const allowSecondSlide = bI === 1; // later pairs must not disturb placed segments
+          const maxSlide = spacing * 3;
+          let best: { sA: number; sB: number } | null = null;
           let bestScore = Infinity;
-          for (let sl = -maxSlide; sl <= maxSlide + 1e-6; sl += 1) {
-            const off: Pixel = [B.v[0] * sl, B.v[1] * sl];
-            if (!dotsClear(B.idx, off)) continue;
-            const cB: Pixel = [cB0[0] + off[0], cB0[1] + off[1]];
-            let score: number;
-            if (Math.abs(denom) < 0.05) {
-              // parallel axes: minimize the lateral offset so the rows can
-              // join collinearly end-to-end
-              score = Math.abs((cB[0] - cA[0]) * A.v[0] + (cB[1] - cA[1]) * A.v[1]) * 2;
-            } else {
-              const t = ((cB[0] - cA[0]) * B.u[1] - (cB[1] - cA[1]) * B.u[0]) / denom;
-              const px = cA[0] + A.u[0] * t;
-              const py = cA[1] + A.u[1] * t;
-              const halfB = halfLenOf(B.idx, cB0, B.u);
-              const extA = Math.max(0, Math.abs(t) - halfA);
-              const extB = Math.max(
-                0,
-                Math.abs((px - cB[0]) * B.u[0] + (py - cB[1]) * B.u[1]) - halfB,
-              );
-              score = extA + extB;
+          for (let sA = -maxSlide; sA <= maxSlide + 1e-6; sA += 1) {
+            if (!allowSecondSlide && Math.abs(sA) > 1e-9) continue;
+            const offA: Pixel = [A.v[0] * sA, A.v[1] * sA];
+            const cA: Pixel = [cA0[0] + offA[0], cA0[1] + offA[1]];
+            for (let sB = -maxSlide; sB <= maxSlide + 1e-6; sB += 1) {
+              const offB: Pixel = [B.v[0] * sB, B.v[1] * sB];
+              const cB: Pixel = [cB0[0] + offB[0], cB0[1] + offB[1]];
+              let score: number;
+              if (Math.abs(denom) < 0.05) {
+                // parallel axes: minimize the lateral offset so the rows
+                // can join collinearly end-to-end
+                score = Math.abs((cB[0] - cA[0]) * A.v[0] + (cB[1] - cA[1]) * A.v[1]) * 2;
+              } else {
+                const t = ((cB[0] - cA[0]) * B.u[1] - (cB[1] - cA[1]) * B.u[0]) / denom;
+                const px = cA[0] + A.u[0] * t;
+                const py = cA[1] + A.u[1] * t;
+                const tB = (px - cB[0]) * B.u[0] + (py - cB[1]) * B.u[1];
+                // infeasible while P is INSIDE either row, or so far past an
+                // end that renderStops would roll the extension back
+                if (Math.abs(t) < halfA - 0.5 || Math.abs(tB) < halfB - 0.5) continue;
+                if (Math.abs(t) - halfA > spacing * 4 || Math.abs(tB) - halfB > spacing * 4) continue;
+                score = (Math.abs(t) - halfA) + (Math.abs(tB) - halfB);
+              }
+              score += (Math.abs(sA) + Math.abs(sB)) * 0.05;
+              if (score >= bestScore - 1e-9) continue;
+              if (!dotsClear2(A.idx, offA, B.idx, offB)) continue;
+              bestScore = score;
+              best = { sA, sB };
             }
-            score += Math.abs(sl) * 0.05;
-            if (score < bestScore - 1e-9) { bestScore = score; bestS = sl; }
           }
-          if (bestS !== null && Math.abs(bestS) > 1e-9) {
-            for (const i of B.idx) {
-              s.marks[i].pos = [
-                s.marks[i].pos[0] + B.v[0] * bestS,
-                s.marks[i].pos[1] + B.v[1] * bestS,
-              ];
-            }
-            // a slide is a straight translation: on bending lanes the dots
-            // drift off — re-seat each on its lane at the new cross line
-            const cB2 = centroidOf(B.idx);
-            for (const i of B.idx) seatOnLane(s.marks[i], cB2, B.u);
-            respaceAlong(B.idx.map((i) => s.marks[i]), B.u[0], B.u[1], 2 * r, false);
-          } else if (bestS === null) {
-            // no collision-free slide at all: push apart along the bundle
-            // until dots clear (old fallback)
+          if (best) {
+            const apply = (info: { idx: number[]; u: Pixel; v: Pixel }, sl: number) => {
+              if (Math.abs(sl) < 1e-9) return;
+              for (const i of info.idx) {
+                s.marks[i].pos = [
+                  s.marks[i].pos[0] + info.v[0] * sl,
+                  s.marks[i].pos[1] + info.v[1] * sl,
+                ];
+              }
+              // a slide is a straight translation: on bending lanes the
+              // dots drift — re-seat each on its lane at the new cross line
+              const c2 = centroidOf(info.idx);
+              for (const i of info.idx) seatOnLane(s.marks[i], c2, info.u);
+              respaceAlong(info.idx.map((i) => s.marks[i]), info.u[0], info.u[1], 2 * r, false);
+            };
+            apply(A, best.sA);
+            apply(B, best.sB);
+          } else {
+            // no feasible end-to-end placement: push apart along the bundle
+            // until dots clear (old fallback; stops falls back to a T/bridge)
             for (let k = 0; k < 16 && !dotsClear(B.idx, [0, 0]); k++) {
               for (const i of B.idx) {
                 s.marks[i].pos = [s.marks[i].pos[0] + B.v[0] * 2, s.marks[i].pos[1] + B.v[1] * 2];
