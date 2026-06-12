@@ -747,7 +747,12 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             if (corner) s.marks[i].cornerAfter = corner;
           }
         } else {
-          // spec v2 §3: total fallback — the mega box covers all bundles
+          // spec v2 §3: total fallback — the mega box covers all bundles.
+          // Structural residual: a bundle whose member lanes are coincident
+          // (interlined on one drawn line) or pinch below minGap inside the
+          // slide window admits zero feasible row states — the row-line ×
+          // lane-curve intersection degenerates there — so the station boxes
+          // (the mega branch in stops.ts renders it).
           megaFallbacks++;
           for (const mk of s.marks) mk.mega = true;
         }
