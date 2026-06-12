@@ -32,16 +32,20 @@ while ((m = re.exec(svg))) {
       );
     }
   } else if (lines.length > 0) {
-    // widest line = border stadium
-    const b = lines.reduce((p, q) => (+p[5] >= +q[5] ? p : q));
-    const ax = +b[1], ay = +b[2], bx = +b[3], by = +b[4], half = +b[5] / 2;
-    const distToSeg = (px: number, py: number): number => {
-      const vx = bx - ax, vy = by - ay;
-      const len2 = vx * vx + vy * vy;
-      const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / len2)) : 0;
-      return Math.hypot(px - (ax + vx * t), py - (ay + vy * t));
-    };
-    for (const d of dots) worst = Math.max(worst, distToSeg(d.x, d.y) + d.out - half);
+    // multi-angle capsules: a dot fits if it sits inside ANY of the
+    // marker's stadium segments (each line with its own half-width)
+    for (const d of dots) {
+      let bestOver = Infinity;
+      for (const b of lines) {
+        const ax = +b[1], ay = +b[2], bx = +b[3], by = +b[4], half = +b[5] / 2;
+        const vx = bx - ax, vy = by - ay;
+        const len2 = vx * vx + vy * vy;
+        const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((d.x - ax) * vx + (d.y - ay) * vy) / len2)) : 0;
+        const dist = Math.hypot(d.x - (ax + vx * t), d.y - (ay + vy * t));
+        bestOver = Math.min(bestOver, dist + d.out - half);
+      }
+      worst = Math.max(worst, bestOver);
+    }
   } else {
     continue; // bare dot, nothing to fit
   }

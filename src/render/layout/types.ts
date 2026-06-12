@@ -96,6 +96,12 @@ export interface StopMark {
   pos: Pixel;
   /** Line display name (route bullet) printed inside the stop dot. */
   name?: string;
+  /** Unit lane direction at the mark (for capsule segment orientation). */
+  dir?: Pixel;
+  /** Capsule segment index: marks of one station group by entry-direction
+   *  bundle; each segment renders its own octilinear capsule part (real-NYC
+   *  Atlantic Av-Barclays style multi-angle marker). */
+  seg?: number;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

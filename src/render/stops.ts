@@ -121,32 +121,69 @@ export function renderStops(
       continue;
     }
 
-    // Stadium hull SURROUNDING the dots: border line underneath, fill line on
-    // top, dots drawn over the fill. Round caps extend the hull past the
-    // extreme dots; widths leave the dots a 1.5px margin inside the fill.
-    // Marks can sit off the axis chord (diverged-corridor stations keep dots
-    // on their own lanes) — widen the hull by the lateral extent so every
-    // dot always fits inside.
-    const axLen = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    const nx = -(b[1] - a[1]) / axLen;
-    const ny = (b[0] - a[0]) / axLen;
-    let lat = 0;
-    for (const m of marks) {
-      lat = Math.max(lat, Math.abs((m.pos[0] - a[0]) * nx + (m.pos[1] - a[1]) * ny));
+    // Multi-angle capsule (real-NYC Atlantic Av–Barclays style): one stadium
+    // SEGMENT per entry-direction bundle (marks carry seg indexes), drawn as
+    // one connected marker — every border first, every fill second, so fills
+    // merge across overlapping segments; a joint bridges segment centroids
+    // that don't touch. Single-segment stations reduce to the classic pill.
+    const segIds = [...new Set(marks.map((m) => m.seg ?? 0))];
+    interface SegGeom { a: Pixel; b: Pixel; w: number; c: Pixel }
+    const segGeoms: SegGeom[] = [];
+    for (const sid of segIds) {
+      const sm = marks.filter((m) => (m.seg ?? 0) === sid);
+      let sa = sm[0].pos;
+      let sb = sm[0].pos;
+      let span = 0;
+      for (let i = 0; i < sm.length; i++) {
+        for (let j = i + 1; j < sm.length; j++) {
+          const d = Math.hypot(sm[i].pos[0] - sm[j].pos[0], sm[i].pos[1] - sm[j].pos[1]);
+          if (d > span) { span = d; sa = sm[i].pos; sb = sm[j].pos; }
+        }
+      }
+      // lateral widening: dots off the axis chord must still fit inside
+      let lat = 0;
+      if (span > 1e-6) {
+        const nx = -(sb[1] - sa[1]) / span;
+        const ny = (sb[0] - sa[0]) / span;
+        for (const m of sm) {
+          lat = Math.max(lat, Math.abs((m.pos[0] - sa[0]) * nx + (m.pos[1] - sa[1]) * ny));
+        }
+      }
+      segGeoms.push({
+        a: sa,
+        b: sb,
+        w: 2 * r + 3 + 2 * lat,
+        c: [(sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2],
+      });
     }
-    const x1 = a[0].toFixed(1);
-    const y1 = a[1].toFixed(1);
-    const x2 = b[0].toFixed(1);
-    const y2 = b[1].toFixed(1);
-    out.push(wrap((a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
-      '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + stroke + '" stroke-width="' + (2 * r + 6 + 2 * lat).toFixed(1) +
-      '" stroke-linecap="round"/>' +
-      '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
-      '" stroke="' + fill + '" stroke-width="' + (2 * r + 3 + 2 * lat).toFixed(1) +
-      '" stroke-linecap="round"' + attrs + '/>' +
-      dots,
-    ));
+    // joints: chain segments by nearest centroid so the marker is connected
+    const joints: Array<[Pixel, Pixel]> = [];
+    for (let i = 1; i < segGeoms.length; i++) {
+      let bestJ = 0;
+      let bestD = Infinity;
+      for (let j = 0; j < i; j++) {
+        const d = Math.hypot(segGeoms[i].c[0] - segGeoms[j].c[0], segGeoms[i].c[1] - segGeoms[j].c[1]);
+        if (d < bestD) { bestD = d; bestJ = j; }
+      }
+      joints.push([segGeoms[i].c, segGeoms[bestJ].c]);
+    }
+    const lineSvg = (p: Pixel, q: Pixel, color: string, w: number, withAttrs: boolean): string =>
+      '<line x1="' + p[0].toFixed(1) + '" y1="' + p[1].toFixed(1) +
+      '" x2="' + q[0].toFixed(1) + '" y2="' + q[1].toFixed(1) +
+      '" stroke="' + color + '" stroke-width="' + w.toFixed(1) +
+      '" stroke-linecap="round"' + (withAttrs ? attrs : '') + '/>';
+    let inner = '';
+    for (const g of segGeoms) inner += lineSvg(g.a, g.b, stroke, g.w + 3, false);
+    for (const [p, q] of joints) inner += lineSvg(p, q, stroke, 2 * r + 6, false);
+    let first = true;
+    for (const g of segGeoms) {
+      inner += lineSvg(g.a, g.b, fill, g.w, first);
+      first = false;
+    }
+    for (const [p, q] of joints) inner += lineSvg(p, q, fill, 2 * r + 3, false);
+    const cx = segGeoms.reduce((acc, g) => acc + g.c[0], 0) / segGeoms.length;
+    const cy = segGeoms.reduce((acc, g) => acc + g.c[1], 0) / segGeoms.length;
+    out.push(wrap(cx, cy, inner + dots));
   }
   return out;
 }

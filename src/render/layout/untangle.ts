@@ -278,6 +278,12 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   };
   const cornerCache = new Map<string, number>();
   const cornerFactor = (nd: string, a: OptEdge, b: OptEdge): number => {
+    // No corner discount AT stations — and a surcharge, so the cost ladder
+    // reads: open-track bend (0.5x) << straight track (6x) < station (3x of
+    // the already-higher inStat pens). A bend at a station had made the
+    // marker the cheapest swap site (greens/grays swapping right on
+    // Flatbush Av); swaps belong on open-track bends.
+    if (isStation(nd)) return 3;
     const key = nd + '|' + (a.id < b.id ? a.id + '.' + b.id : b.id + '.' + a.id);
     let f = cornerCache.get(key);
     if (f !== undefined) return f;

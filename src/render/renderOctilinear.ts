@@ -476,12 +476,19 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
   }
-  const addStop = (lineId: string, color: string, nodeId: string, pos: Pixel) => {
+  const addStop = (
+    lineId: string,
+    color: string,
+    nodeId: string,
+    pos: Pixel,
+    dir?: Pixel,
+    seg?: number,
+  ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
-    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label });
+    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label, dir, seg });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
   if (args.stations) {
@@ -494,8 +501,17 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const poly = segPath.get(edge.id + '|' + lineId);
         if (!poly || poly.length < 2) continue;
         const atStart = edge.from === nodeId;
-        const a = atStart ? poly[0] : poly[poly.length - 1];
-        const b = atStart ? poly[1] : poly[poly.length - 2];
+        const pts = atStart ? poly : [...poly].reverse();
+        // walk ~10px of arc for a CORRIDOR-scale direction — the first
+        // segment after a join trim is junction-interior scrap and mirrors
+        // marker segment grouping at busy nodes
+        const a = pts[0];
+        let b = pts[pts.length - 1];
+        let acc = 0;
+        for (let i = 1; i < pts.length; i++) {
+          acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+          if (acc >= 10) { b = pts[i]; break; }
+        }
         const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
         if (len < 1e-6) continue;
         return [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
@@ -505,7 +521,14 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     interface StMarks {
       nodeId: string;
       members: number;
-      marks: Array<{ lineId: string; color: string; flagNode: string; pos: Pixel }>;
+      marks: Array<{
+        lineId: string;
+        color: string;
+        flagNode: string;
+        pos: Pixel;
+        dir?: Pixel;
+        seg?: number;
+      }>;
       flagNodes: Set<string>;
     }
     const gathered: StMarks[] = [];
@@ -518,7 +541,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         if (!line) continue;
         const p = drawnEndAt.get(flagNode + '|' + lineId);
         if (!p) continue;
-        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]] });
+        const d = laneDirAt(lineId, flagNode);
+        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]], dir: d ?? undefined });
         flagNodes.add(flagNode);
       }
       // All marks at one node: their longitudinal scatter is a join-curve
@@ -763,28 +787,109 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           if (!movedAny) break;
         }
       } else {
-        // marker axis: farthest pair; near-coincident marks fall back to the
-        // first lane's cross-section
-        let ai = 0, bi = 0, span = 0;
-        for (let i = 0; i < s.marks.length; i++) {
-          for (let j = i + 1; j < s.marks.length; j++) {
+        // Multi-angle capsules: group marks by entry-direction bundle (45°
+        // quantized lane axis + spatial chaining). Each group becomes its
+        // own capsule SEGMENT (real-NYC Atlantic Av–Barclays multi-angle
+        // marker) and lays its dots along its own axis with a minimum gap —
+        // differently-angled bundles stay separately bundled at the marker.
+        const n = s.marks.length;
+        const bucket = s.marks.map((mk) => {
+          const d = mk.dir;
+          if (!d) return -1;
+          const a = ((Math.atan2(d[1], d[0]) % Math.PI) + Math.PI) % Math.PI;
+          return Math.round(a / (Math.PI / 4)) % 4;
+        });
+        const parent = s.marks.map((_, i) => i);
+        const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            if (bucket[i] !== bucket[j]) continue;
             const d = Math.hypot(
               s.marks[i].pos[0] - s.marks[j].pos[0],
               s.marks[i].pos[1] - s.marks[j].pos[1],
             );
-            if (d > span) { span = d; ai = i; bi = j; }
+            if (d < spacing * 2.5) parent[find(i)] = find(j);
           }
         }
-        let ux: number, uy: number;
-        if (span > 1) {
-          ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
-          uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
-        } else {
-          const dir = laneDirAt(s.marks[0].lineId, s.marks[0].flagNode) ?? [1, 0];
-          ux = -dir[1];
-          uy = dir[0];
+        const groups = new Map<number, number[]>();
+        for (let i = 0; i < n; i++) {
+          const g = find(i);
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g)!.push(i);
         }
-        respaceAlong(s.marks, ux, uy, 2 * r, false);
+        let segIdx = 0;
+        for (const idx of groups.values()) {
+          for (const i of idx) s.marks[i].seg = segIdx;
+          segIdx++;
+          if (idx.length < 2) continue;
+          // axis: farthest pair within the group; near-coincident marks
+          // fall back to the group's lane cross-section
+          let ai = idx[0], bi = idx[0], span = 0;
+          for (const i of idx) {
+            for (const j of idx) {
+              const d = Math.hypot(
+                s.marks[i].pos[0] - s.marks[j].pos[0],
+                s.marks[i].pos[1] - s.marks[j].pos[1],
+              );
+              if (d > span) { span = d; ai = i; bi = j; }
+            }
+          }
+          let ux: number, uy: number;
+          if (span > 1) {
+            ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
+            uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
+          } else {
+            const dir = s.marks[idx[0]].dir ?? [1, 0];
+            ux = -dir[1];
+            uy = dir[0];
+          }
+          respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
+        }
+        // Cross-segment dot collisions: two bundles' marks can land on the
+        // same spot at the shared station. Slide the SMALLER segment along
+        // its own lane direction (dots stay on their lines) until every
+        // cross-segment dot pair clears.
+        const rows: Array<{ idx: number[]; dir: Pixel }> = [];
+        for (const idx of groups.values()) {
+          const dir = s.marks[idx[0]].dir ?? [1, 0];
+          rows.push({ idx, dir: [dir[0], dir[1]] });
+        }
+        const minD = 2 * r;
+        for (let iter = 0; iter < 12; iter++) {
+          let movedAny = false;
+          for (let gi = 0; gi < rows.length; gi++) {
+            for (let gj = gi + 1; gj < rows.length; gj++) {
+              let dmin = Infinity;
+              for (const i of rows[gi].idx) {
+                for (const j of rows[gj].idx) {
+                  dmin = Math.min(dmin, Math.hypot(
+                    s.marks[i].pos[0] - s.marks[j].pos[0],
+                    s.marks[i].pos[1] - s.marks[j].pos[1],
+                  ));
+                }
+              }
+              if (dmin >= minD - 0.05) continue;
+              const small = rows[gi].idx.length <= rows[gj].idx.length ? rows[gi] : rows[gj];
+              const big = small === rows[gi] ? rows[gj] : rows[gi];
+              const cAt = (g: { idx: number[] }): Pixel => [
+                g.idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / g.idx.length,
+                g.idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / g.idx.length,
+              ];
+              const sc = cAt(small);
+              const bc = cAt(big);
+              const along = (sc[0] - bc[0]) * small.dir[0] + (sc[1] - bc[1]) * small.dir[1];
+              const sign = along >= 0 ? 1 : -1;
+              for (const i of small.idx) {
+                s.marks[i].pos = [
+                  s.marks[i].pos[0] + small.dir[0] * sign * 2,
+                  s.marks[i].pos[1] + small.dir[1] * sign * 2,
+                ];
+              }
+              movedAny = true;
+            }
+          }
+          if (!movedAny) break;
+        }
       }
     }
     const megas = gathered.filter((s) => boxOf(s).mega);
@@ -890,7 +995,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.dir, m.seg);
     }
   } else {
     for (const edge of layout.edges) {
