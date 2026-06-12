@@ -108,6 +108,7 @@ export const buildLaneCurve = (
   // side, so t increases toward the LONGER side. Consumers must not assume
   // a geographic direction — curveTangent users sign-normalize, and group
   // reversal is explored by the solver's orientation mask.
+  // (sides[0] is the longest side — reversing the shorter keeps that true)
   else pts = [...sides[1]].reverse().concat(sides[0]);
   const dd: Pixel[] = [pts[0]];
   for (const p of pts) {

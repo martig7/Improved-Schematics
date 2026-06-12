@@ -92,6 +92,7 @@ test('P2/clean-track: chain escapes a kinked region', () => {
 });
 
 test('links pull group ends together (one-sided)', () => {
+  // also exercises terminus domain clipping: DP states end at the drawn tips
   // two colinear terminus lanes facing each other with a 20px gap
   const a = buildLaneCurve([[[-10, 0], [-50, 0]]], [-30, 0], 24); // tip at x=-10
   const b = buildLaneCurve([[[10, 0], [50, 0]]], [30, 0], 24);    // tip at x=+10
