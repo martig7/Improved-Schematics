@@ -104,6 +104,10 @@ export const buildLaneCurve = (
   let pts: Pixel[];
   if (sides.length === 0) pts = [anchor, [anchor[0] + 1e-6, anchor[1]]];
   else if (sides.length === 1) pts = [...sides[0]].reverse();
+  // orientation convention: the curve runs shorter-side → node → longer
+  // side, so t increases toward the LONGER side. Consumers must not assume
+  // a geographic direction — curveTangent users sign-normalize, and group
+  // reversal is explored by the solver's orientation mask.
   else pts = [...sides[1]].reverse().concat(sides[0]);
   const dd: Pixel[] = [pts[0]];
   for (const p of pts) {
