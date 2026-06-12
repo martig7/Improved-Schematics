@@ -208,3 +208,22 @@ test('fully masked window degrades to unmasked chain, not stacked anchors', () =
   assert.ok(d >= MINGAP - 1e-6, `mask starvation must not stack dots: d=${d}`);
   assert.ok(!sol.degraded, 'unmasked rung should solve — not the anchor fallback');
 });
+
+test('hardBlocked survives every degradation rung', () => {
+  // §6 mask blankets everything (forces unmasked rungs); hardBlocked vetoes
+  // a disc around the anchors — the solve must place AWAY from it, proving
+  // repair vetoes are honored even after the mask is dropped
+  const curves = [
+    through([[-60, 0], [60, 0]], [0, 0]),
+    through([[-60, PITCH], [60, PITCH]], [0, PITCH]),
+  ];
+  const sol = solveChain(curves, [[0, 1]], {
+    ...OPTS,
+    blocked: () => true,
+    hardBlocked: (p) => Math.hypot(p[0], p[1]) < 8,
+  });
+  assert.ok(Math.hypot(sol.pos[0][0], sol.pos[0][1]) >= 8 - 1e-6,
+    `dot 0 inside hard veto: ${sol.pos[0]}`);
+  const d = Math.hypot(sol.pos[1][0] - sol.pos[0][0], sol.pos[1][1] - sol.pos[0][1]);
+  assert.ok(d >= MINGAP - 1e-6, 'floor must hold');
+});

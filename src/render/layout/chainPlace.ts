@@ -173,6 +173,10 @@ export interface ChainOpts {
   /** Spec §6 inter-station mask: states whose position is vetoed (e.g.
    *  too close to an already-placed neighboring marker) are infeasible. */
   blocked?: (p: Pixel) => boolean;
+  /** Spec §4 repair vetoes: collision sites that must stay forbidden in
+   *  EVERY degradation rung (unlike `blocked`, the §6 inter-station mask,
+   *  which the ladder drops to recover feasibility). */
+  hardBlocked?: (p: Pixel) => boolean;
   /** Spec §4 repair escape hatch: drop the P5 shape clause for this solve.
    *  Used by repair phase 2 when strict-octilinear rounds cannot clear
    *  non-adjacent collisions — collision-freedom outranks octilinearity
@@ -278,9 +282,12 @@ export const solveChain = (
   });
   const statePos = order.map((i, k) => states[k].map((t) => curvePoint(curves[i], t)));
   const vetoed = (p: Pixel): boolean => (o.blocked ? o.blocked(p) : false);
+  // §4 repair vetoes apply in EVERY rung — they are how non-adjacent stacking
+  // gets fixed; dropping them with the §6 mask stalls the repair loop.
+  const hardVetoed = (p: Pixel): boolean => (o.hardBlocked ? o.hardBlocked(p) : false);
   const run = (useOct: boolean, useBlocked: boolean): { t: number[]; pos: Pixel[] } | null => {
     let prevCost = states[0].map(
-      (t, s0) => (useBlocked && vetoed(statePos[0][s0]) ? Infinity :
+      (t, s0) => (hardVetoed(statePos[0][s0]) || (useBlocked && vetoed(statePos[0][s0])) ? Infinity :
         anchorW * (t - curves[order[0]].anchorT) ** 2),
     );
     const back: Int32Array[] = [];
@@ -292,7 +299,7 @@ export const solveChain = (
       const bk = new Int32Array(states[k].length).fill(-1);
       for (let s = 0; s < states[k].length; s++) {
         const p = statePos[k][s];
-        if (useBlocked && vetoed(p)) { cost[s] = Infinity; bk[s] = -1; continue; }
+        if (hardVetoed(p) || (useBlocked && vetoed(p))) { cost[s] = Infinity; bk[s] = -1; continue; }
         let best = Infinity;
         let arg = -1;
         for (let s2 = 0; s2 < pj.length; s2++) {
@@ -363,6 +370,8 @@ export const solveChain = (
   //      floor still hold, which the anchor fallback below cannot promise
   //      (it can stack a station's own dots ~1px apart).
   //   5. anchors: last resort, honors nothing; flagged `degraded`.
+  // `hardBlocked` (§4 repair vetoes) is NOT part of the ladder: it stays in
+  // force at rungs 1-4 — only the anchor fallback escapes it (see below).
   // (`relaxOct` enters the ladder at rung 3; unmasked rungs are skipped when
   // no mask exists, since they would just repeat the masked ones. Fixed
   // order, no randomness — deterministic.)
@@ -377,6 +386,9 @@ export const solveChain = (
     if (sol) return { order, t: sol.t, pos: sol.pos };
   }
   // no feasible chain in the window (extreme floor conflicts): degrade
-  // gracefully to anchors — dots stay on their lanes either way
+  // gracefully to anchors — dots stay on their lanes either way. By nature
+  // this honors NEITHER veto set (`blocked` nor `hardBlocked`) and no floor;
+  // the `degraded` flag tells callers (e.g. the §4 repair loop's best-round
+  // tracking) not to treat it as a solution of equal standing.
   return { order, t: curves.map((c) => c.anchorT), pos: anchorPos, degraded: true };
 };

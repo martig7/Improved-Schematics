@@ -716,12 +716,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             minGap: 2 * r - 0.05,
             anchorW: 0.05,
             linkW: 0.25,
-            // spec §6: dots of already-placed stations veto states; spec §4:
-            // collision sites from earlier repair rounds veto too
+            // spec §6: dots of already-placed stations veto states — a
+            // droppable mask (the ladder un-masks to recover feasibility)
             blocked: (p) => {
               for (const q of placedDots) {
                 if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
               }
+              return false;
+            },
+            // spec §4: collision sites from earlier repair rounds must hold
+            // in EVERY rung — folding them into `blocked` let the unmasked
+            // rungs discard them, stalling the repair loop (mn32 stacking)
+            hardBlocked: (p) => {
               for (const q of repairVeto) {
                 if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
               }
