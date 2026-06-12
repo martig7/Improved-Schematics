@@ -6,7 +6,7 @@
 // one station (express/local pairs). Each dot prints its line's name (route
 // bullet) inside, upright, toggled by the stations toggle.
 
-import type { StopMark } from './layout/types';
+import type { Pixel, StopMark } from './layout/types';
 import { LINE_WIDTH, MEGA_BOXES } from './constants';
 import { escapeXml } from './escape';
 
@@ -171,6 +171,27 @@ export function renderStops(
       const snap = Math.round(Math.atan2(d[0], -d[1]) / (Math.PI / 4)) * (Math.PI / 4);
       return [Math.cos(snap), Math.sin(snap)];
     };
+    // gap between two segments' stadium hulls (≤0 means they overlap)
+    const hullGap = (A: SegGeom, B: SegGeom): number => {
+      const segSegDist = (p1: Pixel, p2: Pixel, q1: Pixel, q2: Pixel): number => {
+        const ptSeg = (p: Pixel, a: Pixel, b: Pixel): number => {
+          const dx = b[0] - a[0];
+          const dy = b[1] - a[1];
+          const len2 = dx * dx + dy * dy;
+          const u = len2 < 1e-12 ? 0 :
+            Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2));
+          return Math.hypot(p[0] - (a[0] + dx * u), p[1] - (a[1] + dy * u));
+        };
+        const d = (p: Pixel, q: Pixel, r2: Pixel, s2: Pixel) =>
+          (q[0] - p[0]) * (s2[1] - r2[1]) - (q[1] - p[1]) * (s2[0] - r2[0]);
+        const o = (p: Pixel, q: Pixel, r2: Pixel) =>
+          Math.sign((q[0] - p[0]) * (r2[1] - p[1]) - (q[1] - p[1]) * (r2[0] - p[0]));
+        if (Math.abs(d(p1, p2, q1, q2)) > 1e-12 &&
+            o(p1, p2, q1) !== o(p1, p2, q2) && o(q1, q2, p1) !== o(q1, q2, p2)) return 0;
+        return Math.min(ptSeg(p1, q1, q2), ptSeg(p2, q1, q2), ptSeg(q1, p1, p2), ptSeg(q2, p1, p2));
+      };
+      return segSegDist(A.a, A.b, B.a, B.b) - (A.w + B.w) / 2;
+    };
     const maxExt = (LINE_WIDTH + 2) * 4; // ~4 lane spacings
     for (let i = 1; i < segGeoms.length; i++) {
       let bestJ = 0;
@@ -191,6 +212,34 @@ export function renderStops(
         const px = A.c[0] + uA[0] * t;
         const py = A.c[1] + uA[1] * t;
         const sB = (px - B.c[0]) * uB[0] + (py - B.c[1]) * uB[1];
+        // Corner openness: the angle between the directions the two rows
+        // RETREAT from P. Open (135°, Atlantic Av) and right corners look
+        // clean with tips extended to P; at an ACUTE corner (45° V) the
+        // extension makes one row's body ride over the other (the dots'
+        // lanes force both rows onto the tight side of the axes crossing),
+        // so there the rows just fuse where their hulls already overlap.
+        // Degenerate/single-dot segments are exempt: for them the extension
+        // IS the marker body (it builds the pill), and skipping it leaves a
+        // pinched snowman.
+        const retreatDot =
+          Math.sign(t) * Math.sign(sB) * (uA[0] * uB[0] + uA[1] * uB[1]);
+        const halfA = Math.hypot(A.b[0] - A.a[0], A.b[1] - A.a[1]) / 2;
+        const halfB = Math.hypot(B.b[0] - B.a[0], B.b[1] - B.a[1]) / 2;
+        if (retreatDot > 0.5 && halfA > r && halfB > r) {
+          if (hullGap(A, B) <= -1) continue; // bodies already overlap: fused pills
+          // barely apart: short bridge between the two nearest end caps
+          let ea: 'a' | 'b' = 'a';
+          let eb: 'a' | 'b' = 'a';
+          let bestEnd = Infinity;
+          for (const x of ['a', 'b'] as const) {
+            for (const y of ['a', 'b'] as const) {
+              const d = Math.hypot(A[x][0] - B[y][0], A[x][1] - B[y][1]);
+              if (d < bestEnd) { bestEnd = d; ea = x; eb = y; }
+            }
+          }
+          joints.push([A[ea], B[eb]]);
+          continue;
+        }
         const extend = (g: SegGeom, u: Pixel, along: number): boolean => {
           const halfLen = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]) / 2;
           const ext = Math.abs(along) - halfLen;
