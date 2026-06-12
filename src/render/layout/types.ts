@@ -99,6 +99,12 @@ export interface StopMark {
   /** Chain position within the station's marker (dots-on-lanes model):
    *  dots sorted by this index form the capsule spine. */
   chain?: number;
+  /** Rigid-row model (spec v2): synthetic corner vertex between this mark
+   *  and the next in chain order — a pair boundary's derived elbow point. */
+  cornerAfter?: Pixel;
+  /** Rigid-row total fallback (spec v2 §3): no feasible row configuration —
+   *  the station renders as the mega box instead of a spine capsule. */
+  mega?: boolean;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

@@ -8,7 +8,8 @@ import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
-import { buildLaneCurve, curveTangent, solveChain } from './layout/chainPlace';
+import { buildLaneCurve, curveTangent } from './layout/chainPlace';
+import { solveRows } from './layout/rowPlace';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -484,12 +485,16 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     nodeId: string,
     pos: Pixel,
     chain?: number,
+    cornerAfter?: Pixel,
+    mega?: boolean,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
-    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label, chain });
+    stopsByNode.get(nodeId)!.push({
+      lineId, color, pos, name: lineById.get(lineId)?.label, chain, cornerAfter, mega,
+    });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
   if (args.stations) {
@@ -551,6 +556,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         flagNode: string;
         pos: Pixel;
         chain?: number;
+        cornerAfter?: Pixel;
+        mega?: boolean;
       }>;
     }
     const gathered: StMarks[] = [];
@@ -651,12 +658,13 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       if (out && out.length >= 2) segPath.set(key, atStart ? out : out.reverse());
     };
-    // ---- dots-on-lanes chain placement (spec 2026-06-12) -------------
-    // Each dot's position is an arc parameter on its OWN lane curve; the
-    // station's marker is a chain over its dots, solved exactly per station
-    // by DP (chainPlace.ts). On-lane holds by construction — this replaces
-    // the cross-line collapse/seat/respace/elbow-slide/snap stack.
+    // ---- rigid-row marker placement (spec v2 2026-06-12) -------------
+    // Each bundle places a straight octilinear ROW; dots are intersections
+    // of the row line with their own lane curves (rowPlace.ts). Shape holds
+    // by construction (R1/R2) — the only fallback is the per-station mega
+    // box (R4), never a partially-degraded chain.
     const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
+    let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
     for (const s of gathered) {
       if (s.marks.length === 1) {
         s.marks[0].chain = 0;
@@ -709,72 +717,44 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             (s.marks[a].pos[0] * nx + s.marks[a].pos[1] * ny) -
             (s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny));
         });
-        const repairVeto: Pixel[] = [];
-        const solve = () =>
-          solveChain(curves, groups, {
-            pitch: spacing,
-            minGap: 2 * r - 0.05,
-            anchorW: 0.05,
-            linkW: 0.25,
-            // spec §6: dots of already-placed stations veto states — a
-            // droppable mask (the ladder un-masks to recover feasibility)
-            blocked: (p) => {
-              for (const q of placedDots) {
-                if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
-              }
-              return false;
-            },
-            // spec §4: collision sites from earlier repair rounds must hold
-            // in EVERY rung — folding them into `blocked` let the unmasked
-            // rungs discard them, stalling the repair loop (mn32 stacking)
-            hardBlocked: (p) => {
-              for (const q of repairVeto) {
-                if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
-              }
-              return false;
-            },
-          });
-        // spec §4 local repair: the DP floors only CONSECUTIVE pairs;
-        // where lanes cross inside the window, non-adjacent dots can
-        // stack. Re-solve with the collision sites vetoed until all
-        // pairs clear (or give up and keep the best round — truly
-        // coincident lanes have no separating placement).
-        const collisionSites = (ps: Pixel[]): Pixel[] => {
-          const sites: Pixel[] = [];
-          for (let i2 = 0; i2 < ps.length; i2++) {
-            for (let j2 = i2 + 1; j2 < ps.length; j2++) {
-              const pi = ps[i2];
-              const pj = ps[j2];
-              if (Math.hypot(pi[0] - pj[0], pi[1] - pj[1]) < 2 * r - 0.05) {
-                // mask the offending states themselves (spec §4) plus the
-                // midpoint — the three discs cover the whole collision
-                // site, so the pair can't slide a half-step and re-stack
-                sites.push([pi[0], pi[1]], [pj[0], pj[1]], [(pi[0] + pj[0]) / 2, (pi[1] + pj[1]) / 2]);
-              }
+        const ropts = {
+          minGap: 2 * r - 0.05,
+          arcLimit: CHAIN_ARC_LIMIT,
+          extCap: 6 * spacing,
+          // spec §6 mask: dots of already-placed stations veto row states —
+          // never dropped in this model (a masked station boxes instead)
+          blocked: (p: Pixel) => {
+            for (const q of placedDots) {
+              if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
             }
-          }
-          return sites;
+            return false;
+          },
         };
-        let latest = solve();
-        let sol = latest;
-        let solBad = collisionSites(sol.pos).length;
-        for (let round = 0; round < 8 && solBad > 0; round++) {
-          repairVeto.push(...collisionSites(latest.pos));
-          latest = solve();
-          const bad = collisionSites(latest.pos).length;
-          // keep the best round seen: repair must never end worse than
-          // the initial solve (a later round can degrade to the anchor
-          // fallback when vetoes make the chain infeasible)
-          if (bad < solBad) { sol = latest; solBad = bad; }
+        let sol = solveRows(curves, groups, ropts);
+        if (!sol) {
+          // window escalation: rebuild curves at twice the arc window
+          const wide = s.marks.map((mk) =>
+            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2),
+          );
+          sol = solveRows(wide, groups, { ...ropts, arcLimit: CHAIN_ARC_LIMIT * 2 });
         }
-        for (let k = 0; k < sol.order.length; k++) {
-          const i = sol.order[k];
-          s.marks[i].pos = sol.pos[i];
-          s.marks[i].chain = k;
+        if (sol) {
+          for (let k = 0; k < sol.order.length; k++) {
+            const i = sol.order[k];
+            s.marks[i].pos = sol.pos[i];
+            s.marks[i].chain = k;
+            const corner = sol.cornerAfter.get(k);
+            if (corner) s.marks[i].cornerAfter = corner;
+          }
+        } else {
+          // spec v2 §3: total fallback — the mega box covers all bundles
+          megaFallbacks++;
+          for (const mk of s.marks) mk.mega = true;
         }
       }
       for (const mk of s.marks) placedDots.push(mk.pos);
     }
+    if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
     for (const s of gathered) {
@@ -914,7 +894,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega);
     }
   } else {
     for (const edge of layout.edges) {
