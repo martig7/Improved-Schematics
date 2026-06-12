@@ -6,7 +6,7 @@
 // one station (express/local pairs). Each dot prints its line's name (route
 // bullet) inside, upright, toggled by the stations toggle.
 
-import type { StopMark } from './layout/types';
+import type { Pixel, StopMark } from './layout/types';
 import { LINE_WIDTH, MEGA_BOXES } from './constants';
 import { escapeXml } from './escape';
 import { rdpSimplify } from './layout/chainPlace';
@@ -84,7 +84,9 @@ export function renderStops(
     // mega eligibility mirrors the pre-dots rule exactly: group-driven
     // capsules (members known) need >1 members; legacy callers need >1 marks
     const megaEligible = members !== undefined ? members > 1 : marks.length > 1;
-    if (MEGA_BOXES && megaEligible && (degByNode?.get(nodeId) ?? 0) >= 12) {
+    // mega fires per-station when the rigid-row solver found no feasible
+    // configuration (spec v2 §3), or via the dormant global MEGA_BOXES rule
+    if (marks.some((m) => m.mega) || (MEGA_BOXES && megaEligible && (degByNode?.get(nodeId) ?? 0) >= 12)) {
       // Mega capsule for huge interchanges (user rule): the junction's whole
       // footprint becomes the marker — a rounded rectangle covering the
       // marks with padding — so lines may reverse/cross/weave freely
@@ -126,7 +128,14 @@ export function renderStops(
     // Dots are on the spine by construction (P3), so containment is
     // structural and lateral widening no longer exists.
     const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
-    const spine = rdpSimplify(ordered.map((mk) => mk.pos), 0.75);
+    // rigid-row model: pair boundaries contribute a derived elbow vertex
+    // between the facing end-dots; RDP keeps corners (genuine bends)
+    const vertices: Pixel[] = [];
+    for (const mk of ordered) {
+      vertices.push(mk.pos);
+      if (mk.cornerAfter) vertices.push(mk.cornerAfter);
+    }
+    const spine = rdpSimplify(vertices, 0.75);
     const dAttr = 'M ' + spine.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L ');
     const pathSvg = (color: string, w: number, withAttrs: boolean): string =>
       '<path d="' + dAttr + '" fill="none" stroke="' + color +
