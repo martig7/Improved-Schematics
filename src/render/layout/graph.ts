@@ -296,30 +296,69 @@ export function walkRouteVisits(
 
   const combos = route.stCombos ?? [];
   if (combos.length > 0) {
-    // Closing-leg suppression: a loop-closure deadhead (a combo many times
-    // longer than the route's median leg, with no reverse counterpart at
-    // group level — every genuine service leg of a round trip has one)
-    // paints the line across half the map without serving anything: the NYC
-    // H's 50km "Library Av -> Park Av" hop drew a phantom brown line through
-    // 27 St / 92 St. Skip those combos and mark a service break so no edge
-    // is painted across the gap.
+    // Positioning-leg suppression: a route cycle can contain non-revenue
+    // style hops — the NYC H's RETURN path detours 50km back across the
+    // city (Library Av -> Park Av, 45 scheduled minutes non-stop), painting
+    // the line through dozens of stations it never serves. Candidates are
+    // screened hard (way longer than the route's median leg, no reverse
+    // counterpart at group level — every genuine round-trip service leg has
+    // one), and then a SAFETY GUARD applies: a leg is only suppressed if
+    // the route's remaining legs still serve every station group and stay
+    // CONNECTED — the worst failure mode is extra ink, never a lost station
+    // or a broken line. Suppression marks a service break so no edge is
+    // painted across the gap.
     const dists = combos.map((c) => c.distance ?? 0).sort((x, y) => x - y);
     const median = dists[Math.floor(dists.length / 2)] ?? 0;
+    const gOf = (sid: string) => stNodeToGroup.get(sid) ?? sid;
     const gFwd = new Set<string>();
-    for (const c of combos) {
-      gFwd.add(
-        (stNodeToGroup.get(c.startStNodeId) ?? '') + '>' + (stNodeToGroup.get(c.endStNodeId) ?? ''),
-      );
-    }
-    const isClosingLeg = (c: (typeof combos)[number]): boolean =>
+    for (const c of combos) gFwd.add(gOf(c.startStNodeId) + '>' + gOf(c.endStNodeId));
+    const isCandidate = (c: (typeof combos)[number]): boolean =>
       (c.distance ?? 0) > 10000 &&
       median > 0 &&
       (c.distance ?? 0) > 8 * median &&
-      !gFwd.has(
-        (stNodeToGroup.get(c.endStNodeId) ?? '') + '>' + (stNodeToGroup.get(c.startStNodeId) ?? ''),
-      );
+      !gFwd.has(gOf(c.endStNodeId) + '>' + gOf(c.startStNodeId));
+    const suppressedCombos = new Set<(typeof combos)[number]>();
+    const candidates = combos
+      .filter(isCandidate)
+      .sort((a, b) => (b.distance ?? 0) - (a.distance ?? 0));
+    if (candidates.length > 0) {
+      const allGroups = new Set<string>();
+      for (const c of combos) {
+        allGroups.add(gOf(c.startStNodeId));
+        allGroups.add(gOf(c.endStNodeId));
+      }
+      for (const cand of candidates) {
+        const kept = combos.filter((c) => c !== cand && !suppressedCombos.has(c));
+        // coverage: every group must remain an endpoint of some kept leg
+        const keptGroups = new Set<string>();
+        for (const c of kept) {
+          keptGroups.add(gOf(c.startStNodeId));
+          keptGroups.add(gOf(c.endStNodeId));
+        }
+        if (![...allGroups].every((g) => keptGroups.has(g))) continue;
+        // connectivity: kept legs must form one component over the groups
+        const parent = new Map<string, string>();
+        const find = (x: string): string => {
+          let r = x;
+          while (parent.get(r) !== r) r = parent.get(r)!;
+          let c = x;
+          while (parent.get(c) !== c) {
+            const n = parent.get(c)!;
+            parent.set(c, r);
+            c = n;
+          }
+          return r;
+        };
+        for (const g of keptGroups) parent.set(g, g);
+        for (const c of kept) parent.set(find(gOf(c.startStNodeId)), find(gOf(c.endStNodeId)));
+        const roots = new Set<string>();
+        for (const g of keptGroups) roots.add(find(g));
+        if (roots.size !== 1) continue;
+        suppressedCombos.add(cand);
+      }
+    }
     for (const combo of combos) {
-      if (isClosingLeg(combo)) {
+      if (suppressedCombos.has(combo)) {
         if (visits.length > 0) visits[visits.length - 1].breakAfter = true;
         continue;
       }

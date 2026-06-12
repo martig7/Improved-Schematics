@@ -116,29 +116,61 @@ test('parallel unmapped corridor tracks contribute one centerline', () => {
   assert.equal(edge.geo!.length, 2, 'parallel corridor tracks should not double-draw geo');
 });
 
-test('walkRouteVisits suppresses loop-closure deadhead legs', () => {
-  // route: A->B, B->A (symmetric 1km legs), then a 60km closing leg A->C
-  // with no reverse counterpart - the closing leg must paint nothing and
-  // leave a service break instead.
+const positioningStations = [
+  { id: 'px', name: 'X', coords: [-122.0, 47.0], trackIds: ['tx'], trackGroupId: 'gx',
+    buildType: 'constructed', stNodeIds: ['nx'], routeIds: ['rp'], createdAt: 0, nearbyStations: [] },
+  { id: 'py', name: 'Y', coords: [-122.0, 47.05], trackIds: ['ty'], trackGroupId: 'gy',
+    buildType: 'constructed', stNodeIds: ['ny'], routeIds: ['rp'], createdAt: 0, nearbyStations: [] },
+  { id: 'pz', name: 'Z', coords: [-122.1, 47.0], trackIds: ['tz'], trackGroupId: 'gz',
+    buildType: 'constructed', stNodeIds: ['nz'], routeIds: ['rp'], createdAt: 0, nearbyStations: [] },
+] as unknown as Station[];
+
+test('walkRouteVisits suppresses redundant positioning legs', () => {
+  // X<->Y<->Z all served by symmetric 1km legs; a 60km Z->X hop with no
+  // reverse closes the cycle. Removing it keeps every group served and the
+  // route connected, so it must paint nothing (service break instead).
   const routes = [
     {
-      id: 'r9',
-      bullet: '9',
+      id: 'rp',
+      bullet: 'P',
       color: '#662483',
       stCombos: [
-        { startStNodeId: 'n1', endStNodeId: 'n2', path: [], distance: 1000 },
-        { startStNodeId: 'n2', endStNodeId: 'n1', path: [], distance: 1000 },
-        { startStNodeId: 'n1', endStNodeId: 'n3', path: [], distance: 60000 },
+        { startStNodeId: 'nx', endStNodeId: 'ny', path: [], distance: 1000 },
+        { startStNodeId: 'ny', endStNodeId: 'nz', path: [], distance: 1000 },
+        { startStNodeId: 'nz', endStNodeId: 'ny', path: [], distance: 1000 },
+        { startStNodeId: 'ny', endStNodeId: 'nx', path: [], distance: 1000 },
+        { startStNodeId: 'nz', endStNodeId: 'nx', path: [], distance: 60000 },
       ],
       stComboTimings: [],
     },
   ] as unknown as Route[];
-  const graph = buildTransitGraph(stations, routes, buildStationGroups(stations));
-  // only the g1<->g1 self pair (skipped) and the closing g1->g2 (suppressed):
-  // no edge between g1 and g2 may exist
-  assert.equal(graph.edges.length, 0);
-  // the traversal still exists for the symmetric part (n1/n2 share group g1,
-  // so no edges at all here - the point is the 60km leg did NOT create one)
+  const graph = buildTransitGraph(positioningStations, routes, buildStationGroups(positioningStations));
+  // X-Y and Y-Z survive; the 60km Z-X hop must NOT create an edge
+  assert.equal(graph.edges.length, 2);
+  assert.ok(!graph.edges.some((e) =>
+    (e.from === 'gx' && e.to === 'gz') || (e.from === 'gz' && e.to === 'gx')));
+});
+
+test('walkRouteVisits keeps a long leg that is the sole link (safety guard)', () => {
+  // Y->Z is 60km with no reverse, but it is the ONLY leg serving Z —
+  // suppressing it would lose the station, so it must be kept.
+  const routes = [
+    {
+      id: 'rp',
+      bullet: 'P',
+      color: '#662483',
+      stCombos: [
+        { startStNodeId: 'nx', endStNodeId: 'ny', path: [], distance: 1000 },
+        { startStNodeId: 'ny', endStNodeId: 'nx', path: [], distance: 1000 },
+        { startStNodeId: 'ny', endStNodeId: 'nz', path: [], distance: 60000 },
+      ],
+      stComboTimings: [],
+    },
+  ] as unknown as Route[];
+  const graph = buildTransitGraph(positioningStations, routes, buildStationGroups(positioningStations));
+  assert.equal(graph.edges.length, 2); // X-Y AND Y-Z both drawn
+  assert.ok(graph.edges.some((e) =>
+    (e.from === 'gy' && e.to === 'gz') || (e.from === 'gz' && e.to === 'gy')));
 });
 
 test('walkRouteVisits keeps symmetric long legs (express)', () => {
