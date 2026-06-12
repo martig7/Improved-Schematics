@@ -709,19 +709,58 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             (s.marks[a].pos[0] * nx + s.marks[a].pos[1] * ny) -
             (s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny));
         });
-        const sol = solveChain(curves, groups, {
-          pitch: spacing,
-          minGap: 2 * r - 0.05,
-          anchorW: 0.05,
-          linkW: 0.25,
-          // spec §6: dots of already-placed stations veto states
-          blocked: (p) => {
-            for (const q of placedDots) {
-              if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
+        const repairVeto: Pixel[] = [];
+        const solve = () =>
+          solveChain(curves, groups, {
+            pitch: spacing,
+            minGap: 2 * r - 0.05,
+            anchorW: 0.05,
+            linkW: 0.25,
+            // spec §6: dots of already-placed stations veto states; spec §4:
+            // collision sites from earlier repair rounds veto too
+            blocked: (p) => {
+              for (const q of placedDots) {
+                if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
+              }
+              for (const q of repairVeto) {
+                if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
+              }
+              return false;
+            },
+          });
+        // spec §4 local repair: the DP floors only CONSECUTIVE pairs;
+        // where lanes cross inside the window, non-adjacent dots can
+        // stack. Re-solve with the collision sites vetoed until all
+        // pairs clear (or give up and keep the best round — truly
+        // coincident lanes have no separating placement).
+        const collisionSites = (ps: Pixel[]): Pixel[] => {
+          const sites: Pixel[] = [];
+          for (let i2 = 0; i2 < ps.length; i2++) {
+            for (let j2 = i2 + 1; j2 < ps.length; j2++) {
+              const pi = ps[i2];
+              const pj = ps[j2];
+              if (Math.hypot(pi[0] - pj[0], pi[1] - pj[1]) < 2 * r - 0.05) {
+                // mask the offending states themselves (spec §4) plus the
+                // midpoint — the three discs cover the whole collision
+                // site, so the pair can't slide a half-step and re-stack
+                sites.push([pi[0], pi[1]], [pj[0], pj[1]], [(pi[0] + pj[0]) / 2, (pi[1] + pj[1]) / 2]);
+              }
             }
-            return false;
-          },
-        });
+          }
+          return sites;
+        };
+        let latest = solve();
+        let sol = latest;
+        let solBad = collisionSites(sol.pos).length;
+        for (let round = 0; round < 8 && solBad > 0; round++) {
+          repairVeto.push(...collisionSites(latest.pos));
+          latest = solve();
+          const bad = collisionSites(latest.pos).length;
+          // keep the best round seen: repair must never end worse than
+          // the initial solve (a later round can degrade to the anchor
+          // fallback when vetoes make the chain infeasible)
+          if (bad < solBad) { sol = latest; solBad = bad; }
+        }
         for (let k = 0; k < sol.order.length; k++) {
           const i = sol.order[k];
           s.marks[i].pos = sol.pos[i];
