@@ -171,15 +171,6 @@ export function renderStops(
       const snap = Math.round(Math.atan2(d[0], -d[1]) / (Math.PI / 4)) * (Math.PI / 4);
       return [Math.cos(snap), Math.sin(snap)];
     };
-    // closest point on segment a2-b2 to p
-    const closestOnSeg = (p: Pixel, a2: Pixel, b2: Pixel): Pixel => {
-      const dx = b2[0] - a2[0];
-      const dy = b2[1] - a2[1];
-      const l2 = dx * dx + dy * dy;
-      const u = l2 < 1e-12 ? 0 :
-        Math.max(0, Math.min(1, ((p[0] - a2[0]) * dx + (p[1] - a2[1]) * dy) / l2));
-      return [a2[0] + dx * u, a2[1] + dy * u];
-    };
     const maxExt = (LINE_WIDTH + 2) * 4; // ~4 lane spacings
     for (let i = 1; i < segGeoms.length; i++) {
       let bestJ = 0;
@@ -216,20 +207,19 @@ export function renderStops(
         if (retreatDot > 0.5 && halfA > r && halfB > r) {
           // The bodies meet cap-against-side here (no extension) — but the
           // fills only overlap in a small lens, so border ink pinches
-          // through as a seam between the two pills. A short joint from
-          // the nearer tip onto the other row's axis fuses them FLUSH
-          // (user: the join must read as a solid triangle, no gap).
-          const cand = (from: SegGeom, to: SegGeom) => {
-            const qa = closestOnSeg(from.a, to.a, to.b);
-            const qb = closestOnSeg(from.b, to.a, to.b);
-            const da = Math.hypot(from.a[0] - qa[0], from.a[1] - qa[1]);
-            const db = Math.hypot(from.b[0] - qb[0], from.b[1] - qb[1]);
-            return da <= db ? { tip: from.a, q: qa, d: da } : { tip: from.b, q: qb, d: db };
-          };
-          const ab = cand(A, B);
-          const ba = cand(B, A);
-          const c2 = ab.d <= ba.d ? ab : ba;
-          joints.push({ p: c2.tip, q: c2.q, w: Math.min(A.w, B.w) });
+          // through as a seam between the two pills. Joint = stadium from
+          // the nearest TIP of one to the nearest END-CAP CENTER of the
+          // other: its edges are then the common tangents of the two round
+          // caps, so the union outline gets a straight flush chamfer (a
+          // tip-to-axis joint leaves a concave dimple beside the far cap).
+          let best: { p: Pixel; q: Pixel; d: number } | null = null;
+          for (const tip of [A.a, A.b]) {
+            for (const end of [B.a, B.b]) {
+              const d = Math.hypot(tip[0] - end[0], tip[1] - end[1]);
+              if (!best || d < best.d) best = { p: tip, q: end, d };
+            }
+          }
+          joints.push({ p: best!.p, q: best!.q, w: Math.min(A.w, B.w) });
           continue;
         }
         const extend = (g: SegGeom, u: Pixel, along: number): boolean => {
