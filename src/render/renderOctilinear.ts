@@ -5,7 +5,7 @@
 
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
-import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP } from './constants';
+import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { renderStops } from './stops';
@@ -560,7 +560,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         x0 = Math.min(x0, m.pos[0]); y0 = Math.min(y0, m.pos[1]);
         x1 = Math.max(x1, m.pos[0]); y1 = Math.max(y1, m.pos[1]);
       }
-      const mega = s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 12;
+      const mega = MEGA_BOXES && s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 12;
       const pad = mega ? r + 7 : r + 3;
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       if (mega) {

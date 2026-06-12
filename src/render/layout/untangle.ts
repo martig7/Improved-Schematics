@@ -38,6 +38,11 @@ interface OptEdge {
   to: string;
   parts: OptPart[];
   lines: string[]; // identical set across parts
+  /** Y/dogbone rewrite: stacked siblings share the same parts (one physical
+   *  trunk) and compose at write-back in stackIdx order (canonical from->to
+   *  lateral frame). The side is locked by junction geometry. */
+  stackGroup?: number;
+  stackIdx?: number;
 }
 
 /** LOOM's shipped penalty defaults (LoomConfig.h / LoomMain.cpp). */
@@ -165,6 +170,85 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
   }
 
+  // ---- departure angle of an opt edge at a node (corridor scale) -------------
+  const TANGENT_WALK = 20; // px; noise-scale tangents mirror orders (octi lesson)
+  const angleAt = (oe: OptEdge, nd: string): number => {
+    const part = oe.from === nd ? oe.parts[0] : oe.parts[oe.parts.length - 1];
+    const e = part.edge;
+    const pts = (oe.from === nd) !== part.rev ? e.path : [...e.path].reverse();
+    let ref = pts.length > 1 ? pts[pts.length - 1] : pts[0];
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+      acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      if (acc >= TANGENT_WALK) { ref = pts[i]; break; }
+    }
+    return Math.atan2(ref[1] - pts[0][1], ref[0] - pts[0][0]);
+  };
+
+  // ---- LOOM untangle rewrites: Y / dogbone trunk splits -----------------------
+  // A deg-3 junction whose trunk line set is the DISJOINT UNION of its two
+  // branch sets ("Y") couples the trunk's whole ordering to both branches.
+  // Split the trunk into two STACKED parallel opt edges (one per branch
+  // set); the lateral side is locked by the branches' angular order at the
+  // junction (the diffSweep convention: the first-clockwise branch's lines
+  // take the LOW normalized ranks). Branch-bound lines then pre-sort onto
+  // the correct side of the trunk and the solution space decomposes. A
+  // dogbone (trunk between two such junctions) splits via whichever end
+  // matches first; incompatible far-end partitions surface as ordinary
+  // scored crossings at the far node.
+  let stackSeq = 0;
+  const tryY = (nd: string): boolean => {
+    const adj = optAdj.get(nd) ?? [];
+    if (adj.length !== 3) return false;
+    for (let t = 0; t < 3; t++) {
+      const em = adj[t];
+      if (em.from === em.to || em.stackGroup !== undefined) continue;
+      if (em.lines.length < 2) continue;
+      const [b1, b2] = adj.filter((x) => x !== em);
+      const s1 = new Set(b1.lines);
+      const s2 = new Set(b2.lines);
+      if (s1.size === 0 || s2.size === 0) continue;
+      if (em.lines.length !== s1.size + s2.size) continue;
+      if (!em.lines.every((l) => (s1.has(l) ? !s2.has(l) : s2.has(l)))) continue;
+      // angular lock: which branch comes first clockwise after the trunk
+      const circ = [em, b1, b2]
+        .map((oe) => ({ oe, ang: angleAt(oe, nd) }))
+        .sort((a, b) => (b.ang - a.ang) || (a.oe.id - b.oe.id))
+        .map((x) => x.oe);
+      const i = circ.indexOf(em);
+      const firstBranch = [...circ.slice(i + 1), ...circ.slice(0, i)][0];
+      const lowLines = firstBranch === b1 ? b1.lines : b2.lines;
+      const highLines = firstBranch === b1 ? b2.lines : b1.lines;
+      // normalized-low ranks = chain indexes 0.. when the trunk LEAVES nd
+      const lowIdx = em.from === nd ? 0 : 1;
+      const group = stackSeq++;
+      const mk = (lines: string[], idx: number): OptEdge => ({
+        id: seq++,
+        from: em.from,
+        to: em.to,
+        parts: em.parts,
+        lines: [...lines],
+        stackGroup: group,
+        stackIdx: idx,
+      });
+      const em1 = mk(lowLines, lowIdx);
+      const em2 = mk(highLines, 1 - lowIdx);
+      optEdges.splice(optEdges.indexOf(em), 1, em1, em2);
+      for (const n2 of new Set([em.from, em.to])) {
+        const a = optAdj.get(n2)!;
+        a.splice(a.indexOf(em), 1, em1, em2);
+      }
+      return true;
+    }
+    return false;
+  };
+  for (let round = 0; round < 4; round++) {
+    let changed = false;
+    for (const nd of [...optAdj.keys()]) if (tryY(nd)) changed = true;
+    if (!changed) break;
+  }
+  const nStacks = stackSeq;
+
   // ---- corner-aware crossing weights ----------------------------------------
   // Unit tangent of the opt edge's drawn course at node nd, pointing AWAY
   // from nd (taken from the underlying layout edge of the chain that
@@ -204,7 +288,22 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   // ---- connOccurs from traversals --------------------------------------------
   // (line, node, optEdge pair) actually connected by service. Lines with no
   // traversal connect everywhere (LOOM default when no restrictions exist).
+  // Post-rewrite a layout edge can host several STACKED opt edges — resolve
+  // by line membership.
   const layoutById = new Map(edges.map((e) => [e.id, e]));
+  const optByLayout = new Map<string, OptEdge[]>();
+  for (const oe of optEdges) {
+    for (const p of oe.parts) {
+      if (!optByLayout.has(p.edge.id)) optByLayout.set(p.edge.id, []);
+      optByLayout.get(p.edge.id)!.push(oe);
+    }
+  }
+  const optFor = (layoutEdgeId: string, lineId: string): OptEdge | undefined => {
+    const lst = optByLayout.get(layoutEdgeId);
+    if (!lst) return undefined;
+    if (lst.length === 1) return lst[0];
+    return lst.find((oe) => oe.lines.includes(lineId)) ?? lst[0];
+  };
   const connPairs = new Set<string>();
   const linesWithTrav = new Set<string>();
   const pairKey = (line: string, nd: string, a: number, b: number) =>
@@ -216,8 +315,8 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       const e2 = layoutById.get(steps[i].edgeId);
       if (!e1 || !e2) continue;
       const n1 = steps[i - 1].reversed ? e1.from : e1.to;
-      const o1 = partOf.get(e1.id);
-      const o2 = partOf.get(e2.id);
+      const o1 = optFor(e1.id, lineId);
+      const o2 = optFor(e2.id, lineId);
       if (!o1 || !o2 || o1 === o2) continue;
       connPairs.add(pairKey(lineId, n1, o1.id, o2.id));
     }
@@ -264,23 +363,20 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   }
 
   // ---- circular edge order per node (departure angles, corridor scale) ------
-  const TANGENT_WALK = 20; // px; noise-scale tangents mirror orders (octi lesson)
-  const angleAt = (oe: OptEdge, nd: string): number => {
-    const part = oe.from === nd ? oe.parts[0] : oe.parts[oe.parts.length - 1];
-    const e = part.edge;
-    const pts = (oe.from === nd) !== part.rev ? e.path : [...e.path].reverse();
-    let ref = pts.length > 1 ? pts[pts.length - 1] : pts[0];
-    let acc = 0;
-    for (let i = 1; i < pts.length; i++) {
-      acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-      if (acc >= TANGENT_WALK) { ref = pts[i]; break; }
-    }
-    return Math.atan2(ref[1] - pts[0][1], ref[0] - pts[0][0]);
+  // Stacked Y-siblings share one physical course (equal angles): break the
+  // tie by their lateral stack position at the node (normalized-low side
+  // first), so third-edge sweeps read them as the laterally ordered pair
+  // they are drawn as.
+  const stackTie = (a: OptEdge, b: OptEdge, nd: string): number => {
+    if (a.stackGroup === undefined || a.stackGroup !== b.stackGroup) return 0;
+    const aLow = a.from === nd ? a.stackIdx! : 1 - a.stackIdx!;
+    const bLow = b.from === nd ? b.stackIdx! : 1 - b.stackIdx!;
+    return aLow - bLow;
   };
   const circOrder = new Map<string, OptEdge[]>();
   for (const [nd, adj] of optAdj) {
     const entries = adj.map((oe) => ({ oe, ang: angleAt(oe, nd) }));
-    entries.sort((a, b) => (b.ang - a.ang) || (a.oe.id - b.oe.id));
+    entries.sort((a, b) => (b.ang - a.ang) || stackTie(a.oe, b.oe, nd) || (a.oe.id - b.oe.id));
     circOrder.set(nd, entries.map((x) => x.oe));
   }
   const clockwEdges = (ea: OptEdge, nd: string): OptEdge[] => {
@@ -475,7 +571,8 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   if (DBG) {
     const t = tally();
     console.error(
-      `[untangle] optEdges=${optEdges.length} seed: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
+      `[untangle] optEdges=${optEdges.length} (${nStacks} Y-splits) seed: ` +
+      `sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
     );
   }
 
@@ -675,17 +772,34 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
   }
 
-  // ---- write back (partner blocks expand in place) ----------------------------
-  for (const oe of optEdges) {
-    const order = cfg.get(oe.id)!;
-    const expanded: string[] = [];
+  // ---- write back (partner blocks expand in place; stacks compose) -----------
+  const expand = (order: string[]): string[] => {
+    const out: string[] = [];
     for (const l of order) {
       const block = partnerBlock.get(l);
-      if (block) expanded.push(...block);
-      else expanded.push(l);
+      if (block) out.push(...block);
+      else out.push(l);
     }
+    return out;
+  };
+  const stackMembers = new Map<number, OptEdge[]>();
+  for (const oe of optEdges) {
+    if (oe.stackGroup === undefined) continue;
+    if (!stackMembers.has(oe.stackGroup)) stackMembers.set(oe.stackGroup, []);
+    stackMembers.get(oe.stackGroup)!.push(oe);
+  }
+  for (const oe of optEdges) {
+    if (oe.stackGroup !== undefined) continue; // composed below
+    const expanded = expand(cfg.get(oe.id)!);
     for (const part of oe.parts) {
       part.edge.lineOrder = part.rev ? [...expanded].reverse() : [...expanded];
+    }
+  }
+  for (const sibs of stackMembers.values()) {
+    sibs.sort((a, b) => a.stackIdx! - b.stackIdx!);
+    const chainOrder = sibs.flatMap((s) => expand(cfg.get(s.id)!));
+    for (const part of sibs[0].parts) {
+      part.edge.lineOrder = part.rev ? [...chainOrder].reverse() : [...chainOrder];
     }
   }
 

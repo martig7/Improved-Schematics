@@ -148,3 +148,26 @@ test('cornerTurnFactor: straight full price, 45deg half, 90deg+ nearly free', as
   assert.equal(cornerTurnFactor(0), 0.15); // 90 degree corner
   assert.equal(cornerTurnFactor(0.7), 0.15); // 135 degree hook
 });
+
+test('untangle: Y rewrite locks the trunk side by branch geometry', () => {
+  const mk = (flip: boolean) => makeLayout(
+    [['r', 0, 0], ['n', 20, 0], ['pe', 30, flip ? 10 : -10], ['qe', 30, flip ? -10 : 10]],
+    [
+      { id: 't', from: 'r', to: 'n', lines: ['A', 'B'] },
+      { id: 'p', from: 'n', to: 'pe', lines: ['A'] },
+      { id: 'q', from: 'n', to: 'qe', lines: ['B'] },
+    ],
+    {
+      A: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      B: [{ edgeId: 't', reversed: false }, { edgeId: 'q', reversed: false }],
+    },
+  );
+  const a = mk(false);
+  untangleLineOrder(a);
+  const b = mk(true);
+  untangleLineOrder(b);
+  const ta = a.edges.find((e) => e.id === 't')!.lineOrder;
+  const tb = b.edges.find((e) => e.id === 't')!.lineOrder;
+  assert.deepEqual([...ta].sort(), ['A', 'B']);
+  assert.notDeepEqual(ta, tb, 'mirrored branch geometry flips the trunk side');
+});

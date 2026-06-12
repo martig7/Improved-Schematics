@@ -7,7 +7,7 @@
 // bullet) inside, upright, toggled by the stations toggle.
 
 import type { StopMark } from './layout/types';
-import { LINE_WIDTH } from './constants';
+import { LINE_WIDTH, MEGA_BOXES } from './constants';
 import { escapeXml } from './escape';
 
 export function renderStops(
@@ -85,9 +85,7 @@ export function renderStops(
     // mega eligibility mirrors the pre-dots rule exactly: group-driven
     // capsules (members known) need >1 members; legacy callers need >1 marks
     const megaEligible = members !== undefined ? members > 1 : marks.length > 1;
-    // phase-out experiment: threshold raised 8 -> 12 (only the very largest
-    // interchanges keep a box; corner-routed crossings cover the rest)
-    if (megaEligible && (degByNode?.get(nodeId) ?? 0) >= 12) {
+    if (MEGA_BOXES && megaEligible && (degByNode?.get(nodeId) ?? 0) >= 12) {
       // Mega capsule for huge interchanges (user rule): the junction's whole
       // footprint becomes the marker — a rounded rectangle covering the
       // marks with padding — so lines may reverse/cross/weave freely
