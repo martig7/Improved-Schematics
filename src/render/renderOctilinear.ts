@@ -1256,11 +1256,21 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
         }
         // FINAL lane-fidelity pass (user rule: dots never leave their
-        // lines): a mark still >2px off its lane after the elbow solve — a
-        // re-seat that failed past a lane END (terminus tips), a single-dot
-        // drift, or the push-apart fallback — snaps to the nearest point of
-        // its lane polyline, unless that would collide with another dot.
+        // lines): a mark still >6px off its line's ink after the elbow
+        // solve — a re-seat that failed past a lane END (terminus tips) or
+        // a single-dot drift — snaps to the nearest point of its lane
+        // polyline, unless that would collide with another dot. ONLY for
+        // dots in segments of ≤2 marks: rows own their dots (a welded
+        // junction row legitimately spans lanes whose drawn ink kinks >6px
+        // away mid-row — per-dot snapping tears the row into a blob, the
+        // 22 St diagonal), and floating rows are normalization's job.
+        const segSize = new Map<number, number>();
         for (const mk of s.marks) {
+          const sg = mk.seg ?? 0;
+          segSize.set(sg, (segSize.get(sg) ?? 0) + 1);
+        }
+        for (const mk of s.marks) {
+          if ((segSize.get(mk.seg ?? 0) ?? 1) > 2) continue;
           const polys = lanePolysOf(mk.lineId);
           if (polys.length === 0) continue;
           let bestD = Infinity;
