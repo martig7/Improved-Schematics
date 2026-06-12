@@ -505,6 +505,24 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       return null;
     };
+    // ALL drawn polylines of a line, map-wide (cached) — distance-to-lane
+    // checks must see every edge: a line continues through a junction on
+    // another edge, and a marker can sit on a NEIGHBOR edge's join curve;
+    // any narrower scope misreads seated dots as floating (and a 40px cap
+    // on use keeps far geometry irrelevant).
+    const lanePolysCache = new Map<string, Pixel[][]>();
+    const lanePolysOf = (lineId: string): Pixel[][] => {
+      let polys = lanePolysCache.get(lineId);
+      if (!polys) {
+        polys = [];
+        const suffix = '|' + lineId;
+        for (const [key, poly] of segPath) {
+          if (key.endsWith(suffix) && poly.length >= 2) polys.push(poly);
+        }
+        lanePolysCache.set(lineId, polys);
+      }
+      return polys;
+    };
     /** Seat a mark ON its lane at the capsule's cross-section: intersect the
      *  lane polyline with the cross line (point c, direction u), taking the
      *  crossing nearest the node. Join curves displace lane ENDPOINTS into
@@ -1018,6 +1036,152 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           return true;
         };
+        const maxSlide = spacing * 3;
+        const applySlide = (info: { idx: number[]; u: Pixel; v: Pixel }, sl: number) => {
+          if (Math.abs(sl) < 1e-9) return;
+          for (const i of info.idx) {
+            s.marks[i].pos = [
+              s.marks[i].pos[0] + info.v[0] * sl,
+              s.marks[i].pos[1] + info.v[1] * sl,
+            ];
+          }
+          // a slide is a straight translation: on bending lanes the
+          // dots drift — re-seat each on its lane at the new cross line
+          const c2 = centroidOf(info.idx);
+          for (const i of info.idx) seatOnLane(s.marks[i], c2, info.u);
+          respaceAlong(info.idx.map((i) => s.marks[i]), info.u[0], info.u[1], 2 * r, false);
+        };
+        // Lane-seatability (full dry-run of applySlide on clones): translate
+        // the segment, seat each mark on the cross line, PAV-respace, then
+        // require every lane-backed dot to END ≤2px from its lane. Slides
+        // past a bundle BEND have no lanes to ride — seatOnLane fails
+        // silently there and the dots float in the corner pocket (St Lukes
+        // Pl F/G/H/E column). The post-PAV check matters: a dot whose lane
+        // runs PARALLEL to the segment axis seats at a single point and the
+        // respace shoves it back off. 'free' = no drawn lanes to constrain.
+        const ptSegDist = (p: Pixel, a: Pixel, b: Pixel): number => {
+          const dx = b[0] - a[0];
+          const dy = b[1] - a[1];
+          const l2 = dx * dx + dy * dy;
+          const t = l2 < 1e-12 ? 0 :
+            Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+          return Math.hypot(p[0] - (a[0] + dx * t), p[1] - (a[1] + dy * t));
+        };
+        const seatableSeg = (
+          info: { idx: number[]; u: Pixel },
+          off: Pixel,
+        ): number | false | 'free' => {
+          const clones = info.idx.map((i) => ({
+            ...s.marks[i],
+            pos: [s.marks[i].pos[0] + off[0], s.marks[i].pos[1] + off[1]] as Pixel,
+          }));
+          const cand: Pixel = [
+            clones.reduce((acc, c) => acc + c.pos[0], 0) / clones.length,
+            clones.reduce((acc, c) => acc + c.pos[1], 0) / clones.length,
+          ];
+          for (const c of clones) seatOnLane(c, cand, info.u);
+          respaceAlong(clones, info.u[0], info.u[1], 2 * r, false);
+          // Two criteria. (1) Lane distance ≤6px: lane-curve/junction-bend
+          // deviation leaves GOOD placements up to ~5.5px off one lane
+          // (Broadway row's A at the blue kink); every real observed float
+          // is ≥6.2px (St Lukes column, terminus tips). (2) Row stays
+          // STRAIGHT: each dot ≤1.5px lateral of the cross line — at
+          // junctions the lanes fan apart, so a slid row can re-seat with
+          // every dot on-lane yet scattered along diverging lanes (22 St
+          // diagonal exploded into a blob); those slides are infeasible.
+          // returns the max lane distance over lane-backed marks (a quality
+          // measure: 0 = every dot exactly on a lane), false when the row
+          // breaks, 'free' when nothing constrains it
+          let constrained = false;
+          let maxD = 0;
+          for (const c of clones) {
+            // straightness only meaningful for ≥3 dots: a 2-dot pill is
+            // always straight, and mid-curve pills legitimately sit ROTATED
+            // off the snapped axis (flagging those slid them into neighbors)
+            const lat = clones.length < 3 ? 0 : Math.abs(
+              (c.pos[0] - cand[0]) * -info.u[1] + (c.pos[1] - cand[1]) * info.u[0],
+            );
+            if (lat > 1.5) return false;
+            const polys = lanePolysOf(c.lineId);
+            if (polys.length === 0) continue;
+            constrained = true;
+            let best = Infinity;
+            for (const poly of polys) {
+              for (let k = 1; k < poly.length && best > 6; k++) {
+                best = Math.min(best, ptSegDist(c.pos, poly[k - 1], poly[k]));
+              }
+            }
+            if (best > 6) return false;
+            maxD = Math.max(maxD, best);
+          }
+          return constrained ? maxD : 'free';
+        };
+        // Max lane distance of a segment's marks AS THEY CURRENTLY SIT (no
+        // reconstruction) — the ground truth for "is this segment floating".
+        // The seatableSeg dry-run is only an ESTIMATE of where a slide
+        // lands; for rotated mid-curve pills it reconstructs wrongly, so
+        // triggers and stay-put decisions must use the real positions.
+        const asIsMaxDist = (info: { idx: number[] }): number | 'free' => {
+          let constrained = false;
+          let maxD = 0;
+          for (const i of info.idx) {
+            const polys = lanePolysOf(s.marks[i].lineId);
+            if (polys.length === 0) continue;
+            constrained = true;
+            let best = Infinity;
+            for (const poly of polys) {
+              for (let k = 1; k < poly.length && best > 6; k++) {
+                best = Math.min(best, ptSegDist(s.marks[i].pos, poly[k - 1], poly[k]));
+              }
+            }
+            maxD = Math.max(maxD, best);
+          }
+          return constrained ? maxD : 'free';
+        };
+        // Integer slide grid (same enumeration as the solver loops) where
+        // the segment fully seats; sl=0 is always allowed when the segment
+        // is fine where it stands. null = unconstrained (single dots keep
+        // their seat-snap behavior; no lanes / nowhere seatable likewise —
+        // don't brick odd stations).
+        const slideRangeSeatable = (
+          info: { idx: number[]; u: Pixel; v: Pixel },
+        ): Set<number> | null => {
+          if (info.idx.length < 2) return null;
+          const asIs = asIsMaxDist(info);
+          if (asIs === 'free') return null;
+          const ok = new Set<number>();
+          for (let sl = -maxSlide; sl <= maxSlide + 1e-6; sl += 1) {
+            if (typeof seatableSeg(info, [info.v[0] * sl, info.v[1] * sl]) === 'number') {
+              ok.add(Math.round(sl));
+            }
+          }
+          if (asIs <= 6) ok.add(0);
+          return ok.size > 0 ? ok : null;
+        };
+        // A segment standing at a NESTED bundle bend can be unseatable in
+        // place — each lane turns at its own corner, so no cross line at
+        // the node meets all of them. Move it to the nearest seatable
+        // slide BEFORE solving so every dot lives on its lane.
+        for (const info of segInfos) {
+          if (info.idx.length < 2) continue;
+          const asIs = asIsMaxDist(info);
+          if (asIs === 'free' || asIs <= 6) continue; // genuinely floating only
+          const ok = slideRangeSeatable(info);
+          if (!ok) continue;
+          // best seatable slide = tightest seating first, shortest move second
+          let bestS: number | undefined;
+          let bestQ = Infinity;
+          for (const sl of ok) {
+            const q = seatableSeg(info, [info.v[0] * sl, info.v[1] * sl]);
+            if (typeof q !== 'number') continue;
+            const score = q + Math.abs(sl) * 0.05;
+            if (score < bestQ && dotsClear(info.idx, [info.v[0] * sl, info.v[1] * sl])) {
+              bestQ = score;
+              bestS = sl;
+            }
+          }
+          if (bestS !== undefined) applySlide(info, bestS);
+        }
         for (let bI = 1; bI < segInfos.length; bI++) {
           const B = segInfos[bI];
           const cB0 = centroidOf(B.idx);
@@ -1040,14 +1204,19 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // 2-D slide search can usually place P off both ends; extension
           // covers whatever the slide bounds cannot.
           const allowSecondSlide = bI === 1; // later pairs must not disturb placed segments
-          const maxSlide = spacing * 3;
+          // hard constraint: a slid segment must remain fully seatable on
+          // its lanes (a slide off the drawn bundle = floating dots)
+          const seatA = allowSecondSlide ? slideRangeSeatable(A) : null;
+          const seatB = slideRangeSeatable(B);
           let best: { sA: number; sB: number } | null = null;
           let bestScore = Infinity;
           for (let sA = -maxSlide; sA <= maxSlide + 1e-6; sA += 1) {
             if (!allowSecondSlide && Math.abs(sA) > 1e-9) continue;
+            if (seatA && !seatA.has(Math.round(sA))) continue;
             const offA: Pixel = [A.v[0] * sA, A.v[1] * sA];
             const cA: Pixel = [cA0[0] + offA[0], cA0[1] + offA[1]];
             for (let sB = -maxSlide; sB <= maxSlide + 1e-6; sB += 1) {
+              if (seatB && !seatB.has(Math.round(sB))) continue;
               const offB: Pixel = [B.v[0] * sB, B.v[1] * sB];
               const cB: Pixel = [cB0[0] + offB[0], cB0[1] + offB[1]];
               let score: number;
@@ -1074,22 +1243,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             }
           }
           if (best) {
-            const apply = (info: { idx: number[]; u: Pixel; v: Pixel }, sl: number) => {
-              if (Math.abs(sl) < 1e-9) return;
-              for (const i of info.idx) {
-                s.marks[i].pos = [
-                  s.marks[i].pos[0] + info.v[0] * sl,
-                  s.marks[i].pos[1] + info.v[1] * sl,
-                ];
-              }
-              // a slide is a straight translation: on bending lanes the
-              // dots drift — re-seat each on its lane at the new cross line
-              const c2 = centroidOf(info.idx);
-              for (const i of info.idx) seatOnLane(s.marks[i], c2, info.u);
-              respaceAlong(info.idx.map((i) => s.marks[i]), info.u[0], info.u[1], 2 * r, false);
-            };
-            apply(A, best.sA);
-            apply(B, best.sB);
+            applySlide(A, best.sA);
+            applySlide(B, best.sB);
           } else {
             // no feasible end-to-end placement: push apart along the bundle
             // until dots clear (old fallback; stops falls back to a T/bridge)
@@ -1099,6 +1254,42 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
               }
             }
           }
+        }
+        // FINAL lane-fidelity pass (user rule: dots never leave their
+        // lines): a mark still >2px off its lane after the elbow solve — a
+        // re-seat that failed past a lane END (terminus tips), a single-dot
+        // drift, or the push-apart fallback — snaps to the nearest point of
+        // its lane polyline, unless that would collide with another dot.
+        for (const mk of s.marks) {
+          const polys = lanePolysOf(mk.lineId);
+          if (polys.length === 0) continue;
+          let bestD = Infinity;
+          let bp: Pixel = mk.pos;
+          for (const poly of polys) {
+            for (let k = 1; k < poly.length; k++) {
+              const a = poly[k - 1];
+              const b = poly[k];
+              const dx = b[0] - a[0];
+              const dy = b[1] - a[1];
+              const l2 = dx * dx + dy * dy;
+              const t = l2 < 1e-12 ? 0 :
+                Math.max(0, Math.min(1, ((mk.pos[0] - a[0]) * dx + (mk.pos[1] - a[1]) * dy) / l2));
+              const px = a[0] + dx * t;
+              const py = a[1] + dy * t;
+              const d = Math.hypot(mk.pos[0] - px, mk.pos[1] - py);
+              if (d < bestD) { bestD = d; bp = [px, py]; }
+            }
+          }
+          if (bestD <= 6 || bestD > 40) continue;
+          let clear = true;
+          for (const other of s.marks) {
+            if (other === mk) continue;
+            if (Math.hypot(bp[0] - other.pos[0], bp[1] - other.pos[1]) < 2 * r - 0.05) {
+              clear = false;
+              break;
+            }
+          }
+          if (clear) mk.pos = bp;
         }
       }
     }
