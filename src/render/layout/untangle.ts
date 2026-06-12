@@ -57,8 +57,10 @@ export interface UntanglePens {
    *  Same-color service families (express/local pairs: 1/2/3/4 all red)
    *  should ride adjacent — splitting a family is usually crossing-NEUTRAL,
    *  so the LOOM objectives alone break these ties arbitrarily (the 1
-   *  stranded east of the blue trunk at 22 St). Kept well below one
-   *  crossing so it never trades a real crossing away locally. */
+   *  stranded east of the blue trunk at 22 St). Raised in v0.2.29 (user
+   *  rule: never break a bundle to thread a foreign line through it — the
+   *  9 splitting the greens at Flatbush) — a family breakup now outweighs
+   *  a corner crossing. */
   colorFragPen: number;
 }
 
@@ -69,19 +71,20 @@ export const DEFAULT_UNTANGLE_PENS: UntanglePens = {
   inStatCrossPenSameSeg: 12,
   inStatCrossPenDiffSeg: 3,
   inStatSplitPen: 9,
-  colorFragPen: 0.5,
+  colorFragPen: 2.5,
 };
 
 const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
 
-/** Corner discount for same-segment crossing penalties (user rule:
- *  crossings prefer corners). `dot` is the dot product of the two unit
- *  tangents pointing AWAY from the node — continuing straight through means
- *  opposite tangents (dot -> -1, full price); a 45° bend halves the price;
- *  a 90°+ corner makes the swap nearly free (the turn's own rotation
- *  absorbs the crossing, like the 2/3 cross on the real NYC map). */
+/** Corner weighting for same-segment crossing penalties (user rule:
+ *  crossings prefer corners; in-bundle crossings WITHOUT a bend are all but
+ *  disallowed). `dot` is the dot product of the two unit tangents pointing
+ *  AWAY from the node — continuing straight through means opposite tangents
+ *  (dot -> -1, heavily punished); a 45° bend halves the base price; a 90°+
+ *  corner makes the swap nearly free (the turn's own rotation absorbs the
+ *  crossing, like the 2/3 cross on the real NYC map). */
 export const cornerTurnFactor = (dot: number): number =>
-  dot < -0.92 ? 1 : dot < -0.38 ? 0.5 : 0.15;
+  dot < -0.92 ? 6 : dot < -0.38 ? 0.5 : 0.15;
 
 function inversions(a: number[]): number {
   let inv = 0;

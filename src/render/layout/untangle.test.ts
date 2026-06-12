@@ -141,9 +141,9 @@ test('untangle: partner lines stay adjacent as a block', () => {
   assert.equal(t.lineOrder.length, 3, 'all lines present after block expansion');
 });
 
-test('cornerTurnFactor: straight full price, 45deg half, 90deg+ nearly free', async () => {
+test('cornerTurnFactor: straight punished, 45deg half, 90deg+ nearly free', async () => {
   const { cornerTurnFactor } = await import('./untangle');
-  assert.equal(cornerTurnFactor(-1), 1); // straight through
+  assert.equal(cornerTurnFactor(-1), 6); // straight through: all but disallowed
   assert.equal(cornerTurnFactor(-0.71), 0.5); // 45 degree bend
   assert.equal(cornerTurnFactor(0), 0.15); // 90 degree corner
   assert.equal(cornerTurnFactor(0.7), 0.15); // 135 degree hook
