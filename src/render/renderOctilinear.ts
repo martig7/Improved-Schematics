@@ -8,6 +8,7 @@ import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
+import { buildLaneCurve, curveTangent, solveChain } from './layout/chainPlace';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -135,6 +136,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   // Retraced corridors are also free: an edge draws once per line no matter
   // how often the traversal passes over it.
   const spacing = LINE_WIDTH + LINE_GAP;
+  const CHAIN_ARC_LIMIT = 24; // ±arc window per lane curve (~one grid cell)
   const segPath = new Map<string, Pixel[]>(); // edge.id|lineId -> offset polyline
   const dByLine = new Map<string, string[]>();
   // Corner fillets: every interior bend of a lane polyline is rounded with a
@@ -360,7 +362,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   // the line), not the trimmed endpoint.
   const mitered = new Set<string>(); // lineId|node|pairKey
   const endMoved = new Set<string>(); // edgeId|lineId|end
-  const joinCurves: Array<{ lineId: string; a: Pixel; apex: Pixel; b: Pixel }> = [];
+  const joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }> = [];
   const joinStopPos = new Map<string, Pixel>(); // nodeId|lineId -> on-curve position
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
@@ -388,7 +390,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         endMoved.add(keyB);
         const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
         mitered.add(lineId + '|' + endA + '|' + pairKey);
-        joinCurves.push({ lineId, a: join.a, apex: join.apex, b: join.b });
+        joinCurves.push({ lineId, node: endA, a: join.a, apex: join.apex, b: join.b });
         const stopKey = endA + '|' + lineId;
         if (!joinStopPos.has(stopKey)) {
           // quadratic midpoint Q(0.5) = (a + 2*apex + b) / 4 — on the curve
@@ -481,30 +483,19 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     color: string,
     nodeId: string,
     pos: Pixel,
-    dir?: Pixel,
-    seg?: number,
+    chain?: number,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
-    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label, dir, seg });
+    stopsByNode.get(nodeId)!.push({ lineId, color, pos, name: lineById.get(lineId)?.label, chain });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
   if (args.stations) {
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
-    /** The drawn lane polyline of a line at a node, oriented node-outward. */
-    const lanePolyAt = (lineId: string, nodeId: string): Pixel[] | null => {
-      for (const edge of layout.edges) {
-        if (edge.from !== nodeId && edge.to !== nodeId) continue;
-        const poly = segPath.get(edge.id + '|' + lineId);
-        if (!poly || poly.length < 2) continue;
-        return edge.from === nodeId ? poly : [...poly].reverse();
-      }
-      return null;
-    };
     // ALL drawn polylines of a line, map-wide (cached) — distance-to-lane
     // checks must see every edge: a line continues through a junction on
     // another edge, and a marker can sit on a NEIGHBOR edge's join curve;
@@ -523,59 +514,49 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       return polys;
     };
-    /** Seat a mark ON its lane at the capsule's cross-section: intersect the
-     *  lane polyline with the cross line (point c, direction u), taking the
-     *  crossing nearest the node. Join curves displace lane ENDPOINTS into
-     *  the corner (the 22 St BADC row read one pitch off its lanes) — the
-     *  intersection recovers where the lane actually runs at that height. */
-    const seatOnLane = (
-      mk: { lineId: string; flagNode: string; pos: Pixel },
-      c: Pixel,
-      u: Pixel,
-    ): boolean => {
-      const poly = lanePolyAt(mk.lineId, mk.flagNode);
-      if (!poly) return false;
-      const nx = -u[1];
-      const ny = u[0];
-      let prevF = (poly[0][0] - c[0]) * nx + (poly[0][1] - c[1]) * ny;
-      for (let i = 1; i < poly.length; i++) {
-        const f = (poly[i][0] - c[0]) * nx + (poly[i][1] - c[1]) * ny;
-        if ((prevF <= 0 && f >= 0) || (prevF >= 0 && f <= 0)) {
-          const t = Math.abs(f - prevF) > 1e-9 ? prevF / (prevF - f) : 0;
-          const px = poly[i - 1][0] + (poly[i][0] - poly[i - 1][0]) * t;
-          const py = poly[i - 1][1] + (poly[i][1] - poly[i - 1][1]) * t;
-          if (Math.hypot(px - c[0], py - c[1]) < 40) {
-            mk.pos = [px, py];
-            return true;
-          }
-          return false;
-        }
-        prevF = f;
-      }
-      return false;
-    };
-    const laneDirAt = (lineId: string, nodeId: string): Pixel | null => {
+    // drawn join-curve geometry per node|line: lane curves must bridge the
+    // node ON the drawn quadratic (spec §2.1) — chording the trim gap reads
+    // up to half the join sagitta off the ink (dots float in the corner)
+    const joinsAt = new Map<string, Array<{ a: Pixel; apex: Pixel; b: Pixel }>>();
+    for (const jc of joinCurves) {
+      const k = jc.node + '|' + jc.lineId;
+      let arr = joinsAt.get(k);
+      if (!arr) { arr = []; joinsAt.set(k, arr); }
+      arr.push(jc);
+    }
+    const qPoint = (jc: { a: Pixel; apex: Pixel; b: Pixel }, u: number): Pixel => [
+      (1 - u) * (1 - u) * jc.a[0] + 2 * (1 - u) * u * jc.apex[0] + u * u * jc.b[0],
+      (1 - u) * (1 - u) * jc.a[1] + 2 * (1 - u) * u * jc.apex[1] + u * u * jc.b[1],
+    ];
+    // incident lane polylines of a line at a node, oriented AWAY from it;
+    // a lane end trimmed for a join curve is extended with its half of the
+    // sampled curve, so both halves meet at the curve midpoint Q(0.5)
+    const lanePolysAt = (lineId: string, nodeId: string): Pixel[][] => {
+      const out: Pixel[][] = [];
+      const joins = joinsAt.get(nodeId + '|' + lineId);
       for (const edge of layout.edges) {
         if (edge.from !== nodeId && edge.to !== nodeId) continue;
         const poly = segPath.get(edge.id + '|' + lineId);
         if (!poly || poly.length < 2) continue;
-        const atStart = edge.from === nodeId;
-        const pts = atStart ? poly : [...poly].reverse();
-        // walk ~10px of arc for a CORRIDOR-scale direction — the first
-        // segment after a join trim is junction-interior scrap and mirrors
-        // marker segment grouping at busy nodes
-        const a = pts[0];
-        let b = pts[pts.length - 1];
-        let acc = 0;
-        for (let i = 1; i < pts.length; i++) {
-          acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-          if (acc >= 10) { b = pts[i]; break; }
+        const pts = edge.from === nodeId ? poly : [...poly].reverse();
+        let bridged = pts;
+        if (joins) {
+          for (const jc of joins) {
+            const da = Math.hypot(pts[0][0] - jc.a[0], pts[0][1] - jc.a[1]);
+            const db = Math.hypot(pts[0][0] - jc.b[0], pts[0][1] - jc.b[1]);
+            if (Math.min(da, db) > 0.5) continue;
+            const half: Pixel[] = [];
+            for (let k2 = 6; k2 >= 1; k2--) {
+              const u = da <= db ? 0.5 * (k2 / 6) : 1 - 0.5 * (k2 / 6);
+              half.push(qPoint(jc, u));
+            }
+            bridged = [...half, ...pts];
+            break;
+          }
         }
-        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (len < 1e-6) continue;
-        return [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+        out.push(bridged);
       }
-      return null;
+      return out;
     };
     interface StMarks {
       nodeId: string;
@@ -585,43 +566,21 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         color: string;
         flagNode: string;
         pos: Pixel;
-        dir?: Pixel;
-        seg?: number;
+        chain?: number;
       }>;
-      flagNodes: Set<string>;
     }
     const gathered: StMarks[] = [];
     for (const st of args.stations) {
       membersByNode!.set(st.nodeId, st.members);
       const marks: StMarks['marks'] = [];
-      const flagNodes = new Set<string>();
       for (const [lineId, flagNode] of st.stopNodes) {
         const line = lineById.get(lineId);
         if (!line) continue;
         const p = drawnEndAt.get(flagNode + '|' + lineId);
         if (!p) continue;
-        const d = laneDirAt(lineId, flagNode);
-        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]], dir: d ?? undefined });
-        flagNodes.add(flagNode);
+        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]] });
       }
-      // All marks at one node: their longitudinal scatter is a join-curve
-      // artifact (each lane trims/curves differently), and the farthest-pair
-      // capsule axis would run ALONG the bundle — lines visibly piercing a
-      // lengthwise pill (Court). Project marks onto the bundle cross-section
-      // so the capsule spans ACROSS the lanes. Multi-node stations (diverged
-      // corridors) keep their true spanning marks.
-      if (marks.length > 1 && flagNodes.size === 1) {
-        const dir = laneDirAt(marks[0].lineId, [...flagNodes][0]);
-        if (dir) {
-          const cx = marks.reduce((s, m) => s + m.pos[0], 0) / marks.length;
-          const cy = marks.reduce((s, m) => s + m.pos[1], 0) / marks.length;
-          for (const m of marks) {
-            const lon = (m.pos[0] - cx) * dir[0] + (m.pos[1] - cy) * dir[1];
-            m.pos = [m.pos[0] - lon * dir[0], m.pos[1] - lon * dir[1]];
-          }
-        }
-      }
-      gathered.push({ nodeId: st.nodeId, members: st.members, marks, flagNodes });
+      gathered.push({ nodeId: st.nodeId, members: st.members, marks });
     }
 
     // ---- marker collision backup ------------------------------------------
@@ -708,600 +667,84 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       if (out && out.length >= 2) segPath.set(key, atStart ? out : out.reverse());
     };
-    // Dot layout pass (user spec). Mega boxes: marks group PER BUNDLE —
-    // marks whose lanes share a direction axis and sit near one another are
-    // one bundle crossing the box; each group lays out across ITS bundle
-    // (cross-section row through the group's centroid) instead of one global
-    // row. Thin capsules: dots stay on their lanes but get a minimum
-    // spacing along the marker axis so near-coincident marks (perpendicular
-    // crossings — Kew Gardens Rd) never stack their bullets. Done BEFORE
-    // boxOf is consumed so the box and collision slides see final positions.
-    const respaceAlong = (
-      marks: StMarks['marks'],
-      ux: number,
-      uy: number,
-      step: number,
-      collapse: boolean, // also kill scatter perpendicular to the row
-    ) => {
-      const cx = marks.reduce((acc, m) => acc + m.pos[0], 0) / marks.length;
-      const cy = marks.reduce((acc, m) => acc + m.pos[1], 0) / marks.length;
-      const order = marks.map((m, i) => ({
-        i,
-        t: (m.pos[0] - cx) * ux + (m.pos[1] - cy) * uy,
-        c: m.color,
-      }));
-      if (collapse) {
-        // mega-box rows are cosmetic: keep color families contiguous (by
-        // family mean position), members in lane order within the family
-        const fam = new Map<string, { sum: number; n: number }>();
-        for (const o of order) {
-          const f = fam.get(o.c) ?? { sum: 0, n: 0 };
-          f.sum += o.t;
-          f.n++;
-          fam.set(o.c, f);
-        }
-        order.sort((p, q) => {
-          if (p.c !== q.c) {
-            const fp = fam.get(p.c)!;
-            const fq = fam.get(q.c)!;
-            const d = fp.sum / fp.n - fq.sum / fq.n;
-            if (d !== 0) return d;
-            return p.c < q.c ? -1 : 1;
-          }
-          return p.t - q.t;
-        });
-      } else {
-        order.sort((p, q) => p.t - q.t);
-      }
-      // Minimal-displacement min-gap (pool adjacent violators): dots stay
-      // EXACTLY at their lane positions unless a gap violation forces a
-      // local pool, and pooled runs center on their own members' mean — no
-      // global recenter drift (the old shift slid whole rows laterally off
-      // their bundles: the 2 St seating bug).
-      const d = order.map((o, k) => o.t - k * step);
-      const blocks: Array<{ sum: number; n: number }> = [];
-      for (const x of d) {
-        blocks.push({ sum: x, n: 1 });
-        while (
-          blocks.length > 1 &&
-          blocks[blocks.length - 2].sum / blocks[blocks.length - 2].n >=
-            blocks[blocks.length - 1].sum / blocks[blocks.length - 1].n
-        ) {
-          const b = blocks.pop()!;
-          blocks[blocks.length - 1].sum += b.sum;
-          blocks[blocks.length - 1].n += b.n;
-        }
-      }
-      const ts: number[] = [];
-      for (const b of blocks) {
-        const mean = b.sum / b.n;
-        for (let k = 0; k < b.n; k++) ts.push(mean + ts.length * step);
-      }
-      order.forEach((o, k) => {
-        const t = ts[k];
-        const mk = marks[o.i];
-        if (collapse) mk.pos = [cx + ux * t, cy + uy * t];
-        else {
-          const dt = t - o.t;
-          mk.pos = [mk.pos[0] + ux * dt, mk.pos[1] + uy * dt];
-        }
-      });
-    };
+    // ---- dots-on-lanes chain placement (spec 2026-06-12) -------------
+    // Each dot's position is an arc parameter on its OWN lane curve; the
+    // station's marker is a chain over its dots, solved exactly per station
+    // by DP (chainPlace.ts). On-lane holds by construction — this replaces
+    // the cross-line collapse/seat/respace/elbow-slide/snap stack.
+    const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
     for (const s of gathered) {
-      if (s.marks.length < 2) continue;
-      if (boxOf(s).mega) {
-        // bundle grouping: quantized lane-direction axis + spatial chaining
-        const n = s.marks.length;
-        const bucket = s.marks.map((mk) => {
-          const d = laneDirAt(mk.lineId, mk.flagNode);
-          if (!d) return -1;
-          const a = ((Math.atan2(d[1], d[0]) % Math.PI) + Math.PI) % Math.PI;
-          return Math.round(a / (Math.PI / 4)) % 4;
+      if (s.marks.length === 1) {
+        s.marks[0].chain = 0;
+      } else if (s.marks.length > 1) {
+        const curves = s.marks.map((mk) =>
+          buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT),
+        );
+        // groups: marks sharing an incident drawn edge ride one corridor
+        const sets = s.marks.map((mk) => {
+          const set = new Set<string>();
+          for (const edge of layout.edges) {
+            if (edge.from !== mk.flagNode && edge.to !== mk.flagNode) continue;
+            if (segPath.has(edge.id + '|' + mk.lineId)) set.add(edge.id);
+          }
+          return set;
         });
         const parent = s.marks.map((_, i) => i);
-        const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-        for (let i = 0; i < n; i++) {
-          for (let j = i + 1; j < n; j++) {
-            // null-dir marks (suppressed lane pieces) chain with any nearby
-            // bucket rather than forming phantom segments of their own
-            if (bucket[i] !== bucket[j] && bucket[i] !== -1 && bucket[j] !== -1) continue;
-            const d = Math.hypot(
-              s.marks[i].pos[0] - s.marks[j].pos[0],
-              s.marks[i].pos[1] - s.marks[j].pos[1],
-            );
-            // chain reach covers marks separated by PASSING lanes between
-            // their stop lanes (Howard St: 3 and 1 ride the outer lanes of
-            // a 4-lane bundle, ~3 pitches apart) without bridging to a
-            // genuinely separate parallel corridor (>= ~1.5 cells away)
-            if (d < spacing * 4) parent[find(i)] = find(j);
-          }
-        }
-        const groups = new Map<number, number[]>();
-        for (let i = 0; i < n; i++) {
-          const g = find(i);
-          if (!groups.has(g)) groups.set(g, []);
-          groups.get(g)!.push(i);
-        }
-        const rows: Array<{ idx: number[]; dir: Pixel }> = [];
-        for (const idx of groups.values()) {
-          const dir = laneDirAt(s.marks[idx[0]].lineId, s.marks[idx[0]].flagNode) ?? [1, 0];
-          rows.push({ idx, dir: [dir[0], dir[1]] });
-          if (idx.length < 2) continue;
-          // row runs ACROSS the bundle (the lanes' cross-section)
-          respaceAlong(idx.map((i) => s.marks[i]), -dir[1], dir[0], 2 * r + 1.6, true);
-        }
-        // Bundles CROSS inside the box, so rows from different bundles can
-        // land on each other — slide the smaller row along its own bundle
-        // direction (stays on its lanes, purely cosmetic under the box)
-        // until every cross-row dot pair clears.
-        const minD = 2 * r + 1.6;
-        for (let iter = 0; iter < 12; iter++) {
-          let movedAny = false;
-          for (let gi = 0; gi < rows.length; gi++) {
-            for (let gj = gi + 1; gj < rows.length; gj++) {
-              let dmin = Infinity;
-              for (const i of rows[gi].idx) {
-                for (const j of rows[gj].idx) {
-                  dmin = Math.min(dmin, Math.hypot(
-                    s.marks[i].pos[0] - s.marks[j].pos[0],
-                    s.marks[i].pos[1] - s.marks[j].pos[1],
-                  ));
-                }
-              }
-              if (dmin >= minD - 0.05) continue;
-              const small = rows[gi].idx.length <= rows[gj].idx.length ? rows[gi] : rows[gj];
-              const big = small === rows[gi] ? rows[gj] : rows[gi];
-              const cAt = (g: { idx: number[] }): Pixel => [
-                g.idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / g.idx.length,
-                g.idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / g.idx.length,
-              ];
-              const sc = cAt(small);
-              const bc = cAt(big);
-              const along = (sc[0] - bc[0]) * small.dir[0] + (sc[1] - bc[1]) * small.dir[1];
-              const sign = along >= 0 ? 1 : -1;
-              for (const i of small.idx) {
-                s.marks[i].pos = [
-                  s.marks[i].pos[0] + small.dir[0] * sign * 2,
-                  s.marks[i].pos[1] + small.dir[1] * sign * 2,
-                ];
-              }
-              movedAny = true;
+        const find = (x: number): number =>
+          parent[x] === x ? x : (parent[x] = find(parent[x]));
+        for (let i = 0; i < sets.length; i++) {
+          for (let j = i + 1; j < sets.length; j++) {
+            for (const id of sets[i]) {
+              if (sets[j].has(id)) { parent[find(i)] = find(j); break; }
             }
           }
-          if (!movedAny) break;
         }
-      } else {
-        // Multi-angle capsules: group marks by entry-direction bundle (45°
-        // quantized lane axis + spatial chaining). Each group becomes its
-        // own capsule SEGMENT (real-NYC Atlantic Av–Barclays multi-angle
-        // marker) and lays its dots along its own axis with a minimum gap —
-        // differently-angled bundles stay separately bundled at the marker.
-        const n = s.marks.length;
-        const bucket = s.marks.map((mk) => {
-          const d = mk.dir;
-          if (!d) return -1;
-          const a = ((Math.atan2(d[1], d[0]) % Math.PI) + Math.PI) % Math.PI;
-          return Math.round(a / (Math.PI / 4)) % 4;
+        const byRoot = new Map<number, number[]>();
+        s.marks.forEach((_, i) => {
+          const rt = find(i);
+          let arr = byRoot.get(rt);
+          if (!arr) { arr = []; byRoot.set(rt, arr); }
+          arr.push(i);
         });
-        const parent = s.marks.map((_, i) => i);
-        const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-        for (let i = 0; i < n; i++) {
-          for (let j = i + 1; j < n; j++) {
-            // null-dir marks (suppressed lane pieces) chain with any nearby
-            // bucket rather than forming phantom segments of their own
-            if (bucket[i] !== bucket[j] && bucket[i] !== -1 && bucket[j] !== -1) continue;
-            const d = Math.hypot(
-              s.marks[i].pos[0] - s.marks[j].pos[0],
-              s.marks[i].pos[1] - s.marks[j].pos[1],
-            );
-            // chain reach covers marks separated by PASSING lanes between
-            // their stop lanes (Howard St: 3 and 1 ride the outer lanes of
-            // a 4-lane bundle, ~3 pitches apart) without bridging to a
-            // genuinely separate parallel corridor (>= ~1.5 cells away)
-            if (d < spacing * 4) parent[find(i)] = find(j);
-          }
-        }
-        const groups = new Map<number, number[]>();
-        for (let i = 0; i < n; i++) {
-          const g = find(i);
-          if (!groups.has(g)) groups.set(g, []);
-          groups.get(g)!.push(i);
-        }
-        let segIdx = 0;
-        for (const idx of groups.values()) {
-          for (const i of idx) s.marks[i].seg = segIdx;
-          segIdx++;
-          if (idx.length < 2) continue;
-          // The segment axis is the bundle's CROSS-SECTION (perpendicular
-          // to the mean lane direction), never the marks' scatter — the
-          // capsule must sit perpendicular to the route its lines actually
-          // take (user rule: the BADC capsule at 22 St reads horizontal
-          // across its vertical bundle). Collapse the joins' longitudinal
-          // scatter onto the cross line through the group centroid, then
-          // enforce the minimum dot gap along it.
-          let d0: Pixel | undefined;
+        // within-group order = lateral order across the corridor
+        const groups = [...byRoot.values()].map((idx) => {
+          if (idx.length === 1) return idx;
+          const t0 = curveTangent(curves[idx[0]], curves[idx[0]].anchorT);
+          let mx = 0;
+          let my = 0;
           for (const i of idx) {
-            if (s.marks[i].dir) { d0 = s.marks[i].dir; break; }
+            const tg = curveTangent(curves[i], curves[i].anchorT);
+            const sgn = tg[0] * t0[0] + tg[1] * t0[1] < 0 ? -1 : 1;
+            mx += tg[0] * sgn;
+            my += tg[1] * sgn;
           }
-          if (d0) {
-            let mx = 0, my = 0;
-            for (const i of idx) {
-              const d = s.marks[i].dir ?? d0;
-              const sgn = d[0] * d0[0] + d[1] * d0[1] < 0 ? -1 : 1;
-              mx += d[0] * sgn;
-              my += d[1] * sgn;
+          const len = Math.hypot(mx, my) || 1;
+          const nx = -my / len;
+          const ny = mx / len;
+          return [...idx].sort((a, b) =>
+            (s.marks[a].pos[0] * nx + s.marks[a].pos[1] * ny) -
+            (s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny));
+        });
+        const sol = solveChain(curves, groups, {
+          pitch: spacing,
+          minGap: 2 * r - 0.05,
+          anchorW: 0.05,
+          linkW: 0.25,
+          // spec §6: dots of already-placed stations veto states
+          blocked: (p) => {
+            for (const q of placedDots) {
+              if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
             }
-            // snap the cross-axis to the octilinear grid (a capsule reads
-            // as exactly horizontal/diagonal/vertical, not approximately)
-            const rawAng = Math.atan2(mx, -my); // angle of the perpendicular
-            const snapAng = Math.round(rawAng / (Math.PI / 4)) * (Math.PI / 4);
-            const ux = Math.cos(snapAng);
-            const uy = Math.sin(snapAng);
-            const cx = idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / idx.length;
-            const cy = idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / idx.length;
-            for (const i of idx) {
-              const mk = s.marks[i];
-              // seat the dot ON its lane at this cross-section; fall back
-              // to projecting the (possibly join-displaced) mark
-              if (!seatOnLane(mk, [cx, cy], [ux, uy])) {
-                const t = (mk.pos[0] - cx) * ux + (mk.pos[1] - cy) * uy;
-                mk.pos = [cx + ux * t, cy + uy * t];
-              }
-            }
-            respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
-          } else {
-            // no lane direction available: farthest-pair fallback
-            let ai = idx[0], bi = idx[0], span = 0;
-            for (const i of idx) {
-              for (const j of idx) {
-                const d = Math.hypot(
-                  s.marks[i].pos[0] - s.marks[j].pos[0],
-                  s.marks[i].pos[1] - s.marks[j].pos[1],
-                );
-                if (d > span) { span = d; ai = i; bi = j; }
-              }
-            }
-            if (span > 1) {
-              const ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
-              const uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
-              respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
-            }
-          }
-        }
-        // Tip-to-tip elbow solver (user design): the segments' octilinear
-        // axes intersect at the elbow point P; sliding a segment along its
-        // own bundle (dots ride their lanes) moves P, so search a bounded
-        // slide for each newcomer segment that minimizes the tip extension
-        // both segments need to reach P — REJECTING any slide that brings
-        // dots of different segments within a dot diameter. The extension
-        // itself is drawn by renderStops (tips extended to the axes'
-        // intersection); here we only place the segments.
-        const segInfos: Array<{ idx: number[]; u: Pixel; v: Pixel; }> = [];
-        for (const idx of groups.values()) {
-          let d0: Pixel | undefined;
-          for (const i of idx) {
-            if (s.marks[i].dir) { d0 = s.marks[i].dir; break; }
-          }
-          let u: Pixel = [1, 0];
-          if (d0) {
-            let mx = 0, my = 0;
-            for (const i of idx) {
-              const d = s.marks[i].dir ?? d0;
-              const sgn = d[0] * d0[0] + d[1] * d0[1] < 0 ? -1 : 1;
-              mx += d[0] * sgn;
-              my += d[1] * sgn;
-            }
-            const snapAng = Math.round(Math.atan2(mx, -my) / (Math.PI / 4)) * (Math.PI / 4);
-            u = [Math.cos(snapAng), Math.sin(snapAng)];
-          }
-          segInfos.push({ idx, u, v: [-u[1], u[0]] });
-        }
-        const centroidOf = (idx: number[]): Pixel => [
-          idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / idx.length,
-          idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / idx.length,
-        ];
-        const halfLenOf = (idx: number[], c: Pixel, u: Pixel): number => {
-          let h = 0;
-          for (const i of idx) {
-            h = Math.max(h, Math.abs((s.marks[i].pos[0] - c[0]) * u[0] + (s.marks[i].pos[1] - c[1]) * u[1]));
-          }
-          return h;
-        };
-        const dotsClear = (movedSeg: number[], offset: Pixel): boolean => {
-          for (const i of movedSeg) {
-            const px = s.marks[i].pos[0] + offset[0];
-            const py = s.marks[i].pos[1] + offset[1];
-            for (let j = 0; j < s.marks.length; j++) {
-              if (movedSeg.includes(j)) continue;
-              if (Math.hypot(px - s.marks[j].pos[0], py - s.marks[j].pos[1]) < 2 * r - 0.05) return false;
-            }
-          }
-          return true;
-        };
-        const dotsClear2 = (idxA: number[], offA: Pixel, idxB: number[], offB: Pixel): boolean => {
-          const posOf = (i: number): Pixel => {
-            if (idxA.includes(i)) return [s.marks[i].pos[0] + offA[0], s.marks[i].pos[1] + offA[1]];
-            if (idxB.includes(i)) return [s.marks[i].pos[0] + offB[0], s.marks[i].pos[1] + offB[1]];
-            return s.marks[i].pos;
-          };
-          for (let i = 0; i < s.marks.length; i++) {
-            const si = idxA.includes(i) ? 0 : idxB.includes(i) ? 1 : 2;
-            const pi = posOf(i);
-            for (let j = i + 1; j < s.marks.length; j++) {
-              const sj = idxA.includes(j) ? 0 : idxB.includes(j) ? 1 : 2;
-              if (si === sj && si !== 2) continue; // same segment: PAV handles
-              const pj = posOf(j);
-              if (Math.hypot(pi[0] - pj[0], pi[1] - pj[1]) < 2 * r - 0.05) return false;
-            }
-          }
-          return true;
-        };
-        const maxSlide = spacing * 3;
-        const applySlide = (info: { idx: number[]; u: Pixel; v: Pixel }, sl: number) => {
-          if (Math.abs(sl) < 1e-9) return;
-          for (const i of info.idx) {
-            s.marks[i].pos = [
-              s.marks[i].pos[0] + info.v[0] * sl,
-              s.marks[i].pos[1] + info.v[1] * sl,
-            ];
-          }
-          // a slide is a straight translation: on bending lanes the
-          // dots drift — re-seat each on its lane at the new cross line
-          const c2 = centroidOf(info.idx);
-          for (const i of info.idx) seatOnLane(s.marks[i], c2, info.u);
-          respaceAlong(info.idx.map((i) => s.marks[i]), info.u[0], info.u[1], 2 * r, false);
-        };
-        // Lane-seatability (full dry-run of applySlide on clones): translate
-        // the segment, seat each mark on the cross line, PAV-respace, then
-        // require every lane-backed dot to END ≤2px from its lane. Slides
-        // past a bundle BEND have no lanes to ride — seatOnLane fails
-        // silently there and the dots float in the corner pocket (St Lukes
-        // Pl F/G/H/E column). The post-PAV check matters: a dot whose lane
-        // runs PARALLEL to the segment axis seats at a single point and the
-        // respace shoves it back off. 'free' = no drawn lanes to constrain.
-        const ptSegDist = (p: Pixel, a: Pixel, b: Pixel): number => {
-          const dx = b[0] - a[0];
-          const dy = b[1] - a[1];
-          const l2 = dx * dx + dy * dy;
-          const t = l2 < 1e-12 ? 0 :
-            Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
-          return Math.hypot(p[0] - (a[0] + dx * t), p[1] - (a[1] + dy * t));
-        };
-        const seatableSeg = (
-          info: { idx: number[]; u: Pixel },
-          off: Pixel,
-        ): number | false | 'free' => {
-          const clones = info.idx.map((i) => ({
-            ...s.marks[i],
-            pos: [s.marks[i].pos[0] + off[0], s.marks[i].pos[1] + off[1]] as Pixel,
-          }));
-          const cand: Pixel = [
-            clones.reduce((acc, c) => acc + c.pos[0], 0) / clones.length,
-            clones.reduce((acc, c) => acc + c.pos[1], 0) / clones.length,
-          ];
-          for (const c of clones) seatOnLane(c, cand, info.u);
-          respaceAlong(clones, info.u[0], info.u[1], 2 * r, false);
-          // Two criteria. (1) Lane distance ≤6px: lane-curve/junction-bend
-          // deviation leaves GOOD placements up to ~5.5px off one lane
-          // (Broadway row's A at the blue kink); every real observed float
-          // is ≥6.2px (St Lukes column, terminus tips). (2) Row stays
-          // STRAIGHT: each dot ≤1.5px lateral of the cross line — at
-          // junctions the lanes fan apart, so a slid row can re-seat with
-          // every dot on-lane yet scattered along diverging lanes (22 St
-          // diagonal exploded into a blob); those slides are infeasible.
-          // returns the max lane distance over lane-backed marks (a quality
-          // measure: 0 = every dot exactly on a lane), false when the row
-          // breaks, 'free' when nothing constrains it
-          let constrained = false;
-          let maxD = 0;
-          for (const c of clones) {
-            // straightness only meaningful for ≥3 dots: a 2-dot pill is
-            // always straight, and mid-curve pills legitimately sit ROTATED
-            // off the snapped axis (flagging those slid them into neighbors)
-            const lat = clones.length < 3 ? 0 : Math.abs(
-              (c.pos[0] - cand[0]) * -info.u[1] + (c.pos[1] - cand[1]) * info.u[0],
-            );
-            if (lat > 1.5) return false;
-            const polys = lanePolysOf(c.lineId);
-            if (polys.length === 0) continue;
-            constrained = true;
-            let best = Infinity;
-            for (const poly of polys) {
-              for (let k = 1; k < poly.length && best > 6; k++) {
-                best = Math.min(best, ptSegDist(c.pos, poly[k - 1], poly[k]));
-              }
-            }
-            if (best > 6) return false;
-            maxD = Math.max(maxD, best);
-          }
-          return constrained ? maxD : 'free';
-        };
-        // Max lane distance of a segment's marks AS THEY CURRENTLY SIT (no
-        // reconstruction) — the ground truth for "is this segment floating".
-        // The seatableSeg dry-run is only an ESTIMATE of where a slide
-        // lands; for rotated mid-curve pills it reconstructs wrongly, so
-        // triggers and stay-put decisions must use the real positions.
-        const asIsMaxDist = (info: { idx: number[] }): number | 'free' => {
-          let constrained = false;
-          let maxD = 0;
-          for (const i of info.idx) {
-            const polys = lanePolysOf(s.marks[i].lineId);
-            if (polys.length === 0) continue;
-            constrained = true;
-            let best = Infinity;
-            for (const poly of polys) {
-              for (let k = 1; k < poly.length && best > 6; k++) {
-                best = Math.min(best, ptSegDist(s.marks[i].pos, poly[k - 1], poly[k]));
-              }
-            }
-            maxD = Math.max(maxD, best);
-          }
-          return constrained ? maxD : 'free';
-        };
-        // Integer slide grid (same enumeration as the solver loops) where
-        // the segment fully seats; sl=0 is always allowed when the segment
-        // is fine where it stands. null = unconstrained (single dots keep
-        // their seat-snap behavior; no lanes / nowhere seatable likewise —
-        // don't brick odd stations).
-        const slideRangeSeatable = (
-          info: { idx: number[]; u: Pixel; v: Pixel },
-        ): Set<number> | null => {
-          if (info.idx.length < 2) return null;
-          const asIs = asIsMaxDist(info);
-          if (asIs === 'free') return null;
-          const ok = new Set<number>();
-          for (let sl = -maxSlide; sl <= maxSlide + 1e-6; sl += 1) {
-            if (typeof seatableSeg(info, [info.v[0] * sl, info.v[1] * sl]) === 'number') {
-              ok.add(Math.round(sl));
-            }
-          }
-          if (asIs <= 6) ok.add(0);
-          return ok.size > 0 ? ok : null;
-        };
-        // A segment standing at a NESTED bundle bend can be unseatable in
-        // place — each lane turns at its own corner, so no cross line at
-        // the node meets all of them. Move it to the nearest seatable
-        // slide BEFORE solving so every dot lives on its lane.
-        for (const info of segInfos) {
-          if (info.idx.length < 2) continue;
-          const asIs = asIsMaxDist(info);
-          if (asIs === 'free' || asIs <= 6) continue; // genuinely floating only
-          const ok = slideRangeSeatable(info);
-          if (!ok) continue;
-          // best seatable slide = tightest seating first, shortest move second
-          let bestS: number | undefined;
-          let bestQ = Infinity;
-          for (const sl of ok) {
-            const q = seatableSeg(info, [info.v[0] * sl, info.v[1] * sl]);
-            if (typeof q !== 'number') continue;
-            const score = q + Math.abs(sl) * 0.05;
-            if (score < bestQ && dotsClear(info.idx, [info.v[0] * sl, info.v[1] * sl])) {
-              bestQ = score;
-              bestS = sl;
-            }
-          }
-          if (bestS !== undefined) applySlide(info, bestS);
-        }
-        for (let bI = 1; bI < segInfos.length; bI++) {
-          const B = segInfos[bI];
-          const cB0 = centroidOf(B.idx);
-          let aI = 0;
-          let bestD = Infinity;
-          for (let j = 0; j < bI; j++) {
-            const cj = centroidOf(segInfos[j].idx);
-            const d = Math.hypot(cB0[0] - cj[0], cB0[1] - cj[1]);
-            if (d < bestD) { bestD = d; aI = j; }
-          }
-          const A = segInfos[aI];
-          const cA0 = centroidOf(A.idx);
-          const halfA = halfLenOf(A.idx, cA0, A.u);
-          const halfB = halfLenOf(B.idx, cB0, B.u);
-          const denom = A.u[0] * B.u[1] - A.u[1] * B.u[0];
-          // END-TO-END constraint (user design): the elbow point P must sit
-          // AT OR BEYOND the end of BOTH rows — a P inside a row makes the
-          // other segment poke into its side (a T, not a corner). Sliding A
-          // along its bundle moves P along B's axis and vice versa, so the
-          // 2-D slide search can usually place P off both ends; extension
-          // covers whatever the slide bounds cannot.
-          const allowSecondSlide = bI === 1; // later pairs must not disturb placed segments
-          // hard constraint: a slid segment must remain fully seatable on
-          // its lanes (a slide off the drawn bundle = floating dots)
-          const seatA = allowSecondSlide ? slideRangeSeatable(A) : null;
-          const seatB = slideRangeSeatable(B);
-          let best: { sA: number; sB: number } | null = null;
-          let bestScore = Infinity;
-          for (let sA = -maxSlide; sA <= maxSlide + 1e-6; sA += 1) {
-            if (!allowSecondSlide && Math.abs(sA) > 1e-9) continue;
-            if (seatA && !seatA.has(Math.round(sA))) continue;
-            const offA: Pixel = [A.v[0] * sA, A.v[1] * sA];
-            const cA: Pixel = [cA0[0] + offA[0], cA0[1] + offA[1]];
-            for (let sB = -maxSlide; sB <= maxSlide + 1e-6; sB += 1) {
-              if (seatB && !seatB.has(Math.round(sB))) continue;
-              const offB: Pixel = [B.v[0] * sB, B.v[1] * sB];
-              const cB: Pixel = [cB0[0] + offB[0], cB0[1] + offB[1]];
-              let score: number;
-              if (Math.abs(denom) < 0.05) {
-                // parallel axes: minimize the lateral offset so the rows
-                // can join collinearly end-to-end
-                score = Math.abs((cB[0] - cA[0]) * A.v[0] + (cB[1] - cA[1]) * A.v[1]) * 2;
-              } else {
-                const t = ((cB[0] - cA[0]) * B.u[1] - (cB[1] - cA[1]) * B.u[0]) / denom;
-                const px = cA[0] + A.u[0] * t;
-                const py = cA[1] + A.u[1] * t;
-                const tB = (px - cB[0]) * B.u[0] + (py - cB[1]) * B.u[1];
-                // infeasible while P is INSIDE either row, or so far past an
-                // end that renderStops would roll the extension back
-                if (Math.abs(t) < halfA - 0.5 || Math.abs(tB) < halfB - 0.5) continue;
-                if (Math.abs(t) - halfA > spacing * 4 || Math.abs(tB) - halfB > spacing * 4) continue;
-                score = (Math.abs(t) - halfA) + (Math.abs(tB) - halfB);
-              }
-              score += (Math.abs(sA) + Math.abs(sB)) * 0.05;
-              if (score >= bestScore - 1e-9) continue;
-              if (!dotsClear2(A.idx, offA, B.idx, offB)) continue;
-              bestScore = score;
-              best = { sA, sB };
-            }
-          }
-          if (best) {
-            applySlide(A, best.sA);
-            applySlide(B, best.sB);
-          } else {
-            // no feasible end-to-end placement: push apart along the bundle
-            // until dots clear (old fallback; stops falls back to a T/bridge)
-            for (let k = 0; k < 16 && !dotsClear(B.idx, [0, 0]); k++) {
-              for (const i of B.idx) {
-                s.marks[i].pos = [s.marks[i].pos[0] + B.v[0] * 2, s.marks[i].pos[1] + B.v[1] * 2];
-              }
-            }
-          }
-        }
-        // FINAL lane-fidelity pass (user rule: dots never leave their
-        // lines): a mark still >6px off its line's ink after the elbow
-        // solve — a re-seat that failed past a lane END (terminus tips) or
-        // a single-dot drift — snaps to the nearest point of its lane
-        // polyline, unless that would collide with another dot. ONLY for
-        // dots in segments of ≤2 marks: rows own their dots (a welded
-        // junction row legitimately spans lanes whose drawn ink kinks >6px
-        // away mid-row — per-dot snapping tears the row into a blob, the
-        // 22 St diagonal), and floating rows are normalization's job.
-        const segSize = new Map<number, number>();
-        for (const mk of s.marks) {
-          const sg = mk.seg ?? 0;
-          segSize.set(sg, (segSize.get(sg) ?? 0) + 1);
-        }
-        for (const mk of s.marks) {
-          if ((segSize.get(mk.seg ?? 0) ?? 1) > 2) continue;
-          const polys = lanePolysOf(mk.lineId);
-          if (polys.length === 0) continue;
-          let bestD = Infinity;
-          let bp: Pixel = mk.pos;
-          for (const poly of polys) {
-            for (let k = 1; k < poly.length; k++) {
-              const a = poly[k - 1];
-              const b = poly[k];
-              const dx = b[0] - a[0];
-              const dy = b[1] - a[1];
-              const l2 = dx * dx + dy * dy;
-              const t = l2 < 1e-12 ? 0 :
-                Math.max(0, Math.min(1, ((mk.pos[0] - a[0]) * dx + (mk.pos[1] - a[1]) * dy) / l2));
-              const px = a[0] + dx * t;
-              const py = a[1] + dy * t;
-              const d = Math.hypot(mk.pos[0] - px, mk.pos[1] - py);
-              if (d < bestD) { bestD = d; bp = [px, py]; }
-            }
-          }
-          if (bestD <= 6 || bestD > 40) continue;
-          let clear = true;
-          for (const other of s.marks) {
-            if (other === mk) continue;
-            if (Math.hypot(bp[0] - other.pos[0], bp[1] - other.pos[1]) < 2 * r - 0.05) {
-              clear = false;
-              break;
-            }
-          }
-          if (clear) mk.pos = bp;
+            return false;
+          },
+        });
+        for (let k = 0; k < sol.order.length; k++) {
+          const i = sol.order[k];
+          s.marks[i].pos = sol.pos[i];
+          s.marks[i].chain = k;
         }
       }
+      for (const mk of s.marks) placedDots.push(mk.pos);
     }
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
@@ -1349,40 +792,24 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
 
     // Small-vs-small collisions: neighbouring stations' markers must not
     // overlap (user rule). Penetration is measured between the markers'
-    // actual SEGMENT HULLS (per-seg stadium axes + half-widths — bbox tests
+    // actual SPINE HULLS (chain-pair stadium segments — bbox tests
     // miss/false-flag multi-angle capsules); the marker with fewer marks
     // slides along its own lanes until every hull pair clears.
     {
       type Hull = Array<{ a: Pixel; b: Pixel; half: number }>;
       const hullsOf = (marks: StMarks['marks'], posOf?: (i: number) => Pixel): Hull => {
-        const segs = new Map<number, number[]>();
-        marks.forEach((m, i) => {
-          const k = m.seg ?? 0;
-          if (!segs.has(k)) segs.set(k, []);
-          segs.get(k)!.push(i);
-        });
+        // capsule = spine through chain-ordered dots; hull = its consecutive
+        // pair segments at half-width fill half + border = r + 3 (the old
+        // per-seg lateral widening no longer exists)
+        const p = (i: number): Pixel => (posOf ? posOf(i) : marks[i].pos);
+        const ordered = marks
+          .map((m, i) => ({ i, chain: m.chain ?? 0 }))
+          .sort((m1, m2) => m1.chain - m2.chain);
         const out: Hull = [];
-        for (const idx of segs.values()) {
-          const p = (i: number): Pixel => (posOf ? posOf(i) : marks[i].pos);
-          let sa = p(idx[0]);
-          let sb = p(idx[0]);
-          let span = 0;
-          for (const i of idx) {
-            for (const j of idx) {
-              const d = Math.hypot(p(i)[0] - p(j)[0], p(i)[1] - p(j)[1]);
-              if (d > span) { span = d; sa = p(i); sb = p(j); }
-            }
-          }
-          let lat = 0;
-          if (span > 1e-6) {
-            const nx = -(sb[1] - sa[1]) / span;
-            const ny = (sb[0] - sa[0]) / span;
-            for (const i of idx) {
-              lat = Math.max(lat, Math.abs((p(i)[0] - sa[0]) * nx + (p(i)[1] - sa[1]) * ny));
-            }
-          }
-          out.push({ a: sa, b: sb, half: r + 3 + lat });
+        for (let k = 1; k < ordered.length; k++) {
+          out.push({ a: p(ordered[k - 1].i), b: p(ordered[k].i), half: r + 3 });
         }
+        if (out.length === 0) out.push({ a: p(ordered[0].i), b: p(ordered[0].i), half: r + 3 });
         return out;
       };
       const ptSeg = (px: number, py: number, a: Pixel, b: Pixel): number => {
@@ -1458,7 +885,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.dir, m.seg);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain);
     }
   } else {
     for (const edge of layout.edges) {
