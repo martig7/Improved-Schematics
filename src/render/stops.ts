@@ -163,7 +163,7 @@ export function renderStops(
     // ever touch segments at their ends. Parallel collinear rows extend to
     // meet halfway; anything else (parallel offset rows, an absurdly far
     // P) falls back to a short bridge.
-    const joints: Array<[Pixel, Pixel]> = [];
+    const joints: Array<{ p: Pixel; q: Pixel; w: number }> = [];
     const axisDirOf = (g: SegGeom, marks0: StopMark): Pixel => {
       const len = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);
       if (len > 1e-6) return [(g.b[0] - g.a[0]) / len, (g.b[1] - g.a[1]) / len];
@@ -171,26 +171,14 @@ export function renderStops(
       const snap = Math.round(Math.atan2(d[0], -d[1]) / (Math.PI / 4)) * (Math.PI / 4);
       return [Math.cos(snap), Math.sin(snap)];
     };
-    // gap between two segments' stadium hulls (≤0 means they overlap)
-    const hullGap = (A: SegGeom, B: SegGeom): number => {
-      const segSegDist = (p1: Pixel, p2: Pixel, q1: Pixel, q2: Pixel): number => {
-        const ptSeg = (p: Pixel, a: Pixel, b: Pixel): number => {
-          const dx = b[0] - a[0];
-          const dy = b[1] - a[1];
-          const len2 = dx * dx + dy * dy;
-          const u = len2 < 1e-12 ? 0 :
-            Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2));
-          return Math.hypot(p[0] - (a[0] + dx * u), p[1] - (a[1] + dy * u));
-        };
-        const d = (p: Pixel, q: Pixel, r2: Pixel, s2: Pixel) =>
-          (q[0] - p[0]) * (s2[1] - r2[1]) - (q[1] - p[1]) * (s2[0] - r2[0]);
-        const o = (p: Pixel, q: Pixel, r2: Pixel) =>
-          Math.sign((q[0] - p[0]) * (r2[1] - p[1]) - (q[1] - p[1]) * (r2[0] - p[0]));
-        if (Math.abs(d(p1, p2, q1, q2)) > 1e-12 &&
-            o(p1, p2, q1) !== o(p1, p2, q2) && o(q1, q2, p1) !== o(q1, q2, p2)) return 0;
-        return Math.min(ptSeg(p1, q1, q2), ptSeg(p2, q1, q2), ptSeg(q1, p1, p2), ptSeg(q2, p1, p2));
-      };
-      return segSegDist(A.a, A.b, B.a, B.b) - (A.w + B.w) / 2;
+    // closest point on segment a2-b2 to p
+    const closestOnSeg = (p: Pixel, a2: Pixel, b2: Pixel): Pixel => {
+      const dx = b2[0] - a2[0];
+      const dy = b2[1] - a2[1];
+      const l2 = dx * dx + dy * dy;
+      const u = l2 < 1e-12 ? 0 :
+        Math.max(0, Math.min(1, ((p[0] - a2[0]) * dx + (p[1] - a2[1]) * dy) / l2));
+      return [a2[0] + dx * u, a2[1] + dy * u];
     };
     const maxExt = (LINE_WIDTH + 2) * 4; // ~4 lane spacings
     for (let i = 1; i < segGeoms.length; i++) {
@@ -226,18 +214,22 @@ export function renderStops(
         const halfA = Math.hypot(A.b[0] - A.a[0], A.b[1] - A.a[1]) / 2;
         const halfB = Math.hypot(B.b[0] - B.a[0], B.b[1] - B.a[1]) / 2;
         if (retreatDot > 0.5 && halfA > r && halfB > r) {
-          if (hullGap(A, B) <= -1) continue; // bodies already overlap: fused pills
-          // barely apart: short bridge between the two nearest end caps
-          let ea: 'a' | 'b' = 'a';
-          let eb: 'a' | 'b' = 'a';
-          let bestEnd = Infinity;
-          for (const x of ['a', 'b'] as const) {
-            for (const y of ['a', 'b'] as const) {
-              const d = Math.hypot(A[x][0] - B[y][0], A[x][1] - B[y][1]);
-              if (d < bestEnd) { bestEnd = d; ea = x; eb = y; }
-            }
-          }
-          joints.push([A[ea], B[eb]]);
+          // The bodies meet cap-against-side here (no extension) — but the
+          // fills only overlap in a small lens, so border ink pinches
+          // through as a seam between the two pills. A short joint from
+          // the nearer tip onto the other row's axis fuses them FLUSH
+          // (user: the join must read as a solid triangle, no gap).
+          const cand = (from: SegGeom, to: SegGeom) => {
+            const qa = closestOnSeg(from.a, to.a, to.b);
+            const qb = closestOnSeg(from.b, to.a, to.b);
+            const da = Math.hypot(from.a[0] - qa[0], from.a[1] - qa[1]);
+            const db = Math.hypot(from.b[0] - qb[0], from.b[1] - qb[1]);
+            return da <= db ? { tip: from.a, q: qa, d: da } : { tip: from.b, q: qb, d: db };
+          };
+          const ab = cand(A, B);
+          const ba = cand(B, A);
+          const c2 = ab.d <= ba.d ? ab : ba;
+          joints.push({ p: c2.tip, q: c2.q, w: Math.min(A.w, B.w) });
           continue;
         }
         const extend = (g: SegGeom, u: Pixel, along: number): boolean => {
@@ -283,7 +275,7 @@ export function renderStops(
         }
       }
       // fallback: short bridge between centroids' closest approach
-      joints.push([A.c, B.c]);
+      joints.push({ p: A.c, q: B.c, w: 2 * r + 3 });
     }
     const lineSvg = (p: Pixel, q: Pixel, color: string, w: number, withAttrs: boolean): string =>
       '<line x1="' + p[0].toFixed(1) + '" y1="' + p[1].toFixed(1) +
@@ -292,13 +284,13 @@ export function renderStops(
       '" stroke-linecap="round"' + (withAttrs ? attrs : '') + '/>';
     let inner = '';
     for (const g of segGeoms) inner += lineSvg(g.a, g.b, stroke, g.w + 3, false);
-    for (const [p, q] of joints) inner += lineSvg(p, q, stroke, 2 * r + 6, false);
+    for (const j of joints) inner += lineSvg(j.p, j.q, stroke, j.w + 3, false);
     let first = true;
     for (const g of segGeoms) {
       inner += lineSvg(g.a, g.b, fill, g.w, first);
       first = false;
     }
-    for (const [p, q] of joints) inner += lineSvg(p, q, fill, 2 * r + 3, false);
+    for (const j of joints) inner += lineSvg(j.p, j.q, fill, j.w, false);
     const cx = segGeoms.reduce((acc, g) => acc + g.c[0], 0) / segGeoms.length;
     const cy = segGeoms.reduce((acc, g) => acc + g.c[1], 0) / segGeoms.length;
     out.push(wrap(cx, cy, inner + dots));
