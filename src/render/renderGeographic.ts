@@ -584,28 +584,11 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   for (const g of groups) {
     servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
   }
-  // Nodes visually covered by a mega-station box: crossings there are
-  // hidden, so untangle treats them as free (user rule) — unavoidable
-  // crossings migrate under the boxes instead of showing on open track.
-  // Mirrors the renderer's mega rule (served members > 1, line degree >= 8).
-  // CONSERVATIVE: only the mega node itself — an order flip at a node
-  // renders its weave along the APPROACHING edges, so freeing neighbours
-  // "inside the footprint" leaked visible crossings onto open track just
-  // outside the box.
-  const freeCrossNodes = (() => {
-    const out = new Set<string>();
-    const ldeg = new Map<string, number>();
-    for (const e of layout.edges) {
-      ldeg.set(e.from, (ldeg.get(e.from) ?? 0) + e.lines.length);
-      ldeg.set(e.to, (ldeg.get(e.to) ?? 0) + e.lines.length);
-    }
-    for (const st of supportM.stations.values()) {
-      if ((servedMembers.get(st.id) ?? st.members ?? 1) <= 1) continue;
-      if ((ldeg.get(st.nodeId) ?? 0) < 8) continue;
-      out.add(st.nodeId);
-    }
-    return out;
-  })();
+  // MEGA-BOX PHASE-OUT EXPERIMENT (v0.2.27): freeCross under boxes is OFF —
+  // corner-prioritized crossing weights (cornerTurnFactor) now route
+  // unavoidable swaps into bends instead of hiding them under boxes. To
+  // revert: rebuild the mega-node set here and pass { freeCrossNodes } to
+  // untangleLineOrder (see v0.2.22..26 history).
   // LOOM untangle: optimize per-corridor line order against crossings and
   // separations at nodes (the barycenter pass above only seeds it).
   // (dev A/B switch: OCTI_NO_UNTANGLE=1 keeps the barycenter order)
@@ -615,7 +598,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
       (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
     )
   ) {
-    untangleLineOrder(layout, { freeCrossNodes });
+    untangleLineOrder(layout);
   }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);

@@ -292,7 +292,7 @@ export function SchematicPanel() {
         <span style={{ flex: 1 }} />
         {/* Build marker: proves which bundle the game actually loaded. */}
         <span style={{ opacity: 0.35, fontSize: 10 }}>
-          v0.2.26{dumpStatus ? ` · ${dumpStatus}` : ''}
+          v0.2.27{dumpStatus ? ` · ${dumpStatus}` : ''}
         </span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
