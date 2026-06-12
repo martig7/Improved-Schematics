@@ -450,8 +450,13 @@ export const solveChain = (
         if (prevCost[s2] >= best) continue; // pair cost ≥ 0: sound pruning
         const d = Math.hypot(p[0] - pj[s2][0], p[1] - pj[s2][1]);
         if (d < o.minGap) continue;
+        // intra: |d² − ρ²| — EXACTLY Δt² on parallel lanes (quadratic in
+        // stagger; (d−ρ)² is quartic there and loses to the anchors —
+        // brute-force verified). links: one-sided quadratic in excess.
         const ex = d - o.pitch;
-        const pc = isLink ? (ex > 0 ? linkW * ex * ex : 0) : ex * ex;
+        const pc = isLink
+          ? (ex > 0 ? linkW * ex * ex : 0)
+          : Math.abs(d * d - o.pitch * o.pitch);
         const c2 = prevCost[s2] + pc;
         if (c2 < best) { best = c2; arg = s2; }
       }

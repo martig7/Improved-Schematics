@@ -30,14 +30,15 @@ The marker is a **chain**: a fixed visiting order $\pi$ over the $n$ dots.
 ### 2.3 Energy
 
 $$
-E(t) \;=\; \sum_{(i,j) \in \pi_{\text{intra}}} \big(\lVert p_i - p_j \rVert - \rho\big)^2
+E(t) \;=\; \sum_{(i,j) \in \pi_{\text{intra}}} \big|\lVert p_i - p_j \rVert^2 - \rho^2\big|
 \;+\; \lambda_{\text{link}} \sum_{(i,j) \in \pi_{\text{link}}} \max\big(\lVert p_i - p_j \rVert - \rho,\, 0\big)^2
 \;+\; \lambda \sum_{i=1}^{n} \big(t_i - t_i^{stop}\big)^2
 $$
 
 subject to the hard non-overlap floor $\lVert p_i - p_j \rVert \ge 2r - 0.05$ for consecutive pairs.
 
-- $\rho$ = lane pitch = `LINE_WIDTH + LINE_GAP` (5.5 px). The **target is the pitch, not the dot diameter**: with target $2r < \rho$, lane-pinch regions (crossings) would attain the target exactly and the optimizer would chase junction interiors. With the symmetric quadratic at $\rho$, clean parallel track is the unique zero-energy configuration (§3, P1).
+- $\rho$ = lane pitch = `LINE_WIDTH + LINE_GAP` (5.5 px). The **target is the pitch, not the dot diameter**: with target $2r < \rho$, lane-pinch regions (crossings) would attain the target exactly and the optimizer would chase junction interiors. Pinches ($d < \rho$) and fans ($d > \rho$) both cost energy; at a full crossing ($d = 0$) the cost is $\rho^2$, and the near-floor region costs strictly more than under a $(d-\rho)^2$ law.
+- The intra-pair form is $|d^2 - \rho^2|$, **not** $(d-\rho)^2$ — this is load-bearing. On parallel lanes $d^2 = \Delta t^2 + \rho^2$, so the pair term equals $\Delta t^2$ **exactly**: quadratic curvature in stagger. Under $(d-\rho)^2$ the curvature is quartic ($\approx \Delta t^4 / 4\rho^2$), the quadratic anchor term dominates near zero stagger, and the minimizer retains $\mathcal{O}(\text{px})$ residual stagger (brute-force verified during implementation: ±1.6 px at $\lambda = 0.05$ with ±3 px anchors) — visibly wobbly rows. With $|d^2-\rho^2|$ the parallel-track energy is a quadratic spring chain plus anchors, and the residual stagger is bounded by $\frac{\lambda}{\lambda + c}\,A$ (anchor stagger $A$, chain stiffness $c \ge 2$), ≈ 0.14 px at the defaults — below the 0.5 px state grid, so the discrete minimizer is the perpendicular row.
 - Intra-group pairs use the symmetric quadratic (weight 1): pinches **and** fans both cost energy.
 - Inter-group links use a one-sided quadratic (only excess length penalized) at $\lambda_{\text{link}} = 0.25$: links pull rows together but never overpower intra-group straightness, and never reward entering the junction.
 - Anchor weight $\lambda = 0.05$: breaks translation invariance on straight track and keeps the marker at its station; weak enough that escaping a kinked junction (a ~15 px slide) is always preferred over absorbing per-pair kink penalties.
@@ -47,7 +48,7 @@ All weights are named constants with the defaults above; they are tunables, not 
 
 ## 3. Properties (paper-facing)
 
-- **P1 (Emergent straightness / clean-track placement).** On parallel lanes at pitch $\rho$, $\lVert p_i - p_j \rVert = \sqrt{\Delta t^2 + \rho^2} \ge \rho$ with equality iff $\Delta t = 0$. Hence the perpendicular straight row is the unique minimizer of every intra-group term, the global energy of a clean cross-section is $\le \lambda \sum (t_i - t_i^{stop})^2$ with all pair terms zero, and any cross-section through a kink/crossing region costs strictly more. "Slide to clean track" and "rows are perpendicular pills" are theorems, not heuristics.
+- **P1 (Emergent straightness / clean-track placement).** On parallel lanes at pitch $\rho$, each intra term equals $\Delta t_{ij}^2$ exactly (no approximation), so the restriction of $E$ to clean track is the quadratic form $\sum_{\text{pairs}} \Delta t^2 + \lambda \sum_i (t_i - t_i^{stop})^2$ — a spring chain with weak anchors. Its unique minimizer has residual stagger at most $\frac{\lambda}{\lambda + c} A$ where $A$ is the anchor stagger and $c \ge 2$ the chain stiffness; at the defaults ($\lambda = 0.05$, $A \le$ a few px) this is below half the state grid, so the discrete global minimizer is the exact perpendicular row. Kink/crossing regions pay strictly positive pair costs and are escaped whenever clean track exists in the window. "Slide to clean track" and "rows are perpendicular pills" are theorems with an explicit residual bound, not heuristics.
 - **P2 (Emergent bending).** Where no straight placement exists within the arc window, the minimizer bends exactly as far as the lane geometry forces — the bent-capsule fallback requires no code branch.
 - **P3 (Containment).** Dots lie on the spine by construction; after RDP simplification with tolerance $\varepsilon = 0.75$ px every dot center lies within $\varepsilon$ of the rendered spine. A dot's outer ring radius is $r + 0.75$ (ring stroke 1.5), the capsule fill half-width is $r + 1.5$, so dot ink never escapes the fill, and the border ring adds a further 1.5 px of margin. Capsule containment is a property, not a gate; the lateral-widening machinery disappears.
 - **P4 (Exact solvability).** With fixed $\pi$, $E$ is a chain-structured function (unary + consecutive-pair terms). On a discretized domain it is minimized **exactly** by dynamic programming (§4). No local-minimum caveats.
