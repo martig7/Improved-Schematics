@@ -156,41 +156,84 @@ export function renderStops(
         c: [(sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2],
       });
     }
-    // joints: connect each segment to its nearest predecessor at the
-    // CLOSEST POINTS between their stadium axes (centroid joints drew long
-    // arms slashing across bundles); segments whose hulls already touch
-    // need no joint at all
-    const closestOnSeg = (p: Pixel, a: Pixel, b: Pixel): Pixel => {
-      const vx = b[0] - a[0];
-      const vy = b[1] - a[1];
-      const len2 = vx * vx + vy * vy;
-      const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2)) : 0;
-      return [a[0] + vx * t, a[1] + vy * t];
-    };
-    const segClosest = (g1: SegGeom, g2: SegGeom): [Pixel, Pixel, number] => {
-      let best: [Pixel, Pixel, number] = [g1.c, g2.c, Infinity];
-      for (const [p, a, b, flip] of [
-        [g1.a, g2.a, g2.b, true], [g1.b, g2.a, g2.b, true],
-        [g2.a, g1.a, g1.b, false], [g2.b, g1.a, g1.b, false],
-      ] as Array<[Pixel, Pixel, Pixel, boolean]>) {
-        const q = closestOnSeg(p, a, b);
-        const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
-        if (d < best[2]) best = flip ? [p, q, d] : [q, p, d];
-      }
-      return best;
-    };
+    // Tip-to-tip elbows (user design): each segment pairs with its nearest
+    // predecessor (by centroid — mirrors the layout solver); their
+    // octilinear axes intersect at the elbow point P, and both segments'
+    // nearer tips EXTEND to P so the round caps meet there — joints only
+    // ever touch segments at their ends. Parallel collinear rows extend to
+    // meet halfway; anything else (parallel offset rows, an absurdly far
+    // P) falls back to a short bridge.
     const joints: Array<[Pixel, Pixel]> = [];
+    const axisDirOf = (g: SegGeom, marks0: StopMark): Pixel => {
+      const len = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);
+      if (len > 1e-6) return [(g.b[0] - g.a[0]) / len, (g.b[1] - g.a[1]) / len];
+      const d = marks0.dir ?? [1, 0];
+      const snap = Math.round(Math.atan2(d[0], -d[1]) / (Math.PI / 4)) * (Math.PI / 4);
+      return [Math.cos(snap), Math.sin(snap)];
+    };
+    const maxExt = (LINE_WIDTH + 2) * 4; // ~4 lane spacings
     for (let i = 1; i < segGeoms.length; i++) {
-      let bestPair: [Pixel, Pixel, number] | null = null;
       let bestJ = 0;
+      let bestD = Infinity;
       for (let j = 0; j < i; j++) {
-        const pair = segClosest(segGeoms[i], segGeoms[j]);
-        if (!bestPair || pair[2] < bestPair[2]) { bestPair = pair; bestJ = j; }
+        const d = Math.hypot(segGeoms[i].c[0] - segGeoms[j].c[0], segGeoms[i].c[1] - segGeoms[j].c[1]);
+        if (d < bestD) { bestD = d; bestJ = j; }
       }
-      if (!bestPair) continue;
-      // hulls already touch (axis distance < the two half-widths) -> no joint
-      if (bestPair[2] < (segGeoms[i].w + segGeoms[bestJ].w) / 2) continue;
-      joints.push([bestPair[0], bestPair[1]]);
+      const A = segGeoms[bestJ];
+      const B = segGeoms[i];
+      const mA = marks.find((m) => (m.seg ?? 0) === segIds[bestJ])!;
+      const mB = marks.find((m) => (m.seg ?? 0) === segIds[i])!;
+      const uA = axisDirOf(A, mA);
+      const uB = axisDirOf(B, mB);
+      const denom = uA[0] * uB[1] - uA[1] * uB[0];
+      if (Math.abs(denom) >= 0.05) {
+        const t = ((B.c[0] - A.c[0]) * uB[1] - (B.c[1] - A.c[1]) * uB[0]) / denom;
+        const px = A.c[0] + uA[0] * t;
+        const py = A.c[1] + uA[1] * t;
+        const sB = (px - B.c[0]) * uB[0] + (py - B.c[1]) * uB[1];
+        const extend = (g: SegGeom, u: Pixel, along: number): boolean => {
+          const halfLen = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]) / 2;
+          const ext = Math.abs(along) - halfLen;
+          if (ext > maxExt) return false;
+          if (ext <= 0) return true; // P inside the row: hulls already meet
+          const tip: Pixel = [px, py];
+          // move the endpoint nearer P onto P
+          const dA = Math.hypot(g.a[0] - px, g.a[1] - py);
+          const dB = Math.hypot(g.b[0] - px, g.b[1] - py);
+          if (dA <= dB) g.a = tip;
+          else g.b = tip;
+          return true;
+        };
+        // tentatively extend both; roll back to a bridge if either is too far
+        const aSnap: [Pixel, Pixel] = [A.a, A.b];
+        const bSnap: [Pixel, Pixel] = [B.a, B.b];
+        if (extend(A, uA, t) && extend(B, uB, sB)) continue;
+        A.a = aSnap[0]; A.b = aSnap[1];
+        B.a = bSnap[0]; B.b = bSnap[1];
+      } else {
+        // parallel: collinear rows (small lateral offset) meet halfway
+        const lat = Math.abs((B.c[0] - A.c[0]) * -uA[1] + (B.c[1] - A.c[1]) * uA[0]);
+        if (lat < 2) {
+          const dEnds = (p: Pixel, q: Pixel) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+          let ea: 'a' | 'b' = 'a';
+          let eb: 'a' | 'b' = 'a';
+          let best = Infinity;
+          for (const x of ['a', 'b'] as const) {
+            for (const y of ['a', 'b'] as const) {
+              const d = dEnds(A[x], B[y]);
+              if (d < best) { best = d; ea = x; eb = y; }
+            }
+          }
+          if (best <= maxExt * 2) {
+            const mid: Pixel = [(A[ea][0] + B[eb][0]) / 2, (A[ea][1] + B[eb][1]) / 2];
+            A[ea] = mid;
+            B[eb] = mid;
+            continue;
+          }
+        }
+      }
+      // fallback: short bridge between centroids' closest approach
+      joints.push([A.c, B.c]);
     }
     const lineSvg = (p: Pixel, q: Pixel, color: string, w: number, withAttrs: boolean): string =>
       '<line x1="' + p[0].toFixed(1) + '" y1="' + p[1].toFixed(1) +

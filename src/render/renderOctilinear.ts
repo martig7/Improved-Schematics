@@ -694,13 +694,32 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       } else {
         order.sort((p, q) => p.t - q.t);
       }
-      const ts = order.map((o) => o.t);
-      for (let k = 1; k < ts.length; k++) ts[k] = Math.max(ts[k], ts[k - 1] + step);
-      const shift =
-        order.reduce((acc, o) => acc + o.t, 0) / order.length -
-        ts.reduce((acc, t) => acc + t, 0) / ts.length;
+      // Minimal-displacement min-gap (pool adjacent violators): dots stay
+      // EXACTLY at their lane positions unless a gap violation forces a
+      // local pool, and pooled runs center on their own members' mean — no
+      // global recenter drift (the old shift slid whole rows laterally off
+      // their bundles: the 2 St seating bug).
+      const d = order.map((o, k) => o.t - k * step);
+      const blocks: Array<{ sum: number; n: number }> = [];
+      for (const x of d) {
+        blocks.push({ sum: x, n: 1 });
+        while (
+          blocks.length > 1 &&
+          blocks[blocks.length - 2].sum / blocks[blocks.length - 2].n >=
+            blocks[blocks.length - 1].sum / blocks[blocks.length - 1].n
+        ) {
+          const b = blocks.pop()!;
+          blocks[blocks.length - 1].sum += b.sum;
+          blocks[blocks.length - 1].n += b.n;
+        }
+      }
+      const ts: number[] = [];
+      for (const b of blocks) {
+        const mean = b.sum / b.n;
+        for (let k = 0; k < b.n; k++) ts.push(mean + ts.length * step);
+      }
       order.forEach((o, k) => {
-        const t = ts[k] + shift;
+        const t = ts[k];
         const mk = marks[o.i];
         if (collapse) mk.pos = [cx + ux * t, cy + uy * t];
         else {
@@ -724,12 +743,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
         for (let i = 0; i < n; i++) {
           for (let j = i + 1; j < n; j++) {
-            if (bucket[i] !== bucket[j]) continue;
+            // null-dir marks (suppressed lane pieces) chain with any nearby
+            // bucket rather than forming phantom segments of their own
+            if (bucket[i] !== bucket[j] && bucket[i] !== -1 && bucket[j] !== -1) continue;
             const d = Math.hypot(
               s.marks[i].pos[0] - s.marks[j].pos[0],
               s.marks[i].pos[1] - s.marks[j].pos[1],
             );
-            if (d < spacing * 2.5) parent[find(i)] = find(j);
+            // chain reach covers marks separated by PASSING lanes between
+            // their stop lanes (Howard St: 3 and 1 ride the outer lanes of
+            // a 4-lane bundle, ~3 pitches apart) without bridging to a
+            // genuinely separate parallel corridor (>= ~1.5 cells away)
+            if (d < spacing * 4) parent[find(i)] = find(j);
           }
         }
         const groups = new Map<number, number[]>();
@@ -803,12 +828,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
         for (let i = 0; i < n; i++) {
           for (let j = i + 1; j < n; j++) {
-            if (bucket[i] !== bucket[j]) continue;
+            // null-dir marks (suppressed lane pieces) chain with any nearby
+            // bucket rather than forming phantom segments of their own
+            if (bucket[i] !== bucket[j] && bucket[i] !== -1 && bucket[j] !== -1) continue;
             const d = Math.hypot(
               s.marks[i].pos[0] - s.marks[j].pos[0],
               s.marks[i].pos[1] - s.marks[j].pos[1],
             );
-            if (d < spacing * 2.5) parent[find(i)] = find(j);
+            // chain reach covers marks separated by PASSING lanes between
+            // their stop lanes (Howard St: 3 and 1 ride the outer lanes of
+            // a 4-lane bundle, ~3 pitches apart) without bridging to a
+            // genuinely separate parallel corridor (>= ~1.5 cells away)
+            if (d < spacing * 4) parent[find(i)] = find(j);
           }
         }
         const groups = new Map<number, number[]>();
@@ -829,7 +860,10 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // across its vertical bundle). Collapse the joins' longitudinal
           // scatter onto the cross line through the group centroid, then
           // enforce the minimum dot gap along it.
-          const d0 = s.marks[idx[0]].dir;
+          let d0: Pixel | undefined;
+          for (const i of idx) {
+            if (s.marks[i].dir) { d0 = s.marks[i].dir; break; }
+          }
           if (d0) {
             let mx = 0, my = 0;
             for (const i of idx) {
@@ -871,50 +905,113 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             }
           }
         }
-        // Cross-segment dot collisions: two bundles' marks can land on the
-        // same spot at the shared station. Slide the SMALLER segment along
-        // its own lane direction (dots stay on their lines) until every
-        // cross-segment dot pair clears.
-        const rows: Array<{ idx: number[]; dir: Pixel }> = [];
+        // Tip-to-tip elbow solver (user design): the segments' octilinear
+        // axes intersect at the elbow point P; sliding a segment along its
+        // own bundle (dots ride their lanes) moves P, so search a bounded
+        // slide for each newcomer segment that minimizes the tip extension
+        // both segments need to reach P — REJECTING any slide that brings
+        // dots of different segments within a dot diameter. The extension
+        // itself is drawn by renderStops (tips extended to the axes'
+        // intersection); here we only place the segments.
+        const segInfos: Array<{ idx: number[]; u: Pixel; v: Pixel; }> = [];
         for (const idx of groups.values()) {
-          const dir = s.marks[idx[0]].dir ?? [1, 0];
-          rows.push({ idx, dir: [dir[0], dir[1]] });
+          let d0: Pixel | undefined;
+          for (const i of idx) {
+            if (s.marks[i].dir) { d0 = s.marks[i].dir; break; }
+          }
+          let u: Pixel = [1, 0];
+          if (d0) {
+            let mx = 0, my = 0;
+            for (const i of idx) {
+              const d = s.marks[i].dir ?? d0;
+              const sgn = d[0] * d0[0] + d[1] * d0[1] < 0 ? -1 : 1;
+              mx += d[0] * sgn;
+              my += d[1] * sgn;
+            }
+            const snapAng = Math.round(Math.atan2(mx, -my) / (Math.PI / 4)) * (Math.PI / 4);
+            u = [Math.cos(snapAng), Math.sin(snapAng)];
+          }
+          segInfos.push({ idx, u, v: [-u[1], u[0]] });
         }
-        const minD = 2 * r;
-        for (let iter = 0; iter < 12; iter++) {
-          let movedAny = false;
-          for (let gi = 0; gi < rows.length; gi++) {
-            for (let gj = gi + 1; gj < rows.length; gj++) {
-              let dmin = Infinity;
-              for (const i of rows[gi].idx) {
-                for (const j of rows[gj].idx) {
-                  dmin = Math.min(dmin, Math.hypot(
-                    s.marks[i].pos[0] - s.marks[j].pos[0],
-                    s.marks[i].pos[1] - s.marks[j].pos[1],
-                  ));
-                }
-              }
-              if (dmin >= minD - 0.05) continue;
-              const small = rows[gi].idx.length <= rows[gj].idx.length ? rows[gi] : rows[gj];
-              const big = small === rows[gi] ? rows[gj] : rows[gi];
-              const cAt = (g: { idx: number[] }): Pixel => [
-                g.idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / g.idx.length,
-                g.idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / g.idx.length,
-              ];
-              const sc = cAt(small);
-              const bc = cAt(big);
-              const along = (sc[0] - bc[0]) * small.dir[0] + (sc[1] - bc[1]) * small.dir[1];
-              const sign = along >= 0 ? 1 : -1;
-              for (const i of small.idx) {
-                s.marks[i].pos = [
-                  s.marks[i].pos[0] + small.dir[0] * sign * 2,
-                  s.marks[i].pos[1] + small.dir[1] * sign * 2,
-                ];
-              }
-              movedAny = true;
+        const centroidOf = (idx: number[]): Pixel => [
+          idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / idx.length,
+          idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / idx.length,
+        ];
+        const halfLenOf = (idx: number[], c: Pixel, u: Pixel): number => {
+          let h = 0;
+          for (const i of idx) {
+            h = Math.max(h, Math.abs((s.marks[i].pos[0] - c[0]) * u[0] + (s.marks[i].pos[1] - c[1]) * u[1]));
+          }
+          return h;
+        };
+        const dotsClear = (movedSeg: number[], offset: Pixel): boolean => {
+          for (const i of movedSeg) {
+            const px = s.marks[i].pos[0] + offset[0];
+            const py = s.marks[i].pos[1] + offset[1];
+            for (let j = 0; j < s.marks.length; j++) {
+              if (movedSeg.includes(j)) continue;
+              if (Math.hypot(px - s.marks[j].pos[0], py - s.marks[j].pos[1]) < 2 * r - 0.05) return false;
             }
           }
-          if (!movedAny) break;
+          return true;
+        };
+        for (let bI = 1; bI < segInfos.length; bI++) {
+          const B = segInfos[bI];
+          const cB0 = centroidOf(B.idx);
+          let aI = 0;
+          let bestD = Infinity;
+          for (let j = 0; j < bI; j++) {
+            const cj = centroidOf(segInfos[j].idx);
+            const d = Math.hypot(cB0[0] - cj[0], cB0[1] - cj[1]);
+            if (d < bestD) { bestD = d; aI = j; }
+          }
+          const A = segInfos[aI];
+          const cA = centroidOf(A.idx);
+          const halfA = halfLenOf(A.idx, cA, A.u);
+          const denom = A.u[0] * B.u[1] - A.u[1] * B.u[0];
+          const maxSlide = spacing * 1.5;
+          let bestS: number | null = null;
+          let bestScore = Infinity;
+          for (let sl = -maxSlide; sl <= maxSlide + 1e-6; sl += 1) {
+            const off: Pixel = [B.v[0] * sl, B.v[1] * sl];
+            if (!dotsClear(B.idx, off)) continue;
+            const cB: Pixel = [cB0[0] + off[0], cB0[1] + off[1]];
+            let score: number;
+            if (Math.abs(denom) < 0.05) {
+              // parallel axes: minimize the lateral offset so the rows can
+              // join collinearly end-to-end
+              score = Math.abs((cB[0] - cA[0]) * A.v[0] + (cB[1] - cA[1]) * A.v[1]) * 2;
+            } else {
+              const t = ((cB[0] - cA[0]) * B.u[1] - (cB[1] - cA[1]) * B.u[0]) / denom;
+              const px = cA[0] + A.u[0] * t;
+              const py = cA[1] + A.u[1] * t;
+              const halfB = halfLenOf(B.idx, cB0, B.u);
+              const extA = Math.max(0, Math.abs(t) - halfA);
+              const extB = Math.max(
+                0,
+                Math.abs((px - cB[0]) * B.u[0] + (py - cB[1]) * B.u[1]) - halfB,
+              );
+              score = extA + extB;
+            }
+            score += Math.abs(sl) * 0.05;
+            if (score < bestScore - 1e-9) { bestScore = score; bestS = sl; }
+          }
+          if (bestS !== null && Math.abs(bestS) > 1e-9) {
+            for (const i of B.idx) {
+              s.marks[i].pos = [
+                s.marks[i].pos[0] + B.v[0] * bestS,
+                s.marks[i].pos[1] + B.v[1] * bestS,
+              ];
+            }
+          } else if (bestS === null) {
+            // no collision-free slide at all: push apart along the bundle
+            // until dots clear (old fallback)
+            for (let k = 0; k < 16 && !dotsClear(B.idx, [0, 0]); k++) {
+              for (const i of B.idx) {
+                s.marks[i].pos = [s.marks[i].pos[0] + B.v[0] * 2, s.marks[i].pos[1] + B.v[1] * 2];
+              }
+            }
+          }
         }
       }
     }
