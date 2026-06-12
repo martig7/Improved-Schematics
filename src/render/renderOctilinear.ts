@@ -822,28 +822,54 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           for (const i of idx) s.marks[i].seg = segIdx;
           segIdx++;
           if (idx.length < 2) continue;
-          // axis: farthest pair within the group; near-coincident marks
-          // fall back to the group's lane cross-section
-          let ai = idx[0], bi = idx[0], span = 0;
-          for (const i of idx) {
-            for (const j of idx) {
-              const d = Math.hypot(
-                s.marks[i].pos[0] - s.marks[j].pos[0],
-                s.marks[i].pos[1] - s.marks[j].pos[1],
-              );
-              if (d > span) { span = d; ai = i; bi = j; }
+          // The segment axis is the bundle's CROSS-SECTION (perpendicular
+          // to the mean lane direction), never the marks' scatter — the
+          // capsule must sit perpendicular to the route its lines actually
+          // take (user rule: the BADC capsule at 22 St reads horizontal
+          // across its vertical bundle). Collapse the joins' longitudinal
+          // scatter onto the cross line through the group centroid, then
+          // enforce the minimum dot gap along it.
+          const d0 = s.marks[idx[0]].dir;
+          if (d0) {
+            let mx = 0, my = 0;
+            for (const i of idx) {
+              const d = s.marks[i].dir ?? d0;
+              const sgn = d[0] * d0[0] + d[1] * d0[1] < 0 ? -1 : 1;
+              mx += d[0] * sgn;
+              my += d[1] * sgn;
+            }
+            // snap the cross-axis to the octilinear grid (a capsule reads
+            // as exactly horizontal/diagonal/vertical, not approximately)
+            const rawAng = Math.atan2(mx, -my); // angle of the perpendicular
+            const snapAng = Math.round(rawAng / (Math.PI / 4)) * (Math.PI / 4);
+            const ux = Math.cos(snapAng);
+            const uy = Math.sin(snapAng);
+            const cx = idx.reduce((acc, i) => acc + s.marks[i].pos[0], 0) / idx.length;
+            const cy = idx.reduce((acc, i) => acc + s.marks[i].pos[1], 0) / idx.length;
+            for (const i of idx) {
+              const mk = s.marks[i];
+              const t = (mk.pos[0] - cx) * ux + (mk.pos[1] - cy) * uy;
+              mk.pos = [cx + ux * t, cy + uy * t];
+            }
+            respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
+          } else {
+            // no lane direction available: farthest-pair fallback
+            let ai = idx[0], bi = idx[0], span = 0;
+            for (const i of idx) {
+              for (const j of idx) {
+                const d = Math.hypot(
+                  s.marks[i].pos[0] - s.marks[j].pos[0],
+                  s.marks[i].pos[1] - s.marks[j].pos[1],
+                );
+                if (d > span) { span = d; ai = i; bi = j; }
+              }
+            }
+            if (span > 1) {
+              const ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
+              const uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
+              respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
             }
           }
-          let ux: number, uy: number;
-          if (span > 1) {
-            ux = (s.marks[bi].pos[0] - s.marks[ai].pos[0]) / span;
-            uy = (s.marks[bi].pos[1] - s.marks[ai].pos[1]) / span;
-          } else {
-            const dir = s.marks[idx[0]].dir ?? [1, 0];
-            ux = -dir[1];
-            uy = dir[0];
-          }
-          respaceAlong(idx.map((i) => s.marks[i]), ux, uy, 2 * r, false);
         }
         // Cross-segment dot collisions: two bundles' marks can land on the
         // same spot at the shared station. Slide the SMALLER segment along
@@ -936,21 +962,72 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
 
-    // Small-vs-small collisions: a slid pill can land on a neighbouring dot
-    // (Court's 2/4 pill over the W dot east of the Tacoma box). Resolve by
-    // sliding the marker with FEWER marks along its own lanes away from the
-    // other — same machinery as the mega backup; the trial must clear the
-    // other marker AND every mega box.
+    // Small-vs-small collisions: neighbouring stations' markers must not
+    // overlap (user rule). Penetration is measured between the markers'
+    // actual SEGMENT HULLS (per-seg stadium axes + half-widths — bbox tests
+    // miss/false-flag multi-angle capsules); the marker with fewer marks
+    // slides along its own lanes until every hull pair clears.
     {
+      type Hull = Array<{ a: Pixel; b: Pixel; half: number }>;
+      const hullsOf = (marks: StMarks['marks'], posOf?: (i: number) => Pixel): Hull => {
+        const segs = new Map<number, number[]>();
+        marks.forEach((m, i) => {
+          const k = m.seg ?? 0;
+          if (!segs.has(k)) segs.set(k, []);
+          segs.get(k)!.push(i);
+        });
+        const out: Hull = [];
+        for (const idx of segs.values()) {
+          const p = (i: number): Pixel => (posOf ? posOf(i) : marks[i].pos);
+          let sa = p(idx[0]);
+          let sb = p(idx[0]);
+          let span = 0;
+          for (const i of idx) {
+            for (const j of idx) {
+              const d = Math.hypot(p(i)[0] - p(j)[0], p(i)[1] - p(j)[1]);
+              if (d > span) { span = d; sa = p(i); sb = p(j); }
+            }
+          }
+          let lat = 0;
+          if (span > 1e-6) {
+            const nx = -(sb[1] - sa[1]) / span;
+            const ny = (sb[0] - sa[0]) / span;
+            for (const i of idx) {
+              lat = Math.max(lat, Math.abs((p(i)[0] - sa[0]) * nx + (p(i)[1] - sa[1]) * ny));
+            }
+          }
+          out.push({ a: sa, b: sb, half: r + 3 + lat });
+        }
+        return out;
+      };
+      const ptSeg = (px: number, py: number, a: Pixel, b: Pixel): number => {
+        const vx = b[0] - a[0];
+        const vy = b[1] - a[1];
+        const l2 = vx * vx + vy * vy;
+        const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
+        return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+      };
+      const segSegDist = (a1: Pixel, b1: Pixel, a2: Pixel, b2: Pixel): number =>
+        Math.min(
+          ptSeg(a1[0], a1[1], a2, b2), ptSeg(b1[0], b1[1], a2, b2),
+          ptSeg(a2[0], a2[1], a1, b1), ptSeg(b2[0], b2[1], a1, b1),
+        );
+      const penBetween = (A: Hull, B: Hull): number => {
+        let pen = -Infinity;
+        for (const ha of A) {
+          for (const hb of B) {
+            pen = Math.max(pen, ha.half + hb.half - segSegDist(ha.a, ha.b, hb.a, hb.b));
+          }
+        }
+        return pen;
+      };
       const smalls = gathered.filter((s) => s.marks.length > 0 && !boxOf(s).mega);
       for (let ai = 0; ai < smalls.length; ai++) {
         for (let bi = ai + 1; bi < smalls.length; bi++) {
-          const ab = boxOf(smalls[ai]);
-          const bb = boxOf(smalls[bi]);
-          const overlaps = ab.x0 < bb.x1 + 1 && ab.x1 > bb.x0 - 1 && ab.y0 < bb.y1 + 1 && ab.y1 > bb.y0 - 1;
-          if (!overlaps) continue;
+          if (penBetween(hullsOf(smalls[ai].marks), hullsOf(smalls[bi].marks)) <= 0.5) continue;
           const S = smalls[ai].marks.length <= smalls[bi].marks.length ? smalls[ai] : smalls[bi];
           const O = S === smalls[ai] ? smalls[bi] : smalls[ai];
+          const oHull = hullsOf(O.marks);
           const ob = boxOf(O);
           const center: Pixel = [(ob.x0 + ob.x1) / 2, (ob.y0 + ob.y1) / 2];
           for (let d = 4; d <= 32; d += 4) {
@@ -964,7 +1041,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             const pad = r + 3;
             const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
               x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
-            if (!clearOf(ob) || !megas.every((m) => clearOf(boxOf(m)))) continue;
+            const trialHull = hullsOf(S.marks, (i) => moved[i]!.p);
+            if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
             for (let i = 0; i < S.marks.length; i++) {
               const mk = S.marks[i];
               mk.pos = moved[i]!.p;

@@ -156,16 +156,41 @@ export function renderStops(
         c: [(sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2],
       });
     }
-    // joints: chain segments by nearest centroid so the marker is connected
+    // joints: connect each segment to its nearest predecessor at the
+    // CLOSEST POINTS between their stadium axes (centroid joints drew long
+    // arms slashing across bundles); segments whose hulls already touch
+    // need no joint at all
+    const closestOnSeg = (p: Pixel, a: Pixel, b: Pixel): Pixel => {
+      const vx = b[0] - a[0];
+      const vy = b[1] - a[1];
+      const len2 = vx * vx + vy * vy;
+      const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2)) : 0;
+      return [a[0] + vx * t, a[1] + vy * t];
+    };
+    const segClosest = (g1: SegGeom, g2: SegGeom): [Pixel, Pixel, number] => {
+      let best: [Pixel, Pixel, number] = [g1.c, g2.c, Infinity];
+      for (const [p, a, b, flip] of [
+        [g1.a, g2.a, g2.b, true], [g1.b, g2.a, g2.b, true],
+        [g2.a, g1.a, g1.b, false], [g2.b, g1.a, g1.b, false],
+      ] as Array<[Pixel, Pixel, Pixel, boolean]>) {
+        const q = closestOnSeg(p, a, b);
+        const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+        if (d < best[2]) best = flip ? [p, q, d] : [q, p, d];
+      }
+      return best;
+    };
     const joints: Array<[Pixel, Pixel]> = [];
     for (let i = 1; i < segGeoms.length; i++) {
+      let bestPair: [Pixel, Pixel, number] | null = null;
       let bestJ = 0;
-      let bestD = Infinity;
       for (let j = 0; j < i; j++) {
-        const d = Math.hypot(segGeoms[i].c[0] - segGeoms[j].c[0], segGeoms[i].c[1] - segGeoms[j].c[1]);
-        if (d < bestD) { bestD = d; bestJ = j; }
+        const pair = segClosest(segGeoms[i], segGeoms[j]);
+        if (!bestPair || pair[2] < bestPair[2]) { bestPair = pair; bestJ = j; }
       }
-      joints.push([segGeoms[i].c, segGeoms[bestJ].c]);
+      if (!bestPair) continue;
+      // hulls already touch (axis distance < the two half-widths) -> no joint
+      if (bestPair[2] < (segGeoms[i].w + segGeoms[bestJ].w) / 2) continue;
+      joints.push([bestPair[0], bestPair[1]]);
     }
     const lineSvg = (p: Pixel, q: Pixel, color: string, w: number, withAttrs: boolean): string =>
       '<line x1="' + p[0].toFixed(1) + '" y1="' + p[1].toFixed(1) +

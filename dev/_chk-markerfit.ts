@@ -67,3 +67,47 @@ while ((m = re.exec(svg))) {
   }
 }
 console.log(`${checked} capsules checked, ${bad} bad (overflow/stacked)`);
+
+// ---- station-vs-station marker overlap ------------------------------------
+{
+  const svg2 = readFileSync(file, 'utf-8');
+  const re2 = /<g class="imp-stop" data-ax="([\d.-]+)" data-ay="([\d.-]+)">(.*?)<\/g>/g;
+  interface Hull { ax: number; ay: number; lines: Array<{ a: [number, number]; b: [number, number]; half: number }>; dots: Array<{ x: number; y: number; r: number }> }
+  const hulls: Hull[] = [];
+  let mm: RegExpExecArray | null;
+  while ((mm = re2.exec(svg2))) {
+    const inner = mm[3];
+    const lines = [...inner.matchAll(/<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)" stroke="[^"]*" stroke-width="([\d.-]+)"/g)]
+      .map((l) => ({ a: [+l[1], +l[2]] as [number, number], b: [+l[3], +l[4]] as [number, number], half: +l[5] / 2 }));
+    const dots = [...inner.matchAll(/<circle cx="([\d.-]+)" cy="([\d.-]+)" r="([\d.-]+)"/g)]
+      .map((c) => ({ x: +c[1], y: +c[2], r: +c[3] + 0.75 }));
+    hulls.push({ ax: +mm[1], ay: +mm[2], lines, dots });
+  }
+  const segDist = (p1: [number, number], q1: [number, number], p2: [number, number], q2: [number, number]): number => {
+    const ptSeg = (p: [number, number], a: [number, number], b: [number, number]): number => {
+      const vx = b[0] - a[0], vy = b[1] - a[1];
+      const l2 = vx * vx + vy * vy;
+      const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2)) : 0;
+      return Math.hypot(p[0] - (a[0] + vx * t), p[1] - (a[1] + vy * t));
+    };
+    return Math.min(ptSeg(p1, p2, q2), ptSeg(q1, p2, q2), ptSeg(p2, p1, q1), ptSeg(q2, p1, q1));
+  };
+  let overlaps = 0;
+  for (let i = 0; i < hulls.length; i++) {
+    for (let j = i + 1; j < hulls.length; j++) {
+      const A = hulls[i], B = hulls[j];
+      if (Math.abs(A.ax - B.ax) > 80 || Math.abs(A.ay - B.ay) > 80) continue;
+      let pen = 0;
+      for (const la of A.lines.length ? A.lines : A.dots.map((d) => ({ a: [d.x, d.y] as [number, number], b: [d.x, d.y] as [number, number], half: d.r }))) {
+        for (const lb of B.lines.length ? B.lines : B.dots.map((d) => ({ a: [d.x, d.y] as [number, number], b: [d.x, d.y] as [number, number], half: d.r }))) {
+          pen = Math.max(pen, la.half + lb.half - segDist(la.a, la.b, lb.a, lb.b));
+        }
+      }
+      if (pen > 0.5) {
+        overlaps++;
+        console.log(`MARKER OVERLAP ${pen.toFixed(1)}px: (${A.ax},${A.ay}) vs (${B.ax},${B.ay})`);
+      }
+    }
+  }
+  console.log(`${overlaps} station-vs-station marker overlaps`);
+}
