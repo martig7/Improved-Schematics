@@ -44,3 +44,13 @@ test('rdpSimplify collapses near-collinear chains, keeps corners', () => {
   const corner: Pixel[] = [[0, 0], [10, 0], [10, 10]];
   assert.equal(rdpSimplify(corner, 0.75).length, 3);
 });
+
+test('buildLaneCurve degenerate empty incident list returns valid curve', () => {
+  const c = buildLaneCurve([], [3, 7], 24);
+  assert.ok(c.pts.length >= 2);
+  assert.ok(c.cum.length === c.pts.length);
+  assert.ok(isFinite(c.anchorT) && c.anchorT >= 0);
+  const p = curvePoint(c, c.anchorT);
+  // synthetic curve: point is at or very near the anchor
+  assert.ok(Math.hypot(p[0] - 3, p[1] - 7) < 0.01);
+});
