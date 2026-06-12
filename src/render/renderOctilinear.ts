@@ -496,24 +496,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
-    // ALL drawn polylines of a line, map-wide (cached) — distance-to-lane
-    // checks must see every edge: a line continues through a junction on
-    // another edge, and a marker can sit on a NEIGHBOR edge's join curve;
-    // any narrower scope misreads seated dots as floating (and a 40px cap
-    // on use keeps far geometry irrelevant).
-    const lanePolysCache = new Map<string, Pixel[][]>();
-    const lanePolysOf = (lineId: string): Pixel[][] => {
-      let polys = lanePolysCache.get(lineId);
-      if (!polys) {
-        polys = [];
-        const suffix = '|' + lineId;
-        for (const [key, poly] of segPath) {
-          if (key.endsWith(suffix) && poly.length >= 2) polys.push(poly);
-        }
-        lanePolysCache.set(lineId, polys);
-      }
-      return polys;
-    };
     // drawn join-curve geometry per node|line: lane curves must bridge the
     // node ON the drawn quadratic (spec §2.1) — chording the trim gap reads
     // up to half the join sagitta off the ink (dots float in the corner)
@@ -544,6 +526,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           for (const jc of joins) {
             const da = Math.hypot(pts[0][0] - jc.a[0], pts[0][1] - jc.a[1]);
             const db = Math.hypot(pts[0][0] - jc.b[0], pts[0][1] - jc.b[1]);
+            // 0.5px: curveLaneJoin's trim leaves the lane end within float
+            // rounding of jc.a/jc.b — a sub-pixel bound, not a tunable
             if (Math.min(da, db) > 0.5) continue;
             const half: Pixel[] = [];
             for (let k2 = 6; k2 >= 1; k2--) {
