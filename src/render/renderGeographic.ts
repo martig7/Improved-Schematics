@@ -28,6 +28,7 @@ import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
 import { assignEndpointOrders } from './layout/assignEndpointOrders';
+import { countCrossings } from './layout/crossings';
 
 export interface GeoInput {
   routes: Route[];
@@ -611,6 +612,14 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     )
   ) {
     assignEndpointOrders(layout);
+  }
+
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.CHK_CROSSINGS === '1'
+  ) {
+    const r = countCrossings(layout);
+    console.error(`[crossings] onEdges=${r.onEdges} atNodes=${r.atNodes} nonPlanar=${r.nonPlanar}`);
   }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
