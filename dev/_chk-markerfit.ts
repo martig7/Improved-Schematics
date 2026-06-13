@@ -72,7 +72,11 @@ while ((m = re.exec(svg))) {
     bad++;
     console.log(`OVERFLOW ${worst.toFixed(2)}px at (${m[1]},${m[2]}) station=${station} dots=${dots.length}`);
   }
-  // stacked bullets: dot centers closer than ~a dot diameter
+  // stacked bullets: dot centers closer than ~a dot diameter. Mega boxes
+  // (rect markers) legitimately stack dots inside the box — interlined /
+  // pinching lanes with no feasible rigid row (spec v2 §3) — so the box
+  // covers them and stacking is expected; only spine markers are checked.
+  if (rect) continue;
   for (let i = 0; i < dots.length; i++) {
     for (let j = i + 1; j < dots.length; j++) {
       const d = Math.hypot(dots[i].x - dots[j].x, dots[i].y - dots[j].y);

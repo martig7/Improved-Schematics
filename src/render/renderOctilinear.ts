@@ -762,6 +762,69 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
     const megas = gathered.filter((s) => boxOf(s).mega);
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
+    let slideBoxed = 0; // stations a collision-slide bent past octilinearity
+    // When a collision-slide moves a station, its derived corners (spec R1)
+    // move WITH it: a corner is the meeting of two row legs, so the new
+    // corner is the intersection of lines through the SLID boundary dots
+    // along the OLD leg directions (solver axes — octilinear by
+    // construction). Capture leg dirs from the old positions BEFORE the
+    // slide; recompute AFTER. Near-parallel legs degenerate → clear (a
+    // straight row has no corner). Clearing alone is unsound for bent
+    // markers on non-parallel lanes (SEA mn177: the plain chord's off-axis
+    // residual is invariant under the equal-arc slide).
+    type CornerCap = Array<{ mk: StMarks['marks'][number]; next: StMarks['marks'][number]; dirA: Pixel; dirB: Pixel }>;
+    const captureCorners = (marks: StMarks['marks']): CornerCap => {
+      const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
+      const cap: CornerCap = [];
+      for (let k = 0; k + 1 < ordered.length; k++) {
+        const mk = ordered[k];
+        const corner = mk.cornerAfter;
+        if (!corner) continue;
+        const next = ordered[k + 1];
+        const ax = corner[0] - mk.pos[0];
+        const ay = corner[1] - mk.pos[1];
+        const bx = next.pos[0] - corner[0];
+        const by = next.pos[1] - corner[1];
+        const la = Math.hypot(ax, ay) || 1;
+        const lb = Math.hypot(bx, by) || 1;
+        cap.push({ mk, next, dirA: [ax / la, ay / la], dirB: [bx / lb, by / lb] });
+      }
+      return cap;
+    };
+    const applyCorners = (cap: CornerCap) => {
+      for (const { mk, next, dirA, dirB } of cap) {
+        const cross = dirA[0] * dirB[1] - dirA[1] * dirB[0];
+        if (Math.abs(cross) < 0.05) { mk.cornerAfter = undefined; continue; }
+        const wx = next.pos[0] - mk.pos[0];
+        const wy = next.pos[1] - mk.pos[1];
+        const t = (wx * dirB[1] - wy * dirB[0]) / cross;
+        mk.cornerAfter = [mk.pos[0] + dirA[0] * t, mk.pos[1] + dirA[1] * t];
+      }
+    };
+    // Is a slid marker's spine still octilinear? A slide moves each dot along
+    // its OWN lane, so a straight row whose dots ride non-parallel lanes bends
+    // (SEA mn177: a horizontal pair slid into a 62° chord). Corner recompute
+    // only salvages markers that already had a real bend; a broken straight
+    // row has no corner to recover. Such stations fall back to the mega box
+    // (spec v2 §3 — the honest fallback for anything that can't read as a
+    // clean octilinear marker). Matches the octi gate's length-aware bar.
+    const QPI = Math.PI / 4;
+    const spineOctilinear = (marks: StMarks['marks']): boolean => {
+      const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
+      const vs: Pixel[] = [];
+      for (const mk of ordered) { vs.push(mk.pos); if (mk.cornerAfter) vs.push(mk.cornerAfter); }
+      for (let i = 1; i < vs.length; i++) {
+        const dx = vs[i][0] - vs[i - 1][0];
+        const dy = vs[i][1] - vs[i - 1][1];
+        const len = Math.hypot(dx, dy);
+        if (len < 1) continue;
+        const m = ((Math.atan2(dy, dx) % QPI) + QPI) % QPI;
+        const off = Math.min(m, QPI - m);
+        const bar = Math.max((1 * Math.PI) / 180, Math.asin(Math.min(1, 0.85 / len)));
+        if (off > bar) return false;
+      }
+      return true;
+    };
     for (const s of gathered) {
       const sb = boxOf(s);
       if (sb.mega || s.marks.length === 0) continue;
@@ -781,6 +844,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           const pad = r + 3;
           if (x0 - pad >= mb.x1 + 2 || x1 + pad <= mb.x0 - 2 || y0 - pad >= mb.y1 + 2 || y1 + pad <= mb.y0 - 2) {
+            const cap = captureCorners(s.marks); // old leg dirs before the slide
             for (let i = 0; i < s.marks.length; i++) {
               const mk = s.marks[i];
               mk.pos = moved[i]!.p;
@@ -796,6 +860,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
               }
               if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
+            applyCorners(cap); // recompute corners on the slid dots (spec R1)
+            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; }
             slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
@@ -869,6 +935,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
               x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
             const trialHull = hullsOf(S.marks, (i) => moved[i]!.p);
             if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
+            const cap = captureCorners(S.marks); // old leg dirs before the slide
             for (let i = 0; i < S.marks.length; i++) {
               const mk = S.marks[i];
               mk.pos = moved[i]!.p;
@@ -881,12 +948,15 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
               }
               if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
+            applyCorners(cap); // recompute corners on the slid dots (spec R1)
+            if (!spineOctilinear(S.marks)) { for (const mk of S.marks) mk.mega = true; slideBoxed++; }
             slid.push({ nodeId: S.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
         }
       }
     }
+    if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
     if (
       slid.length > 0 &&
       typeof process !== 'undefined' &&
