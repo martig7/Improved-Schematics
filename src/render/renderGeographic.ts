@@ -547,6 +547,13 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   if (Number.isFinite(ndmEnv) && ndmEnv >= 0) {
     octiOpts.penalties = { ...(octiOpts.penalties ?? {}), ndMovePen: ndmEnv };
   }
+  // Length preservation: penalize a drawn corridor whose endpoint chord
+  // undershoots its warped geographic chord, so octi keeps the density warp's
+  // spacing where it would otherwise compress it out (St Lukes/Watts/Howard
+  // piled together). Unlike ndMovePen it preserves spacing without pinning
+  // absolute positions, giving the user-preferred more-vertical layout.
+  // Weight 8 (spacing benefit saturates ≥1). OCTI_LENPRES=<n> overrides.
+  octiOpts.lenPresW = 8;
   const imageRaw = octi(support, octiOpts);
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support

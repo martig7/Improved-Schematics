@@ -39,6 +39,11 @@ export interface OctiOptions {
   locSearchTimeBudgetMs?: number;
   /** Grid penalty overrides. */
   penalties?: Partial<Penalties>;
+  /** Length-preservation weight: penalize a drawn corridor whose endpoint chord
+   *  undershoots its warped geographic chord (preserves spacing where octi
+   *  would otherwise compress the density warp's dilation). 0 = off. Overridden
+   *  by the OCTI_LENPRES env for sweeps. */
+  lenPresW?: number;
   /** DIAGNOSTIC ONLY (default true). When explicitly false, skip the
    *  degree-2 collapse (combineDeg2) and route the planarized support graph
    *  directly, so EVERY station node is placed by the octilinearizer itself
@@ -574,6 +579,13 @@ interface CombCtx {
   childCount: (ceId: string) => number;
   maxGrDist: number;
   geoW: number;
+  /** Length-preservation weight (0 = off). Penalizes a drawn corridor whose
+   *  endpoint chord undershoots its warped geographic chord — preserves spacing
+   *  without forcing angles (the user-preferred fix for octi compressing the
+   *  density warp; ndMovePen tethered positions and forced angles instead). */
+  lenPresW: number;
+  /** warped geographic endpoint chord (spacing target) of a support edge. */
+  geoLenOf: (ce: SupportEdge) => number;
   /** per support edge: decimated course + per-grid-edge penalty cache. */
   geoPenFor: (ce: SupportEdge, grid: OctiGridGraph) => ((e: number) => number) | undefined;
 }
@@ -625,6 +637,20 @@ function buildCombCtx(
   }
 
   const geoW = opts.geographicAffinity ?? 0;
+  const lenEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_LENPRES)
+      : NaN;
+  const lenPresW = Number.isFinite(lenEnv) ? lenEnv : (opts.lenPresW ?? 0);
+  const chordCache = new Map<string, number>();
+  const geoLenOf = (ce: SupportEdge): number => {
+    let v = chordCache.get(ce.id);
+    if (v === undefined) {
+      v = dist(ce.points[0], ce.points[ce.points.length - 1]);
+      chordCache.set(ce.id, v);
+    }
+    return v;
+  };
   const courses = new Map<string, Pixel[]>();
   const penCaches = new Map<string, Map<number, number>>();
 
@@ -677,6 +703,8 @@ function buildCombCtx(
     childCount: (ceId) => info.chains.get(ceId)?.edges.length ?? 1,
     maxGrDist: opts.maxGrDist ?? 3,
     geoW,
+    lenPresW,
+    geoLenOf,
     geoPenFor: (ce, g) => {
       if (!geoW) return undefined;
       let cache = penCaches.get(ce.id);
@@ -733,6 +761,7 @@ class Drawing {
   ndBndCosts = new Map<string, number>();
   edgCosts = new Map<string, number>();
   springCosts = new Map<string, number>();
+  lengthCosts = new Map<string, number>();
   vios = new Map<string, number>();
   violations = 0;
   c = Infinity;
@@ -750,6 +779,7 @@ class Drawing {
     d.ndBndCosts = new Map(this.ndBndCosts);
     d.edgCosts = new Map(this.edgCosts);
     d.springCosts = new Map(this.springCosts);
+    d.lengthCosts = new Map(this.lengthCosts);
     d.vios = new Map(this.vios);
     d.violations = this.violations;
     d.c = this.c;
@@ -765,6 +795,8 @@ class Drawing {
     toBase: number,
     grid: OctiGridGraph,
     childs: number,
+    geoChord = 0,
+    lenPresW = 0,
   ): void {
     if (this.c === Infinity) this.c = 0;
 
@@ -812,6 +844,23 @@ class Drawing {
     }
     this.springCosts.set(ce.id, spring);
     this.c += spring;
+
+    // length preservation: penalize a corridor whose drawn endpoint chord
+    // undershoots its warped geographic chord — keeps spacing without forcing
+    // angles. Endpoint-distance based, so straightening a bow is NOT penalized
+    // (only genuine compression). The local search pulls compressed corridors
+    // back open (St Lukes/Watts/Howard) while leaving junction angles free.
+    let lenPen = 0;
+    if (lenPresW > 0 && geoChord > 0) {
+      const drawnChord = dist(grid.basePos(fromBase), grid.basePos(toBase));
+      const short = geoChord - drawnChord;
+      if (short > 0) {
+        const s = short / grid.cellSize;
+        lenPen = lenPresW * s * s;
+      }
+    }
+    this.lengthCosts.set(ce.id, lenPen);
+    this.c += lenPen;
   }
 
   private attribute(nd: string, ec: number): void {
@@ -831,6 +880,8 @@ class Drawing {
     this.edgCosts.delete(ce.id);
     this.c -= this.springCosts.get(ce.id) ?? 0;
     this.springCosts.delete(ce.id);
+    this.c -= this.lengthCosts.get(ce.id) ?? 0;
+    this.lengthCosts.delete(ce.id);
 
     this.c -= this.ndBndCosts.get(ce.from) ?? 0;
     this.c -= this.ndBndCosts.get(ce.to) ?? 0;
@@ -1156,7 +1207,7 @@ function drawOrder(
     res.costs[0] -= costOffsetFrom;
     res.costs[res.costs.length - 1] -= costOffsetTo;
 
-    drawing.draw(ce, rev, res.edges, res.costs, res.fromBase, res.toBase, grid, ctx.childCount(ce.id));
+    drawing.draw(ce, rev, res.edges, res.costs, res.fromBase, res.toBase, grid, ctx.childCount(ce.id), ctx.geoLenOf(ce), ctx.lenPresW);
 
     for (const b of toCands) grid.closeSinkTo(b);
     for (const b of frCands) grid.closeSinkFr(b);
