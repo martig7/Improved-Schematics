@@ -38,6 +38,20 @@ test('curveTangent is unit and follows the polyline', () => {
   assert.ok(Math.abs(Math.abs(tg[1]) - 1) < 1e-6 && Math.abs(tg[0]) < 1e-6);
 });
 
+test('curveTangent skips a degenerate sub-pixel micro-segment', () => {
+  // a vertical lane with an 8e-6 px horizontal jog at the anchored vertex —
+  // join-bridge/clip noise that must NOT read as a horizontal tangent (this
+  // was boxing Central Park: the noise tangent corrupted group ordering)
+  const c = {
+    pts: [[10, 0], [10, 8], [10.000008, 8], [10, 16]] as Pixel[],
+    cum: [0, 8, 8.000008, 16.000008],
+    anchorT: 8,
+  };
+  const tg = curveTangent(c, c.anchorT);
+  assert.ok(Math.abs(tg[0]) < 0.01 && Math.abs(Math.abs(tg[1]) - 1) < 0.01,
+    `tangent should be vertical, got ${tg}`);
+});
+
 test('rdpSimplify collapses near-collinear chains, keeps corners', () => {
   const wiggle: Pixel[] = [[0, 0], [5, 0.3], [10, -0.2], [15, 0.1], [20, 0]];
   assert.equal(rdpSimplify(wiggle, 0.75).length, 2);

@@ -50,8 +50,18 @@ export const curveTangent = (c: LaneCurve, t: number): Pixel => {
     if (c.cum[mid] <= tt) lo = mid;
     else hi = mid;
   }
-  const dx = c.pts[hi][0] - c.pts[lo][0];
-  const dy = c.pts[hi][1] - c.pts[lo][1];
+  // Expand past degenerate near-coincident vertices: join-curve bridging and
+  // arc clipping can leave sub-pixel micro-segments (e.g. a 8e-6 px jog at a
+  // seam) whose normalized direction is pure noise — a vertical lane then
+  // reads as horizontal, corrupting octilinear snaps and group ordering.
+  let dx = c.pts[hi][0] - c.pts[lo][0];
+  let dy = c.pts[hi][1] - c.pts[lo][1];
+  while (Math.hypot(dx, dy) < 0.5 && (lo > 0 || hi < c.pts.length - 1)) {
+    if (lo > 0) lo--;
+    if (hi < c.pts.length - 1) hi++;
+    dx = c.pts[hi][0] - c.pts[lo][0];
+    dy = c.pts[hi][1] - c.pts[lo][1];
+  }
   const len = Math.hypot(dx, dy) || 1;
   return [dx / len, dy / len];
 };
