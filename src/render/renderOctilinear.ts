@@ -7,9 +7,11 @@ import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
-import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
+import { curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows } from './layout/rowPlace';
+import { buildEdgeLanes } from './layout/laneSwaps';
+import { edgeEndpointOrders } from './layout/edgeOrders';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -286,17 +288,19 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);
     if (base.length < 2) continue;
-    const order = orderOf.get(edge.id) ?? [];
+    const drawn = orderOf.get(edge.id) ?? []; // lineOrder filtered to drawn lines
+    if (drawn.length === 0) continue;
+    const drawnSet = new Set(drawn);
+    // Endpoint orders filtered to the SAME drawn set (a line draws on an edge or
+    // not, independent of endpoint), preserving each end's relative order. When
+    // orderFrom/orderTo are unset both equal `drawn`, so buildEdgeLanes takes its
+    // identity fast-path and the geometry is byte-identical to the legacy model.
+    const { from, to } = edgeEndpointOrders(edge);
+    const fromDrawn = from.filter((l) => drawnSet.has(l));
+    const toDrawn = to.filter((l) => drawnSet.has(l));
     const bias = biasOf.get(edge.id) ?? 0;
-    for (let i = 0; i < order.length; i++) {
-      const lineId = order[i];
-      const o = (slotOf.get(edge.id + '|' + lineId) ?? 0) + bias;
-      const poly =
-        Math.abs(o) < 1e-9
-          ? base.map((p) => p.slice() as Pixel)
-          : offsetPolyline(base, o, /*simplify*/ false);
-      segPath.set(edge.id + '|' + lineId, poly);
-    }
+    const lanes = buildEdgeLanes(base, fromDrawn, toDrawn, spacing, bias);
+    for (const [lineId, poly] of lanes) segPath.set(edge.id + '|' + lineId, poly);
   }
 
   // Jog-dominated sliver suppression: merge can leave a line a tiny edge
