@@ -991,6 +991,49 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
 
+    // Terminus trim: a line that ENDS at this station has exactly one drawn
+    // incident lane, and its ribbon runs all the way to the NODE — but the
+    // rigid-row solve (and the collision slides) move the marker DOT off the
+    // node along that lane, so the terminating ink pokes straight THROUGH the
+    // capsule and out the far side (320 Pl's Y on Seattle). Trim the node-end
+    // of the lane back to the dot so the ink stops at its stop.
+    const arcToPoint = (pts: Pixel[], target: Pixel): number => {
+      let acc = 0;
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const ax = pts[i - 1][0];
+        const ay = pts[i - 1][1];
+        const vx = pts[i][0] - ax;
+        const vy = pts[i][1] - ay;
+        const L2 = vx * vx + vy * vy;
+        const seg = Math.sqrt(L2);
+        const t = L2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((target[0] - ax) * vx + (target[1] - ay) * vy) / L2));
+        const d = Math.hypot(target[0] - (ax + vx * t), target[1] - (ay + vy * t));
+        if (d < bestD) { bestD = d; best = acc + seg * t; }
+        acc += seg;
+      }
+      return best;
+    };
+    for (const s of gathered) {
+      for (const mk of s.marks) {
+        if (mk.mega) continue; // box covers everything
+        let incEdge: string | null = null;
+        let nInc = 0;
+        for (const e of layout.edges) {
+          if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+          if (segPath.has(e.id + '|' + mk.lineId)) { nInc++; incEdge = e.id; }
+        }
+        if (nInc !== 1 || !incEdge) continue; // terminus = one drawn incident lane
+        const poly = segPath.get(incEdge + '|' + mk.lineId);
+        const edge = edgeById.get(incEdge);
+        if (!poly || !edge || poly.length < 2) continue;
+        const pts = edge.from === mk.flagNode ? poly : [...poly].reverse();
+        const d = arcToPoint(pts, mk.pos);
+        if (d > r + 2) trimLaneAt(incEdge, mk.lineId, mk.flagNode, d);
+      }
+    }
+
     for (const s of gathered) {
       for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega);
     }
