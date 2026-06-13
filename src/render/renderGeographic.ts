@@ -519,6 +519,34 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   if (Number.isFinite(affEnv) && affEnv > 0) {
     octiOpts.geographicAffinity = affEnv;
   }
+  // (dev override: OCTI_DENSITY=<n> for sweeps — the chain spring weight that
+  // resists drawing a deg-2 station chain on fewer grid hops than it has
+  // stations. Default 0.5; higher resists vertical corridor compression but
+  // risks switchback zigzags.)
+  const denEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_DENSITY)
+      : NaN;
+  if (Number.isFinite(denEnv) && denEnv >= 0) {
+    octiOpts.penalties = { ...(octiOpts.penalties ?? {}), densityPen: denEnv };
+  }
+  // Node-displacement penalty: tether each placed node to its true (warped)
+  // position. The LOOM default 0.5 lets octi compress the density warp's
+  // vertical dilation back out — it minimizes path length/bends with almost
+  // nothing tying nodes to geography, so multi-bundle corridors get crushed
+  // and stations pile up (St Lukes/Watts/Howard). 3 preserves the warp's
+  // spread (Watts<->Howard gap 2px->27px, true 32) and de-collides markers
+  // map-wide (NYC station-vs-station overlaps 7->0) at zero octi violations
+  // and no Seattle ring regression; the spacing benefit saturates at 3.
+  // (dev override: OCTI_NDMOVE=<n>.)
+  octiOpts.penalties = { ...(octiOpts.penalties ?? {}), ndMovePen: 3 };
+  const ndmEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_NDMOVE)
+      : NaN;
+  if (Number.isFinite(ndmEnv) && ndmEnv >= 0) {
+    octiOpts.penalties.ndMovePen = ndmEnv;
+  }
   const imageRaw = octi(support, octiOpts);
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
