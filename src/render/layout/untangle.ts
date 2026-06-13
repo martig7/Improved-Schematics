@@ -535,6 +535,55 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     nodeScore(oe.from, cfg) + nodeScore(oe.to, cfg) +
     pens.colorFragPen * colorFrag(cfg.get(oe.id)!);
 
+  // ---- destination-grouped seed (consistent propagation) --------------------
+  // Phase-0 finding: untangle's objective is FINE with a destination-grouped
+  // order (lines that exit together stay a contiguous block, so families read
+  // clean at the marker), it just never REACHES it from the barycenter/color
+  // seeds. A grouped seed that is CONSISTENT across edges (shared lines in the
+  // same relative order on neighbours) survives untangle; an independent
+  // per-edge grouping does not (it manufactures join crossings). So: BFS the opt
+  // graph from the widest edge, group each edge's lines by their (from-exit,
+  // to-exit) destination key, and order every neighbour to MATCH already-seeded
+  // edges on the lines they share. Off unless OCTI_GROUP_SEED=1.
+  const exitAtMemo = new Map<string, number>();
+  const exitAt = (oe: OptEdge, nd: string, line: string): number => {
+    const key = oe.id + '|' + nd + '|' + line;
+    const m = exitAtMemo.get(key);
+    if (m !== undefined) return m;
+    let res = -1; // terminates / stops here
+    for (const eb of optAdj.get(nd) ?? []) {
+      if (eb === oe) continue;
+      if (connOccurs(line, nd, oe, eb)) { res = eb.id; break; }
+    }
+    exitAtMemo.set(key, res);
+    return res;
+  };
+  const groupSeedEnabled =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_GROUP_SEED === '1';
+  const optById = new Map(optEdges.map((e) => [e.id, e]));
+  /** Destination-grouped order of edge `e`'s lines, read at node `S`: lines that
+   *  exit `e` to the same neighbour at `S` form one contiguous group; groups are
+   *  ordered by that neighbour's departure angle at `S`; within a group, lines
+   *  are sub-ordered by their exit at `e`'s FAR end (recursive grouping). Used as
+   *  a LOCAL seed for one station's incident edges (mutually consistent at S). */
+  const groupedAtStation = (e: OptEdge, S: string): string[] => {
+    const far = e.from === S ? e.to : e.from;
+    const angAt = (exitEid: number, nd: string): number => {
+      const ne = optById.get(exitEid);
+      return ne ? angleAt(ne, nd) : Number.POSITIVE_INFINITY; // terminators last
+    };
+    return [...e.lines].sort((a, b) => {
+      const ga = exitAt(e, S, a);
+      const gb = exitAt(e, S, b);
+      if (ga !== gb) return angAt(ga, S) - angAt(gb, S);
+      const fa = exitAt(e, far, a);
+      const fb = exitAt(e, far, b);
+      if (fa !== fb) return angAt(fa, far) - angAt(fb, far);
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  };
+
   // ---- initial config from current lineOrder ---------------------------------
   const cfg: Cfg = new Map();
   for (const oe of optEdges) {
@@ -768,6 +817,38 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       const scoreB = compScore();
       const keptFamilyBasin = scoreB <= scoreA;
       if (!keptFamilyBasin) for (const [id, ord] of snapA) cfg.set(id, ord);
+      // Local per-station grouped seed (Phase-0 fix): untangle's objective is
+      // fine with a destination-grouped order, it just never reaches one. A
+      // GLOBAL grouped seed fails (a globally-consistent grouping is the hard
+      // line-bundling problem), but a LOCAL one — re-group only ONE station's
+      // incident edges, consistently with each other, leave the rest at the A/B
+      // result — survives (forced-seed test). So greedily try each station: seed
+      // its incident multi-edges grouped (widest edge grouped at the station, the
+      // others inherit its order on shared lines), climb, keep only if the whole
+      // component improves.
+      if (groupSeedEnabled) {
+        const stations = [...compNodes].filter((n) => isStation(n)).sort();
+        for (const S of stations) {
+          const inc = (optAdj.get(S) ?? []).filter((e) => e.lines.length > 1 && multi.includes(e));
+          if (inc.length === 0) continue;
+          const snap = new Map(multi.map((oe) => [oe.id, cfg.get(oe.id)!.slice()]));
+          const before = compScore();
+          const root = [...inc].sort((a, b) => b.lines.length - a.lines.length || a.id - b.id)[0];
+          const rootOrder = groupedAtStation(root, S);
+          cfg.set(root.id, rootOrder);
+          const rootPos = new Map(rootOrder.map((l, i) => [l, i]));
+          for (const e of inc) {
+            if (e === root) continue;
+            const shared = e.lines.filter((l) => rootPos.has(l) && connOccurs(l, S, e, root));
+            shared.sort((a, b) => rootPos.get(a)! - rootPos.get(b)!);
+            const sharedSet = new Set(shared);
+            const fresh = groupedAtStation(e, S).filter((l) => !sharedSet.has(l));
+            cfg.set(e.id, [...shared, ...fresh]);
+          }
+          hillClimb();
+          if (compScore() > before) for (const [id, ord] of snap) cfg.set(id, ord);
+        }
+      }
       if (DBG) {
         const lbls = [...compNodes].map((n) => layout.nodes.get(n)?.label).filter(Boolean);
         let f = 0;
