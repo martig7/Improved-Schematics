@@ -57,10 +57,26 @@ export function planSwaps(orderFrom: string[], orderTo: string[], base: Pixel[])
     if (done) break;
   }
   if (swaps.length === 0) return [];
-  const total = arcLengths(base)[base.length - 1];
-  // Even interior spacing in swap order; the first crossing nearest the from
-  // end, the last nearest the to end.
-  return swaps.map((s, k) => ({ lo: s.lo, arc: (total * (k + 1)) / (swaps.length + 1) }));
+  const cum = arcLengths(base);
+  const total = cum[cum.length - 1];
+  // Interior bend vertices are the strongest swap anchors (the turn absorbs the
+  // crossing). Rank candidate arc positions: interior vertices first (sharpest
+  // turn wins), then evenly spaced fallbacks for any extra swaps. Assign the
+  // chosen arcs to swaps in spatial (ascending) order so the per-line slot
+  // timeline in buildEdgeLanes stays monotone along the edge.
+  const bends: { arc: number; sharp: number }[] = [];
+  for (let i = 1; i < base.length - 1; i++) {
+    const a = base[i - 1], v = base[i], b = base[i + 1];
+    const l1 = Math.hypot(v[0] - a[0], v[1] - a[1]) || 1;
+    const l2 = Math.hypot(b[0] - v[0], b[1] - v[1]) || 1;
+    const dot = ((v[0] - a[0]) * (b[0] - v[0]) + (v[1] - a[1]) * (b[1] - v[1])) / (l1 * l2);
+    bends.push({ arc: cum[i], sharp: 1 - dot }); // sharp in [0,2]
+  }
+  bends.sort((p, q) => q.sharp - p.sharp || p.arc - q.arc);
+  const candidates: number[] = bends.map((b) => b.arc);
+  for (let k = 1; k <= swaps.length; k++) candidates.push((total * k) / (swaps.length + 1));
+  const chosen = candidates.slice(0, swaps.length).sort((a, b) => a - b);
+  return swaps.map((s, k) => ({ lo: s.lo, arc: chosen[k] }));
 }
 
 /** Whether the swap at arc `s.arc` exchanges this line, given its timeline. */

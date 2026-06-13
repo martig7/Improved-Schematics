@@ -74,3 +74,19 @@ test('buildEdgeLanes: swapping lanes never share a collinear segment (overdraw-s
     }
   }
 });
+
+test('planSwaps: a single swap on a bent edge lands at the interior bend vertex', () => {
+  // Base bends at arc 30 (vertex [30,0]); total length 80 so the even-spacing
+  // midpoint would be 40 — the swap must prefer the bend (30), not 40.
+  const base: Pixel[] = [[0, 0], [30, 0], [30, 50]];
+  const swaps = planSwaps(['A', 'B'], ['B', 'A'], base);
+  assert.equal(swaps.length, 1);
+  assert.ok(Math.abs(swaps[0].arc - 30) < 1e-6, `swap at the bend (arc 30), got ${swaps[0].arc}`);
+});
+
+test('planSwaps: straight edge with no bend spaces swaps in the interior', () => {
+  const base: Pixel[] = [[0, 0], [120, 0]];
+  const swaps = planSwaps(['A', 'B', 'C'], ['C', 'B', 'A'], base); // 3 inversions
+  assert.equal(swaps.length, 3);
+  for (const s of swaps) assert.ok(s.arc > 0 && s.arc < 120, 'interior');
+});
