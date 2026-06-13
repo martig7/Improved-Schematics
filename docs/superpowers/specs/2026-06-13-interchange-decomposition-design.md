@@ -32,6 +32,14 @@ Invariants (the diagram, made structural):
 
 Each internal edge carries ONE order and hosts ONE operation, so the single-order model is *sufficient per sub-edge* — the wall is gone because the order changes *between* sub-nodes, not within one.
 
+### 2.0 Why untangle cooperates (the load-bearing mechanism)
+
+The decomposition does not merely *permit* a clean band — it *motivates* untangle to produce one, by changing where the braid's crossing is counted:
+
+- **Make the braid expensive.** The split-node where a band peels a group **is the station**. So a braided arrival (group not contiguous) forces a crossing *at the station* = `inStatCrossPen` (high). Today the same braid costs only cheap non-station crossings at the trunk's neighbors (mn59/mn152 at Flatbush), which is exactly why untangle never fixes it — decomposition removes that loophole.
+- **Provide a cheap place to absorb it.** The reorder-node on the approach is a **non-station** node, so the relocated crossing there is cheap (`sameSegCrossPen`, and corner-discounted if it sits at a bend). untangle then *prefers* to reorder on the approach over braiding at the station.
+- **Contraction exemption (required).** untangle contracts deg-2 same-line-set runs into one opt edge with one order. A reorder-node is deg-2 with the same line set on both sides, so it would be contracted away and the reorder could not happen. Reorder-nodes must therefore be flagged **contraction-exempt** (a forced opt-edge boundary) — a small, local change to the opt-graph build (`sameLineSet`/run-growth check skips flagged nodes). The crossing between its two opt edges is then scored normally (cheap, non-station), which is precisely the incentive above. This is the single most important thing Phase 0 must verify.
+
 ### 2.1 Flatbush, worked
 
 Today (one node mn147, braided trunk `[6,5,Y,8,9,7,Z]`):
@@ -84,7 +92,7 @@ No new marker math — the chain is just more sub-nodes for the existing capsule
 
 ## 7. Verification & phasing
 
-- **Phase 0 — feasibility probe (no ship):** hand-build the Flatbush decomposition in a dev probe (`dev/_probe-flat.ts` already loads the graph), render it, confirm it produces the clean band + spanning capsule. Decisive go/no-go before investing.
+- **Phase 0 — feasibility probe (no ship):** hand-build the Flatbush decomposition in a dev probe (`dev/_probe-flat.ts` already loads the graph): split mn147 into split-node(s), insert a contraction-exempt reorder-node on the NW trunk, re-home edges/traversals/stops, run untangle, and confirm **untangle relocates the green braid to the reorder-node — yielding a clean station band** (the §2.0 mechanism). Then render and confirm the clean band + spanning capsule. The contraction-exemption + cheap-reorder-vs-expensive-station-braid incentive is the decisive thing to prove; if untangle does NOT move the crossing, the mechanism is wrong and we stop before investing. Go/no-go gate.
 - **Phase 1 — decomposition pass (split-nodes only):** decompose nested splits (no reorder-nodes yet); stations that only need a clean split (not a reorder) clean up. Gates + crops.
 - **Phase 2 — reorder-nodes:** stage within-band reorders on approaches; the dense fans (Flatbush, 3 St) clean up. Placement rule tuning.
 - **Phase 3 — capsule spanning + residual box + ship:** marker spans chains; un-decomposable nodes box; full sweep; ship.
