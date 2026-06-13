@@ -150,12 +150,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   // corner to the available segment length.
   const SMOOTH_R = LINE_WIDTH * 5;
   const FILLET_R = SMOOTH_R;
-  // OCTI_SPREAD=1: spread a large band-on-band exchange (whole bundle reorders
-  // at one straight node) into a gradual drift instead of a ~90° S chord. Off
-  // by default (baseline byte-identical). See the join pass below.
-  const SPREAD_EXCHANGE =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_SPREAD === '1';
   const fmt = (p: Pixel) => p[0].toFixed(1) + ',' + p[1].toFixed(1);
   const pushSeg = (lineId: string, poly: Pixel[]) => {
     let d = dByLine.get(lineId);
@@ -434,19 +428,17 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const taperA = Math.min(spacing * 8, polyLenOf(pA) * 0.45);
       const taperB = Math.min(spacing * 8, polyLenOf(pB) * 0.45);
       if (taperA < gap || taperB < gap) {
-        // Baseline: not enough room for a gentle taper → keep the S connector.
-        // OCTI_SPREAD: a big band-on-band exchange — the WHOLE bundle reorders
-        // at one straight node (Flatbush mn59: grays/greens swap sides) — would
-        // otherwise draw as a steep ~90° perpendicular S chord (lon≈0 at the
-        // node, so the connector cubic collapses to a lateral chord). Spread it
-        // anyway over the available edge length: both lane ends drift to the
-        // shared midpoint, so the band-cross becomes a long shallow X instead
-        // of a right-angle jog. Requires real room on both edges (≥1.5 slots)
-        // so we never tilt a near-zero stub. Scoped by construction to nodes
-        // where the lineOrder changes between incident edges (a bundle
-        // exchange) — plain corridor turns keep their order and never reach
-        // this lateral-jog branch.
-        if (!SPREAD_EXCHANGE || taperA < spacing * 1.5 || taperB < spacing * 1.5) continue;
+        // A big band-on-band exchange — the WHOLE bundle reorders at one straight
+        // node (Flatbush mn59: grays/greens swap sides) — would otherwise draw as
+        // a steep ~90° perpendicular S chord (lon≈0 at the node collapses the
+        // connector cubic to a lateral chord). Spread it over the available edge
+        // length instead: both lane ends drift to the shared midpoint, so the
+        // band-cross becomes a long shallow X. Keep the S connector only when an
+        // edge is too short (<1.5 slots) to tilt without a near-zero stub.
+        // Scoped by construction to nodes where the lineOrder changes between
+        // incident edges (a bundle exchange) — plain corridor turns keep their
+        // order and never reach this lateral-jog branch.
+        if (taperA < spacing * 1.5 || taperB < spacing * 1.5) continue;
       }
       const mid: Pixel = [(qa[0] + qb[0]) / 2, (qa[1] + qb[1]) / 2];
       taperLaneEnd(pA, aAtStart, mid, taperA);

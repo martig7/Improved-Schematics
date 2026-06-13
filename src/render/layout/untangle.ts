@@ -544,7 +544,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   // per-edge grouping does not (it manufactures join crossings). So: BFS the opt
   // graph from the widest edge, group each edge's lines by their (from-exit,
   // to-exit) destination key, and order every neighbour to MATCH already-seeded
-  // edges on the lines they share. Off unless OCTI_GROUP_SEED=1.
+  // edges on the lines they share. Runs unconditionally as a local seed basin.
   const exitAtMemo = new Map<string, number>();
   const exitAt = (oe: OptEdge, nd: string, line: string): number => {
     const key = oe.id + '|' + nd + '|' + line;
@@ -558,9 +558,6 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     exitAtMemo.set(key, res);
     return res;
   };
-  const groupSeedEnabled =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_GROUP_SEED === '1';
   const optById = new Map(optEdges.map((e) => [e.id, e]));
   /** Destination-grouped order of edge `e`'s lines, read at node `S`: lines that
    *  exit `e` to the same neighbour at `S` form one contiguous group; groups are
@@ -826,7 +823,12 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       // its incident multi-edges grouped (widest edge grouped at the station, the
       // others inherit its order on shared lines), climb, keep only if the whole
       // component improves.
-      if (groupSeedEnabled) {
+      // Destination-grouped local seed basin: for each station in the component,
+      // seed its incident multi-edges with a mutually-consistent grouped order,
+      // hill-climb, and keep only if compScore improves (snapshot/revert). This
+      // is what reaches a clean destination-banded marker the barycenter/family
+      // basins never find (Flatbush greens/grays contiguous, 9 between).
+      {
         const stations = [...compNodes].filter((n) => isStation(n)).sort();
         for (const S of stations) {
           const inc = (optAdj.get(S) ?? []).filter((e) => e.lines.length > 1 && multi.includes(e));
