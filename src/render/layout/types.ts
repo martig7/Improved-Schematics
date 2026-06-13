@@ -70,6 +70,11 @@ export interface LayoutEdge {
   path: Cell[]; // octilinear grid path
   lines: LineRef[];
   lineOrder: string[]; // ordered line ids (mutated by orderLines)
+  /** Per-segment line ordering (spec 2026-06-13): lateral order at the `from`
+   *  endpoint. Undefined means "same as lineOrder" (no internal crossings). */
+  orderFrom?: string[];
+  /** Lateral order at the `to` endpoint. Undefined means "same as lineOrder". */
+  orderTo?: string[];
   stops: Map<string, EdgeStop>;
 }
 
@@ -78,6 +83,9 @@ export interface Layout {
   nodes: Map<string, LayoutNode>;
   edges: LayoutEdge[];
   lineTraversals: Map<string, TraversalStep[]>;
+  /** Nodes the planarity pass could not make crossing-free; rendered as the
+   *  mega box (spec 2026-06-13 §5). Populated by assignEndpointOrders. */
+  nonPlanarNodes?: Set<string>;
 }
 
 /** Walk result element from walkRouteVisits. */
