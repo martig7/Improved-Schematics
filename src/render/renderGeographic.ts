@@ -27,8 +27,6 @@ import {
 import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
-import { assignEndpointOrders } from './layout/assignEndpointOrders';
-import { countCrossings } from './layout/crossings';
 
 export interface GeoInput {
   routes: Route[];
@@ -601,25 +599,6 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
     )
   ) {
     untangleLineOrder(layout);
-  }
-
-  // Per-segment line ordering (spec 2026-06-13): turn the single per-edge order
-  // into planar endpoint orders so crossings move from stations onto bends.
-  if (
-    !(
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_NO_ENDPOINTS === '1'
-    )
-  ) {
-    assignEndpointOrders(layout);
-  }
-
-  if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.CHK_CROSSINGS === '1'
-  ) {
-    const r = countCrossings(layout);
-    console.error(`[crossings] onEdges=${r.onEdges} atNodes=${r.atNodes} nonPlanar=${r.nonPlanar}`);
   }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
