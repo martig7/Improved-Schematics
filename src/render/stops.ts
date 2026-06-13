@@ -103,11 +103,16 @@ export function renderStops(
       const minSide = 2 * r + 3;
       if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
       if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
+      // No internal bullet circles: a boxed station is a genuine crossing where
+      // the stops converge at the crossing point, so the per-line dots overlap
+      // into an unreadable cluster (user: "leave them as boxes but remove the
+      // station circles"). The box alone marks the interchange; the crossing
+      // lines read through it.
       out.push(wrap((x0 + x1) / 2, (y0 + y1) / 2,
         '<rect x="' + x0.toFixed(1) + '" y="' + y0.toFixed(1) +
         '" width="' + (x1 - x0).toFixed(1) + '" height="' + (y1 - y0).toFixed(1) +
         '" rx="' + (r + 1.5).toFixed(1) + '" fill="' + fill +
-        '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>' + dots,
+        '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>',
       ));
       continue;
     }
