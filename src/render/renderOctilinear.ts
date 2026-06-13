@@ -681,11 +681,22 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           return set;
         });
+        // Octilinear run-axis (0..3, mod 180° — a row's line direction) per
+        // mark, from its lane tangent. Lanes that share a drawn edge but run
+        // in DIFFERENT directions are different bundles (a multi-arm junction:
+        // Park Av's F/G horizontal + A/B 135° + H/E 45°), each its own row
+        // that pairs with a corner — grouping them into one row asks for a
+        // straight line across diverging lanes, which has no solution → box.
+        const markAxis = s.marks.map((_, i) => {
+          const tg = curveTangent(curves[i], curves[i].anchorT);
+          return (((Math.round(Math.atan2(tg[1], tg[0]) / (Math.PI / 4)) % 4) + 4) % 4);
+        });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
           parent[x] === x ? x : (parent[x] = find(parent[x]));
         for (let i = 0; i < sets.length; i++) {
           for (let j = i + 1; j < sets.length; j++) {
+            if (markAxis[i] !== markAxis[j]) continue; // same corridor AND same run-axis
             for (const id of sets[i]) {
               if (sets[j].has(id)) { parent[find(i)] = find(j); break; }
             }
