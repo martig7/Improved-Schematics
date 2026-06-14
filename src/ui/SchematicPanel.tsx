@@ -404,7 +404,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v0.3</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.0</span>
         {svg && !generating && (
           <button onClick={downloadSvg} style={toggleStyle(false)} title="Download as SVG">
             ↓ SVG
