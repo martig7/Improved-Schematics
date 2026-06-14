@@ -1034,6 +1034,122 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
 
+    // Station-vs-capsule eviction: a terminus dot can land INSIDE a
+    // neighbouring station's capsule when two stops are near-coincident
+    // (320 Pl's C terminus dot trapped in 307 Pl's C+Y elbow on Seattle).
+    // The dot's only lane runs straight into that capsule, so it cannot
+    // slide out ALONG it. Instead ROTATE the terminus stub: redraw it as a
+    // single straight octilinear segment leaving the shared capsule-side
+    // anchor in the octilinear direction closest to the original, far enough
+    // to carry the dot clear of every foreign capsule (octilinearity holds
+    // by construction — one axis-aligned leg).
+    {
+      const ptSegD = (px: number, py: number, a: Pixel, b: Pixel): number => {
+        const vx = b[0] - a[0], vy = b[1] - a[1];
+        const l2 = vx * vx + vy * vy;
+        const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
+        return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+      };
+      const spineSegsOf = (st: StMarks): Array<[Pixel, Pixel]> => {
+        const ord = [...st.marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
+        const vs: Pixel[] = [];
+        for (const mk of ord) { vs.push(mk.pos); if (mk.cornerAfter) vs.push(mk.cornerAfter); }
+        const out: Array<[Pixel, Pixel]> = [];
+        for (let i = 1; i < vs.length; i++) out.push([vs[i - 1], vs[i]]);
+        return out;
+      };
+      const capHalf = r + 3; // a capsule's fill half-width
+      const need = capHalf + r; // dot bullet fully clear of a capsule's fill
+      const S2 = Math.SQRT1_2;
+      const OCT: Pixel[] = [
+        [1, 0], [S2, S2], [0, 1], [-S2, S2], [-1, 0], [-S2, -S2], [0, -1], [S2, -S2],
+      ];
+      const capsules = gathered.filter((o) => o.marks.length >= 2 && !boxOf(o).mega);
+      // candidate dot clear of every FOREIGN capsule (spine segments + member bullets)?
+      const dotClear = (p: Pixel, selfNode: string): boolean => {
+        for (const o of capsules) {
+          if (o.nodeId === selfNode) continue;
+          for (const [a, b] of spineSegsOf(o)) if (ptSegD(p[0], p[1], a, b) < need) return false;
+          for (const om of o.marks) if (Math.hypot(p[0] - om.pos[0], p[1] - om.pos[1]) < 2 * r) return false;
+        }
+        return true;
+      };
+      // the new stub may legitimately lie inside the anchor's capsule for the
+      // first ~capHalf (every line leaves a capsule through its fill), but
+      // BEYOND that it must run in open space — otherwise the rotated stub
+      // just slices across the foreign capsule (SW diagonal across 307 Pl).
+      const stubClear = (anchor: Pixel, dir: Pixel, L: number, selfNode: string): boolean => {
+        const steps = Math.max(2, Math.ceil(L));
+        for (let i = 1; i <= steps; i++) {
+          const t = (L * i) / steps;
+          if (t < capHalf) continue; // emanation region next to the anchor
+          const px = anchor[0] + dir[0] * t;
+          const py = anchor[1] + dir[1] * t;
+          for (const o of capsules) {
+            if (o.nodeId === selfNode) continue;
+            for (const [a, b] of spineSegsOf(o)) if (ptSegD(px, py, a, b) < capHalf) return false;
+          }
+        }
+        return true;
+      };
+      const evicted: Array<{ node: string; to: Pixel }> = [];
+      for (const s of gathered) {
+        if (boxOf(s).mega) continue;
+        for (const mk of s.marks) {
+          if (mk.mega) continue;
+          if (dotClear(mk.pos, s.nodeId)) continue; // not trapped
+          // terminus = exactly one drawn incident lane
+          let incEdge: string | null = null;
+          let nInc = 0;
+          for (const e of layout.edges) {
+            if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+            if (segPath.has(e.id + '|' + mk.lineId)) { nInc++; incEdge = e.id; }
+          }
+          if (nInc !== 1 || !incEdge) continue; // only termini can be re-stubbed
+          const edge = edgeById.get(incEdge);
+          const poly = segPath.get(incEdge + '|' + mk.lineId);
+          if (!edge || !poly || poly.length < 2) continue;
+          // node-first: pts[0] is the dot (node) end, pts[last] the anchor where
+          // the lane meets the neighbouring capsule's member bullet
+          const pts = edge.from === mk.flagNode ? poly : [...poly].reverse();
+          const anchor = pts[pts.length - 1];
+          const ox = pts[pts.length - 2][0] - anchor[0];
+          const oy = pts[pts.length - 2][1] - anchor[1];
+          const ol = Math.hypot(ox, oy) || 1;
+          const odir: Pixel = [ox / ol, oy / ol];
+          // octilinear axes ranked by closeness to the original outward dir
+          const ranked = [...OCT].sort(
+            (d1, d2) => (d2[0] * odir[0] + d2[1] * odir[1]) - (d1[0] * odir[0] + d1[1] * odir[1]),
+          );
+          let placed: Pixel | null = null;
+          for (const dir of ranked) {
+            for (let L = need; L <= need + 24; L += 1) {
+              const cand: Pixel = [anchor[0] + dir[0] * L, anchor[1] + dir[1] * L];
+              if (dotClear(cand, s.nodeId) && stubClear(anchor, dir, L, s.nodeId)) { placed = cand; break; }
+            }
+            if (placed) break;
+          }
+          if (!placed) continue; // no clean octilinear escape — leave it
+          mk.pos = placed;
+          mk.cornerAfter = undefined;
+          mk.chain = 0;
+          const rebuilt: Pixel[] = [placed, anchor];
+          segPath.set(incEdge + '|' + mk.lineId, edge.from === mk.flagNode ? rebuilt : [...rebuilt].reverse());
+          evicted.push({ node: s.nodeId, to: placed });
+        }
+      }
+      if (
+        evicted.length > 0 &&
+        typeof process !== 'undefined' &&
+        (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+      ) {
+        for (const e of evicted) {
+          const label = layout.nodes.get(e.node)?.label ?? e.node;
+          console.error(`[stops] evicted "${label}" terminus dot clear of foreign capsule -> (${e.to[0].toFixed(0)},${e.to[1].toFixed(0)})`);
+        }
+      }
+    }
+
     for (const s of gathered) {
       for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega);
     }
