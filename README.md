@@ -35,6 +35,8 @@ Actively developed. Send me any saves that you want me to look at via discord (i
 - [ ] Label placement polish, framing/rotation controls
 - [ ] Further improvements to capsule optimization (punish number of angles)
 - [ ] Improvements to balancing between geographic accuracy and clean-ness of the octolinear rendering.
+- [ ] More realistic geography (parks)
+- [ ] Better density-based map expansion (split nodes based on degree and then expand the actual geography based on that)
 
 ## Architecture
 
