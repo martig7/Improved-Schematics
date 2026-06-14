@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { Resvg } from '@resvg/resvg-js';
 import { generateSchematicSVG } from '../src/render/schematic';
+import { keepLargestWaterBodies } from '../src/water/bodies';
 import type { WaterCollection } from '../src/render/types';
 
 const dumpPath =
@@ -29,9 +30,14 @@ console.log(
 );
 
 // Water is cosmetic for graph debugging; use the Seattle coastline if present.
+// Filter to match the shipped look (generateWaterFromIndex applies the same
+// keep-largest-bodies pass to the runtime ocean-index water).
 let water: WaterCollection | undefined;
 if (existsSync('sea_water.geojson')) {
-  water = JSON.parse(readFileSync('sea_water.geojson', 'utf-8'));
+  water = keepLargestWaterBodies(
+    JSON.parse(readFileSync('sea_water.geojson', 'utf-8')),
+    { minFracOfLargest: 0.01 },
+  );
 }
 
 const svg = generateSchematicSVG({
