@@ -416,6 +416,8 @@ export interface ModdingAPI {
     getStationRidership(stationId?: string | null): StationRidership;
     /** Get ridership broken down by station for a specific route. */
     getRouteRidership(routeId?: string | null): RouteRidership;
+    /** Proximity-merged station interchange groups (same data as in-game schematic). */
+    getStationGroups?(): unknown;
   };
 
   // ---------------------------------------------------------------------------

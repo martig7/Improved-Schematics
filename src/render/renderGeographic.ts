@@ -23,6 +23,7 @@ import {
   edgeKeysFromGraph,
   routedGroupsOnly,
   DEFAULT_TRANSFER_METERS,
+  type TransferPair,
 } from './transfers';
 import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
@@ -385,7 +386,28 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   });
 }
 
-function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
+/** Everything renderRibbons needs to draw a smoothed map except the
+ *  label/station toggles — i.e. the cacheable output of the heavy pipeline. */
+export interface SmoothedPrecomputed {
+  layout: Layout;
+  nodePx: Map<string, Pixel>;
+  transfers: TransferPair[];
+  stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
+  /** Static overlay drawn between water and routes (water polygons + optional
+   *  Γ' grid); independent of the label/station toggles. */
+  gridOverlay: string;
+  width: number;
+  height: number;
+  dark: boolean;
+}
+
+/** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
+ *  → line ordering/untangle. Independent of the label/station toggles, so the
+ *  UI caches this on first Generate and redraws cheaply via drawSmoothed when
+ *  only those toggles change. Returns a ready SVG string for the degenerate
+ *  no-edges fallback instead. */
+export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | string {
+  const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
@@ -553,7 +575,7 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   // piled together). Unlike ndMovePen it preserves spacing without pinning
   // absolute positions, giving the user-preferred more-vertical layout.
   // Weight 8 (spacing benefit saturates ≥1). OCTI_LENPRES=<n> overrides.
-  octiOpts.lenPresW = 8;
+  octiOpts.lenPresW = 1.5;
   const imageRaw = octi(support, octiOpts);
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
@@ -644,26 +666,40 @@ function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const waterColor = dark ? DARK_THEME.water : theme.water;
   const waterOverlay = input.water ? waterGroup(input.water, proj, waterColor) : '';
   const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
+  const stations = [...supportM.stations.values()].map((st) => ({
+    nodeId: st.nodeId,
+    members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),
+    stopNodes: st.stopNodes ?? new Map<string, string>(),
+  }));
 
+  return { layout, nodePx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark };
+}
+
+/** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
+ *  precomputeSmoothed — this is what re-runs when labels/stations toggle. */
+export function drawSmoothed(
+  pre: SmoothedPrecomputed,
+  opts: { showLabels: boolean; showStations: boolean },
+): string {
   return renderRibbons({
-    layout,
-    nodePx,
+    layout: pre.layout,
+    nodePx: pre.nodePx,
     edgePolyline: (e) => e.path.map((c) => [c[0], c[1]]),
-    width,
-    height,
-    dark,
+    width: pre.width,
+    height: pre.height,
+    dark: pre.dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
-    transfers,
-    gridOverlay: waterOverlay + gridSvg,
-    stations: (() => {
-      return [...supportM.stations.values()].map((st) => ({
-        nodeId: st.nodeId,
-        members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),
-        stopNodes: st.stopNodes ?? new Map<string, string>(),
-      }));
-    })(),
+    transfers: pre.transfers,
+    gridOverlay: pre.gridOverlay,
+    stations: pre.stations,
   });
+}
+
+function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
+  const pre = precomputeSmoothed(input);
+  if (typeof pre === 'string') return pre;
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

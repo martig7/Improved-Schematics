@@ -116,3 +116,76 @@ export function dijkstra<NodeId>(
   }
   return null;
 }
+
+/**
+ * Multi-source / multi-target Dijkstra with per-endpoint entry costs.
+ *
+ * `sources` maps a start node to its entry cost (added to the path cost).
+ * `targets` maps a goal node to its exit cost. The cheapest source→target path
+ * (including both endpoint costs) is returned. No heuristic — the octi grid is
+ * small per query and bend costs are encoded as edges, so plain Dijkstra is
+ * correct.
+ */
+export function dijkstraMulti<NodeId>(
+  sources: Map<NodeId, number>,
+  targets: Map<NodeId, number>,
+  neighbors: (n: NodeId) => Iterable<DijkstraEdge<NodeId>>,
+  expansionBudget = 200_000,
+): DijkstraResult<NodeId> | null {
+  const keyFn = (n: NodeId) => String(n);
+  const targetCost = new Map<string, number>();
+  for (const [t, c] of targets) targetCost.set(keyFn(t), c);
+
+  const best = new Map<string, number>();
+  const parent = new Map<string, NodeId | null>();
+  const open = new MinHeap<NodeId>();
+  for (const [s, c] of sources) {
+    const k = keyFn(s);
+    if (c < (best.get(k) ?? Infinity)) {
+      best.set(k, c);
+      parent.set(k, null);
+      open.push(c, s);
+    }
+  }
+
+  let expanded = 0;
+  let bestGoal: { node: NodeId; total: number } | null = null;
+  while (open.size > 0) {
+    const top = open.pop()!;
+    const cur = top.v;
+    const curKey = keyFn(cur);
+    const curBest = best.get(curKey) ?? Infinity;
+    if (top.p > curBest + 1e-9) continue;
+
+    const exit = targetCost.get(curKey);
+    if (exit !== undefined) {
+      const total = curBest + exit;
+      if (!bestGoal || total < bestGoal.total) bestGoal = { node: cur, total };
+    }
+    // Once the cheapest open entry exceeds the best completed goal, stop.
+    if (bestGoal && curBest >= bestGoal.total) break;
+
+    if (++expanded > expansionBudget) break;
+
+    for (const edge of neighbors(cur)) {
+      const g = curBest + edge.w;
+      const k = keyFn(edge.to);
+      if (g < (best.get(k) ?? Infinity)) {
+        best.set(k, g);
+        parent.set(k, cur);
+        open.push(g, edge.to);
+      }
+    }
+  }
+
+  if (!bestGoal) return null;
+  const path: NodeId[] = [];
+  let n: NodeId | null = bestGoal.node;
+  while (n !== null) {
+    path.push(n);
+    const p = parent.get(keyFn(n));
+    n = p === undefined ? null : p;
+  }
+  path.reverse();
+  return { path, cost: bestGoal.total };
+}

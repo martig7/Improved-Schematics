@@ -11,7 +11,7 @@ import type { Route, Track } from '../types/game-state';
 import type { Coordinate } from '../types/core';
 import type { WaterCollection, SchematicOptions } from './types';
 import { DEFAULT_OPTIONS } from './types';
-import { renderGeographic } from './renderGeographic';
+import { renderGeographic, precomputeSmoothed, drawSmoothed, type SmoothedPrecomputed } from './renderGeographic';
 import { renderOctilinear } from './renderOctilinear';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { octilinearLayout } from './layout/octilinear';
@@ -71,4 +71,31 @@ export function generateSchematicSVG(input: SchematicInput): string {
   }
 
   return renderGeographic({ ...input, smooth: opts.mode === 'smoothed' });
+}
+
+export type { SmoothedPrecomputed };
+
+/**
+ * Two-phase smoothed render. `precomputeSmoothedSchematic` runs the expensive
+ * layout (octi pipeline) once; `drawSmoothedSchematic` redraws that cached
+ * result cheaply whenever only the label/station toggles change. Geographic
+ * and schematic modes stay single-phase via `generateSchematicSVG`.
+ *
+ * Returns a ready-to-use SVG string (instead of a precomputed bundle) for the
+ * empty/degenerate cases, so callers branch on `typeof result === 'string'`.
+ */
+export function precomputeSmoothedSchematic(input: SchematicInput): SmoothedPrecomputed | string {
+  const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
+  if (input.routes.length === 0) {
+    return emptyStateSvg(opts.width, opts.height, opts.dark ? '#18181b' : opts.theme.land);
+  }
+  return precomputeSmoothed({ ...input, smooth: true });
+}
+
+export function drawSmoothedSchematic(
+  pre: SmoothedPrecomputed,
+  options?: Partial<SchematicOptions>,
+): string {
+  const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...options };
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations });
 }

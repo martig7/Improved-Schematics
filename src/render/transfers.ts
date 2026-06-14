@@ -143,8 +143,6 @@ export function renderTransferConnectors(
   const stroke = opts.dark ? '#9ca3af' : '#374151';
   const { strokeWidth } = opts;
   const legExtra = opts.legExtra ?? BRACKET_LEG_EXTRA;
-  const dashOn = (strokeWidth * 1.5).toFixed(1);
-  const dashOff = (strokeWidth * 1.2).toFixed(1);
   const paths: string[] = [];
 
   for (const p of pairs) {
@@ -162,7 +160,7 @@ export function renderTransferConnectors(
     }
     paths.push(
       `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" ` +
-        `stroke-linecap="butt" stroke-linejoin="miter" stroke-dasharray="${dashOn},${dashOff}" opacity="0.7"/>`,
+        `stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`,
     );
   }
 

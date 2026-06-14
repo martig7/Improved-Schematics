@@ -3,13 +3,15 @@
  *
  * Mirrors the game's own `buildGeoProjectedRoutes`: a route's geometry is the
  * concatenation of the track segments referenced by its stCombos paths, in
- * order. We keep the coordinates geographic (unprojected) so the caller can
- * apply a shared projection alongside the water layer.
+ * order. Track segments that stay within the same station group (e.g. parallel
+ * forward/back tracks at one platform) contribute coords once — the same rule
+ * as walkRouteVisits in buildTransitGraph.
  */
 
-import type { Route, Track } from '../types/game-state';
+import type { Route, Track, Station } from '../types/game-state';
 import type { Coordinate } from '../types/core';
 import type { RouteLine, StationPoint } from './types';
+import { getOrBuildStationGroups, buildGroupMaps, appendComboPathGeometry } from './layout/graph';
 
 /** Validate a hex color string, falling back to a neutral gray. */
 export function sanitizeColor(color: string | undefined): string {
@@ -24,29 +26,30 @@ export function sanitizeColor(color: string | undefined): string {
  * track geometry. Track segments are looked up by id; missing tracks are
  * skipped so a partial route still renders what it can.
  */
-export function extractRouteLines(routes: Route[], tracks: Track[]): RouteLine[] {
+export function extractRouteLines(
+  routes: Route[],
+  tracks: Track[],
+  stations: Station[],
+  apiGroups?: unknown[] | null,
+): RouteLine[] {
   const trackMap = new Map<string, Track>();
   for (const track of tracks) trackMap.set(track.id, track);
+
+  const groups = getOrBuildStationGroups(stations, apiGroups ?? null);
+  const { trackToGroup } = buildGroupMaps(stations, groups);
 
   const lines: RouteLine[] = [];
 
   for (const route of routes) {
-    // tempParentId marks an in-progress edit clone of a real route — skip it.
     if (route.tempParentId != null) continue;
 
     const combos = route.stCombos;
     if (!combos || combos.length === 0) continue;
 
     const points: Coordinate[] = [];
+    const prevSegGroup = { value: undefined as string | undefined };
     for (const combo of combos) {
-      for (const segment of combo.path) {
-        const track = trackMap.get(segment.trackId);
-        if (!track) continue;
-        // Append this segment's coordinates. Reversed segments are walked
-        // backwards so the polyline stays continuous.
-        const coords = segment.reversed ? [...track.coords].reverse() : track.coords;
-        for (const c of coords) points.push(c);
-      }
+      appendComboPathGeometry(points, combo.path ?? [], trackMap, trackToGroup, prevSegGroup);
     }
 
     if (points.length < 2) continue;

@@ -8,3 +8,10 @@ debug/
 dev/out*.svg
 dev/out*.png
 dev/water-out.geojson
+loom-master/
+*.png
+*.svg
+*.json
+*.geojson
+dev/
+examoplesave_seattle/

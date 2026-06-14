@@ -11,7 +11,12 @@
  */
 
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
-import { generateSchematicSVG } from '../render/schematic';
+import {
+  generateSchematicSVG,
+  precomputeSmoothedSchematic,
+  drawSmoothedSchematic,
+  type SmoothedPrecomputed,
+} from '../render/schematic';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode, WaterCollection } from '../render/types';
 import { generateWater } from '../water/oceanIndex';
@@ -27,7 +32,6 @@ const MAX_SCALE = 12;
 const MODES: { id: RenderMode; label: string }[] = [
   { id: 'geographic', label: 'Geographic' },
   { id: 'smoothed', label: 'Smoothed' },
-  { id: 'schematic', label: 'Schematic' },
 ];
 
 interface View {
@@ -50,8 +54,15 @@ export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
-  const [showGrid, setShowGrid] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
+  // demand: entering the mode shows a Generate Map button instead of building
+  // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
+  // build took, surfaced as "Finished in X.XXs".
+  const [smoothedReady, setSmoothedReady] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [genMs, setGenMs] = useState<number | null>(null);
+  const genMsRef = useRef<number | null>(null);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -86,15 +97,13 @@ export function SchematicPanel() {
     };
   }, []);
 
-  // One-shot dump of the exact live render inputs, so in-game artifacts can
-  // be reproduced offline bit-for-bit (geojson reconstructions drift from the
-  // live save and the game's station grouping). storage.set silently drops
-  // multi-MB payloads, so deliver as a browser download instead.
-  const dumpedInputs = useRef(false);
+  // Dump the exact live render inputs, so in-game artifacts can be reproduced
+  // offline bit-for-bit (geojson reconstructions drift from the live save and
+  // the game's station grouping). storage.set silently drops multi-MB payloads,
+  // so deliver as a browser download instead — triggered on demand via the
+  // "input dump" control rather than auto-downloading when the panel opens.
   const [dumpStatus, setDumpStatus] = useState<string | null>(null);
-  useEffect(() => {
-    if (mode !== 'smoothed' || dumpedInputs.current) return;
-    dumpedInputs.current = true;
+  const downloadDump = useCallback(() => {
     try {
       const payload = JSON.stringify({
         at: new Date().toISOString(),
@@ -112,30 +121,87 @@ export function SchematicPanel() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      setDumpStatus(`input dump ↓ ${(payload.length / 1e6).toFixed(1)}MB`);
+      setDumpStatus(`${(payload.length / 1e6).toFixed(1)}MB`);
     } catch (err) {
-      setDumpStatus('dump failed: ' + String(err));
+      setDumpStatus('failed: ' + String(err));
     }
-  }, [mode]);
+  }, []);
+
+  // Cache of the expensive smoothed layout. Built on Generate Map (and rebuilt
+  // when `water` arrives), then reused for label/station toggles so those are a
+  // cheap redraw instead of a full octi re-run. Cleared on each Generate click
+  // so a fresh build reflects current game state.
+  const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string; water: WaterCollection | undefined } | null>(null);
+
+  // View-preservation: the inject effect re-fits only when the layout identity
+  // changes (mode switch, (re)generation, or water reframe), and keeps the
+  // current pan/zoom when only labels/stations toggle (same layout redrawn).
+  const layoutIdRef = useRef<unknown>(null);
+  const lastLayoutIdRef = useRef<unknown>(undefined);
+  const geoIdRef = useRef<{ mode: RenderMode; water: WaterCollection | undefined } | null>(null);
 
   const svg = useMemo(() => {
-    const routes = api.gameState.getRoutes();
-    const tracks = api.gameState.getTracks();
-    const stations = api.gameState.getStations();
+    const dark = api.ui.getResolvedTheme() === 'dark';
     // The game exposes its real station groups (spatial-proximity-merged
     // platforms, used by the in-game SchematicMapMenu) via an undocumented
     // method. Falls back to trackGroupId grouping if absent or empty.
-    const stationGroups = resolveStationGroupsFromGameState(api.gameState);
-    const dark = api.ui.getResolvedTheme() === 'dark';
-    return generateSchematicSVG({
-      routes,
-      tracks,
-      stations,
-      stationGroups,
+    const buildInput = () => ({
+      routes: api.gameState.getRoutes(),
+      tracks: api.gameState.getTracks(),
+      stations: api.gameState.getStations(),
+      stationGroups: resolveStationGroupsFromGameState(api.gameState),
       water,
-      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, showGrid, dark },
+      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
     });
-  }, [mode, showStations, showLabels, showGrid, water]);
+
+    if (mode === 'smoothed') {
+      // Stay blank until the user clicks Generate Map.
+      if (!smoothedReady) {
+        genMsRef.current = null;
+        layoutIdRef.current = 'smoothed-blank';
+        return '';
+      }
+      // Run the heavy octi pipeline only when there's no valid cache (fresh
+      // Generate, or `water` changed). Label/station toggles fall through to
+      // the cheap redraw below, reusing the cached layout.
+      let cache = smoothedCacheRef.current;
+      if (!cache || cache.water !== water) {
+        const t0 = performance.now();
+        cache = { pre: precomputeSmoothedSchematic(buildInput()), water };
+        smoothedCacheRef.current = cache;
+        genMsRef.current = performance.now() - t0;
+      }
+      // The cache object is recreated on every (re)build but reused across
+      // label/station toggles — exactly the identity the inject effect needs.
+      layoutIdRef.current = cache;
+      const pre = cache.pre;
+      return typeof pre === 'string' ? pre : drawSmoothedSchematic(pre, { showLabels, showStations });
+    }
+
+    // Geographic/schematic: cheap enough to fully render on every change. Its
+    // layout identity depends only on mode + water (stable across toggles).
+    genMsRef.current = null;
+    if (!geoIdRef.current || geoIdRef.current.mode !== mode || geoIdRef.current.water !== water) {
+      geoIdRef.current = { mode, water };
+    }
+    layoutIdRef.current = geoIdRef.current;
+    return generateSchematicSVG(buildInput());
+  }, [mode, showStations, showLabels, water, smoothedReady]);
+
+  // Save the pristine generated SVG (full map at intrinsic bounds — not the
+  // DOM copy, whose viewBox/width are mutated for pan/zoom).
+  const downloadSvg = useCallback(() => {
+    if (!svg) return;
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `improvedschematics-${mode}.svg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }, [svg, mode]);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
@@ -209,15 +275,45 @@ export function SchematicPanel() {
         }));
       labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
     }
-    // Always re-fit when the SVG (and therefore its bounds) changes.
-    fit();
-  }, [svg, fit, applyToDom]);
+    // Preserve the current pan/zoom when only the SVG CONTENT changed (a
+    // label/station toggle redraws the SAME layout). Re-fit only when the
+    // layout identity changes — mode switch, (re)generation, or water reframe.
+    if (viewRef.current && layoutIdRef.current === lastLayoutIdRef.current) {
+      applyToDom(true); // re-apply existing viewBox + counter-scale the new nodes
+    } else {
+      fit();
+    }
+    lastLayoutIdRef.current = layoutIdRef.current;
+    // Surface the smoothed build time (geographic renders are cheap + auto).
+    setGenMs(mode === 'smoothed' ? genMsRef.current : null);
+    // The map is in the DOM now — drop the generating spinner.
+    if (svg) setGenerating(false);
+  }, [svg, mode, fit, applyToDom]);
 
-  // Re-fit on mode switch (different layout shape).
+  // Re-fit on mode switch (different layout shape). Also re-arm the on-demand
+  // gate so smoothed mode shows the Generate Map button instead of auto-building.
   useEffect(() => {
+    setSmoothedReady(false);
+    setGenerating(false);
     const id = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(id);
   }, [mode, fit]);
+
+  // After the Generate Map click, paint the spinner for at least one frame
+  // before the synchronous octi pipeline blocks the thread (double rAF
+  // guarantees a committed, composited frame first). The rotation is a
+  // transform animation, so the compositor keeps it spinning while JS blocks.
+  useEffect(() => {
+    if (!generating || smoothedReady) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setSmoothedReady(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [generating, smoothedReady]);
 
   // Wheel zoom toward the cursor (native + non-passive so it can preventDefault).
   useEffect(() => {
@@ -280,41 +376,121 @@ export function SchematicPanel() {
         <button onClick={() => setShowLabels((v) => !v)} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
+        <span style={{ flex: 1 }} />
+        {mode === 'smoothed' && genMs != null && (
+          <span style={{ color: '#888', fontSize: 11 }}>
+            Finished in {(genMs / 1000).toFixed(2)}s
+          </span>
+        )}
         {mode === 'smoothed' && (
-          <button
-            onClick={() => setShowGrid((v) => !v)}
-            style={toggleStyle(showGrid)}
-            title="Overlay the Hanan routing grid (diagnostic)"
-          >
-            {showGrid ? '✓ Grid' : 'Grid'}
+          <span style={{ opacity: 0.35, fontSize: 10, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            input dump
+            <button
+              onClick={downloadDump}
+              title="Download the live render inputs as JSON"
+              style={{
+                cursor: 'pointer',
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                font: 'inherit',
+                color: 'inherit',
+                lineHeight: 1,
+              }}
+            >
+              ↓
+            </button>
+            {dumpStatus ? ` ${dumpStatus}` : ''}
+          </span>
+        )}
+        {/* Build marker: proves which bundle the game actually loaded. */}
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v0.3</span>
+        {svg && !generating && (
+          <button onClick={downloadSvg} style={toggleStyle(false)} title="Download as SVG">
+            ↓ SVG
           </button>
         )}
-        <span style={{ flex: 1 }} />
-        {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>
-          v0.2.50{dumpStatus ? ` · ${dumpStatus}` : ''}
-        </span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
       </div>
-      <div
-        ref={viewportRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerLeave={endDrag}
-        onDoubleClick={fit}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflow: 'hidden',
-          position: 'relative',
-          borderRadius: 6,
-          cursor: dragging ? 'grabbing' : 'grab',
-          touchAction: 'none',
-        }}
-      />
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <div
+          ref={viewportRef}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerLeave={endDrag}
+          onDoubleClick={fit}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            overflow: 'hidden',
+            borderRadius: 6,
+            cursor: dragging ? 'grabbing' : 'grab',
+            touchAction: 'none',
+          }}
+        />
+        {mode === 'smoothed' && !smoothedReady && !generating && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <button
+              onClick={() => {
+                // Fresh build: drop any cached layout from a prior generation.
+                smoothedCacheRef.current = null;
+                setGenerating(true);
+              }}
+              style={{
+                background: '#ffffff',
+                color: '#1a1a1a',
+                border: 'none',
+                borderRadius: 10,
+                padding: '12px 24px',
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
+              }}
+            >
+              Generate Map
+            </button>
+          </div>
+        )}
+        {mode === 'smoothed' && generating && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                border: '3px solid rgba(136, 136, 136, 0.3)',
+                borderTopColor: '#888',
+                animation: 'imp-spin 0.8s linear infinite',
+                willChange: 'transform',
+              }}
+            />
+            <span style={{ color: '#888', fontSize: 12 }}>This may take a while</span>
+            <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

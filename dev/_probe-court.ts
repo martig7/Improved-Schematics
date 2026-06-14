@@ -57,3 +57,40 @@ for (const name of ['Court', 'Tacoma Av']) {
     }
   }
 }
+
+// traversal steps of the gray pair near the hub
+for (const lid of ['87028bd5-b5cf-4ad4-99a0-29a90de80172', '6d6a7b31']) {
+  for (const [lineId, steps] of h.lineTraversals) {
+    if (!lineId.startsWith(lid.slice(0, 8))) continue;
+    const seq: string[] = [];
+    for (const s of steps) {
+      const e = h.edges.get(s.edgeId);
+      if (!e) continue;
+      const a = s.reversed ? e.to : e.from;
+      const b = s.reversed ? e.from : e.to;
+      seq.push(`${s.edgeId}(${a}>${b})`);
+    }
+    console.log(`line ${lineId.slice(0, 8)}: ${seq.join(' ')}`);
+  }
+}
+
+// NE corridor (Court -> Milwaukee Way): painted lines vs gray traversal use
+const milw = [...h.stations.values()].find((s) => s.label === 'Milwaukee Way');
+const court = [...h.stations.values()].find((s) => s.label === 'Court');
+console.log('court node', court?.nodeId, 'milwaukee node', milw?.nodeId);
+const grayIds = [...h.lineRefs.keys()].filter((id) =>
+  ['0458fd40', '262b05f7', '87028bd5', '6d6a7b31'].some((p) => id.startsWith(p)));
+const usesEdge = new Map<string, Set<string>>();
+for (const [lid, steps] of h.lineTraversals) {
+  usesEdge.set(lid, new Set(steps.map((s) => s.edgeId)));
+}
+for (const g of grayIds) {
+  console.log(`gray ${g.slice(0, 8)}: traversal=${h.lineTraversals.has(g) ? h.lineTraversals.get(g)!.length + ' steps' : 'MISSING'}`);
+}
+// walk edges around Court's node
+for (const eid of h.adj.get(court?.nodeId ?? '') ?? []) {
+  const e = h.edges.get(eid)!;
+  const grayOn = grayIds.filter((g) => e.lineIds.has(g)).map((g) => g.slice(0, 8));
+  const grayUse = grayIds.filter((g) => usesEdge.get(g)?.has(eid)).map((g) => g.slice(0, 8));
+  console.log(`edge ${eid} ${e.from}->${e.to} painted grays=[${grayOn}] traversed-by=[${grayUse}] allLines=${e.lineIds.size}`);
+}
