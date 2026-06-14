@@ -13,5 +13,9 @@ loom-master/
 *.svg
 *.json
 *.geojson
+# keep essential config tracked despite the broad *.json rule above
+!package.json
+!tsconfig.json
+!manifest.json
 dev/
 examoplesave_seattle/

@@ -1,4 +1,0 @@
-function renderLabel(_0x24c1e9, _0x10cab9, _0x111c61, _0x10c78e) {
-  const _0x293946 = _0xee17, _0xde259b = _0x10c78e ? _0x111c61 ? "#f4f4f5" : "#71717a" : _0x111c61 ? "#222" : "#888";
-  return "<g data-station-id=\"" + escapeXml(_0x24c1e9["id"]) + "\">\n<text x=\"" + _0x10cab9["x"]["toFixed"](1) + "\" y=\"" + _0x10cab9["y"]["toFixed"](1) + "\" text-anchor=\"" + _0x10cab9["anchor"] + "\" font-family=\"Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif\" font-size=\"" + LABEL_FONT_SIZE + "\" fill=\"" + _0xde259b + "\" font-weight=\"medium\">" + escapeXml(_0x24c1e9["label"]) + "</text>\n</g>";
-}
