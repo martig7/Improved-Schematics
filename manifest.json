@@ -1,8 +1,8 @@
 {
-  "id": "com.gcm.improvedschematics",
+  "id": "improved-schematics",
   "name": "Improved Schematics",
   "description": "Generates a geographic schematic map of your transit system with simplified land and water context, like a real subway map.",
-  "version": "1.0",
+  "version": "1.0.0",
   "author": {
     "name": "gcm"
   },
