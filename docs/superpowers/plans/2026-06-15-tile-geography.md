@@ -1052,6 +1052,23 @@ git commit -m "chore(geography): in-game verification tuning"
 
 ---
 
+## Schema discovery (in-game, 2026-06-15)
+
+The Approach-A probe initially returned `null` ("no usable vector source") in-game.
+A `map.getStyle()` dump revealed why: the basemap's vector source `general-tiles`
+(`map://<CITY>/tiles/{z}/{x}/{y}.mvt`) uses the game's **own** source-layer names,
+not OSM ones — `water`, `parks` (plural, not `park`), `ocean_foundations`,
+`buildings`, `airports`, `*_labels`. The OSM-only signatures missed `parks`.
+
+Fix (committed): added a `subwaybuilder` schema to the probe — discriminated by the
+unique `parks` layer, with **water = `water` + `ocean_foundations`** (the latter
+carries the saltwater/sea for coastal cities; `water` alone is inland lakes/rivers)
+— and taught `classifyFeature` those layer names. `harvest.ts` now logs per-source-
+layer feature counts so the in-game re-test confirms each layer's contribution.
+The custom `map://` tile protocol is registered globally on the shared maplibre
+module, so the offscreen map (built from the borrowed constructor) should resolve
+it — this is the next thing the re-test exercises.
+
 ## Notes & accepted limitations
 
 - **Single fallback:** any failure (no map, raster basemap, unknown schema, tile load failure, empty harvest) → `null` → no backdrop. `ocean_depth_index` is no longer rendered in geographic/smoothed modes.
