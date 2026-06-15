@@ -54,15 +54,14 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
   return out;
 }
 
-// Despike thresholds: drop a vertex whose triangle with its neighbours is at
-// least this long but thinner than this wide — i.e. a degenerate needle (e.g. a
-// tile-clip "bridge" darting to the map edge), not a real coastline/peninsula.
-const DESPIKE_MIN_LEN_M = 500;
-const DESPIKE_MAX_WIDTH_M = 40;
+// A ring that turns by more than ~120° at a vertex is doubling back on itself —
+// a needle tip, backtrack, or self-overlapping zigzag from degenerate tile-clip
+// geometry. Real coastline/peninsula corners turn less than this. cos(120°)=-0.5.
+const DESPIKE_COS_TURN = -0.5;
 
-/** Remove needle/spike vertices from a closed ring: a vertex P whose triangle
- *  A-P-B is long (an edge ≥ MIN_LEN) yet thin (triangle "width" = 2·area/longest
- *  side < MAX_WIDTH). Iterates because removing a tip can expose another. */
+/** Remove sharp-reversal vertices from a closed ring (the ring turns back on
+ *  itself by > ~120°). Iterates because removing one reversal can expose the
+ *  next, which collapses backtracking spikes / self-overlapping tangles. */
 function despike(pts: Pt[]): Pt[] {
   let out = pts;
   let changed = true;
@@ -74,14 +73,14 @@ function despike(pts: Pt[]): Pt[] {
       const A = out[(i - 1 + n) % n];
       const P = out[i];
       const B = out[(i + 1) % n];
-      const pa = Math.hypot(A[0] - P[0], A[1] - P[1]);
-      const pb = Math.hypot(B[0] - P[0], B[1] - P[1]);
-      const ab = Math.hypot(A[0] - B[0], A[1] - B[1]);
-      const longest = Math.max(pa, pb, ab);
-      const area2 = Math.abs((A[0] - P[0]) * (B[1] - P[1]) - (A[1] - P[1]) * (B[0] - P[0]));
-      const width = longest > 0 ? area2 / longest : 0;
-      if (longest > DESPIKE_MIN_LEN_M && width < DESPIKE_MAX_WIDTH_M) {
-        changed = true; // drop this needle vertex
+      const ix = P[0] - A[0]; // edge into P
+      const iy = P[1] - A[1];
+      const ox = B[0] - P[0]; // edge out of P
+      const oy = B[1] - P[1];
+      const li = Math.hypot(ix, iy);
+      const lo = Math.hypot(ox, oy);
+      if (li > 0 && lo > 0 && (ix * ox + iy * oy) / (li * lo) < DESPIKE_COS_TURN) {
+        changed = true; // sharp reversal → drop this vertex
         continue;
       }
       keep.push(P);

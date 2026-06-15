@@ -61,6 +61,18 @@ test('cleanFeatures: removes a long thin needle spike, keeps the body', () => {
   assert.ok(maxLat < 0.02, `spike removed (maxLat ${maxLat})`);
 });
 
+test('cleanFeatures: removes a short backtrack spike (sharp reversal)', () => {
+  // The ring darts out ~330 m and straight back — short edges, but a 180° reversal.
+  const ring = poly([
+    [0, 0], [0.01, 0], [0.01, 0.01],
+    [0.005, 0.01], [0.005, 0.013], [0.005, 0.01],
+    [0, 0.01], [0, 0],
+  ]);
+  const out = cleanFeatures([ring], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 0 });
+  const maxLat = Math.max(...out[0].geometry.coordinates[0].map((c) => c[1]));
+  assert.ok(maxLat < 0.0115, `backtrack removed (maxLat ${maxLat})`);
+});
+
 test('cleanFeatures: Chaikin smoothing rounds corners (adds points)', () => {
   const out = cleanFeatures([big], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 2 });
   assert.equal(out.length, 1);
