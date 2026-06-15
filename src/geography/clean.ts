@@ -54,10 +54,10 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
   return out;
 }
 
-// A ring that turns by more than ~120° at a vertex is doubling back on itself —
-// a needle tip, backtrack, or self-overlapping zigzag from degenerate tile-clip
-// geometry. Real coastline/peninsula corners turn less than this. cos(120°)=-0.5.
-const DESPIKE_COS_TURN = -0.5;
+// A ring that nearly reverses (turns > ~150°) at a vertex is doubling back on
+// itself — a needle tip or backtrack. Kept conservative (real corners turn less)
+// because the renderer's nonzero fill already absorbs self-overlap. cos(150°)≈-0.87.
+const DESPIKE_COS_TURN = -0.85;
 
 /** Remove sharp-reversal vertices from a closed ring (the ring turns back on
  *  itself by > ~120°). Iterates because removing one reversal can expose the

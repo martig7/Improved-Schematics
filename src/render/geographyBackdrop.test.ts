@@ -27,7 +27,7 @@ test('geographyBackdrop: emits a green group then a water group (water on top)',
   assert.ok(greenIdx < waterIdx, 'green is drawn before water');
   assert.ok(svg.includes('M0 0 L10 0 L10 10'), 'projects water ring');
   assert.ok(svg.includes(`fill="${DEFAULT_THEME.green}" fill-rule="nonzero"`), 'parks fill solid (nonzero)');
-  assert.ok(svg.includes(`fill="${DEFAULT_THEME.water}" fill-rule="evenodd"`), 'water keeps holes (evenodd)');
+  assert.ok(svg.includes(`fill="${DEFAULT_THEME.water}" fill-rule="nonzero"`), 'water fills solid (nonzero, no XOR gaps)');
 });
 
 test('geographyBackdrop: omits an empty category', () => {

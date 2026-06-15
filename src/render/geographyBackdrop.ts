@@ -47,5 +47,8 @@ export function geographyBackdrop(
   if (!geo) return '';
   const greenFill = dark ? DARK_THEME.green : theme.green;
   const waterFill = dark ? DARK_THEME.water : theme.water;
-  return polyGroup(geo.green, proj, greenFill, 'nonzero') + polyGroup(geo.water, proj, waterFill, 'evenodd');
+  // Both nonzero: overlapping/self-overlapping tile polygons fill solid instead
+  // of XOR-ing into gaps (the mid-ocean "spike"). Correctly-wound holes (islands)
+  // still render as holes under nonzero.
+  return polyGroup(geo.green, proj, greenFill, 'nonzero') + polyGroup(geo.water, proj, waterFill, 'nonzero');
 }
