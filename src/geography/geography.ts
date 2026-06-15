@@ -62,8 +62,10 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     // close on a raster), so a park split into sub-threshold pieces survives as
     // one. GEO_PARK_GAP_M = bridge distance in meters (0 disables).
     const mergedGreen = combineCloseParks(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
-    const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 1_000_000), simplifyM, smoothIters });
-    const green = cleanFeatures(mergedGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 1_000_000), simplifyM, smoothIters, dropHoles: true });
+    // Min area to keep as a fraction of total map area (scale-invariant; ~0.4%
+    // ≈ the previous 1.3M m² for a typical city). GEO_MIN_WATER_FRAC / _PARK_FRAC.
+    const water = cleanFeatures(rawWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.004), simplifyM, smoothIters });
+    const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.004), simplifyM, smoothIters, dropHoles: true });
 
     if (water.length === 0 && green.length === 0) {
       console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);

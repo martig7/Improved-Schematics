@@ -4,8 +4,9 @@ import { douglasPeucker, chaikin, type Pt } from '../water/simplify';
 import { ringArea } from '../water/bodies';
 
 export interface CleanOptions {
-  /** Drop a polygon whose outer ring is smaller than this (m²). */
-  minAreaM2: number;
+  /** Drop a polygon whose outer ring is smaller than this fraction of the total
+   *  map (bbox) area. Scale-invariant — trims proportionally on any city size. */
+  minAreaFrac: number;
   /** Douglas–Peucker tolerance in meters (0 = no simplification). */
   simplifyM: number;
   /** Chaikin corner-rounding iterations (0 = no smoothing). */
@@ -31,12 +32,17 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
   const toM = (c: Coordinate): Pt => [(c[0] - lng0) * mx, (c[1] - lat0) * my];
   const toLngLat = (p: Pt): Coordinate => [lng0 + p[0] / mx, lat0 + p[1] / my];
 
+  // Absolute area threshold (m²) = fraction × total map area, so the filter
+  // scales with the bbox rather than needing a per-city tweak.
+  const mapAreaM2 = Math.abs((bbox[2] - bbox[0]) * mx) * Math.abs((bbox[3] - bbox[1]) * my);
+  const minAreaM2 = opts.minAreaFrac * mapAreaM2;
+
   const out: GeoPolyFeature[] = [];
   for (const f of features) {
     const rings = f.geometry.coordinates;
     if (rings.length === 0) continue;
     const ringsM = rings.map((r) => r.map(toM));
-    if (ringArea(ringsM[0]) < opts.minAreaM2) continue; // outer ring too small → drop whole polygon
+    if (ringArea(ringsM[0]) < minAreaM2) continue; // outer ring too small → drop whole polygon
     const cleaned: Coordinate[][] = [];
     const sourceRings = opts.dropHoles ? ringsM.slice(0, 1) : ringsM; // exterior only when filling holes
     for (const rM of sourceRings) {

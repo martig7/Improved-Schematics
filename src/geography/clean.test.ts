@@ -12,12 +12,12 @@ const big = poly([[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]);
 const tiny = poly([[0, 0], [0.0005, 0], [0.0005, 0.0005], [0, 0.0005], [0, 0]]);
 
 test('cleanFeatures: drops polygons below the area threshold', () => {
-  const out = cleanFeatures([big, tiny], BBOX, { minAreaM2: 30_000, simplifyM: 0, smoothIters: 0 });
+  const out = cleanFeatures([big, tiny], BBOX, { minAreaFrac: 1e-5, simplifyM: 0, smoothIters: 0 });
   assert.equal(out.length, 1); // tiny (~3100 m²) dropped, big kept
 });
 
 test('cleanFeatures: returns [] when every polygon is sub-threshold', () => {
-  const out = cleanFeatures([tiny], BBOX, { minAreaM2: 30_000, simplifyM: 0, smoothIters: 0 });
+  const out = cleanFeatures([tiny], BBOX, { minAreaFrac: 1e-5, simplifyM: 0, smoothIters: 0 });
   assert.equal(out.length, 0);
 });
 
@@ -26,7 +26,7 @@ test('cleanFeatures: Douglas–Peucker drops collinear edge midpoints', () => {
     [0, 0], [0.005, 0], [0.01, 0], [0.01, 0.005], [0.01, 0.01],
     [0.005, 0.01], [0, 0.01], [0, 0.005], [0, 0],
   ]); // 8 distinct points, 4 of them collinear midpoints
-  const out = cleanFeatures([withMidpoints], BBOX, { minAreaM2: 0, simplifyM: 10, smoothIters: 0 });
+  const out = cleanFeatures([withMidpoints], BBOX, { minAreaFrac: 0, simplifyM: 10, smoothIters: 0 });
   assert.equal(out.length, 1);
   assert.ok(out[0].geometry.coordinates[0].length < 8, 'midpoints removed');
 });
@@ -42,14 +42,14 @@ test('cleanFeatures: dropHoles keeps only the exterior ring', () => {
       ],
     },
   };
-  const kept = cleanFeatures([withHole], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 0 });
+  const kept = cleanFeatures([withHole], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 0 });
   assert.equal(kept[0].geometry.coordinates.length, 2, 'hole kept by default');
-  const filled = cleanFeatures([withHole], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 0, dropHoles: true });
+  const filled = cleanFeatures([withHole], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 0, dropHoles: true });
   assert.equal(filled[0].geometry.coordinates.length, 1, 'hole dropped');
 });
 
 test('cleanFeatures: Chaikin smoothing rounds corners (adds points)', () => {
-  const out = cleanFeatures([big], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 2 });
+  const out = cleanFeatures([big], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 2 });
   assert.equal(out.length, 1);
   assert.ok(out[0].geometry.coordinates[0].length > 4, 'corners rounded into more points');
 });
