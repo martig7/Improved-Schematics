@@ -20,16 +20,10 @@ import {
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { generateGeography } from '../geography/geography';
-import type { GeographyData, HarvestView } from '../geography/types';
-import { computeBounds } from '../render/projection';
+import type { GeographyData } from '../geography/types';
+import type { BoundingBox } from '../types/core';
+import { computeBounds, padBounds } from '../render/projection';
 import { modState, PANEL_STORAGE_KEY } from '../state';
-
-/** The slice of the game's City config we read to frame the whole-city harvest. */
-interface CityViewCfg {
-  code: string;
-  minZoom?: number;
-  initialViewState?: { longitude: number; latitude: number; zoom: number };
-}
 
 const api = window.SubwayBuilderAPI;
 
@@ -86,18 +80,28 @@ export function SchematicPanel() {
   useEffect(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.();
     if (!city) return;
-    // Whole-city harvest view: the city config's center + minZoom is the most
-    // zoomed-out (full-city) view. Fall back to the station centroid if absent.
-    const cfg = ((api.utils.getCities?.() ?? []) as unknown as CityViewCfg[]).find((c) => c.code === city);
-    const iv = cfg?.initialViewState;
-    let view: HarvestView | null = iv ? { center: [iv.longitude, iv.latitude], zoom: cfg?.minZoom ?? iv.zoom } : null;
-    if (!view) {
+    // Harvest extent = bbox of the demand points (the populated city), so we grab
+    // tiles where people actually are. Fall back to the station centroid extent.
+    let harvestBbox: BoundingBox | null = null;
+    const demand = api.gameState.getDemandData?.();
+    if (demand && demand.points.size > 0) {
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      for (const p of demand.points.values()) {
+        const [lng, lat] = p.location;
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+      harvestBbox = padBounds([minLng, minLat, maxLng, maxLat], 0.1);
+    }
+    if (!harvestBbox) {
       const b = computeBounds(api.gameState.getStations().map((s) => ({ points: [s.coords] })));
-      if (!b) return; // no city config and no stations yet → nothing to frame
-      view = { center: [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], zoom: 11 };
+      if (!b) return; // no demand data and no stations yet → nothing to frame
+      harvestBbox = padBounds(b, 0.15);
     }
     let alive = true;
-    generateGeography(city, view).then((g) => {
+    generateGeography(city, harvestBbox).then((g) => {
       if (alive && g) setGeography(g);
     });
     return () => {

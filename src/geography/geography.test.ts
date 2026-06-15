@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildGeography } from './geography';
 import type { GeographyDeps } from './geography';
-import type { TaggedFeature, HarvestView } from './types';
+import type { TaggedFeature } from './types';
 import type { ProbeResult } from './schemaProbe';
 
-const VIEW: HarvestView = { center: [-2.99, 53.41], zoom: 9.5 };
+// The harvest bbox the panel would pass (demand extent); the test's fake harvest
+// ignores it, so any value works — the framing bbox comes from the features.
+const HARVEST: [number, number, number, number] = [-3.25, 53.22, -2.48, 53.58];
 
 const PROBE: ProbeResult = { sourceId: 'osm', source: {}, schema: 'openmaptiles', sourceLayers: ['water', 'landuse'] };
 
@@ -16,12 +18,12 @@ const RAW: TaggedFeature[] = [
 
 test('buildGeography: returns null when there is no map', async () => {
   const deps: GeographyDeps = { getMap: () => null, probe: () => PROBE, harvest: async () => RAW };
-  assert.equal(await buildGeography(VIEW, deps), null);
+  assert.equal(await buildGeography(HARVEST, deps), null);
 });
 
 test('buildGeography: returns null when the probe finds no usable source', async () => {
   const deps: GeographyDeps = { getMap: () => ({ getStyle: () => ({}) }) as never, probe: () => null, harvest: async () => RAW };
-  assert.equal(await buildGeography(VIEW, deps), null);
+  assert.equal(await buildGeography(HARVEST, deps), null);
 });
 
 test('buildGeography: buckets harvested features and frames on their extent', async () => {
@@ -30,7 +32,7 @@ test('buildGeography: buckets harvested features and frames on their extent', as
     probe: () => PROBE,
     harvest: async () => RAW,
   };
-  const geo = await buildGeography(VIEW, deps);
+  const geo = await buildGeography(HARVEST, deps);
   assert.ok(geo);
   assert.equal(geo!.water.length, 1);
   assert.equal(geo!.green.length, 1);
@@ -39,5 +41,5 @@ test('buildGeography: buckets harvested features and frames on their extent', as
 
 test('buildGeography: returns null when nothing was harvested', async () => {
   const deps: GeographyDeps = { getMap: () => ({ getStyle: () => ({}) }) as never, probe: () => PROBE, harvest: async () => [] };
-  assert.equal(await buildGeography(VIEW, deps), null);
+  assert.equal(await buildGeography(HARVEST, deps), null);
 });

@@ -1,5 +1,6 @@
 import type { Map as MlMap } from 'maplibre-gl';
-import type { GeographyData, TaggedFeature, HarvestView } from './types';
+import type { GeographyData, TaggedFeature } from './types';
+import type { BoundingBox } from '../types/core';
 import { probeVectorSchema, type ProbeResult, type StyleLike } from './schemaProbe';
 import { harvestTaggedFeatures } from './harvest';
 import { bucketFeatures } from './classify';
@@ -20,7 +21,7 @@ function envNum(name: string, fallback: number): number {
 export interface GeographyDeps {
   getMap: () => MlMap | null;
   probe: (style: StyleLike) => ProbeResult | null;
-  harvest: (map: MlMap, probe: ProbeResult, view: HarvestView) => Promise<TaggedFeature[]>;
+  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox) => Promise<TaggedFeature[]>;
 }
 
 // window.SubwayBuilderAPI is accessed lazily (only when getMap is actually
@@ -31,9 +32,9 @@ const defaultDeps: GeographyDeps = {
   harvest: harvestTaggedFeatures,
 };
 
-/** Probe → harvest the whole city → classify. The framing bbox is derived from
- *  the harvested features (the real data extent). Returns null on any failure. */
-export async function buildGeography(view: HarvestView, deps: GeographyDeps = defaultDeps): Promise<GeographyData | null> {
+/** Probe → harvest the demand-extent tiles → classify. The framing bbox is
+ *  derived from the harvested features (the real data extent). Null on failure. */
+export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDeps = defaultDeps): Promise<GeographyData | null> {
   try {
     const map = deps.getMap();
     if (!map) return null;
@@ -42,7 +43,7 @@ export async function buildGeography(view: HarvestView, deps: GeographyDeps = de
       console.warn(`${TAG} no usable vector source in the basemap`);
       return null;
     }
-    const raw = await deps.harvest(map, probe, view);
+    const raw = await deps.harvest(map, probe, harvestBbox);
     const { water: rawWater, green: rawGreen } = bucketFeatures(raw, probe.schema);
     const bbox = featuresBbox([...rawWater, ...rawGreen]);
     if (!bbox) {
@@ -71,14 +72,14 @@ export async function buildGeography(view: HarvestView, deps: GeographyDeps = de
   }
 }
 
-/** Cached per city: the whole-city geography is harvested once per session. */
+/** Cached per city: the geography is harvested once per session. */
 export async function generateGeography(
   cityCode: string,
-  view: HarvestView,
+  harvestBbox: BoundingBox,
   deps: GeographyDeps = defaultDeps,
 ): Promise<GeographyData | null> {
   if (cache.has(cityCode)) return cache.get(cityCode) ?? null;
-  const result = await buildGeography(view, deps);
+  const result = await buildGeography(harvestBbox, deps);
   cache.set(cityCode, result);
   return result;
 }

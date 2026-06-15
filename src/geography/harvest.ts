@@ -1,5 +1,6 @@
 import type { Map as MlMap, StyleSpecification, SourceSpecification } from 'maplibre-gl';
-import type { TaggedFeature, HarvestView } from './types';
+import type { TaggedFeature } from './types';
+import type { BoundingBox } from '../types/core';
 import type { ProbeResult } from './schemaProbe';
 
 const TAG = '[ImprovedSchematics] geography:';
@@ -23,15 +24,15 @@ function nextIdleOrTimeout(map: MlMap): Promise<void> {
 
 /**
  * Build a hidden offscreen MapLibre map carrying only the probed vector source,
- * point it at the whole-city view, wait for tiles to load, and return every
- * feature from the target source-layers tagged with its layer name. The view of
- * the real game map is never touched. Returns [] on any failure (caller treats
- * as "no geography").
+ * fit it to the given bbox (the demand/populated-city extent), wait for tiles to
+ * load, and return every feature from the target source-layers tagged with its
+ * layer name. The view of the real game map is never touched. Returns [] on any
+ * failure (caller treats as "no geography").
  */
 export async function harvestTaggedFeatures(
   gameMap: MlMap,
   probe: ProbeResult,
-  view: HarvestView,
+  bbox: BoundingBox,
 ): Promise<TaggedFeature[]> {
   // Borrow the constructor from the live instance — we never import the runtime.
   const MapCtor = gameMap.constructor as typeof MlMap;
@@ -55,26 +56,15 @@ export async function harvestTaggedFeatures(
     })),
   };
 
-  // Dev override: GEO_HARVEST_ZOOM forces the harvest zoom (lower = wider/coarser
-  // = covers more city per view; higher = finer but may clip the city edges).
-  const zoom = (() => {
-    const env = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.GEO_HARVEST_ZOOM) : NaN;
-    return Number.isFinite(env) ? env : view.zoom;
-  })();
-
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   let map: MlMap | null = null;
   try {
-    map = new MapCtor({
-      container,
-      style,
-      center: view.center,
-      zoom,
-      interactive: false,
-      attributionControl: false,
-      fadeDuration: 0,
-    });
+    map = new MapCtor({ container, style, interactive: false, attributionControl: false, fadeDuration: 0 });
     await new Promise<void>((resolve) => map!.once('load', () => resolve()));
+    map.fitBounds(
+      [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
+      { animate: false, padding: 0, duration: 0 },
+    );
     await nextIdleOrTimeout(map);
 
     const out: TaggedFeature[] = [];

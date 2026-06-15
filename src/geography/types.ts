@@ -27,11 +27,3 @@ export interface TaggedFeature {
   properties: Record<string, unknown>;
   geometry: { type: string; coordinates: unknown };
 }
-
-/** Where to point the offscreen harvest map. center = [lng,lat]; zoom is chosen
- *  to frame the whole city (the game's minZoom), so the harvest grabs every city
- *  tile rather than only those near the network. */
-export interface HarvestView {
-  center: [number, number];
-  zoom: number;
-}
