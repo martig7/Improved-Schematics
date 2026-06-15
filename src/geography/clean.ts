@@ -54,6 +54,43 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
   return out;
 }
 
+// Despike thresholds: drop a vertex whose triangle with its neighbours is at
+// least this long but thinner than this wide — i.e. a degenerate needle (e.g. a
+// tile-clip "bridge" darting to the map edge), not a real coastline/peninsula.
+const DESPIKE_MIN_LEN_M = 500;
+const DESPIKE_MAX_WIDTH_M = 40;
+
+/** Remove needle/spike vertices from a closed ring: a vertex P whose triangle
+ *  A-P-B is long (an edge ≥ MIN_LEN) yet thin (triangle "width" = 2·area/longest
+ *  side < MAX_WIDTH). Iterates because removing a tip can expose another. */
+function despike(pts: Pt[]): Pt[] {
+  let out = pts;
+  let changed = true;
+  while (changed && out.length >= 4) {
+    changed = false;
+    const n = out.length;
+    const keep: Pt[] = [];
+    for (let i = 0; i < n; i++) {
+      const A = out[(i - 1 + n) % n];
+      const P = out[i];
+      const B = out[(i + 1) % n];
+      const pa = Math.hypot(A[0] - P[0], A[1] - P[1]);
+      const pb = Math.hypot(B[0] - P[0], B[1] - P[1]);
+      const ab = Math.hypot(A[0] - B[0], A[1] - B[1]);
+      const longest = Math.max(pa, pb, ab);
+      const area2 = Math.abs((A[0] - P[0]) * (B[1] - P[1]) - (A[1] - P[1]) * (B[0] - P[0]));
+      const width = longest > 0 ? area2 / longest : 0;
+      if (longest > DESPIKE_MIN_LEN_M && width < DESPIKE_MAX_WIDTH_M) {
+        changed = true; // drop this needle vertex
+        continue;
+      }
+      keep.push(P);
+    }
+    out = keep;
+  }
+  return out;
+}
+
 /** Simplify + smooth one closed ring (in meter space). The closing duplicate is
  *  stripped so DP/Chaikin treat it as a loop; the SVG renderer re-closes via 'Z'. */
 function smoothRing(ringM: Pt[], simplifyM: number, smoothIters: number): Pt[] {
@@ -63,6 +100,7 @@ function smoothRing(ringM: Pt[], simplifyM: number, smoothIters: number): Pt[] {
   if (pts.length > 1 && a[0] === b[0] && a[1] === b[1]) pts = pts.slice(0, -1);
   if (pts.length < 3) return ringM.slice();
   let s = simplifyM > 0 ? douglasPeucker(pts, simplifyM) : pts;
+  s = despike(s); // kill needle artifacts before Chaikin would widen them into visible spikes
   if (smoothIters > 0) s = chaikin(s, smoothIters, true);
   return s;
 }

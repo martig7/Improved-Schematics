@@ -48,6 +48,19 @@ test('cleanFeatures: dropHoles keeps only the exterior ring', () => {
   assert.equal(filled[0].geometry.coordinates.length, 1, 'hole dropped');
 });
 
+test('cleanFeatures: removes a long thin needle spike, keeps the body', () => {
+  // A box with a ~4.4 km-long, near-zero-width spike darting north from the top edge.
+  const needle = poly([
+    [0, 0], [0.01, 0], [0.01, 0.01],
+    [0.00601, 0.01], [0.006, 0.05], [0.00599, 0.01],
+    [0, 0.01], [0, 0],
+  ]);
+  const out = cleanFeatures([needle], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 0 });
+  assert.equal(out.length, 1);
+  const maxLat = Math.max(...out[0].geometry.coordinates[0].map((c) => c[1]));
+  assert.ok(maxLat < 0.02, `spike removed (maxLat ${maxLat})`);
+});
+
 test('cleanFeatures: Chaikin smoothing rounds corners (adds points)', () => {
   const out = cleanFeatures([big], BBOX, { minAreaFrac: 0, simplifyM: 0, smoothIters: 2 });
   assert.equal(out.length, 1);
