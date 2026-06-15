@@ -313,7 +313,7 @@ export function SchematicPanel() {
       // the whole marker made them gigantic relative to the map when zoomed
       // out.) Only rings/brackets/grid outside both groups counter-scale.
       strokeNodes.current = [...svgEl.querySelectorAll('[stroke-width]')]
-        .filter((el) => !el.closest('.edges') && !el.closest('.imp-stop'))
+        .filter((el) => !el.closest('.edges') && !el.closest('.imp-stop') && !el.closest('.imp-geo'))
         .map((el) => ({
           el,
           base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
