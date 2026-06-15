@@ -12,13 +12,16 @@ export interface CombineOptions {
 }
 
 /**
- * Combine extremely-close park fragments into single polygons via a raster
- * morphological close: rasterize each park's exterior into a boolean grid, dilate
+ * Combine touching / extremely-close polygon fragments into single polygons via a
+ * raster morphological close: rasterize each exterior into a boolean grid, dilate
  * then erode by k cells (which bridges gaps ≤ ~2k cells while leaving isolated
- * parks unchanged and filling small holes), then re-trace the merged outlines
- * back to [lng,lat]. Meant to run BEFORE the size filter so merged parks survive.
+ * bodies unchanged and filling small holes), then re-trace the merged outlines
+ * back to [lng,lat]. Meant to run BEFORE the size filter. Used to merge road-split
+ * parks into one shape, and to merge rivers into the ocean so connected water
+ * survives the filter even though a thin river's own area is tiny. (Holes are
+ * filled — exteriors only.)
  */
-export function combineCloseParks(features: GeoPolyFeature[], opts: CombineOptions): GeoPolyFeature[] {
+export function combineClose(features: GeoPolyFeature[], opts: CombineOptions): GeoPolyFeature[] {
   if (features.length === 0 || opts.gapM <= 0) return features;
   const bbox = featuresBbox(features);
   if (!bbox) return features;

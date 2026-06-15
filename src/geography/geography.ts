@@ -6,7 +6,7 @@ import { harvestTaggedFeatures } from './harvest';
 import { bucketFeatures } from './classify';
 import { cleanFeatures } from './clean';
 import { featuresBbox } from './bbox';
-import { combineCloseParks } from './combine';
+import { combineClose } from './combine';
 
 const TAG = '[ImprovedSchematics] geography:';
 const cache = new Map<string, GeographyData | null>();
@@ -61,17 +61,20 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     // Merge extremely-close park fragments BEFORE the size filter (morphological
     // close on a raster), so a park split into sub-threshold pieces survives as
     // one. GEO_PARK_GAP_M = bridge distance in meters (0 disables).
-    const mergedGreen = combineCloseParks(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
-    // Min area to keep as a fraction of total map area (scale-invariant; ~0.4%
-    // ≈ the previous 1.3M m² for a typical city). GEO_MIN_WATER_FRAC / _PARK_FRAC.
-    const water = cleanFeatures(rawWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.004), simplifyM, smoothIters });
-    const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.004), simplifyM, smoothIters, dropHoles: true });
+    const mergedGreen = combineClose(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
+    // Merge touching water (rivers into the ocean) before the size filter, so a
+    // thin river — tiny on its own area — survives as part of the ocean body it
+    // connects to. GEO_WATER_GAP_M = bridge distance in meters (0 disables).
+    const mergedWater = combineClose(rawWater, { gapM: envNum('GEO_WATER_GAP_M', 30) });
+    // Min area to keep as a fraction of total map area (scale-invariant).
+    const water = cleanFeatures(mergedWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.00004), simplifyM, smoothIters });
+    const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.0001), simplifyM, smoothIters, dropHoles: true });
 
     if (water.length === 0 && green.length === 0) {
       console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);
       return null;
     }
-    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (raw ${rawWater.length}+${rawGreen.length} → ${mergedGreen.length} merged parks), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
+    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (raw ${rawWater.length}+${rawGreen.length} → ${mergedWater.length}+${mergedGreen.length} merged), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
     return { bbox, water, green };
   } catch (err) {
     console.warn(`${TAG} build failed:`, err);
