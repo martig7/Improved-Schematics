@@ -57,6 +57,15 @@ function lineToPath(points: Pixel[]): string {
   return d.trim();
 }
 
+/** Frame points covering the geography extent, so the render bounds — and thus
+ *  the land background rect — span the whole city rather than just the network.
+ *  Empty when there's no geography. */
+function geoFramePts(geo: GeographyData | undefined): { points: Coordinate[] }[] {
+  if (!geo) return [];
+  const [minLng, minLat, maxLng, maxLat] = geo.bbox;
+  return [{ points: [[minLng, minLat], [maxLng, maxLat]] }];
+}
+
 function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
   const m = new Map<string, string[]>();
   for (const e of graph.edges) {
@@ -250,7 +259,7 @@ export function renderGeographic(input: GeoInput): string {
 
   const lines = extractRouteLines(input.routes, input.tracks, input.stations as never, input.stationGroups);
   const bounds = (() => {
-    const b = computeBounds(lines);
+    const b = computeBounds([...lines, ...geoFramePts(input.geography)]);
     return b ? padBounds(b, 0.08) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
   const proj = createProjection(bounds, width, height, padding);
@@ -321,6 +330,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   const bounds = (() => {
     const framePts: { points: Coordinate[] }[] = [...graph.nodes.values()].map((n) => ({ points: [n.lngLat] }));
     for (const e of graph.edges) if (e.geo) framePts.push({ points: e.geo });
+    framePts.push(...geoFramePts(input.geography));
     const b = computeBounds(framePts);
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();
@@ -400,6 +410,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const bounds = (() => {
     const framePts: { points: Coordinate[] }[] = [...graph.nodes.values()].map((n) => ({ points: [n.lngLat] }));
     for (const e of graph.edges) if (e.geo) framePts.push({ points: e.geo });
+    framePts.push(...geoFramePts(input.geography));
     const b = computeBounds(framePts);
     return b ? padBounds(b, 0.1) : ([-1, -1, 1, 1] as [number, number, number, number]);
   })();

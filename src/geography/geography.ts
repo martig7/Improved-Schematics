@@ -1,10 +1,10 @@
 import type { Map as MlMap } from 'maplibre-gl';
-import type { BoundingBox } from '../types/core';
-import type { GeographyData, TaggedFeature } from './types';
+import type { GeographyData, TaggedFeature, HarvestView } from './types';
 import { probeVectorSchema, type ProbeResult, type StyleLike } from './schemaProbe';
 import { harvestTaggedFeatures } from './harvest';
 import { bucketFeatures } from './classify';
 import { cleanFeatures } from './clean';
+import { featuresBbox } from './bbox';
 
 const TAG = '[ImprovedSchematics] geography:';
 const cache = new Map<string, GeographyData | null>();
@@ -20,7 +20,7 @@ function envNum(name: string, fallback: number): number {
 export interface GeographyDeps {
   getMap: () => MlMap | null;
   probe: (style: StyleLike) => ProbeResult | null;
-  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox) => Promise<TaggedFeature[]>;
+  harvest: (map: MlMap, probe: ProbeResult, view: HarvestView) => Promise<TaggedFeature[]>;
 }
 
 // window.SubwayBuilderAPI is accessed lazily (only when getMap is actually
@@ -31,8 +31,9 @@ const defaultDeps: GeographyDeps = {
   harvest: harvestTaggedFeatures,
 };
 
-/** Probe → harvest → classify. Returns null (→ no backdrop) on any failure. */
-export async function buildGeography(bbox: BoundingBox, deps: GeographyDeps = defaultDeps): Promise<GeographyData | null> {
+/** Probe → harvest the whole city → classify. The framing bbox is derived from
+ *  the harvested features (the real data extent). Returns null on any failure. */
+export async function buildGeography(view: HarvestView, deps: GeographyDeps = defaultDeps): Promise<GeographyData | null> {
   try {
     const map = deps.getMap();
     if (!map) return null;
@@ -41,8 +42,13 @@ export async function buildGeography(bbox: BoundingBox, deps: GeographyDeps = de
       console.warn(`${TAG} no usable vector source in the basemap`);
       return null;
     }
-    const raw = await deps.harvest(map, probe, bbox);
+    const raw = await deps.harvest(map, probe, view);
     const { water: rawWater, green: rawGreen } = bucketFeatures(raw, probe.schema);
+    const bbox = featuresBbox([...rawWater, ...rawGreen]);
+    if (!bbox) {
+      console.warn(`${TAG} harvested 0 polygons from '${probe.sourceId}' (${probe.schema}, layers: ${probe.sourceLayers.join(', ')})`);
+      return null;
+    }
 
     // Declutter + smooth: drop sub-threshold polygons and round the MVT
     // stair-steps. Tunable via env (set before launching, like the OCTI_* knobs):
@@ -50,14 +56,14 @@ export async function buildGeography(bbox: BoundingBox, deps: GeographyDeps = de
     //   GEO_SIMPLIFY_M — Douglas–Peucker tolerance (m); GEO_SMOOTH — Chaikin iters
     const simplifyM = envNum('GEO_SIMPLIFY_M', 30);
     const smoothIters = envNum('GEO_SMOOTH', 2);
-    const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 20_000), simplifyM, smoothIters });
+    const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 100_000), simplifyM, smoothIters });
     const green = cleanFeatures(rawGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 40_000), simplifyM, smoothIters });
 
     if (water.length === 0 && green.length === 0) {
-      console.warn(`${TAG} harvested 0 polygons from '${probe.sourceId}' (${probe.schema}, layers: ${probe.sourceLayers.join(', ')})`);
+      console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);
       return null;
     }
-    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green polygons (from ${rawWater.length}+${rawGreen.length} raw) from '${probe.sourceId}'`);
+    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (from ${rawWater.length}+${rawGreen.length} raw), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
     return { bbox, water, green };
   } catch (err) {
     console.warn(`${TAG} build failed:`, err);
@@ -65,15 +71,14 @@ export async function buildGeography(bbox: BoundingBox, deps: GeographyDeps = de
   }
 }
 
-/** Cached per city. The first bbox seen for a city wins (harvested once per
- *  session); pad the bbox at the call site to cover expected network growth. */
+/** Cached per city: the whole-city geography is harvested once per session. */
 export async function generateGeography(
   cityCode: string,
-  bbox: BoundingBox,
+  view: HarvestView,
   deps: GeographyDeps = defaultDeps,
 ): Promise<GeographyData | null> {
   if (cache.has(cityCode)) return cache.get(cityCode) ?? null;
-  const result = await buildGeography(bbox, deps);
+  const result = await buildGeography(view, deps);
   cache.set(cityCode, result);
   return result;
 }

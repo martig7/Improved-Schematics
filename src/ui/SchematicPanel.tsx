@@ -20,9 +20,16 @@ import {
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { generateGeography } from '../geography/geography';
-import type { GeographyData } from '../geography/types';
-import { computeBounds, padBounds } from '../render/projection';
+import type { GeographyData, HarvestView } from '../geography/types';
+import { computeBounds } from '../render/projection';
 import { modState, PANEL_STORAGE_KEY } from '../state';
+
+/** The slice of the game's City config we read to frame the whole-city harvest. */
+interface CityViewCfg {
+  code: string;
+  minZoom?: number;
+  initialViewState?: { longitude: number; latitude: number; zoom: number };
+}
 
 const api = window.SubwayBuilderAPI;
 
@@ -79,12 +86,18 @@ export function SchematicPanel() {
   useEffect(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.();
     if (!city) return;
-    const stations = api.gameState.getStations();
-    const b = computeBounds(stations.map((s) => ({ points: [s.coords] })));
-    if (!b) return; // no stations yet → nothing to frame
-    const bbox = padBounds(b, 0.15);
+    // Whole-city harvest view: the city config's center + minZoom is the most
+    // zoomed-out (full-city) view. Fall back to the station centroid if absent.
+    const cfg = ((api.utils.getCities?.() ?? []) as unknown as CityViewCfg[]).find((c) => c.code === city);
+    const iv = cfg?.initialViewState;
+    let view: HarvestView | null = iv ? { center: [iv.longitude, iv.latitude], zoom: cfg?.minZoom ?? iv.zoom } : null;
+    if (!view) {
+      const b = computeBounds(api.gameState.getStations().map((s) => ({ points: [s.coords] })));
+      if (!b) return; // no city config and no stations yet → nothing to frame
+      view = { center: [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], zoom: 11 };
+    }
     let alive = true;
-    generateGeography(city, bbox).then((g) => {
+    generateGeography(city, view).then((g) => {
       if (alive && g) setGeography(g);
     });
     return () => {
