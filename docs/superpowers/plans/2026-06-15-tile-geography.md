@@ -261,12 +261,14 @@ export interface ProbeResult {
   sourceLayers: string[];
 }
 
-/** Ordered so the most specific signature wins. `green` lists candidate green
- *  source-layers; a schema matches when water + at least one green layer exist. */
-const SIGNATURES: Array<{ schema: GeoSchema; water: string[]; green: string[] }> = [
-  { schema: 'protomaps', water: ['water'], green: ['natural', 'landuse'] },
-  { schema: 'openmaptiles', water: ['water'], green: ['landcover', 'park', 'landuse'] },
-  { schema: 'mapbox', water: ['water'], green: ['landuse', 'landcover'] },
+/** Ordered so the most specific signature wins. `collect` lists every green
+ *  source-layer to query; `requireAny` is the discriminator that must be present
+ *  for the schema to match (so Protomaps's `natural` distinguishes it from the
+ *  OpenMapTiles/Mapbox `landuse` schemas, which classify identically anyway). */
+const SIGNATURES: Array<{ schema: GeoSchema; water: string[]; collect: string[]; requireAny: string[] }> = [
+  { schema: 'protomaps', water: ['water'], collect: ['natural', 'landuse'], requireAny: ['natural'] },
+  { schema: 'openmaptiles', water: ['water'], collect: ['landcover', 'park', 'landuse'], requireAny: ['landcover', 'park'] },
+  { schema: 'mapbox', water: ['water'], collect: ['landuse', 'landcover'], requireAny: ['landuse', 'landcover'] },
 ];
 
 /** Find the first vector source whose layers match a known OSM schema. */
@@ -280,18 +282,18 @@ export function probeVectorSchema(style: StyleLike): ProbeResult | null {
     }
     for (const sig of SIGNATURES) {
       const hasWater = sig.water.some((w) => present.has(w));
-      const greens = sig.green.filter((g) => present.has(g));
-      if (hasWater && greens.length > 0) {
-        const sourceLayers = [...new Set([...sig.water.filter((w) => present.has(w)), ...greens])];
-        return { sourceId, source: src, schema: sig.schema, sourceLayers };
-      }
+      const discriminates = sig.requireAny.some((g) => present.has(g));
+      if (!hasWater || !discriminates) continue;
+      const greens = sig.collect.filter((g) => present.has(g));
+      const sourceLayers = [...new Set([...sig.water.filter((w) => present.has(w)), ...greens])];
+      return { sourceId, source: src, schema: sig.schema, sourceLayers };
     }
   }
   return null;
 }
 ```
 
-Note: the Protomaps signature is checked first because its `natural` layer is the one discriminator; OpenMapTiles/Mapbox both use `landuse`+`class` and classify identically downstream, so a mix-up between those two is harmless.
+Note: `requireAny` is the discriminator — Protomaps is matched by its unique `natural` layer; OpenMapTiles/Mapbox both use `landuse`+`class` and classify identically downstream, so a mix-up between those two is harmless.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
