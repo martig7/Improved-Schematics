@@ -28,6 +28,8 @@ import {
 import { renderRibbons } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
+import { geographyBackdrop } from './geographyBackdrop';
+import type { GeographyData } from '../geography/types';
 
 export interface GeoInput {
   routes: Route[];
@@ -36,6 +38,7 @@ export interface GeoInput {
   /** Raw game stationGroups; see SchematicInput. */
   stationGroups?: unknown[];
   water?: WaterCollection;
+  geography?: GeographyData;
   options?: Partial<SchematicOptions>;
   /** When true, relax lines toward octilinear while staying near geography. */
   smooth?: boolean;
@@ -52,24 +55,6 @@ function lineToPath(points: Pixel[]): string {
     d += (i === 0 ? 'M' : 'L') + r(points[i][0]) + ' ' + r(points[i][1]) + ' ';
   }
   return d.trim();
-}
-
-function waterGroup(water: WaterCollection, proj: Projection, fill: string): string {
-  let paths = '';
-  for (const f of water.features) {
-    if (f.geometry.type !== 'Polygon') continue;
-    let d = '';
-    for (const ring of f.geometry.coordinates) {
-      ring.forEach((c, i) => {
-        const [x, y] = proj.toSVG(c);
-        d += (i === 0 ? 'M' : 'L') + r(x) + ' ' + r(y) + ' ';
-      });
-      d += 'Z ';
-    }
-    if (d.trim()) paths += `<path d="${d.trim()}"/>`;
-  }
-  if (!paths) return '';
-  return `<g fill="${fill}" fill-rule="evenodd" stroke="none">${paths}</g>`;
 }
 
 function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
@@ -252,7 +237,6 @@ export function renderGeographic(input: GeoInput): string {
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const { width, height, padding, dark } = opts;
   const land = dark ? DARK_THEME.land : theme.land;
-  const water = dark ? DARK_THEME.water : theme.water;
 
   const parts: string[] = [`<rect x="0" y="0" width="${width}" height="${height}" fill="${land}"/>`];
 
@@ -271,10 +255,8 @@ export function renderGeographic(input: GeoInput): string {
   })();
   const proj = createProjection(bounds, width, height, padding);
 
-  if (input.water) {
-    const g = waterGroup(input.water, proj, water);
-    if (g) parts.push(g);
-  }
+  const backdrop = geographyBackdrop(input.geography, proj, theme, dark);
+  if (backdrop) parts.push(backdrop);
 
   const segments: Segment[] = [];
   let linePaths = '';
@@ -366,11 +348,10 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
-  // Render water through the real projection (the support graph carries no
-  // lngLat, so renderRibbons' bbox-affine water mapping can't be used). Inject
-  // it via the gridOverlay slot, which draws between the background and routes.
-  const waterColor = dark ? DARK_THEME.water : theme.water;
-  const waterOverlay = input.water ? waterGroup(input.water, proj, waterColor) : '';
+  // Render geography through the real projection (the support graph carries no
+  // lngLat, so renderRibbons' bbox-affine mapping can't be used). Inject it via
+  // the gridOverlay slot, which draws between the background and routes.
+  const waterOverlay = geographyBackdrop(input.geography, proj, theme, dark);
 
   return renderRibbons({
     layout,
@@ -660,11 +641,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
-  // The support graph carries no lngLat for renderRibbons' affine water map, so
-  // draw water through the real projection and inject it (plus the optional Γ'
-  // overlay) via the gridOverlay slot.
-  const waterColor = dark ? DARK_THEME.water : theme.water;
-  const waterOverlay = input.water ? waterGroup(input.water, proj, waterColor) : '';
+  // The support graph carries no lngLat for renderRibbons' affine map, so draw
+  // geography through the real (warped) projection — so water + parks deform with
+  // the network — and inject it (plus the optional Γ' overlay) via gridOverlay.
+  const waterOverlay = geographyBackdrop(input.geography, proj, theme, dark);
   const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
   const stations = [...supportM.stations.values()].map((st) => ({
     nodeId: st.nodeId,

@@ -10,6 +10,7 @@
 import type { Route, Track } from '../types/game-state';
 import type { Coordinate } from '../types/core';
 import type { WaterCollection, SchematicOptions } from './types';
+import type { GeographyData } from '../geography/types';
 import { DEFAULT_OPTIONS } from './types';
 import { renderGeographic, precomputeSmoothed, drawSmoothed, type SmoothedPrecomputed } from './renderGeographic';
 import { renderOctilinear } from './renderOctilinear';
@@ -32,6 +33,7 @@ export interface SchematicInput {
    */
   stationGroups?: unknown[];
   water?: WaterCollection;
+  geography?: GeographyData;
   options?: Partial<SchematicOptions>;
 }
 
