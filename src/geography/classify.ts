@@ -16,8 +16,8 @@ export function classifyFeature(
   props: Record<string, unknown>,
   _schema: GeoSchema,
 ): GeoCategory | null {
-  if (sourceLayer === 'water') return 'water';
-  if (sourceLayer === 'park') return 'green'; // OpenMapTiles dedicated park layer
+  if (sourceLayer === 'water' || sourceLayer === 'ocean_foundations') return 'water';
+  if (sourceLayer === 'park' || sourceLayer === 'parks') return 'green'; // dedicated park layer (OMT / Subway Builder)
   const value = String(
     props['class'] ?? props['kind'] ?? props['pmap:kind'] ?? props['subclass'] ?? props['type'] ?? '',
   ).toLowerCase();

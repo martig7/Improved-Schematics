@@ -20,6 +20,10 @@ export interface ProbeResult {
  *  for the schema to match (so Protomaps's `natural` distinguishes it from the
  *  OpenMapTiles/Mapbox `landuse` schemas, which classify identically anyway). */
 const SIGNATURES: Array<{ schema: GeoSchema; water: string[]; collect: string[]; requireAny: string[] }> = [
+  // The game's own `general-tiles` schema. `parks` (plural) is the discriminator
+  // — no OSM schema uses it — and `ocean_foundations` carries the saltwater/sea
+  // while `water` is inland lakes/rivers, so both count as water.
+  { schema: 'subwaybuilder', water: ['water', 'ocean_foundations'], collect: ['parks'], requireAny: ['parks'] },
   { schema: 'protomaps', water: ['water'], collect: ['natural', 'landuse'], requireAny: ['natural'] },
   { schema: 'openmaptiles', water: ['water'], collect: ['landcover', 'park', 'landuse'], requireAny: ['landcover', 'park'] },
   { schema: 'mapbox', water: ['water'], collect: ['landuse', 'landcover'], requireAny: ['landuse', 'landcover'] },

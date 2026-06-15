@@ -62,8 +62,10 @@ export async function harvestTaggedFeatures(
     await nextIdleOrTimeout(map);
 
     const out: TaggedFeature[] = [];
+    const counts: Record<string, number> = {};
     for (const sl of probe.sourceLayers) {
       const feats = map.querySourceFeatures(probe.sourceId, { sourceLayer: sl });
+      counts[sl] = feats.length;
       for (const f of feats) {
         out.push({
           sourceLayer: sl,
@@ -72,6 +74,7 @@ export async function harvestTaggedFeatures(
         });
       }
     }
+    console.info(`${TAG} harvested per source-layer:`, counts);
     return out;
   } catch (err) {
     console.warn(`${TAG} offscreen harvest failed:`, err);

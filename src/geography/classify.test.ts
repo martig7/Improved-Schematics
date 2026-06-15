@@ -14,6 +14,12 @@ test('classifyFeature: green land-cover/use values map to green', () => {
   assert.equal(classifyFeature('park', {}, 'openmaptiles'), 'green');
 });
 
+test('classifyFeature: Subway Builder parks + ocean_foundations layers', () => {
+  assert.equal(classifyFeature('parks', {}, 'subwaybuilder'), 'green');
+  assert.equal(classifyFeature('ocean_foundations', {}, 'subwaybuilder'), 'water');
+  assert.equal(classifyFeature('buildings', {}, 'subwaybuilder'), null);
+});
+
 test('classifyFeature: non-green land-use is dropped', () => {
   assert.equal(classifyFeature('landuse', { class: 'residential' }, 'mapbox'), null);
   assert.equal(classifyFeature('transportation', {}, 'openmaptiles'), null);

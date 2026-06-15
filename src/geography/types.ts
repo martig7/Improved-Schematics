@@ -1,7 +1,9 @@
 import type { Coordinate, BoundingBox } from '../types/core';
 
-/** Which OSM vector-tile schema the game's basemap uses. */
-export type GeoSchema = 'openmaptiles' | 'protomaps' | 'mapbox';
+/** Which vector-tile schema the game's basemap uses. `subwaybuilder` is the
+ *  game's own `general-tiles` schema (water / ocean_foundations / parks); the
+ *  rest are OSM schemas kept as fallbacks. */
+export type GeoSchema = 'subwaybuilder' | 'openmaptiles' | 'protomaps' | 'mapbox';
 
 /** Geography category we keep; everything else is dropped. */
 export type GeoCategory = 'water' | 'green';
