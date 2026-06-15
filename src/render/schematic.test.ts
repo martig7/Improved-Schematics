@@ -6,6 +6,7 @@ import {
   drawSmoothedSchematic,
 } from './schematic';
 import type { RenderMode } from './types';
+import type { GeographyData } from '../geography/types';
 
 const SAMPLE = {
   stations: [
@@ -37,6 +38,23 @@ test('empty network yields the empty-state svg in every mode', () => {
     assert.match(svg, /^<svg/);
     assert.match(svg, /Build at least one route/);
   }
+});
+
+const GEO: GeographyData = {
+  bbox: [-3.05, 53.34, -2.83, 53.47],
+  water: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-3.0, 53.35], [-2.9, 53.35], [-2.9, 53.45], [-3.0, 53.35]]] } }],
+  green: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-2.95, 53.4], [-2.93, 53.4], [-2.93, 53.42], [-2.95, 53.4]]] } }],
+};
+
+test('renders the geography backdrop with no routes built yet', () => {
+  const svg = generateSchematicSVG({ routes: [], tracks: [], stations: [], geography: GEO, options: { mode: 'geographic' } });
+  assert.doesNotMatch(svg, /Build at least one route/, 'not the empty-state prompt');
+  assert.ok(svg.includes('#a8d4e6') || svg.includes('#cfe6c3'), 'has water or park fill');
+});
+
+test('still shows the prompt when there are no routes and no geography', () => {
+  const svg = generateSchematicSVG({ routes: [], tracks: [], stations: [], options: { mode: 'geographic' } });
+  assert.match(svg, /Build at least one route/);
 });
 
 test('each mode returns a well-formed svg for a small network', () => {

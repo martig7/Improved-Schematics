@@ -50,7 +50,9 @@ export function generateSchematicSVG(input: SchematicInput): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const land = opts.dark ? '#18181b' : opts.theme.land;
 
-  if (input.routes.length === 0) {
+  // With no routes, still show the geography backdrop if we have it (renderGeographic
+  // frames on the geography extent); only show the prompt when there's nothing to draw.
+  if (input.routes.length === 0 && !input.geography) {
     return emptyStateSvg(opts.width, opts.height, land);
   }
 
@@ -88,9 +90,11 @@ export type { SmoothedPrecomputed };
  */
 export function precomputeSmoothedSchematic(input: SchematicInput): SmoothedPrecomputed | string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
-  if (input.routes.length === 0) {
+  if (input.routes.length === 0 && !input.geography) {
     return emptyStateSvg(opts.width, opts.height, opts.dark ? '#18181b' : opts.theme.land);
   }
+  // No routes but geography present: precomputeSmoothed sees an empty graph and
+  // falls back to the geographic render (the geography backdrop) as a string.
   return precomputeSmoothed({ ...input, smooth: true });
 }
 
