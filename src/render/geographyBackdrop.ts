@@ -5,8 +5,16 @@ import type { GeographyData, GeoPolyFeature } from '../geography/types';
 
 const r = (n: number): number => Math.round(n * 10) / 10;
 
-/** Render a set of polygon features as one filled SVG group through `proj`. */
-export function polyGroup(features: GeoPolyFeature[], proj: Projection, fill: string): string {
+/** Render a set of polygon features as one filled SVG group through `proj`.
+ *  `fillRule` is 'evenodd' for water (so island holes read as land) and
+ *  'nonzero' for parks (so overlapping tile-duplicate polygons merge solid
+ *  instead of XOR-ing into holes). */
+export function polyGroup(
+  features: GeoPolyFeature[],
+  proj: Projection,
+  fill: string,
+  fillRule: 'evenodd' | 'nonzero' = 'evenodd',
+): string {
   let paths = '';
   for (const f of features) {
     if (f.geometry.type !== 'Polygon') continue;
@@ -21,7 +29,7 @@ export function polyGroup(features: GeoPolyFeature[], proj: Projection, fill: st
     if (d.trim()) paths += `<path d="${d.trim()}"/>`;
   }
   if (!paths) return '';
-  return `<g fill="${fill}" fill-rule="evenodd" stroke="none">${paths}</g>`;
+  return `<g fill="${fill}" fill-rule="${fillRule}" stroke="none">${paths}</g>`;
 }
 
 /**
@@ -39,5 +47,5 @@ export function geographyBackdrop(
   if (!geo) return '';
   const greenFill = dark ? DARK_THEME.green : theme.green;
   const waterFill = dark ? DARK_THEME.water : theme.water;
-  return polyGroup(geo.green, proj, greenFill) + polyGroup(geo.water, proj, waterFill);
+  return polyGroup(geo.green, proj, greenFill, 'nonzero') + polyGroup(geo.water, proj, waterFill, 'evenodd');
 }

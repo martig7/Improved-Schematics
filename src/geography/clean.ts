@@ -10,6 +10,9 @@ export interface CleanOptions {
   simplifyM: number;
   /** Chaikin corner-rounding iterations (0 = no smoothing). */
   smoothIters: number;
+  /** Keep only the exterior ring (fill holes). Used for parks; water keeps its
+   *  holes so islands read as land. */
+  dropHoles?: boolean;
 }
 
 /**
@@ -35,7 +38,8 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
     const ringsM = rings.map((r) => r.map(toM));
     if (ringArea(ringsM[0]) < opts.minAreaM2) continue; // outer ring too small → drop whole polygon
     const cleaned: Coordinate[][] = [];
-    for (const rM of ringsM) {
+    const sourceRings = opts.dropHoles ? ringsM.slice(0, 1) : ringsM; // exterior only when filling holes
+    for (const rM of sourceRings) {
       const s = smoothRing(rM, opts.simplifyM, opts.smoothIters);
       if (s.length >= 3) cleaned.push(s.map(toLngLat));
     }

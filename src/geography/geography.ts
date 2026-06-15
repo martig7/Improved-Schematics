@@ -58,7 +58,7 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     const simplifyM = envNum('GEO_SIMPLIFY_M', 30);
     const smoothIters = envNum('GEO_SMOOTH', 2);
     const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 300_000), simplifyM, smoothIters });
-    const green = cleanFeatures(rawGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 150_000), simplifyM, smoothIters });
+    const green = cleanFeatures(rawGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 150_000), simplifyM, smoothIters, dropHoles: true });
 
     if (water.length === 0 && green.length === 0) {
       console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);

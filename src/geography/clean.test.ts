@@ -31,6 +31,23 @@ test('cleanFeatures: Douglas–Peucker drops collinear edge midpoints', () => {
   assert.ok(out[0].geometry.coordinates[0].length < 8, 'midpoints removed');
 });
 
+test('cleanFeatures: dropHoles keeps only the exterior ring', () => {
+  const withHole: GeoPolyFeature = {
+    type: 'Feature',
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]], // exterior
+        [[0.003, 0.003], [0.006, 0.003], [0.006, 0.006], [0.003, 0.006], [0.003, 0.003]], // hole
+      ],
+    },
+  };
+  const kept = cleanFeatures([withHole], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 0 });
+  assert.equal(kept[0].geometry.coordinates.length, 2, 'hole kept by default');
+  const filled = cleanFeatures([withHole], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 0, dropHoles: true });
+  assert.equal(filled[0].geometry.coordinates.length, 1, 'hole dropped');
+});
+
 test('cleanFeatures: Chaikin smoothing rounds corners (adds points)', () => {
   const out = cleanFeatures([big], BBOX, { minAreaM2: 0, simplifyM: 0, smoothIters: 2 });
   assert.equal(out.length, 1);
