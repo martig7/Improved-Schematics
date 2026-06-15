@@ -18,8 +18,10 @@ import {
   type SmoothedPrecomputed,
 } from '../render/schematic';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
-import type { RenderMode, WaterCollection } from '../render/types';
-import { generateWater } from '../water/oceanIndex';
+import type { RenderMode } from '../render/types';
+import { generateGeography } from '../geography/geography';
+import type { GeographyData } from '../geography/types';
+import { computeBounds, padBounds } from '../render/projection';
 import { modState, PANEL_STORAGE_KEY } from '../state';
 
 const api = window.SubwayBuilderAPI;
@@ -71,14 +73,19 @@ export function SchematicPanel() {
   const viewRef = useRef<View | null>(null);
   const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
 
-  // Water for the current city, loaded from its ocean_depth_index on first open.
-  const [water, setWater] = useState<WaterCollection | undefined>(undefined);
+  // Tile-derived geography (water + parks) for the current city, harvested from
+  // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
+  const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
   useEffect(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.();
     if (!city) return;
+    const stations = api.gameState.getStations();
+    const b = computeBounds(stations.map((s) => ({ points: [s.coords] })));
+    if (!b) return; // no stations yet → nothing to frame
+    const bbox = padBounds(b, 0.15);
     let alive = true;
-    generateWater(city).then((wc) => {
-      if (alive && wc) setWater(wc);
+    generateGeography(city, bbox).then((g) => {
+      if (alive && g) setGeography(g);
     });
     return () => {
       alive = false;
@@ -131,14 +138,14 @@ export function SchematicPanel() {
   // when `water` arrives), then reused for label/station toggles so those are a
   // cheap redraw instead of a full octi re-run. Cleared on each Generate click
   // so a fresh build reflects current game state.
-  const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string; water: WaterCollection | undefined } | null>(null);
+  const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string; geography: GeographyData | undefined } | null>(null);
 
   // View-preservation: the inject effect re-fits only when the layout identity
   // changes (mode switch, (re)generation, or water reframe), and keeps the
   // current pan/zoom when only labels/stations toggle (same layout redrawn).
   const layoutIdRef = useRef<unknown>(null);
   const lastLayoutIdRef = useRef<unknown>(undefined);
-  const geoIdRef = useRef<{ mode: RenderMode; water: WaterCollection | undefined } | null>(null);
+  const geoIdRef = useRef<{ mode: RenderMode; geography: GeographyData | undefined } | null>(null);
 
   const svg = useMemo(() => {
     const dark = api.ui.getResolvedTheme() === 'dark';
@@ -150,7 +157,7 @@ export function SchematicPanel() {
       tracks: api.gameState.getTracks(),
       stations: api.gameState.getStations(),
       stationGroups: resolveStationGroupsFromGameState(api.gameState),
-      water,
+      geography,
       options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
     });
 
@@ -165,9 +172,9 @@ export function SchematicPanel() {
       // Generate, or `water` changed). Label/station toggles fall through to
       // the cheap redraw below, reusing the cached layout.
       let cache = smoothedCacheRef.current;
-      if (!cache || cache.water !== water) {
+      if (!cache || cache.geography !== geography) {
         const t0 = performance.now();
-        cache = { pre: precomputeSmoothedSchematic(buildInput()), water };
+        cache = { pre: precomputeSmoothedSchematic(buildInput()), geography };
         smoothedCacheRef.current = cache;
         genMsRef.current = performance.now() - t0;
       }
@@ -181,12 +188,12 @@ export function SchematicPanel() {
     // Geographic/schematic: cheap enough to fully render on every change. Its
     // layout identity depends only on mode + water (stable across toggles).
     genMsRef.current = null;
-    if (!geoIdRef.current || geoIdRef.current.mode !== mode || geoIdRef.current.water !== water) {
-      geoIdRef.current = { mode, water };
+    if (!geoIdRef.current || geoIdRef.current.mode !== mode || geoIdRef.current.geography !== geography) {
+      geoIdRef.current = { mode, geography };
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, water, smoothedReady]);
+  }, [mode, showStations, showLabels, geography, smoothedReady]);
 
   // Save the pristine generated SVG (full map at intrinsic bounds — not the
   // DOM copy, whose viewBox/width are mutated for pan/zoom).
