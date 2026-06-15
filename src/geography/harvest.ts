@@ -4,8 +4,12 @@ import type { TaggedFeature } from './types';
 import type { ProbeResult } from './schemaProbe';
 
 const TAG = '[ImprovedSchematics] geography:';
-const CONTAINER_PX = 1024; // offscreen canvas size; larger = higher fitBounds zoom = more detail
-const IDLE_TIMEOUT_MS = 10_000;
+// Offscreen canvas size. Tiles-to-cover-the-viewport scales with this, so keep
+// it small: 512px loads ~4× fewer tiles than 1024px (less GPU + less contention
+// with the real map's tile worker during the one-time harvest), at a slightly
+// lower fitBounds zoom — fine, since we simplify the geometry afterwards anyway.
+const CONTAINER_PX = 512;
+const IDLE_TIMEOUT_MS = 6_000;
 
 function nextIdleOrTimeout(map: MlMap): Promise<void> {
   return new Promise((resolve) => {
@@ -51,6 +55,7 @@ export async function harvestTaggedFeatures(
     })),
   };
 
+  const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   let map: MlMap | null = null;
   try {
     map = new MapCtor({ container, style, interactive: false, attributionControl: false, fadeDuration: 0 });
@@ -80,7 +85,30 @@ export async function harvestTaggedFeatures(
     console.warn(`${TAG} offscreen harvest failed:`, err);
     return [];
   } finally {
-    map?.remove();
+    // Tear the offscreen map down immediately so it stops contending with the
+    // real map. remove() disposes the WebGL context in maplibre 5, but we also
+    // force WEBGL_lose_context so the GPU frees the 2nd context now rather than
+    // at GC. Grab the canvas before remove() detaches it.
+    const canvas = (() => {
+      try {
+        return map?.getCanvas() ?? null;
+      } catch {
+        return null;
+      }
+    })();
+    try {
+      map?.remove();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const gl = (canvas?.getContext('webgl2') ?? canvas?.getContext('webgl')) as WebGLRenderingContext | null;
+      gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      /* ignore */
+    }
     container.remove();
+    const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0);
+    console.info(`${TAG} offscreen map disposed (lived ${ms}ms)`);
   }
 }
