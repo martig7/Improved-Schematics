@@ -53,6 +53,11 @@ interface SvgBox {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+// Persists the generated smoothed map across mode switches AND panel close, so
+// switching to geographic or reopening the panel doesn't discard it. Keyed by
+// city; replaced only by an explicit (Re)generate.
+let smoothedStore: { city: string; pre: SmoothedPrecomputed | string } | null = null;
+
 export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(true);
@@ -151,11 +156,10 @@ export function SchematicPanel() {
     }
   }, []);
 
-  // Cache of the expensive smoothed layout. Built on Generate Map (and rebuilt
-  // when `water` arrives), then reused for label/station toggles so those are a
-  // cheap redraw instead of a full octi re-run. Cleared on each Generate click
-  // so a fresh build reflects current game state.
-  const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string; geography: GeographyData | undefined } | null>(null);
+  // Per-mount cache of the expensive smoothed layout, hydrated from smoothedStore
+  // (which persists across mounts). Reused for label/station toggles so those are
+  // a cheap redraw; cleared by (Re)generate to force a fresh octi run.
+  const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string } | null>(null);
 
   // View-preservation: the inject effect re-fits only when the layout identity
   // changes (mode switch, (re)generation, or water reframe), and keeps the
@@ -185,18 +189,27 @@ export function SchematicPanel() {
         layoutIdRef.current = 'smoothed-blank';
         return '';
       }
-      // Run the heavy octi pipeline only when there's no valid cache (fresh
-      // Generate, or `water` changed). Label/station toggles fall through to
-      // the cheap redraw below, reusing the cached layout.
+      const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
       let cache = smoothedCacheRef.current;
-      if (!cache || cache.geography !== geography) {
-        const t0 = performance.now();
-        cache = { pre: precomputeSmoothedSchematic(buildInput()), geography };
+      // Hydrate from the persistent store on a fresh mount / after a mode switch,
+      // so a previously generated map shows instantly without rebuilding.
+      if (!cache && smoothedStore && smoothedStore.city === currentCity) {
+        cache = { pre: smoothedStore.pre };
         smoothedCacheRef.current = cache;
+        genMsRef.current = null;
+      }
+      // Run the heavy octi pipeline only when there's no cache (a fresh
+      // (Re)generate cleared it). Label/station toggles fall through to the
+      // cheap redraw below, reusing the cached layout.
+      if (!cache) {
+        const t0 = performance.now();
+        cache = { pre: precomputeSmoothedSchematic(buildInput()) };
+        smoothedCacheRef.current = cache;
+        smoothedStore = { city: currentCity, pre: cache.pre };
         genMsRef.current = performance.now() - t0;
       }
-      // The cache object is recreated on every (re)build but reused across
-      // label/station toggles — exactly the identity the inject effect needs.
+      // The cache object is stable across label/station toggles — exactly the
+      // identity the inject effect needs.
       layoutIdRef.current = cache;
       const pre = cache.pre;
       return typeof pre === 'string' ? pre : drawSmoothedSchematic(pre, { showLabels, showStations });
@@ -262,6 +275,14 @@ export function SchematicPanel() {
     applyToDom(true);
   }, [applyToDom]);
 
+  // Rebuild the smoothed map from current game state, discarding the stored one.
+  const regenerate = useCallback(() => {
+    smoothedCacheRef.current = null;
+    smoothedStore = null;
+    setSmoothedReady(false);
+    setGenerating(true);
+  }, []);
+
   // Inject SVG, take over its sizing, cache the elements we counter-scale.
   useEffect(() => {
     const vp = viewportRef.current;
@@ -314,11 +335,13 @@ export function SchematicPanel() {
     if (svg) setGenerating(false);
   }, [svg, mode, fit, applyToDom]);
 
-  // Re-fit on mode switch (different layout shape). Also re-arm the on-demand
-  // gate so smoothed mode shows the Generate Map button instead of auto-building.
+  // Re-fit on mode switch (different layout shape). Smoothed mode opens the gate
+  // immediately when a generated map is already stored for this city (so switching
+  // back doesn't lose it); otherwise it shows the Generate Map button.
   useEffect(() => {
-    setSmoothedReady(false);
     setGenerating(false);
+    const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+    setSmoothedReady(mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity);
     const id = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(id);
   }, [mode, fit]);
@@ -400,6 +423,11 @@ export function SchematicPanel() {
         <button onClick={() => setShowLabels((v) => !v)} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
+        {mode === 'smoothed' && smoothedReady && !generating && (
+          <button onClick={regenerate} style={toggleStyle(false)} title="Rebuild the smoothed map from current game state">
+            ↻ Regenerate
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {mode === 'smoothed' && genMs != null && (
           <span style={{ color: '#888', fontSize: 11 }}>
@@ -467,8 +495,9 @@ export function SchematicPanel() {
           >
             <button
               onClick={() => {
-                // Fresh build: drop any cached layout from a prior generation.
+                // Fresh build: drop any cached/stored layout from a prior generation.
                 smoothedCacheRef.current = null;
+                smoothedStore = null;
                 setGenerating(true);
               }}
               style={{
