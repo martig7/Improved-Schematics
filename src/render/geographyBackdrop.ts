@@ -15,10 +15,13 @@ export function polyGroup(
   fill: string,
   fillRule: 'evenodd' | 'nonzero' = 'evenodd',
 ): string {
-  let paths = '';
+  // Accumulate every ring into ONE <path> so abutting per-tile polygons fill as a
+  // single region. Separate <path>s leave a ~1px anti-aliasing seam where two
+  // ocean tiles meet (the mid-ocean "spike"); one path + nonzero has no seam, and
+  // correctly-wound holes (islands) still render as holes.
+  let d = '';
   for (const f of features) {
     if (f.geometry.type !== 'Polygon') continue;
-    let d = '';
     for (const ring of f.geometry.coordinates) {
       ring.forEach((c, i) => {
         const [x, y] = proj.toSVG(c);
@@ -26,10 +29,10 @@ export function polyGroup(
       });
       d += 'Z ';
     }
-    if (d.trim()) paths += `<path d="${d.trim()}"/>`;
   }
-  if (!paths) return '';
-  return `<g fill="${fill}" fill-rule="${fillRule}" stroke="none">${paths}</g>`;
+  d = d.trim();
+  if (!d) return '';
+  return `<g fill="${fill}" fill-rule="${fillRule}" stroke="none"><path d="${d}"/></g>`;
 }
 
 /**
