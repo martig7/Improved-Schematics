@@ -35,7 +35,11 @@ export async function buildGeography(bbox: BoundingBox, deps: GeographyDeps = de
     }
     const raw = await deps.harvest(map, probe, bbox);
     const { water, green } = bucketFeatures(raw, probe.schema);
-    if (water.length === 0 && green.length === 0) return null;
+    if (water.length === 0 && green.length === 0) {
+      console.warn(`${TAG} harvested 0 polygons from '${probe.sourceId}' (${probe.schema}, layers: ${probe.sourceLayers.join(', ')})`);
+      return null;
+    }
+    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green polygons from '${probe.sourceId}'`);
     return { bbox, water, green };
   } catch (err) {
     console.warn(`${TAG} build failed:`, err);
