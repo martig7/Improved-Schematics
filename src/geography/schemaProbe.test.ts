@@ -58,6 +58,24 @@ test('probeVectorSchema: recognizes the Subway Builder general-tiles schema', ()
   assert.ok(r!.sourceLayers.includes('parks'));
 });
 
+test('probeVectorSchema: modded Subway Builder map (green in landuse, parks empty)', () => {
+  // Real shape from a modded LIV map (http tile server; parks layer present but empty).
+  const style = {
+    sources: { 'general-tiles': { type: 'vector', tiles: ['http://127.0.0.1:51534/LIV/{x}/{y}/{z}.mvt'] } },
+    layers: [
+      { source: 'general-tiles', 'source-layer': 'water' },
+      { source: 'general-tiles', 'source-layer': 'landuse' },
+      { source: 'general-tiles', 'source-layer': 'parks' },
+      { source: 'general-tiles', 'source-layer': 'ocean_foundations' },
+    ],
+  };
+  const r = probeVectorSchema(style);
+  assert.ok(r);
+  assert.equal(r!.schema, 'subwaybuilder');
+  assert.ok(r!.sourceLayers.includes('landuse'), 'harvests landuse');
+  assert.ok(r!.sourceLayers.includes('water'));
+});
+
 test('probeVectorSchema: returns null for a raster-only style', () => {
   const style = {
     sources: { sat: { type: 'raster', tiles: ['https://x/{z}/{x}/{y}.png'] } },

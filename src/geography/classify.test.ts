@@ -20,6 +20,14 @@ test('classifyFeature: Subway Builder parks + ocean_foundations layers', () => {
   assert.equal(classifyFeature('buildings', {}, 'subwaybuilder'), null);
 });
 
+test('classifyFeature: modded landuse classified by kind (green kept, rest dropped)', () => {
+  assert.equal(classifyFeature('landuse', { kind: 'park' }, 'subwaybuilder'), 'green');
+  assert.equal(classifyFeature('landuse', { kind: 'grass' }, 'subwaybuilder'), 'green');
+  assert.equal(classifyFeature('landuse', { kind: 'forest' }, 'subwaybuilder'), 'green');
+  assert.equal(classifyFeature('landuse', { kind: 'apron' }, 'subwaybuilder'), null);
+  assert.equal(classifyFeature('landuse', { kind: 'other' }, 'subwaybuilder'), null);
+});
+
 test('classifyFeature: non-green land-use is dropped', () => {
   assert.equal(classifyFeature('landuse', { class: 'residential' }, 'mapbox'), null);
   assert.equal(classifyFeature('transportation', {}, 'openmaptiles'), null);

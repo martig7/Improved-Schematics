@@ -1,11 +1,15 @@
 import { toPolyFeatures } from './normalize';
 import type { GeoCategory, GeoPolyFeature, GeoSchema, TaggedFeature } from './types';
 
-/** Land-use/land-cover/natural values we treat as green space, across schemas. */
+/** Land-use/land-cover/natural values we treat as green space, across schemas
+ *  (OpenMapTiles `class`, Protomaps `pmap:kind`, Tilezen/Subway-Builder `kind`). */
 const GREEN_VALUES = new Set([
-  'park', 'grass', 'forest', 'wood', 'meadow', 'scrub', 'garden', 'grassland',
-  'recreation_ground', 'cemetery', 'nature_reserve', 'farmland', 'heath', 'orchard',
-  'allotments', 'village_green', 'golf_course', 'pitch', 'national_park',
+  'park', 'grass', 'grassland', 'forest', 'wood', 'woodland', 'meadow', 'scrub',
+  'heath', 'fell', 'moor', 'garden', 'recreation_ground', 'cemetery', 'grave_yard',
+  'nature_reserve', 'protected_area', 'national_park', 'conservation', 'farmland',
+  'farmyard', 'orchard', 'vineyard', 'allotments', 'village_green', 'common',
+  'golf_course', 'pitch', 'playground', 'dog_park', 'wetland', 'marsh', 'greenfield',
+  'plant_nursery',
 ]);
 
 /** Classify a harvested feature into a geography category, or null to drop it.
