@@ -64,7 +64,11 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     const mergedGreen = combineClose(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
     // Min area to keep as a fraction of total map area (scale-invariant). Thin
     // rivers fall below it and get dropped — accepted trade-off.
-    const water = cleanFeatures(rawWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.00004), simplifyM, smoothIters });
+    // smoothIters: 0 for water — Chaikin rounds the corner where a per-tile ocean
+    // piece's seam meets the coastline, pulling that seam edge off the shared tile
+    // boundary so adjacent pieces no longer align → a thin gap (the mid-ocean
+    // "spike"). DP alone keeps the seam edges straight, so the tiles stay flush.
+    const water = cleanFeatures(rawWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.00004), simplifyM, smoothIters: 0 });
     const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.0001), simplifyM, smoothIters, dropHoles: true });
 
     if (water.length === 0 && green.length === 0) {
