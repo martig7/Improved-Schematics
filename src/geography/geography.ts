@@ -6,6 +6,7 @@ import { harvestTaggedFeatures } from './harvest';
 import { bucketFeatures } from './classify';
 import { cleanFeatures } from './clean';
 import { featuresBbox } from './bbox';
+import { combineCloseParks } from './combine';
 
 const TAG = '[ImprovedSchematics] geography:';
 const cache = new Map<string, GeographyData | null>();
@@ -57,14 +58,18 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     //   GEO_SIMPLIFY_M — Douglas–Peucker tolerance (m); GEO_SMOOTH — Chaikin iters
     const simplifyM = envNum('GEO_SIMPLIFY_M', 30);
     const smoothIters = envNum('GEO_SMOOTH', 2);
-    const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 300_000), simplifyM, smoothIters });
-    const green = cleanFeatures(rawGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 150_000), simplifyM, smoothIters, dropHoles: true });
+    // Merge extremely-close park fragments BEFORE the size filter (morphological
+    // close on a raster), so a park split into sub-threshold pieces survives as
+    // one. GEO_PARK_GAP_M = bridge distance in meters (0 disables).
+    const mergedGreen = combineCloseParks(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
+    const water = cleanFeatures(rawWater, bbox, { minAreaM2: envNum('GEO_MIN_WATER_M2', 1_000_000), simplifyM, smoothIters });
+    const green = cleanFeatures(mergedGreen, bbox, { minAreaM2: envNum('GEO_MIN_PARK_M2', 1_000_000), simplifyM, smoothIters, dropHoles: true });
 
     if (water.length === 0 && green.length === 0) {
       console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);
       return null;
     }
-    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (from ${rawWater.length}+${rawGreen.length} raw), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
+    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (raw ${rawWater.length}+${rawGreen.length} → ${mergedGreen.length} merged parks), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
     return { bbox, water, green };
   } catch (err) {
     console.warn(`${TAG} build failed:`, err);
