@@ -608,7 +608,6 @@ import { probeVectorSchema, type ProbeResult, type StyleLike } from './schemaPro
 import { harvestTaggedFeatures } from './harvest';
 import { bucketFeatures } from './classify';
 
-const api = window.SubwayBuilderAPI;
 const TAG = '[ImprovedSchematics] geography:';
 const cache = new Map<string, GeographyData | null>();
 
@@ -619,8 +618,10 @@ export interface GeographyDeps {
   harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox) => Promise<TaggedFeature[]>;
 }
 
+// window.SubwayBuilderAPI is accessed lazily (only when getMap is actually
+// called in-game), so importing this module under node:test never touches it.
 const defaultDeps: GeographyDeps = {
-  getMap: () => api.utils.getMap(),
+  getMap: () => window.SubwayBuilderAPI.utils.getMap(),
   probe: probeVectorSchema,
   harvest: harvestTaggedFeatures,
 };
