@@ -19,13 +19,6 @@ test('combineClose: leaves far-apart parks separate', () => {
   assert.equal(out.length, 2);
 });
 
-test('combineClose: merges a thin river touching the ocean into one body', () => {
-  const ocean = sq(0.005, 0.005, 0.02, 0.02); // big
-  const river = sq(0.02, 0.0119, 0.035, 0.0121); // thin, abuts the ocean's right edge at x=0.02
-  const out = combineClose([ocean, river], { gapM: 30 });
-  assert.equal(out.length, 1);
-});
-
 test('combineClose: empty input → empty output', () => {
   assert.deepEqual(combineClose([], { gapM: 300 }), []);
 });

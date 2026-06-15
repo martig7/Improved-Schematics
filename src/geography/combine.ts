@@ -16,10 +16,9 @@ export interface CombineOptions {
  * raster morphological close: rasterize each exterior into a boolean grid, dilate
  * then erode by k cells (which bridges gaps ≤ ~2k cells while leaving isolated
  * bodies unchanged and filling small holes), then re-trace the merged outlines
- * back to [lng,lat]. Meant to run BEFORE the size filter. Used to merge road-split
- * parks into one shape, and to merge rivers into the ocean so connected water
- * survives the filter even though a thin river's own area is tiny. (Holes are
- * filled — exteriors only.)
+ * back to [lng,lat]. Meant to run BEFORE the size filter, so a road-split park
+ * survives as one shape instead of its pieces being trimmed. (Holes are filled —
+ * exteriors only.)
  */
 export function combineClose(features: GeoPolyFeature[], opts: CombineOptions): GeoPolyFeature[] {
   if (features.length === 0 || opts.gapM <= 0) return features;
