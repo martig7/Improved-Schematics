@@ -58,14 +58,17 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     //   GEO_SIMPLIFY_M — Douglas–Peucker tolerance (m); GEO_SMOOTH — Chaikin iters
     const simplifyM = envNum('GEO_SIMPLIFY_M', 30);
     const smoothIters = envNum('GEO_SMOOTH', 2);
+    // Raster resolution for the morphological close (cells per axis). Finer =
+    // thinner rivers / park-necks survive the merge, at more (one-time) compute.
+    const gridMax = envNum('GEO_GRID_MAX', 2500);
     // Merge extremely-close park fragments BEFORE the size filter (morphological
     // close on a raster), so a park split into sub-threshold pieces survives as
     // one. GEO_PARK_GAP_M = bridge distance in meters (0 disables).
-    const mergedGreen = combineClose(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
+    const mergedGreen = combineClose(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50), maxGrid: gridMax });
     // Merge touching water (rivers into the ocean) before the size filter, so a
     // thin river — tiny on its own area — survives as part of the ocean body it
     // connects to. GEO_WATER_GAP_M = bridge distance in meters (0 disables).
-    const mergedWater = combineClose(rawWater, { gapM: envNum('GEO_WATER_GAP_M', 30) });
+    const mergedWater = combineClose(rawWater, { gapM: envNum('GEO_WATER_GAP_M', 30), maxGrid: gridMax });
     // Min area to keep as a fraction of total map area (scale-invariant).
     const water = cleanFeatures(mergedWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.00004), simplifyM, smoothIters });
     const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.0001), simplifyM, smoothIters, dropHoles: true });
