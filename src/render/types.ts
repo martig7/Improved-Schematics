@@ -45,6 +45,8 @@ export type RenderMode = 'geographic' | 'smoothed' | 'schematic';
 export interface SchematicTheme {
   land: string;
   water: string;
+  /** Parks / green-space fill. */
+  green: string;
   stationFill: string;
   stationStroke: string;
   /** Route line width in SVG units. */
@@ -78,6 +80,7 @@ export interface SchematicOptions {
 export const DEFAULT_THEME: SchematicTheme = {
   land: '#f2eadb',
   water: '#a8d4e6',
+  green: '#cfe6c3',
   stationFill: '#ffffff',
   stationStroke: '#444444',
   lineWidth: 4,
@@ -89,6 +92,7 @@ export const DARK_THEME: SchematicTheme = {
   ...DEFAULT_THEME,
   land: '#2a2d34',
   water: '#24506b',
+  green: '#33503b',
   stationFill: '#1b1b1f',
   stationStroke: '#cccccc',
 };
