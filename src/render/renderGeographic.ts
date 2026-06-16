@@ -430,7 +430,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       typeof process !== 'undefined'
         ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP)
         : NaN;
-    return Number.isFinite(env) ? env : 0.6;
+    return Number.isFinite(env) ? env : 0.8;
   })();
   // How hard a single dense locale may magnify. Raised from 3 → 8 so line-rich
   // hubs dilate proportionally to their fan; OCTI_MAXSCALE overrides (set high
