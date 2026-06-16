@@ -30,7 +30,12 @@ export interface DensityWarpOptions {
   beta?: number;
   /** Warp strength: 0 = identity, 1 = full equalization. Default 0.6. */
   alpha?: number;
-  /** Clamp on local linear magnification. Default 3. */
+  /**
+   * Clamp on local linear magnification. Default 8 (raised from the original 3
+   * so line-rich hubs may dilate harder). The warp stays unconditionally
+   * fold-free at any value, so set this very high to effectively remove the
+   * ceiling — distortion is then bounded only by the density of the input.
+   */
   maxScale?: number;
 }
 
@@ -65,7 +70,7 @@ function axisWarp(
   const sigma = opts.sigmaBins ?? 2.5;
   const beta = opts.beta ?? 0.7;
   const alpha = opts.alpha ?? 0.6;
-  const maxScale = opts.maxScale ?? 3;
+  const maxScale = opts.maxScale ?? 8;
   const W = x1 - x0;
   if (!(W > 0)) return (x) => x;
 

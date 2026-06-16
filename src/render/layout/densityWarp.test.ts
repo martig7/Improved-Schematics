@@ -75,3 +75,19 @@ test('densityWarp: local magnification respects maxScale', () => {
     assert.ok((x2 - x1) / 2 <= 3 + 0.05, `scale at ${v} = ${((x2 - x1) / 2).toFixed(2)}`);
   }
 });
+
+test('densityWarp: default maxScale (8) allows stronger magnification than the old 3', () => {
+  const samples: Pixel[] = [];
+  for (let i = 0; i < 200; i++) samples.push([500 + (i % 5), 500 + (i % 7)]); // extreme point cluster
+  const warp = buildDensityWarp(samples, BOX, { alpha: 1 }); // no maxScale → default 8
+  let peak = 0;
+  for (let v = 0; v < 1000; v += 2) {
+    const [x1] = warp([v, 0]);
+    const [x2] = warp([v + 2, 0]);
+    peak = Math.max(peak, (x2 - x1) / 2);
+  }
+  // The raised default lets a dense locale magnify well past the old 3× ceiling,
+  // while still clamping at the new default (fold-free at any value).
+  assert.ok(peak > 3, `default ceiling lifted: peak scale ${peak.toFixed(2)} should exceed 3`);
+  assert.ok(peak <= 8 + 0.05, `default ceiling honored: peak scale ${peak.toFixed(2)} should be ≤ 8`);
+});

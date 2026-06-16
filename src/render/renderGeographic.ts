@@ -420,7 +420,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // network, the water polygons, and every overlay deform through one
   // continuous, provably fold-free mapping; octi runs AFTER the warp, so the
   // output is still perfectly octilinear in screen space.
-  // (dev override: OCTI_WARP=<alpha>, 0 disables)
+  // (dev overrides: OCTI_WARP=<alpha> 0 disables; OCTI_MAXSCALE=<n> raises the
+  //  local magnification ceiling, default 8 — set high to effectively unlimit;
+  //  OCTI_LINECAP=<n> re-caps the per-station line weight, default uncapped so a
+  //  hub dilates with its full line fan)
   const baseProj = createProjection(bounds, width, height, padding);
   const warpAlpha = (() => {
     const env =
@@ -429,10 +432,30 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) ? env : 0.6;
   })();
-  // Weight each station by the number of lines through it (capped) so that
-  // corridor-rich hub areas — not just station-dense downtowns — dilate.
-  // A West-Seattle-style fan hub has moderate station density but needs room
-  // proportional to its LINE fan; pure station counting would compress it.
+  // How hard a single dense locale may magnify. Raised from 3 → 8 so line-rich
+  // hubs dilate proportionally to their fan; OCTI_MAXSCALE overrides (set high
+  // to effectively unlimit — the warp stays fold-free at any value).
+  const warpMaxScale = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_MAXSCALE)
+        : NaN;
+    return Number.isFinite(env) && env > 0 ? env : 8;
+  })();
+  // Per-station warp weight is its line count, UNCAPPED by default so a 10-line
+  // interchange outweighs a 4-line one — the old Math.min(4, …) throttle is gone.
+  // OCTI_LINECAP re-imposes a finite ceiling for sweeps.
+  const warpLineCap = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_LINECAP)
+        : NaN;
+    return Number.isFinite(env) && env >= 1 ? env : Infinity;
+  })();
+  // Weight each station by the number of lines through it so that corridor-rich
+  // hub areas — not just station-dense downtowns — dilate. A West-Seattle-style
+  // fan hub has moderate station density but needs room proportional to its
+  // LINE fan; pure station counting would compress it.
   const warpSamples: Pixel[] = [];
   for (const n of graph.nodes.values()) {
     const p = baseProj.toSVG(n.lngLat);
@@ -441,13 +464,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       const e = graph.edges.find((x) => x.id === eid);
       if (e) for (const l of e.lines) lines.add(l.id);
     }
-    const w = Math.max(1, Math.min(4, lines.size));
+    const w = Math.max(1, Math.min(warpLineCap, lines.size));
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
   const warp = buildDensityWarp(
     warpSamples,
     { minX: 0, minY: 0, maxX: width, maxY: height },
-    { alpha: warpAlpha },
+    { alpha: warpAlpha, maxScale: warpMaxScale },
   );
   const proj: Projection = {
     ...baseProj,
