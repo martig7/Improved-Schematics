@@ -44,6 +44,8 @@ to nudge those greedy outer layers out of their local optima.
    floor but give no global guarantee (grouping a colour family needs simultaneous multi-edge
    rotations one step can't reach).
 4. **Hanan-grid per-edge A\* router** — [hananRouter.ts](../src/render/layout/hananRouter.ts)
+   ⚠️ **DEAD CODE** — grep-verified zero production callers (superseded by the topo+octi router);
+   slated for deletion, see [heuristic-improvements.md](heuristic-improvements.md) Tier 0.
    *(reclassified exact→local)*. Minimizes summed edge weight (length + bend +
    direction-disagreement + station + **negative** bundle bonus + conflict + diag-cross +
    continuity). *Optimal =* not provably so even per-edge — the negative bundle bonus + `0.01`
@@ -69,7 +71,10 @@ to nudge those greedy outer layers out of their local optima.
    competing forces leave residual non-octilinear edges; integer snap adds uncosted
    displacement.
 9. **Geography-anchored relaxation** — [simplify.ts](../src/render/layout/simplify.ts)
-   `smoothGeographic`. Energy = octilinear edge-misfit (0.18) + squared displacement from true
+   `smoothGeographic`. ⚠️ **DEAD CODE** — grep-verified zero production callers (the LOOM octi
+   port replaced relaxation-based smoothing); slated for deletion, see
+   [heuristic-improvements.md](heuristic-improvements.md) Tier 0.
+   Energy = octilinear edge-misfit (0.18) + squared displacement from true
    geography (0.25). *Optimal =* a Pareto force balance at the fixed 0.18/0.25 ratio — not a
    true optimum of either; anchor-dominant, so edges may never fully octilinearize.
 
