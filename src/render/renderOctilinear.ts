@@ -10,6 +10,7 @@ import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows } from './layout/rowPlace';
+import { chooseMutualSlide, penBetween, type Hull } from './layout/capsuleSlide';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -894,16 +895,20 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     }
 
     // Small-vs-small collisions: neighbouring stations' markers must not
-    // overlap (user rule). Penetration is measured between the markers'
-    // actual SPINE HULLS (chain-pair stadium segments — bbox tests
-    // miss/false-flag multi-angle capsules); the marker with fewer marks
-    // slides along its own lanes until every hull pair clears.
+    // overlap (user rule). Penetration is measured between the markers' actual
+    // SPINE HULLS (chain-pair stadium segments — bbox tests miss/false-flag
+    // multi-angle capsules). Resolution ESCALATES (spec 2026-06-15-capsule-
+    // mutual-slide): first slide ONE capsule away (the fewer-marks one); if its
+    // own slide window can't clear the pair, slide BOTH apart along their own
+    // lanes (chooseMutualSlide picks the least-total-slide offsets that clear,
+    // best-effort when none fully does). A bounded relaxation loop re-checks so
+    // ripples (a moved capsule touching a third) settle; each capsule slides at
+    // most once, so total displacement stays within the per-capsule 32px cap.
+    // OCTI_MUTUAL_SLIDE=0 disables the escalation (one-sided, single pass).
     {
-      type Hull = Array<{ a: Pixel; b: Pixel; half: number }>;
       const hullsOf = (marks: StMarks['marks'], posOf?: (i: number) => Pixel): Hull => {
         // capsule = spine through chain-ordered dots; hull = its consecutive
-        // pair segments at half-width fill half + border = r + 3 (the old
-        // per-seg lateral widening no longer exists)
+        // pair segments at half-width fill half + border = r + 3
         const p = (i: number): Pixel => (posOf ? posOf(i) : marks[i].pos);
         const ordered = marks
           .map((m, i) => ({ i, chain: m.chain ?? 0 }))
@@ -915,68 +920,120 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         if (out.length === 0) out.push({ a: p(ordered[0].i), b: p(ordered[0].i), half: r + 3 });
         return out;
       };
-      const ptSeg = (px: number, py: number, a: Pixel, b: Pixel): number => {
-        const vx = b[0] - a[0];
-        const vy = b[1] - a[1];
-        const l2 = vx * vx + vy * vy;
-        const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
-        return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+      const centerOf = (s: StMarks): Pixel => {
+        const b = boxOf(s);
+        return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
       };
-      const segSegDist = (a1: Pixel, b1: Pixel, a2: Pixel, b2: Pixel): number =>
-        Math.min(
-          ptSeg(a1[0], a1[1], a2, b2), ptSeg(b1[0], b1[1], a2, b2),
-          ptSeg(a2[0], a2[1], a1, b1), ptSeg(b2[0], b2[1], a1, b1),
-        );
-      const penBetween = (A: Hull, B: Hull): number => {
-        let pen = -Infinity;
-        for (const ha of A) {
-          for (const hb of B) {
-            pen = Math.max(pen, ha.half + hb.half - segSegDist(ha.a, ha.b, hb.a, hb.b));
+      // commit a slide: move the dots, trim terminating lanes, recompute the
+      // derived corners on the slid dots, box if the spine bent off octilinear.
+      const applySlide = (st: StMarks, moved: Array<{ p: Pixel; edgeId: string }>, d: number) => {
+        const cap = captureCorners(st.marks); // old leg dirs before the slide
+        for (let i = 0; i < st.marks.length; i++) {
+          const mk = st.marks[i];
+          mk.pos = moved[i].p;
+          let incident = 0;
+          for (const e of layout.edges) {
+            if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+            if (!segPath.has(e.id + '|' + mk.lineId)) continue;
+            if (!drawsOn(mk.lineId, e.id)) continue;
+            incident++;
           }
+          if (incident <= 1 && moved[i].edgeId) trimLaneAt(moved[i].edgeId, mk.lineId, mk.flagNode, d);
         }
-        return pen;
+        applyCorners(cap); // recompute corners on the slid dots (spec R1)
+        if (!spineOctilinear(st.marks)) { for (const mk of st.marks) mk.mega = true; slideBoxed++; }
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const mk of st.marks) {
+          x0 = Math.min(x0, mk.pos[0]); y0 = Math.min(y0, mk.pos[1]);
+          x1 = Math.max(x1, mk.pos[0]); y1 = Math.max(y1, mk.pos[1]);
+        }
+        slid.push({ nodeId: st.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
       };
+      // reachable lane offsets for a capsule sliding away from `away`: index 0 =
+      // rest (current dots), 1.. = slid by 4,8,… up to `cap`, stopping at the
+      // first offset that runs off a lane or fails to clear a mega box. A pinned
+      // capsule (already slid this resolution) contributes only its rest offset.
+      type Cand = { moved: Array<{ p: Pixel; edgeId: string }>; d: number; hull: Hull };
+      const buildCands = (st: StMarks, away: Pixel, cap: number, pinned: boolean): Cand[] => {
+        const rest: Cand = {
+          moved: st.marks.map((mk) => ({ p: mk.pos, edgeId: '' })),
+          d: 0,
+          hull: hullsOf(st.marks),
+        };
+        if (pinned) return [rest];
+        const out: Cand[] = [rest];
+        for (let d = 4; d <= cap; d += 4) {
+          const moved = st.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, away, d));
+          if (moved.some((p) => !p)) break;
+          const mv = moved.map((m) => ({ p: m!.p, edgeId: m!.edgeId }));
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const m of mv) {
+            x0 = Math.min(x0, m.p[0]); y0 = Math.min(y0, m.p[1]);
+            x1 = Math.max(x1, m.p[0]); y1 = Math.max(y1, m.p[1]);
+          }
+          const pad = r + 3;
+          const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
+            x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
+          if (!megas.every((m) => clearOf(boxOf(m)))) break;
+          out.push({ moved: mv, d, hull: hullsOf(st.marks, (i) => mv[i].p) });
+        }
+        return out;
+      };
+      const mutualEnabled = !(
+        typeof process !== 'undefined' &&
+        (process as { env?: Record<string, string> }).env?.OCTI_MUTUAL_SLIDE === '0'
+      );
       const smalls = gathered.filter((s) => s.marks.length > 0 && !boxOf(s).mega);
-      for (let ai = 0; ai < smalls.length; ai++) {
-        for (let bi = ai + 1; bi < smalls.length; bi++) {
-          if (penBetween(hullsOf(smalls[ai].marks), hullsOf(smalls[bi].marks)) <= 0.5) continue;
-          const S = smalls[ai].marks.length <= smalls[bi].marks.length ? smalls[ai] : smalls[bi];
-          const O = S === smalls[ai] ? smalls[bi] : smalls[ai];
-          const oHull = hullsOf(O.marks);
-          const ob = boxOf(O);
-          const center: Pixel = [(ob.x0 + ob.x1) / 2, (ob.y0 + ob.y1) / 2];
-          for (let d = 4; d <= 32; d += 4) {
-            const moved = S.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
-            if (moved.some((p) => !p)) break;
-            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-            for (const t of moved) {
-              x0 = Math.min(x0, t!.p[0]); y0 = Math.min(y0, t!.p[1]);
-              x1 = Math.max(x1, t!.p[0]); y1 = Math.max(y1, t!.p[1]);
-            }
-            const pad = r + 3;
-            const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
-              x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
-            const trialHull = hullsOf(S.marks, (i) => moved[i]!.p);
-            if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
-            const cap = captureCorners(S.marks); // old leg dirs before the slide
-            for (let i = 0; i < S.marks.length; i++) {
-              const mk = S.marks[i];
-              mk.pos = moved[i]!.p;
-              let incident = 0;
-              for (const e of layout.edges) {
-                if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
-                if (!segPath.has(e.id + '|' + mk.lineId)) continue;
-                if (!drawsOn(mk.lineId, e.id)) continue;
-                incident++;
+      const slidNodes = new Set<string>(); // pinned after one slide (mutual mode)
+      const MAX_SWEEPS = mutualEnabled ? 3 : 1;
+      for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
+        let movedAny = false;
+        for (let ai = 0; ai < smalls.length; ai++) {
+          for (let bi = ai + 1; bi < smalls.length; bi++) {
+            const A = smalls[ai];
+            const B = smalls[bi];
+            if (penBetween(hullsOf(A.marks), hullsOf(B.marks)) <= 0.5) continue;
+            const pinnedA = mutualEnabled && slidNodes.has(A.nodeId);
+            const pinnedB = mutualEnabled && slidNodes.has(B.nodeId);
+            if (pinnedA && pinnedB) continue; // neither can move
+            // --- stage 1: slide ONE capsule (the fewer-marks movable one) ---
+            const S = pinnedA ? B : pinnedB ? A : A.marks.length <= B.marks.length ? A : B;
+            const O = S === A ? B : A;
+            const oHull = hullsOf(O.marks);
+            const center = centerOf(O);
+            let resolved = false;
+            for (let d = 4; d <= 32; d += 4) {
+              const moved = S.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
+              if (moved.some((p) => !p)) break;
+              let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+              for (const t of moved) {
+                x0 = Math.min(x0, t!.p[0]); y0 = Math.min(y0, t!.p[1]);
+                x1 = Math.max(x1, t!.p[0]); y1 = Math.max(y1, t!.p[1]);
               }
-              if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
+              const pad = r + 3;
+              const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
+                x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
+              const trialHull = hullsOf(S.marks, (i) => moved[i]!.p);
+              if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
+              applySlide(S, moved.map((m) => ({ p: m!.p, edgeId: m!.edgeId })), d);
+              if (mutualEnabled) slidNodes.add(S.nodeId);
+              movedAny = true;
+              resolved = true;
+              break;
             }
-            applyCorners(cap); // recompute corners on the slid dots (spec R1)
-            if (!spineOctilinear(S.marks)) { for (const mk of S.marks) mk.mega = true; slideBoxed++; }
-            slid.push({ nodeId: S.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
-            break;
+            if (resolved || !mutualEnabled) continue;
+            // --- stage 2: escalate — slide BOTH apart (best-effort) ---
+            const candsA = buildCands(A, centerOf(B), 32, pinnedA);
+            const candsB = buildCands(B, centerOf(A), 32, pinnedB);
+            const { ka, kb } = chooseMutualSlide(candsA.map((c) => c.hull), candsB.map((c) => c.hull));
+            if (ka > 0 || kb > 0) {
+              if (ka > 0) { applySlide(A, candsA[ka].moved, candsA[ka].d); slidNodes.add(A.nodeId); }
+              if (kb > 0) { applySlide(B, candsB[kb].moved, candsB[kb].d); slidNodes.add(B.nodeId); }
+              movedAny = true;
+            }
           }
         }
+        if (!movedAny) break;
       }
     }
     if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
