@@ -18,6 +18,7 @@ export interface RowOpts {
   rotW?: number;         // W_ROT, default 20 (px per 45-degree step)
   blocked?: (p: Pixel) => boolean; // spec §6 mask — a row state is infeasible
                                    // if ANY of its dots is blocked (never dropped)
+  dbgLabel?: string; // OCTI_PLACE_DEBUG: station id, for the per-box diagnosis log
 }
 
 export interface RowSolution {
@@ -49,6 +50,15 @@ interface RowState {
   a: Pixel;        // outermost dot at min projection
   b: Pixel;        // outermost dot at max projection
   cost: number;    // slideW*|s| + rotW*rot — the unary state cost
+}
+
+// OCTI_PLACE_DEBUG only: why a bundle's row states all failed (→ mega box).
+interface BundleStat {
+  tried: number;      // (slide × axis) states enumerated
+  noCross: number;    // states where a member lane never crossed the row line
+  pinch: number;      // states where consecutive dots fell below minGap
+  blocked: number;    // states vetoed by the §6 mask (already-placed dots)
+  bestMinGap: number; // largest min-gap among states that crossed all lanes
 }
 
 /** Crossings of the row LINE (A, u) with a lane polyline: walk the vertices
@@ -106,7 +116,7 @@ export function solveRows(
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
 
   // ---- step 1: row states per bundle --------------------------------------
-  const buildStates = (group: number[]): RowState[] => {
+  const buildStates = (group: number[], stats?: BundleStat): RowState[] => {
     const carrier = curves[group[0]];
     // rest axis: octilinear snap of the bundle perpendicular — perp of the
     // mean SIGN-NORMALIZED member tangent at the anchors (same normalization
@@ -129,6 +139,7 @@ export function solveRows(
       const s = j * step;
       const A = curvePoint(carrier, carrier.anchorT + s);
       for (let axis = 0; axis < 4; axis++) {
+        if (stats) stats.tried++;
         const u = AXES[axis];
         let dots: Pixel[];
         if (group.length === 1) {
@@ -143,7 +154,7 @@ export function solveRows(
             if (!p) { hit = false; break; }
             got.push(p);
           }
-          if (!hit) continue; // a member's lane never crosses the row line
+          if (!hit) { if (stats) stats.noCross++; continue; } // a member's lane never crosses the row line
           dots = got;
         }
         // lane-order consistency + floor: projections strictly monotone in
@@ -154,13 +165,19 @@ export function solveRows(
         let feas = true;
         if (dots.length > 1) {
           const sgn = pr[1] - pr[0] > 0 ? 1 : -1;
+          // min consecutive gap (equiv. to the original first-violation break:
+          // feasible iff every gap ≥ minGap iff the min gap ≥ minGap)
+          let mg = Infinity;
           for (let gi = 1; gi < dots.length; gi++) {
-            if ((pr[gi] - pr[gi - 1]) * sgn < minGap) { feas = false; break; }
+            const gap = (pr[gi] - pr[gi - 1]) * sgn;
+            if (gap < mg) mg = gap;
           }
+          if (stats && mg > stats.bestMinGap) stats.bestMinGap = mg; // this state crossed all lanes
+          if (mg < minGap) { feas = false; if (stats) stats.pinch++; }
         }
         if (feas && blocked) {
           for (const p of dots) {
-            if (blocked(p)) { feas = false; break; } // §6 mask — never dropped
+            if (blocked(p)) { feas = false; if (stats) stats.blocked++; break; } // §6 mask — never dropped
           }
         }
         if (!feas) continue;
@@ -181,9 +198,41 @@ export function solveRows(
     }
     return states;
   };
-  const bundleStates = groups.map(buildStates);
-  // a bundle with no feasible row anywhere dooms every pairing
-  if (bundleStates.some((st) => st.length === 0)) return null;
+  const dbg =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_PLACE_DEBUG === '1';
+  const statsArr: BundleStat[] = [];
+  const bundleStates = groups.map((grp, i) => {
+    const st: BundleStat | undefined = dbg
+      ? { tried: 0, noCross: 0, pinch: 0, blocked: 0, bestMinGap: -Infinity }
+      : undefined;
+    if (st) statsArr[i] = st;
+    return buildStates(grp, st);
+  });
+  // a bundle with no feasible row anywhere dooms every pairing → mega box
+  if (bundleStates.some((st) => st.length === 0)) {
+    if (dbg) {
+      for (let i = 0; i < groups.length; i++) {
+        if (bundleStates[i].length > 0) continue;
+        const s = statsArr[i];
+        const cls =
+          s.noCross >= s.tried
+            ? 'NO-CROSSING (lanes never admit a row-line crossing → divergent/coincident; NOT slide/spacing fixable)'
+            : s.bestMinGap > -Infinity && s.bestMinGap < minGap
+              ? `PINCHED (closest gap ${s.bestMinGap.toFixed(2)}px < minGap ${minGap.toFixed(2)}px → octi seated the lanes too tight; fixable UPSTREAM)`
+              : s.blocked > 0
+                ? 'MASKED (§6: every crossing state vetoed by an already-placed station → ordering-dependent)'
+                : 'UNKNOWN';
+        const gapStr = s.bestMinGap > -Infinity ? `${s.bestMinGap.toFixed(2)}px` : 'never crossed';
+        console.error(
+          `[rowPlace] BOX ${opts.dbgLabel ?? '?'} bundle ${i + 1}/${g} members=${groups[i].length}: ` +
+            `${s.tried} states (noCross=${s.noCross} pinch=${s.pinch} blocked=${s.blocked}) ` +
+            `closestGap=${gapStr} minGap=${minGap.toFixed(2)}px → ${cls}`,
+        );
+      }
+    }
+    return null;
+  }
 
   // ---- single bundle: best unary state, no corners -------------------------
   if (g === 1) {

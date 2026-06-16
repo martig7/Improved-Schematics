@@ -745,6 +745,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           minGap: 2 * r - 0.05,
           arcLimit: CHAIN_ARC_LIMIT,
           extCap: 6 * spacing,
+          dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
           // spec §6 mask: dots of already-placed stations veto row states —
           // never dropped in this model (a masked station boxes instead)
           blocked: (p: Pixel) => {

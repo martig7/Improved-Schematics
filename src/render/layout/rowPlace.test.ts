@@ -38,6 +38,31 @@ test('perpendicular rest: parallel lanes give a zero-slide, zero-rotation row', 
   assert.ok(sol.cost <= 0.05 + 1e-9, `rest solve should cost ~0: ${sol.cost}`);
 });
 
+test('OCTI_PLACE_DEBUG classifies a pinched box (lanes seated below minGap)', () => {
+  // two horizontal lanes only 2px apart (< minGap 4.85): every vertical/45° row
+  // crosses them below the floor and the horizontal row misses the far lane, so
+  // the bundle has zero feasible states → mega box. The classifier must report
+  // PINCHED (fixable upstream), not NO-CROSSING or MASKED.
+  const curves = [lane(0, 0), lane(2, 0)];
+  const prev = process.env.OCTI_PLACE_DEBUG;
+  process.env.OCTI_PLACE_DEBUG = '1';
+  const logs: string[] = [];
+  const origErr = console.error;
+  console.error = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
+  let sol;
+  try {
+    sol = solveRows(curves, [[0, 1]], { ...OPTS, dbgLabel: 'TESTNODE' });
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.OCTI_PLACE_DEBUG;
+    else process.env.OCTI_PLACE_DEBUG = prev;
+  }
+  assert.equal(sol, null, 'pinched bundle must box (null)');
+  const box = logs.find((l) => /\[rowPlace\] BOX TESTNODE/.test(l));
+  assert.ok(box, 'classifier logged a BOX line; got: ' + JSON.stringify(logs));
+  assert.match(box!, /PINCHED/, 'classified PINCHED; got: ' + box);
+});
+
 test('V-not-T: corner extends beyond both rows, never pokes a side', () => {
   // two bundles meeting at 90°: horizontal lanes (row vertical) + vertical
   // lanes (row horizontal); anchors offset so the natural corner lies beyond
