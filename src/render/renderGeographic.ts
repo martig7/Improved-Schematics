@@ -452,19 +452,61 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
-  // Weight each station by the number of lines through it so that corridor-rich
-  // hub areas — not just station-dense downtowns — dilate. A West-Seattle-style
-  // fan hub has moderate station density but needs room proportional to its
-  // LINE fan; pure station counting would compress it.
+  // Per-station warp weight = (lines through it) × (local crowding):
+  //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
+  //    proportional to its line fan, not just its station count).
+  //  · CROWDING term dilates stretches where consecutive stations are packed
+  //    tight — the median neighbour gap over a station's own mean neighbour gap.
+  //    The plain count histogram equalizes GLOBAL density, so a pair of close
+  //    INTERMEDIATE stations (low line count, off in a sparse area) barely moves
+  //    a bin and never gets room; this term makes the warp respond to that local
+  //    crowding directly. OCTI_CROWD is the exponent (0 disables → pure line-count).
+  const crowdGamma = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_CROWD)
+        : NaN;
+    return Number.isFinite(env) && env >= 0 ? env : 1;
+  })();
+  const edgeById = new Map<string, (typeof graph.edges)[number]>();
+  for (const e of graph.edges) edgeById.set(e.id, e);
+  const nodePos = new Map<string, Pixel>();
+  for (const n of graph.nodes.values()) nodePos.set(n.id, baseProj.toSVG(n.lngLat));
+  // mean projected gap from each node to its graph neighbours (∞ = isolated)
+  const meanGap = new Map<string, number>();
+  for (const id of graph.nodes.keys()) {
+    const p = nodePos.get(id)!;
+    let sum = 0;
+    let cnt = 0;
+    for (const eid of graph.adj.get(id) ?? []) {
+      const e = edgeById.get(eid);
+      if (!e) continue;
+      const q = nodePos.get(e.from === id ? e.to : e.from);
+      if (!q) continue;
+      sum += Math.hypot(p[0] - q[0], p[1] - q[1]);
+      cnt++;
+    }
+    meanGap.set(id, cnt ? sum / cnt : Infinity);
+  }
+  const finiteGaps = [...meanGap.values()].filter((g) => Number.isFinite(g) && g > 0).sort((a, b) => a - b);
+  const refGap = finiteGaps.length ? finiteGaps[finiteGaps.length >> 1] : 1;
+
   const warpSamples: Pixel[] = [];
   for (const n of graph.nodes.values()) {
-    const p = baseProj.toSVG(n.lngLat);
+    const p = nodePos.get(n.id)!;
     const lines = new Set<string>();
     for (const eid of graph.adj.get(n.id) ?? []) {
-      const e = graph.edges.find((x) => x.id === eid);
+      const e = edgeById.get(eid);
       if (e) for (const l of e.lines) lines.add(l.id);
     }
-    const w = Math.max(1, Math.min(warpLineCap, lines.size));
+    const lineWeight = Math.max(1, Math.min(warpLineCap, lines.size));
+    const g = meanGap.get(n.id)!;
+    // closer-than-median neighbours → boost > 1; farther → < 1; clamped both ways
+    const crowd =
+      crowdGamma > 0 && Number.isFinite(g) && g > 0
+        ? Math.min(8, Math.max(0.25, Math.pow(refGap / g, crowdGamma)))
+        : 1;
+    const w = Math.max(1, Math.round(lineWeight * crowd));
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
   const warp = buildDensityWarp(
