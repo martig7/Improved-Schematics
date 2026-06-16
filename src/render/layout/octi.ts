@@ -35,8 +35,6 @@ export interface OctiOptions {
   maxGrDist?: number;
   /** Max local-search iterations (LOOM heurLocSearchIters). Default 100. */
   locSearchIters?: number;
-  /** Wall-clock budget for the local search in ms. Default 10000. */
-  locSearchTimeBudgetMs?: number;
   /** Grid penalty overrides. */
   penalties?: Partial<Penalties>;
   /** Length-preservation weight: penalize a drawn corridor whose endpoint chord
@@ -57,7 +55,6 @@ export const DEFAULT_OCTI_OPTIONS: OctiOptions = {
   cellDivisor: 1.5,
   maxGrDist: 3,
   locSearchIters: 100,
-  locSearchTimeBudgetMs: 10_000,
 };
 
 const MAX_STALL_RETRIES = 3;
@@ -1671,8 +1668,13 @@ function tryDraw(
   // 2. local search: re-place every station among its 9 neighbouring grid
   //    positions, re-routing its incident edges, until convergence
   const iters = opts.locSearchIters ?? 100;
-  const budget = opts.locSearchTimeBudgetMs ?? 10_000;
-  const t0 = Date.now();
+  // Termination is iteration- and convergence-bounded ONLY. A former wall-clock
+  // budget (Date.now() cutoff) broke the sweep mid-loop at a timing-dependent
+  // point, making node placement — and thus which stations fell back to a mega
+  // box — non-deterministic across machines/load (the in-game "boxes that come
+  // and go with no input change"). iters + CONVERGENCE_THRESHOLD already bound
+  // the work deterministically, so the same input always yields the same map.
+  const t0 = Date.now(); // OCTI_DEBUG timing log only — never gates control flow
   const nodes = [...h.nodes.keys()].filter((nd) => ctx.deg(nd) > 0);
   const hEdges = [...h.edges.values()];
 
@@ -1680,20 +1682,10 @@ function tryDraw(
   // and applies only the single best per iteration (a side effect of its
   // parallel batch design). Single-threaded we converge much faster by
   // accepting every improving move immediately as we sweep.
-  outer:
   for (let iter = 0; iter < iters; iter++) {
     let sweepImp = 0;
 
     for (const a of nodes) {
-      if (Date.now() - t0 > budget) {
-        if (DBG) {
-          console.error(
-            `[octi] locSearch BUDGET EXHAUSTED in node-move loop, sweep ${iter}, ` +
-            `node ${nodes.indexOf(a)}/${nodes.length} — edge re-route sweep never ran this sweep`,
-          );
-        }
-        break outer;
-      }
       const curBase = drawing.nds.get(a);
       if (curBase === undefined) continue;
       // Fan re-route order: longest chains first. A junction's short stub
@@ -1756,15 +1748,6 @@ function tryDraw(
     // forced through violations that no longer exist in the settled end state.
     // Rip each edge up and redraw it under the final constraints.
     for (const ce of hEdges) {
-      if (Date.now() - t0 > budget) {
-        if (DBG) {
-          console.error(
-            `[octi] locSearch BUDGET EXHAUSTED in edge re-route loop, sweep ${iter}, ` +
-            `edge ${hEdges.indexOf(ce)}/${hEdges.length}`,
-          );
-        }
-        break outer;
-      }
       if (ce.from === ce.to || !drawing.drawn(ce.id)) continue;
 
       const run = drawing.clone();

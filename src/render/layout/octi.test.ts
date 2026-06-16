@@ -126,6 +126,18 @@ test('octi places every node within the displacement radius of its input', () =>
   }
 });
 
+test('octi is deterministic: identical placement + paths across runs', () => {
+  // Regression: a wall-clock local-search budget (Date.now() cutoff) once broke
+  // the sweep mid-loop at a timing-dependent point, so node placement — and thus
+  // which stations fell back to a mega box — flickered across machines/load with
+  // no input change. Termination is now iteration/convergence-bounded only.
+  const h = chain([[0, 0], [40, 5], [80, -5], [120, 10], [160, 0]]);
+  const a = octi(h, DEFAULT_OCTI_OPTIONS);
+  const b = octi(h, DEFAULT_OCTI_OPTIONS);
+  assert.deepEqual([...a.placement.entries()], [...b.placement.entries()]);
+  assert.deepEqual([...a.paths.entries()], [...b.paths.entries()]);
+});
+
 test('octi every routed path is octilinear and continuous', () => {
   const h = chain([[0, 0], [40, 5], [80, -5], [120, 10]]);
   const img = octi(h, DEFAULT_OCTI_OPTIONS);
