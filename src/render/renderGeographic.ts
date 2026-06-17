@@ -19,8 +19,6 @@ import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
-  renderTransferConnectors,
-  edgeKeysFromGraph,
   routedGroupsOnly,
   DEFAULT_TRANSFER_METERS,
   type TransferPair,
@@ -305,27 +303,8 @@ export function renderGeographic(input: GeoInput): string {
     const nodePx = new Map<string, Pixel>();
     for (const n of graph.nodes.values()) nodePx.set(n.id, proj.toSVG(n.lngLat));
 
-    // Transfer connectors between nearby station groups not already joined by a route edge.
-    const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
-    const excludeKeys = edgeKeysFromGraph(graph.edges);
-    const routeCounts = nodeRouteCount(graph);
-    // Match the dot/pill sizing in renderGeoNodes so the staple hugs the marker.
-    const dotRadius = (id: string): number => {
-      const routeN = routeCounts.get(id) ?? 1;
-      return routeN > 1 ? INTERCHANGE_R + Math.min(routeN - 1, 4) * 1.6 : STATION_R;
-    };
-    const connector = renderTransferConnectors(
-      transfers,
-      (p) => ({
-        from: proj.toSVG(p.fromCenter),
-        to: proj.toSVG(p.toCenter),
-        radius: Math.max(dotRadius(p.fromId), dotRadius(p.toId)),
-      }),
-      excludeKeys,
-      { dark, strokeWidth: theme.lineWidth * 0.7 },
-    );
-    if (connector) parts.push(connector);
-
+    // Geographic mode draws no transfer-connector brackets — true positions make
+    // nearby-but-unconnected stations legible without the staples.
     parts.push(renderGeoNodes(graph, nodePx, opts, dark, segments));
   }
 
@@ -385,13 +364,13 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   const { layout, nodePx } = supportToLayout(h);
   orderLines(layout);
 
-  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
-
   // Render geography through the real projection (the support graph carries no
   // lngLat, so renderRibbons' bbox-affine mapping can't be used). Inject it via
   // the gridOverlay slot, which draws between the background and routes.
   const waterOverlay = geographyBackdrop(input.geography, proj, theme, dark);
 
+  // Geographic mode (incl. topo) draws no transfer-connector brackets, so no
+  // `transfers` is passed to renderRibbons.
   return renderRibbons({
     layout,
     nodePx,
@@ -401,7 +380,6 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
     dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
-    transfers,
     gridOverlay: waterOverlay,
     // Topo geographic keeps the real projection, so it frames on water/green
     // exactly like plain geographic mode.

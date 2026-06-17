@@ -174,6 +174,35 @@ test('geographic mode omits data-frame when there is no geography', () => {
   assert.doesNotMatch(svg, /data-frame=/, 'no geography → no frame, falls back to full canvas');
 });
 
+test('geographic mode does not draw transfer brackets', () => {
+  // Two routes whose stations sit ~70m apart on different routes → a transfer
+  // pair the geographic renderer used to draw as a U-bracket staple.
+  const st = (id: string, g: string, n: string, lng: number, lat: number, r: string) =>
+    ({ id, name: id, coords: [lng, lat], trackIds: [], trackGroupId: g,
+       buildType: 'constructed', stNodeIds: [n], routeIds: [r], createdAt: 0, nearbyStations: [] });
+  const stations = [
+    st('s1', 'g1', 'n1', -122.0, 47.0, 'r1'),
+    st('s2', 'g2', 'n2', -122.03, 47.0, 'r1'),
+    st('s3', 'g3', 'n3', -122.0008, 47.0001, 'r2'), // ~70m from s1, different route
+    st('s4', 'g4', 'n4', -122.06, 47.0, 'r2'),
+  ];
+  const tracks = [
+    { id: 't1', coords: [[-122.0, 47.0], [-122.03, 47.0]] },
+    { id: 't2', coords: [[-122.0008, 47.0001], [-122.06, 47.0]] },
+  ];
+  const routes = [
+    { id: 'r1', bullet: '1', color: '#cc0000', stComboTimings: [], stCombos: [{ startStNodeId: 'n1', endStNodeId: 'n2', path: [{ trackId: 't1', reversed: false }], distance: 1 }] },
+    { id: 'r2', bullet: '2', color: '#0000cc', stComboTimings: [], stCombos: [{ startStNodeId: 'n3', endStNodeId: 'n4', path: [{ trackId: 't2', reversed: false }], distance: 1 }] },
+  ];
+  const svg = generateSchematicSVG({
+    routes: routes as never,
+    tracks: tracks as never,
+    stations: stations as never,
+    options: { mode: 'geographic', width: 600, height: 600 },
+  });
+  assert.doesNotMatch(svg, /class="transfers"/, 'geographic mode should not render transfer brackets');
+});
+
 test('two-phase smoothed render matches the single-phase output', () => {
   const options = { mode: 'smoothed' as RenderMode, showLabels: true, width: 600, height: 600 };
   const oneShot = generateSchematicSVG({
