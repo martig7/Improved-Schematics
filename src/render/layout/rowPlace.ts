@@ -120,6 +120,16 @@ export function solveRows(
   const step = opts.step ?? 0.5;
   const slideW = opts.slideW ?? 0.05;
   const rotW = opts.rotW ?? 20;
+  // Turn penalty: charge each corner for how much the chain BENDS, so the DP
+  // prefers a straighter capsule (a parallel end-to-end join, or the gentlest
+  // V) over a sharp elbow when the dots admit it. (1 + o1·o2) ∈ [0,2]: 0 for a
+  // straight join, 1 at 90°, 2 at a reversal — cross-V8-safe (dot only) and ≥0
+  // so the chain-DP pruning stays sound. OCTI_TURNW tunes it (0 = off).
+  const turnW = (() => {
+    const v =
+      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_TURNW) : NaN;
+    return Number.isFinite(v) ? v : 12;
+  })();
   const { minGap, arcLimit, extCap, blocked } = opts;
   const n = curves.length;
   const g = groups.length;
@@ -322,7 +332,8 @@ export function solveRows(
     for (const d of Q.dots) {
       if (hyp(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
     }
-    return { cost: ext1 + ext2, corner };
+    const turnPen = turnW * (1 + (o1x * o2x + o1y * o2y)); // ≥0; 0 = straight join
+    return { cost: ext1 + ext2 + turnPen, corner };
   };
 
   // ---- step 3: pairing enumeration + chain DP over bundles -----------------
