@@ -438,7 +438,10 @@ export function buildTransitGraph(
   for (const route of routes) {
     if (route.tempParentId) continue;
     const visits = walkRouteVisits(route, stNodeToGroup, trackToGroup);
-    const line: LineRef = { id: route.id, label: route.bullet || route.id, color: normalizeColor(route.color) };
+    // label = the bullet printed inside dots; an empty/whitespace bullet prints
+    // NOTHING (a blank dot), not the route's UUID. Lines are matched by id, so
+    // the label is display-only and may safely be empty.
+    const line: LineRef = { id: route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color) };
     const traversal: TraversalStep[] = [];
 
     for (let i = 0; i < visits.length - 1; i++) {
