@@ -16,6 +16,8 @@ import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
+import { detectPaintedLoops } from './layout/loopMetrics';
+import type { FrameRect } from './projection';
 
 // sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not), so the rendered
 // marker/ribbon geometry is bit-identical on any engine. SIN1DEG = sin(1°).
@@ -132,6 +134,44 @@ export interface RenderRibbonsArgs {
    *  the marks of its lines from their per-line stop-flag nodes. Without
    *  this, markers fall back to the legacy per-node edge.stops model. */
   stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
+  /** Fit/export crop rect in pixel space, emitted as `data-frame` on the root
+   *  svg. Set by topo-geographic mode (which keeps a real projection); octi
+   *  modes leave it unset so fit/export use the already-tight content viewBox. */
+  frame?: FrameRect;
+}
+
+/** Tight pixel-space bbox of the drawn network — node dots + edge centerlines —
+ *  padded so offset lanes, capsule markers and casing aren't clipped, then
+ *  clamped to the canvas. Octi-based modes (smoothed, schematic) have no
+ *  geographic demand bbox to project, so this is their fit/export frame. */
+function contentFrame(
+  nodePx: Map<string, Pixel>,
+  edges: Layout['edges'],
+  edgePolyline: (edge: Layout['edges'][number]) => Pixel[],
+  width: number,
+  height: number,
+): FrameRect {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const grow = (p: Pixel) => {
+    if (p[0] < minX) minX = p[0];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[1] > maxY) maxY = p[1];
+  };
+  for (const p of nodePx.values()) grow(p);
+  for (const e of edges) for (const p of edgePolyline(e)) grow(p);
+  if (!isFinite(minX)) return { x: 0, y: 0, w: width, h: height };
+  // Margin ≈ a dense hub's lane fan + capsule marker + casing (markers/lanes
+  // bow out past the centerline). ~1% of a 2700px canvas — still a tight frame.
+  const m = LINE_WIDTH * 10;
+  minX = Math.max(0, minX - m);
+  minY = Math.max(0, minY - m);
+  maxX = Math.min(width, maxX + m);
+  maxY = Math.min(height, maxY + m);
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 export function renderRibbons(args: RenderRibbonsArgs): string {
@@ -384,6 +424,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const endMoved = new Set<string>(); // edgeId|lineId|end
   const joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }> = [];
   const joinStopPos = new Map<string, Pixel>(); // nodeId|lineId -> on-curve position
+  // Proper-crossing intersection point of segments p1p2 and p3p4, else null.
+  // Strict opposite orientations both sides → collinear/touching pairs reject.
+  // Cross-products + one divide only (correctly-rounded, cross-V8 stable).
+  const segCross = (p1: Pixel, p2: Pixel, p3: Pixel, p4: Pixel): Pixel | null => {
+    const o = (a: Pixel, b: Pixel, c: Pixel): number => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const d1 = o(p3, p4, p1), d2 = o(p3, p4, p2), d3 = o(p1, p2, p3), d4 = o(p1, p2, p4);
+    if (!(((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))) return null;
+    const den = (p1[0] - p2[0]) * (p3[1] - p4[1]) - (p1[1] - p2[1]) * (p3[0] - p4[0]);
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((p1[0] - p3[0]) * (p3[1] - p4[1]) - (p1[1] - p3[1]) * (p3[0] - p4[0])) / den;
+    return [p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1])];
+  };
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     for (let i = 1; i < traversal.length; i++) {
@@ -438,7 +490,33 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const dirA: Pixel = [(qa[0] - qa1[0]) / lenA, (qa[1] - qa1[1]) / lenA];
       const dirB: Pixel = [(qb1[0] - qb[0]) / lenB, (qb1[1] - qb[1]) / lenB];
       const dot = dirA[0] * dirB[0] + dirA[1] * dirB[1];
-      if (dot < 0.85) continue; // genuine corner the join rejected — keep S connector
+      if (dot < 0.85) {
+        // Genuine sharp corner the join rejected. If the two lane end-segments
+        // CROSS — the inside of the turn, where the line's slot jogs across the
+        // bend and the lanes sweep over each other into a self-loop (a
+        // fused-station hook: Chicago Blue A at Chestnut St, Harvey Rd) — clip
+        // both ends to the crossing point so the lanes MEET there instead of
+        // overshooting. The shared meet point needs no connector (mark mitered).
+        // Non-crossing sharp corners fall through to the S connector unchanged.
+        // (Filleting these bends instead — a curveLaneJoin with/without the
+        // multi-segment cut-back — was tried twice and reverted: the bend sits
+        // AT a fused-station node, so the fillet's lane trim + relocated stop
+        // mega-box the rigid-row marker. Only this minimal end-move is safe.)
+        // Browser-safe env guard: `process` is undefined in the game renderer.
+        const noUncross =
+          typeof process !== 'undefined' &&
+          (process as { env?: Record<string, string> }).env?.OCTI_NO_UNCROSS === '1';
+        const X = noUncross ? null : segCross(qa1, qa, qb1, qb);
+        if (X && !endMoved.has(keyA) && !endMoved.has(keyB)) {
+          if (aAtStart) pA[0] = X; else pA[pA.length - 1] = X;
+          if (bAtStart) pB[0] = X; else pB[pB.length - 1] = X;
+          endMoved.add(keyA);
+          endMoved.add(keyB);
+          const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+          mitered.add(lineId + '|' + endA + '|' + pk);
+        }
+        continue; // S connector for non-crossing sharp corners
+      }
       const polyLenOf = (poly: Pixel[]): number => {
         let L = 0;
         for (let i = 1; i < poly.length; i++) L += hyp(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
@@ -467,6 +545,58 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const pairKey2 = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
       mitered.add(lineId + '|' + endA + '|' + pairKey2);
     }
+  }
+
+  // --- loop diagnostic (OCTI_LOOPS) ------------------------------------------
+  // Measure loops in the PAINTED track — where a route's drawn track crosses
+  // itself (a fused-station hook, balloon loop, terminal ring). Built on the
+  // offset LANES (segPath, now final), not the edge skeleton: an out-and-back
+  // route's skeleton is a perfect overlap, so a self-crossing loop at a station
+  // group (Chicago Blue A at Chestnut St) is invisible there but plain in the
+  // painted lanes. Each loop is anchored to its nearest station group.
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_LOOPS) {
+    const routesPainted: Array<{ lineId: string; pts: Pixel[] }> = [];
+    for (const [lineId, traversal] of layout.lineTraversals) {
+      if (!lineById.has(lineId)) continue;
+      const pts: Pixel[] = [];
+      for (const step of traversal) {
+        const lane = segPath.get(step.edgeId + '|' + lineId);
+        if (!lane || lane.length < 2) continue;
+        const seq = step.reversed ? [...lane].reverse() : lane; // lanes run from→to
+        for (const p of seq) {
+          const last = pts[pts.length - 1];
+          if (!last || Math.abs(last[0] - p[0]) > 1e-6 || Math.abs(last[1] - p[1]) > 1e-6) pts.push(p);
+        }
+      }
+      if (pts.length >= 4) routesPainted.push({ lineId, pts });
+    }
+    // station groups (nodes carrying ≥1 stop) with pixel positions + labels,
+    // for anchoring each loop to the place a reader would name it.
+    const groups: Array<{ pos: Pixel; label: string }> = [];
+    for (const st of args.stations ?? []) {
+      const pos = nodePx.get(st.nodeId);
+      if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+    }
+    const nearestGroup = (p: Pixel): string => {
+      let best = '?';
+      let bd = Infinity;
+      for (const g of groups) {
+        const d = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+        if (d < bd) { bd = d; best = g.label; }
+      }
+      return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+    };
+    const loops = detectPaintedLoops(routesPainted);
+    for (const l of loops.slice(0, 40)) {
+      const ln = lineById.get(l.lineId);
+      console.error(
+        `[loops] ${l.kind.toUpperCase()} route ${ln?.label ?? l.lineId} (${ln?.color ?? '?'}) ` +
+        `at=(${l.at[0].toFixed(0)},${l.at[1].toFixed(0)}) group=${nearestGroup(l.at)} ` +
+        `loopArc=${l.loopArc.toFixed(0)} diam=${l.diameter.toFixed(0)}`,
+      );
+    }
+    const arts = loops.filter((l) => l.kind === 'artifact').length;
+    console.error(`[loops] ${arts} artifact loops, ${loops.length - arts} bigloops (likely genuine routes)`);
   }
 
   // NOTE: path emission (pushSeg + join curves) happens AFTER the station
@@ -1559,6 +1689,48 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
     }
   }
+  // Draw-only sharp-corner fillet (post-marker): the sharp fused-station bends
+  // the gentle join left raw (F/G chevron at Chestnut St) — to keep the marker
+  // solver's lane input pristine — get filleted HERE, after every marker /
+  // slide / eviction read of segPath is done. So this rounds only the DRAWN
+  // ribbon and cannot mega-box (the dots are already seated). Reuses the
+  // regressive curveLaneJoin; marks the pair mitered so the connector pass
+  // skips it. Only touches consecutive pairs no earlier join already handled.
+  const noDrawFillet =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_NO_DRAWFILLET === '1';
+  if (!noDrawFillet) {
+    for (const [lineId, traversal] of layout.lineTraversals) {
+      if (!lineById.has(lineId)) continue;
+      for (let i = 1; i < traversal.length; i++) {
+        const a = traversal[i - 1];
+        const b = traversal[i];
+        if (a.edgeId === b.edgeId) continue;
+        const ea = edgeById.get(a.edgeId);
+        const eb = edgeById.get(b.edgeId);
+        if (!ea || !eb) continue;
+        const endA = a.reversed ? ea.from : ea.to;
+        const startB = b.reversed ? eb.to : eb.from;
+        if (endA !== startB) continue;
+        const aAtStart = ea.from === endA;
+        const bAtStart = eb.from === endA;
+        const keyA = a.edgeId + '|' + lineId + '|' + (aAtStart ? 's' : 'e');
+        const keyB = b.edgeId + '|' + lineId + '|' + (bAtStart ? 's' : 'e');
+        if (endMoved.has(keyA) || endMoved.has(keyB)) continue; // already joined/clipped
+        const pA = segPath.get(a.edgeId + '|' + lineId);
+        const pB = segPath.get(b.edgeId + '|' + lineId);
+        if (!pA || !pB || pA.length < 2 || pB.length < 2) continue;
+        const rj = curveLaneJoin(pA, aAtStart, pB, bAtStart, SMOOTH_R, spacing * 4, true);
+        if (!rj) continue;
+        endMoved.add(keyA);
+        endMoved.add(keyB);
+        const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+        mitered.add(lineId + '|' + endA + '|' + pk);
+        joinCurves.push({ lineId, node: endA, a: rj.a, apex: rj.apex, b: rj.b });
+      }
+    }
+  }
+
   emitLanes();
 
   // Node connectors: where a line continues across a node between two edges
@@ -1754,9 +1926,14 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     );
   }
 
+  // Geographic-topo passes an explicit demand frame; octi modes (smoothed,
+  // schematic) fall back to the rendered network's pixel extent.
+  const fr = args.frame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
+  const frameAttr =
+    ' data-frame="' + fr.x.toFixed(1) + ' ' + fr.y.toFixed(1) + ' ' + fr.w.toFixed(1) + ' ' + fr.h.toFixed(1) + '"';
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
-    '" height="' + height + '">\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
+    '" height="' + height + '"' + frameAttr + '>\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +

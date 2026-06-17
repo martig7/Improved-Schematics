@@ -43,6 +43,7 @@ export function curveLaneJoin(
   bAtStart: boolean,
   radius: number,
   limit: number,
+  allowRegressive = false,
 ): LaneJoin | null {
   if (polyA.length < 2 || polyB.length < 2) return null;
   const qa = aAtStart ? polyA[0] : polyA[polyA.length - 1];
@@ -59,7 +60,10 @@ export function curveLaneJoin(
   // corner and the "join" would loop out and back (the Republican St yellow
   // hook). d1 points INTO the node, d2 points INTO the node from the other
   // side — alignment means the line nearly reverses. Leave it to the chord.
-  if (d1[0] * d2[0] + d1[1] * d2[1] > 0.3 * scale) return null;
+  // allowRegressive lets a DRAW-TIME caller fillet a sharp fused-station bend
+  // (post-marker, so the cut-back can't starve the rigid-row solver); the
+  // on-lane cutBackTo + limit checks below still reject genuine reversals.
+  if (!allowRegressive && d1[0] * d2[0] + d1[1] * d2[1] > 0.3 * scale) return null;
 
   const t = ((qb1[0] - qa1[0]) * d2[1] - (qb1[1] - qa1[1]) * d2[0]) / denom;
   const x = qa1[0] + t * d1[0];
