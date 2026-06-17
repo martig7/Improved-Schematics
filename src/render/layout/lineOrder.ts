@@ -45,7 +45,7 @@ export function orderLines(layout: Layout): void {
         edge.lineOrder = [...edge.lineOrder].sort((a, b) => {
           const ta = target.get(a) ?? 0;
           const tb = target.get(b) ?? 0;
-          if (ta === tb) return a.localeCompare(b);
+          if (ta === tb) return a < b ? -1 : a > b ? 1 : 0; // raw compare (localeCompare is engine-dependent)
           return ta - tb;
         });
         if (edge.lineOrder.join(',') !== before) changed = true;

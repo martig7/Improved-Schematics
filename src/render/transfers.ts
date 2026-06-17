@@ -40,11 +40,11 @@ export function routedGroupsOnly(groups: StationGroup[], graph: TransitGraph): S
 /** Approximate metres between two lng/lat points (cosine-corrected). */
 function metresBetween(a: Coordinate, b: Coordinate): number {
   const meanLat = (a[1] + b[1]) / 2;
-  const k = Math.cos((meanLat * Math.PI) / 180);
+  const k = Math.round(Math.cos((meanLat * Math.PI) / 180) * 1e9) / 1e9; // quantize cos (cross-V8)
   const R = 6371e3;
   const dx = ((b[0] - a[0]) * Math.PI) / 180 * k * R;
   const dy = ((b[1] - a[1]) * Math.PI) / 180 * R;
-  return Math.hypot(dx, dy);
+  return Math.sqrt(dx * dx + dy * dy); // correctly-rounded cross-V8 (hypot is not)
 }
 
 export function findTransferPairs(

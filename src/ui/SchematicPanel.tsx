@@ -140,6 +140,10 @@ export function SchematicPanel() {
         routes: api.gameState.getRoutes(),
         tracks: api.gameState.getTracks(),
         stations: api.gameState.getStations(),
+        // geography sets the projection BOUNDS (geoFramePts → computeBounds), so
+        // it must be captured or an offline repro projects the network into
+        // different bounds → a different octi layout than the game produces.
+        geography,
       });
       const blob = new Blob([payload], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -154,7 +158,7 @@ export function SchematicPanel() {
     } catch (err) {
       setDumpStatus('failed: ' + String(err));
     }
-  }, []);
+  }, [geography]);
 
   // Per-mount cache of the expensive smoothed layout, hydrated from smoothedStore
   // (which persists across mounts). Reused for label/station toggles so those are

@@ -21,7 +21,8 @@ import type {
 export const ALPHA = Math.SQRT1_2; // 0.70710678…
 
 export function dist(a: Pixel, b: Pixel): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const dx = a[0] - b[0], dy = a[1] - b[1];
+  return Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded cross-V8 (hypot is not)
 }
 
 export function polylineLength(pts: Pixel[]): number {
@@ -140,7 +141,7 @@ export class NodeIndex {
         for (const id of b) {
           if (exclude?.has(id)) continue;
           const q = this.pos.get(id)!;
-          const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          const d = Math.sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]));
           if (d <= bestD) {
             bestD = d;
             best = id;
@@ -607,7 +608,7 @@ function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos
   const by = prev ? pk[1] - prev[1] : 0;
   let tx = ax + bx;
   let ty = ay + by;
-  const tl = Math.hypot(tx, ty);
+  const tl = Math.sqrt(tx * tx + ty * ty); // correctly-rounded cross-V8 (hypot is not)
   if (tl < 1e-9) return true;
   tx /= tl;
   ty /= tl;
@@ -658,8 +659,14 @@ export function collapseSharedSegments(
     }
   }
 
+  // TOTAL tie-break (fromId|toId|lineSig is unique per merge edge): mirrored
+  // corridors have equal length, so without this the seed order — and thus the
+  // merged topology — depends on the engine's sort tie behavior (cross-V8).
+  const ekey = (e: { fromId: string; toId: string; lineSig: string }) =>
+    e.fromId + '|' + e.toId + '|' + e.lineSig;
   const sorted = [...input.edges].sort(
-    (x, y) => polylineLength(y.points) - polylineLength(x.points),
+    (x, y) => (polylineLength(y.points) - polylineLength(x.points)) ||
+      (ekey(x) < ekey(y) ? -1 : ekey(x) > ekey(y) ? 1 : 0),
   );
 
   const trace2 =
@@ -1075,7 +1082,7 @@ function projectArcOnPolyline(
     const vy = b[1] - a[1];
     const c2 = vx * vx + vy * vy;
     const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / c2));
-    const d = Math.hypot(q[0] - (a[0] + vx * t), q[1] - (a[1] + vy * t));
+    const d = Math.sqrt((q[0] - (a[0] + vx * t)) ** 2 + (q[1] - (a[1] + vy * t)) ** 2);
     const seg = Math.sqrt(c2);
     if (d < best.d) best = { d, arc: acc + seg * t, segIdx: i - 1, total: 0 };
     acc += seg;

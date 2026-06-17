@@ -30,7 +30,13 @@ export function createProjection(
 
   // Longitude compression factor at the center latitude.
   const centerLat = (minLat + maxLat) / 2;
-  const k = Math.cos((centerLat * Math.PI) / 180) || 1;
+  // Quantize the ONE transcendental in the projection: cos is not correctly-
+  // rounded across V8 builds, and this single scalar multiplies into every
+  // projected x (toSVG below), so a 1-ULP cross-engine diff in it perturbs all
+  // coordinates and the chaotic octi search amplifies it into a different
+  // layout. Rounding to 1e-9 (far sub-pixel at 2700px) makes k — and thus the
+  // whole projected coordinate field — bit-identical on every engine.
+  const k = (Math.round(Math.cos((centerLat * Math.PI) / 180) * 1e9) / 1e9) || 1;
 
   // Projected-space extents (px = lng * k, py = lat).
   const pMinX = minLng * k;

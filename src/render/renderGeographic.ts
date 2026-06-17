@@ -153,11 +153,11 @@ function pointToSeg(p: Pixel, a: Pixel, b: Pixel): number {
   const wx = p[0] - a[0];
   const wy = p[1] - a[1];
   const c1 = vx * wx + vy * wy;
-  if (c1 <= 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  if (c1 <= 0) return Math.sqrt((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2);
   const c2 = vx * vx + vy * vy;
-  if (c2 <= c1) return Math.hypot(p[0] - b[0], p[1] - b[1]);
+  if (c2 <= c1) return Math.sqrt((p[0] - b[0]) ** 2 + (p[1] - b[1]) ** 2);
   const t = c1 / c2;
-  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+  return Math.sqrt((p[0] - (a[0] + t * vx)) ** 2 + (p[1] - (a[1] + t * vy)) ** 2);
 }
 
 /** Douglas–Peucker simplification. */
@@ -191,7 +191,7 @@ function cleanPolyline(pts: Pixel[]): Pixel[] {
   const dedup: Pixel[] = [pts[0]];
   for (let i = 1; i < pts.length; i++) {
     const last = dedup[dedup.length - 1];
-    if (Math.hypot(pts[i][0] - last[0], pts[i][1] - last[1]) >= 1) dedup.push(pts[i]);
+    if ((pts[i][0] - last[0]) ** 2 + (pts[i][1] - last[1]) ** 2 >= 1) dedup.push(pts[i]);
   }
   // Always keep the true last endpoint so the edge still meets its node.
   const end = pts[pts.length - 1];
@@ -319,8 +319,19 @@ export function renderGeographic(input: GeoInput): string {
 function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
-  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const graph = buildTransitGraph(input.stations as never, input.routes, groups, input.tracks);
+  // Canonicalize input ORDER by id. The layout's Map/Set insertion order — and
+  // thus octi's greedy search PATH — follows the input array order, so the
+  // offline dump and the game's live data (iterated in a different order) would
+  // otherwise produce DIFFERENT layouts from the SAME network. Sorting by id
+  // makes the render order-independent → bit-identical offline and in-game.
+  const byId = <T extends { id: string }>(arr: ReadonlyArray<T>): T[] =>
+    [...arr].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const sStations = byId(input.stations as ReadonlyArray<{ id: string }>) as never;
+  const sRoutes = byId(input.routes);
+  const sTracks = input.tracks ? byId(input.tracks) : input.tracks;
+  const sGroups = input.stationGroups ? byId(input.stationGroups) : input.stationGroups;
+  const groups = getOrBuildStationGroups(sStations, sGroups);
+  const graph = buildTransitGraph(sStations, sRoutes, groups, sTracks);
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, options: { ...input.options, useTopoMerge: false } });
   }
@@ -401,8 +412,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
-  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const graph = buildTransitGraph(input.stations as never, input.routes, groups, input.tracks);
+  // Canonicalize input ORDER by id. The layout's Map/Set insertion order — and
+  // thus octi's greedy search PATH — follows the input array order, so the
+  // offline dump and the game's live data (iterated in a different order) would
+  // otherwise produce DIFFERENT layouts from the SAME network. Sorting by id
+  // makes the render order-independent → bit-identical offline and in-game.
+  const byId = <T extends { id: string }>(arr: ReadonlyArray<T>): T[] =>
+    [...arr].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const sStations = byId(input.stations as ReadonlyArray<{ id: string }>) as never;
+  const sRoutes = byId(input.routes);
+  const sTracks = input.tracks ? byId(input.tracks) : input.tracks;
+  const sGroups = input.stationGroups ? byId(input.stationGroups) : input.stationGroups;
+  const groups = getOrBuildStationGroups(sStations, sGroups);
+  const graph = buildTransitGraph(sStations, sRoutes, groups, sTracks);
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });
   }
@@ -483,7 +505,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (!e) continue;
       const q = nodePos.get(e.from === id ? e.to : e.from);
       if (!q) continue;
-      sum += Math.hypot(p[0] - q[0], p[1] - q[1]);
+      const dx = p[0] - q[0], dy = p[1] - q[1];
+      sum += Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded (hypot is not)
       cnt++;
     }
     meanGap.set(id, cnt ? sum / cnt : Infinity);
@@ -502,9 +525,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const lineWeight = Math.max(1, Math.min(warpLineCap, lines.size));
     const g = meanGap.get(n.id)!;
     // closer-than-median neighbours → boost > 1; farther → < 1; clamped both ways
+    // crowdGamma default is 1 → pow(x,1)=x; bypass the (non-correctly-rounded)
+    // Math.pow so a 1-ULP diff can't flip the INTEGER Math.round(w) below and
+    // reshape the warp histogram. For general gamma, quantize before rounding.
     const crowd =
       crowdGamma > 0 && Number.isFinite(g) && g > 0
-        ? Math.min(8, Math.max(0.25, Math.pow(refGap / g, crowdGamma)))
+        ? Math.min(8, Math.max(0.25, crowdGamma === 1 ? refGap / g : Math.round(Math.pow(refGap / g, crowdGamma) * 1e6) / 1e6))
         : 1;
     const w = Math.max(1, Math.round(lineWeight * crowd));
     for (let i = 0; i < w; i++) warpSamples.push(p);

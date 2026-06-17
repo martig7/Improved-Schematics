@@ -60,10 +60,10 @@ export function renderStops(
     let best = 0;
     for (let i = 0; i < marks.length; i++) {
       for (let j = i + 1; j < marks.length; j++) {
-        const d = Math.hypot(
-          marks[i].pos[0] - marks[j].pos[0],
-          marks[i].pos[1] - marks[j].pos[1],
-        );
+        const d = Math.sqrt(
+          (marks[i].pos[0] - marks[j].pos[0]) ** 2 +
+          (marks[i].pos[1] - marks[j].pos[1]) ** 2,
+        ); // correctly-rounded cross-V8 (hypot is not)
         if (d > best) { best = d; ai = i; }
       }
     }

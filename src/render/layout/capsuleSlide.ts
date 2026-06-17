@@ -24,7 +24,7 @@ function ptSeg(px: number, py: number, a: Pixel, b: Pixel): number {
   const vy = b[1] - a[1];
   const l2 = vx * vx + vy * vy;
   const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
-  return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+  return Math.sqrt((px - (a[0] + vx * t)) ** 2 + (py - (a[1] + vy * t)) ** 2); // correctly-rounded cross-V8
 }
 
 /** Endpoint-min approximation of the distance between two segments — exact for

@@ -5,10 +5,13 @@
 import type { Layout, Pixel } from './types';
 import { LINE_WIDTH, LINE_GAP } from '../constants';
 
+// sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not); used for the
+// ribbon-offset geometry so the rendered paths are bit-identical on any engine.
+const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 function unit(a: Pixel, b: Pixel): Pixel {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
-  const len = Math.hypot(dx, dy) || 1;
+  const len = hyp(dx, dy) || 1;
   return [dx / len, dy / len];
 }
 
@@ -50,7 +53,7 @@ export function curveLaneJoin(
   const d1: Pixel = [qa[0] - qa1[0], qa[1] - qa1[1]];
   const d2: Pixel = [qb[0] - qb1[0], qb[1] - qb1[1]];
   const denom = d1[0] * d2[1] - d1[1] * d2[0];
-  const scale = Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]);
+  const scale = hyp(d1[0], d1[1]) * hyp(d2[0], d2[1]);
   if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return null; // parallel
   // regressive turn (> ~107°): the lane-line intersection lies BEHIND the
   // corner and the "join" would loop out and back (the Republican St yellow
@@ -62,8 +65,8 @@ export function curveLaneJoin(
   const x = qa1[0] + t * d1[0];
   const y = qa1[1] + t * d1[1];
 
-  if (Math.hypot(x - qa[0], y - qa[1]) > limit) return null;
-  if (Math.hypot(x - qb[0], y - qb[1]) > limit) return null;
+  if (hyp(x - qa[0], y - qa[1]) > limit) return null;
+  if (hyp(x - qb[0], y - qb[1]) > limit) return null;
 
   // Inner-corner overshoot: a lane drawn PAST the corner leaves the apex
   // behind its end (possibly behind several vertices) — rejecting here
@@ -86,7 +89,7 @@ export function curveLaneJoin(
       if (len2 < 1e-12) continue;
       const u = ((px - ax) * vx + (py - ay) * vy) / len2;
       if (u < -0.001 || u > 1.001) continue;
-      if (Math.hypot(px - (ax + vx * u), py - (ay + vy * u)) > 1.5) return false; // off the lane
+      if (hyp(px - (ax + vx * u), py - (ay + vy * u)) > 1.5) return false; // off the lane
       if (atStart) poly.splice(0, s + 1, [px, py]);
       else poly.splice(n - 1 - s, s + 1, [px, py]);
       return true;
@@ -106,8 +109,8 @@ export function curveLaneJoin(
   const rb1 = bAtStart ? polyB[1] : polyB[polyB.length - 2];
 
   // directions along each lane toward the apex
-  const la = Math.hypot(x - ra1[0], y - ra1[1]);
-  const lb = Math.hypot(x - rb1[0], y - rb1[1]);
+  const la = hyp(x - ra1[0], y - ra1[1]);
+  const lb = hyp(x - rb1[0], y - rb1[1]);
   if (la < 1e-6 || lb < 1e-6) return null;
   const ua: Pixel = [(x - ra1[0]) / la, (y - ra1[1]) / la];
   const ub: Pixel = [(x - rb1[0]) / lb, (y - rb1[1]) / lb];
@@ -146,7 +149,7 @@ export function taperLaneEnd(
   const n = poly.length;
   for (let k = 0; k < n; k++) {
     const p = atStart ? poly[k] : poly[n - 1 - k];
-    acc += Math.hypot(p[0] - prev[0], p[1] - prev[1]);
+    acc += hyp(p[0] - prev[0], p[1] - prev[1]);
     prev = [p[0], p[1]];
     const w = 1 - acc / taperLen;
     if (w <= 0) break;
@@ -175,7 +178,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
   for (const [lineId, edges] of byLine) {
     const canonical = [...edges].sort((a, b) => {
       if (b.lineOrder.length !== a.lineOrder.length) return b.lineOrder.length - a.lineOrder.length;
-      return a.id.localeCompare(b.id);
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; // raw compare (localeCompare is engine-dependent)
     })[0];
     const idx = canonical.lineOrder.indexOf(lineId);
     const center = (canonical.lineOrder.length - 1) / 2;
@@ -202,7 +205,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
   }
   const order = [...offsets.keys()].sort((a, b) => {
     const d = (authority.get(b) ?? 0) - (authority.get(a) ?? 0);
-    return d !== 0 ? d : a.localeCompare(b);
+    return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0); // raw compare (localeCompare is engine-dependent)
   });
   const fixed = new Set<string>();
   const COINCIDENT = 1.0; // px — only true overdraw counts as a collision
@@ -260,7 +263,7 @@ export function simplifyPolyline(points: Pixel[], eps = 0.5): Pixel[] {
   const dedup: Pixel[] = [points[0]];
   for (let i = 1; i < points.length; i++) {
     const last = dedup[dedup.length - 1];
-    if (Math.hypot(points[i][0] - last[0], points[i][1] - last[1]) >= eps) {
+    if (hyp(points[i][0] - last[0], points[i][1] - last[1]) >= eps) {
       dedup.push(points[i]);
     }
   }
@@ -306,7 +309,7 @@ export function offsetPolyline(points: Pixel[], offset: number, simplify = true)
       const n1 = perp(unit(prev, cur));
       const n2 = perp(unit(cur, next));
       const sum: Pixel = [n1[0] + n2[0], n1[1] + n2[1]];
-      const sumLen = Math.hypot(sum[0], sum[1]);
+      const sumLen = hyp(sum[0], sum[1]);
       if (sumLen < 1e-6) {
         // U-turn slipped past simplifyPolyline (degenerate after dedup).
         // Use the incoming normal directly — better than a NaN/0 vector.

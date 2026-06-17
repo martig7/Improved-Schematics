@@ -17,7 +17,7 @@ export interface LaneCurve {
 const arcCum = (pts: Pixel[]): number[] => {
   const cum = [0];
   for (let i = 1; i < pts.length; i++) {
-    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    cum.push(cum[i - 1] + Math.sqrt((pts[i][0] - pts[i - 1][0]) ** 2 + (pts[i][1] - pts[i - 1][1]) ** 2));
   }
   return cum;
 };
@@ -56,13 +56,13 @@ export const curveTangent = (c: LaneCurve, t: number): Pixel => {
   // reads as horizontal, corrupting octilinear snaps and group ordering.
   let dx = c.pts[hi][0] - c.pts[lo][0];
   let dy = c.pts[hi][1] - c.pts[lo][1];
-  while (Math.hypot(dx, dy) < 0.5 && (lo > 0 || hi < c.pts.length - 1)) {
+  while (dx * dx + dy * dy < 0.25 && (lo > 0 || hi < c.pts.length - 1)) {
     if (lo > 0) lo--;
     if (hi < c.pts.length - 1) hi++;
     dx = c.pts[hi][0] - c.pts[lo][0];
     dy = c.pts[hi][1] - c.pts[lo][1];
   }
-  const len = Math.hypot(dx, dy) || 1;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8 (hypot is not)
   return [dx / len, dy / len];
 };
 
@@ -77,7 +77,7 @@ const projectArc = (pts: Pixel[], cum: number[], p: Pixel): number => {
     const dy = pts[i][1] - ay;
     const l2 = dx * dx + dy * dy;
     const u = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2));
-    const d = Math.hypot(p[0] - (ax + dx * u), p[1] - (ay + dy * u));
+    const d = Math.sqrt((p[0] - (ax + dx * u)) ** 2 + (p[1] - (ay + dy * u)) ** 2);
     if (d < bestD) { bestD = d; bestT = cum[i - 1] + Math.sqrt(l2) * u; }
   }
   return bestT;
@@ -109,7 +109,7 @@ export const buildLaneCurve = (
   const lenOf = (p: Pixel[]) => arcCum(p)[p.length - 1];
   const sides = incident
     .filter((p) => p.length >= 2)
-    .sort((x, y) => lenOf(y) - lenOf(x))
+    .sort((x, y) => (lenOf(y) - lenOf(x)) || (x[0][0] - y[0][0]) || (x[0][1] - y[0][1])) // total tie-break (cross-V8 stable)
     .slice(0, 2);
   let pts: Pixel[];
   if (sides.length === 0) pts = [anchor, [anchor[0] + 1e-6, anchor[1]]];
@@ -123,7 +123,7 @@ export const buildLaneCurve = (
   const dd: Pixel[] = [pts[0]];
   for (const p of pts) {
     const q = dd[dd.length - 1];
-    if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6) dd.push(p);
+    if ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 > 1e-12) dd.push(p);
   }
   if (dd.length < 2) dd.push([dd[0][0] + 1e-6, dd[0][1]]);
   let cum = arcCum(dd);
@@ -150,7 +150,7 @@ export const rdpSimplify = (pts: Pixel[], eps: number): Pixel[] => {
     const l2 = dx * dx + dy * dy;
     for (let i = a + 1; i < b; i++) {
       const u = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((pts[i][0] - ax) * dx + (pts[i][1] - ay) * dy) / l2));
-      const d = Math.hypot(pts[i][0] - (ax + dx * u), pts[i][1] - (ay + dy * u));
+      const d = Math.sqrt((pts[i][0] - (ax + dx * u)) ** 2 + (pts[i][1] - (ay + dy * u)) ** 2);
       if (d > worst) { worst = d; wi = i; }
     }
     if (worst > eps && wi > 0) {

@@ -9,13 +9,31 @@ import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
-import { solveRows } from './layout/rowPlace';
+import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, type Hull } from './layout/capsuleSlide';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
+
+// sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not), so the rendered
+// marker/ribbon geometry is bit-identical on any engine. SIN1DEG = sin(1°).
+const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
+const SIN1DEG = 0.017452406437283513;
+// nearest octilinear axis (mod 180°) to a direction — trig-free argmax of
+// |dir·axis| over the 4 axes (deterministic tie → lowest index), so the axis
+// snap is bit-identical cross-V8 (no atan2). Module scope: used by both the
+// spineOctilinear gate and the rigid-row collision slide.
+const AXES4: Pixel[] = [[1, 0], [Math.SQRT1_2, Math.SQRT1_2], [0, 1], [-Math.SQRT1_2, Math.SQRT1_2]];
+const snapAxis = (dx: number, dy: number): Pixel => {
+  let best = 0, bv = -1;
+  for (let k = 0; k < 4; k++) {
+    const v = Math.abs(dx * AXES4[k][0] + dy * AXES4[k][1]);
+    if (v > bv) { bv = v; best = k; }
+  }
+  return AXES4[best];
+};
 
 export interface OctiOptions {
   dark?: boolean;
@@ -161,8 +179,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const a = poly[k - 1];
       const v = poly[k];
       const b = poly[k + 1];
-      const l1 = Math.hypot(v[0] - a[0], v[1] - a[1]);
-      const l2 = Math.hypot(b[0] - v[0], b[1] - v[1]);
+      const l1 = hyp(v[0] - a[0], v[1] - a[1]);
+      const l2 = hyp(b[0] - v[0], b[1] - v[1]);
       if (l1 < 1e-6 || l2 < 1e-6) continue;
       const u1: Pixel = [(v[0] - a[0]) / l1, (v[1] - a[1]) / l1];
       const u2: Pixel = [(b[0] - v[0]) / l2, (b[1] - v[1]) / l2];
@@ -314,7 +332,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     const arcOf = (poly: Pixel[]): number => {
       let acc = 0;
       for (let i = 1; i < poly.length; i++) {
-        acc += Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
+        acc += hyp(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
       }
       return acc;
     };
@@ -345,7 +363,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           if (!ee || ee.id === e.id) continue;
           const mine = endAt(e.id, nd);
           const theirs = endAt(ee.id, nd);
-          if (mine && theirs) jog += Math.hypot(mine[0] - theirs[0], mine[1] - theirs[1]);
+          if (mine && theirs) jog += hyp(mine[0] - theirs[0], mine[1] - theirs[1]);
         }
         if (jog <= arc * 0.6) continue;
         suppressed.add(key);
@@ -411,10 +429,10 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const qa1 = aAtStart ? pA[1] : pA[pA.length - 2];
       const qb = bAtStart ? pB[0] : pB[pB.length - 1];
       const qb1 = bAtStart ? pB[1] : pB[pB.length - 2];
-      const gap = Math.hypot(qb[0] - qa[0], qb[1] - qa[1]);
+      const gap = hyp(qb[0] - qa[0], qb[1] - qa[1]);
       if (gap < 0.5 || gap > spacing * 8) continue;
-      const lenA = Math.hypot(qa[0] - qa1[0], qa[1] - qa1[1]);
-      const lenB = Math.hypot(qb[0] - qb1[0], qb[1] - qb1[1]);
+      const lenA = hyp(qa[0] - qa1[0], qa[1] - qa1[1]);
+      const lenB = hyp(qb[0] - qb1[0], qb[1] - qb1[1]);
       if (lenA < 1e-6 || lenB < 1e-6) continue;
       // directions: A pointing INTO the node, B pointing OUT
       const dirA: Pixel = [(qa[0] - qa1[0]) / lenA, (qa[1] - qa1[1]) / lenA];
@@ -423,7 +441,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       if (dot < 0.85) continue; // genuine corner the join rejected — keep S connector
       const polyLenOf = (poly: Pixel[]): number => {
         let L = 0;
-        for (let i = 1; i < poly.length; i++) L += Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
+        for (let i = 1; i < poly.length; i++) L += hyp(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
         return L;
       };
       const taperA = Math.min(spacing * 8, polyLenOf(pA) * 0.45);
@@ -542,8 +560,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         let bridged = pts;
         if (joins) {
           for (const jc of joins) {
-            const da = Math.hypot(pts[0][0] - jc.a[0], pts[0][1] - jc.a[1]);
-            const db = Math.hypot(pts[0][0] - jc.b[0], pts[0][1] - jc.b[1]);
+            const da = hyp(pts[0][0] - jc.a[0], pts[0][1] - jc.a[1]);
+            const db = hyp(pts[0][0] - jc.b[0], pts[0][1] - jc.b[1]);
             // 0.5px: curveLaneJoin's trim leaves the lane end within float
             // rounding of jc.a/jc.b — a sub-pixel bound, not a tunable
             if (Math.min(da, db) > 0.5) continue;
@@ -600,6 +618,22 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       return n;
     };
     const r = LINE_WIDTH * 0.7;
+    // Near-miss tolerance for the rigid-row dot floor. octi's grid placement can
+    // seat an interchange bundle a sub-pixel below minGap, boxing the whole
+    // station; and because the chaotic greedy local search reaches slightly
+    // different optima across runtimes (offline Node vs the game's V8), that
+    // sub-pixel margin flips boxes on/off between environments. Slackening the
+    // INTRA-station floor by a fraction of a pixel (imperceptible ring overlap
+    // inside the capsule) makes box-vs-row robust to that jitter. Cross-station
+    // separation (the §6 mask below) stays strict. OCTI_MINGAP_SLACK overrides
+    // (0 = strict, the pre-fix behavior).
+    const minGapSlack = (() => {
+      const env =
+        typeof process !== 'undefined'
+          ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINGAP_SLACK)
+          : NaN;
+      return Number.isFinite(env) && env >= 0 ? env : 0.5;
+    })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
@@ -632,7 +666,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         let acc = 0;
         let p: Pixel = pts[pts.length - 1];
         for (let i = 1; i < pts.length; i++) {
-          const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+          const seg = hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
           if (acc + seg >= d) {
             const t = seg > 1e-9 ? (d - acc) / seg : 0;
             p = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
@@ -640,7 +674,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           }
           acc += seg;
         }
-        const dd = Math.hypot(p[0] - awayFrom[0], p[1] - awayFrom[1]);
+        const dd = hyp(p[0] - awayFrom[0], p[1] - awayFrom[1]);
         if (dd > bestD) { bestD = dd; best = { p, edgeId: edge.id }; }
       }
       return best;
@@ -657,7 +691,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       let acc = 0;
       let out: Pixel[] | null = null;
       for (let i = 1; i < pts.length; i++) {
-        const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        const seg = hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
         if (acc + seg >= d) {
           const t = seg > 1e-9 ? (d - acc) / seg : 0;
           const cut: Pixel = [
@@ -702,7 +736,9 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         // straight line across diverging lanes, which has no solution → box.
         const markAxis = s.marks.map((_, i) => {
           const tg = curveTangent(curves[i], curves[i].anchorT);
-          return (((Math.round(Math.atan2(tg[1], tg[0]) / (Math.PI / 4)) % 4) + 4) % 4);
+          // quantize atan2 (cross-V8) before the axis-index round so a 1-ULP
+          // diff can't flip the grouping axis at a 22.5° boundary.
+          return (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
         });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
@@ -734,7 +770,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             mx += tg[0] * sgn;
             my += tg[1] * sgn;
           }
-          const len = Math.hypot(mx, my) || 1;
+          const len = hyp(mx, my) || 1;
           const nx = -my / len;
           const ny = mx / len;
           return [...idx].sort((a, b) =>
@@ -742,7 +778,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             (s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny));
         });
         const ropts = {
-          minGap: 2 * r - 0.05,
+          minGap: Math.max(2, 2 * r - 0.05 - minGapSlack),
           arcLimit: CHAIN_ARC_LIMIT,
           extCap: 6 * spacing,
           dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
@@ -750,7 +786,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // never dropped in this model (a masked station boxes instead)
           blocked: (p: Pixel) => {
             for (const q of placedDots) {
-              if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
+              if (hyp(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
             }
             return false;
           },
@@ -810,8 +846,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const ay = corner[1] - mk.pos[1];
         const bx = next.pos[0] - corner[0];
         const by = next.pos[1] - corner[1];
-        const la = Math.hypot(ax, ay) || 1;
-        const lb = Math.hypot(bx, by) || 1;
+        const la = hyp(ax, ay) || 1;
+        const lb = hyp(bx, by) || 1;
         cap.push({ mk, next, dirA: [ax / la, ay / la], dirB: [bx / lb, by / lb] });
       }
       return cap;
@@ -841,12 +877,13 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       for (let i = 1; i < vs.length; i++) {
         const dx = vs[i][0] - vs[i - 1][0];
         const dy = vs[i][1] - vs[i - 1][1];
-        const len = Math.hypot(dx, dy);
+        const len = Math.sqrt(dx * dx + dy * dy);
         if (len < 1) continue;
-        const m = ((Math.atan2(dy, dx) % QPI) + QPI) % QPI;
-        const off = Math.min(m, QPI - m);
-        const bar = Math.max((1 * Math.PI) / 180, Math.asin(Math.min(1, 0.85 / len)));
-        if (off > bar) return false;
+        // Perpendicular deviation from the nearest octilinear axis = |(dx,dy) × u|.
+        // off > bar ⟺ sin(off) > sin(bar) ⟺ |cross| > max(sin1°·len, 0.85). The
+        // atan2+asin form is not correctly-rounded cross-V8; this cross-product is.
+        const u = snapAxis(dx, dy);
+        if (Math.abs(dx * u[1] - dy * u[0]) > Math.max(SIN1DEG * len, 0.85)) return false;
       }
       return true;
     };
@@ -886,7 +923,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
               if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
             applyCorners(cap); // recompute corners on the slid dots (spec R1)
-            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; }
+            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; console.error(`[stops TEMP] SLIDE-BOXED ${s.nodeId}: mega-escape slide bent the spine off-octilinear -> boxed`); }
             slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
@@ -925,9 +962,199 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const b = boxOf(s);
         return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
       };
+      // ---- rigid-row collision slide (spec 2026-06-16-rigid-slide) --------
+      // The OLD slide walked each dot independently along its OWN lane by equal
+      // arc-length (lanePointAt). On NON-parallel lanes each dot moves by a
+      // different vector, so a straight row bends off octilinear and the
+      // station was boxed (SEA mn185). The fix moves the whole rigid row by ONE
+      // shared translation and re-seats every dot as the intersection of its
+      // (unchanged-direction) row LINE with its own lane — reusing rowPlace's
+      // lineCrossNearest, the exact primitive that seated the dots at placement.
+      // Every dot of a leg then lies on one straight octilinear line, so the
+      // spine is octilinear BY CONSTRUCTION; the box class is gone.
+      // Reconstruct the straight legs of a placed spine from the live marks:
+      // chain order, split at each cornerAfter. Each leg's octilinear direction
+      // is snapped from its end-to-end chord (already collinear by placement),
+      // or from the lane tangent for a single-dot leg.
+      const rowsOf = (marks: StMarks['marks']): Array<{ idx: number[]; u: Pixel }> => {
+        const order = marks.map((_, i) => i).sort((a, b) => (marks[a].chain ?? 0) - (marks[b].chain ?? 0));
+        const legs: number[][] = [];
+        let cur: number[] = [];
+        for (let k = 0; k < order.length; k++) {
+          cur.push(order[k]);
+          if (marks[order[k]].cornerAfter && k + 1 < order.length) { legs.push(cur); cur = []; }
+        }
+        if (cur.length) legs.push(cur);
+        return legs.map((idx) => {
+          let u: Pixel;
+          if (idx.length >= 2) {
+            const a = marks[idx[0]].pos, b = marks[idx[idx.length - 1]].pos;
+            u = snapAxis(b[0] - a[0], b[1] - a[1]);
+          } else {
+            const mk = marks[idx[0]];
+            const c = buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT);
+            const tg = curveTangent(c, c.anchorT);
+            u = snapAxis(tg[0], tg[1]);
+          }
+          return { idx, u };
+        });
+      };
+      // Which incident DRAWN edge's lane does the re-seated dot ride, and how
+      // far (arc from the lane's node-end to the dot) — both for trimLaneAt so a
+      // terminating line's ink still ends at the slid dot. Nearest by squared
+      // distance (no hypot in the selection). Unique for terminating dots.
+      const laneEdgeArc = (mk: StMarks['marks'][number], p: Pixel): { edgeId: string; arc: number } => {
+        let edgeId = '', bestD2 = Infinity, arc = 0;
+        for (const e of layout.edges) {
+          if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
+          const poly = segPath.get(e.id + '|' + mk.lineId);
+          if (!poly || poly.length < 2) continue;
+          if (!drawsOn(mk.lineId, e.id)) continue;
+          const pts = e.from === mk.flagNode ? poly : [...poly].reverse();
+          let acc = 0;
+          for (let i = 1; i < pts.length; i++) {
+            const ax = pts[i - 1][0], ay = pts[i - 1][1];
+            const vx = pts[i][0] - ax, vy = pts[i][1] - ay;
+            const l2 = vx * vx + vy * vy;
+            const seg = Math.sqrt(l2);
+            const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((p[0] - ax) * vx + (p[1] - ay) * vy) / l2)) : 0;
+            const qx = ax + vx * t, qy = ay + vy * t;
+            const d2 = (p[0] - qx) * (p[0] - qx) + (p[1] - qy) * (p[1] - qy);
+            if (d2 < bestD2) { bestD2 = d2; edgeId = e.id; arc = acc + seg * t; }
+            acc += seg;
+          }
+        }
+        return { edgeId, arc };
+      };
+      // Trial positions for a rigid translation of the whole spine away from
+      // `away` by d px. Returns one {p,edgeId,arc} per mark, or null if the
+      // translated line misses a windowed lane (infeasible at this d → caller
+      // stops the sweep and degrades gracefully — never a box).
+      const rigidSlide = (
+        st: StMarks,
+        away: Pixel,
+        d: number,
+      ): Array<{ p: Pixel; edgeId: string; arc: number }> | null => {
+        const legs = rowsOf(st.marks);
+        // Rigid translation applies when EVERY leg is a ≥2-dot straight row —
+        // a single straight row OR a multi-arm junction (SEA mn185: legs=2+2+2).
+        // Each leg's dots sit on an exact AXES line at placement, so re-seating
+        // them on the translated same-axis line keeps every leg octilinear and
+        // each corner = the exact intersection of two translated exact-axis
+        // lines (applyCorners reproduces it with zero deviation). Per-leg legs
+        // with a SINGLE dot (1-mark stations, corner stations whose arms are
+        // one dot) are excluded — their "axis" is the lane direction, so a
+        // perpendicular shift would miss the lane; those use the fallback.
+        if (legs.length >= 1 && legs.every((l) => l.idx.length >= 2)) {
+          let cx = 0, cy = 0;
+          for (const mk of st.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
+          cx /= st.marks.length; cy /= st.marks.length;
+          let vx: number, vy: number;
+          if (legs.length === 1) {
+            // single straight row: translate PERPENDICULAR to its axis by d
+            // (only the perpendicular component moves the line → full d of
+            // lateral separation per step), on the side away from `away`.
+            const u = legs[0].u;
+            let nx = -u[1], ny = u[0];
+            if ((cx - away[0]) * nx + (cy - away[1]) * ny < 0) { nx = -nx; ny = -ny; }
+            vx = d * nx; vy = d * ny;
+          } else {
+            // multi-arm junction: translate the whole rigid spider by d along
+            // the away direction; corners move by exactly v, each arm re-seats
+            // on its own translated axis line (octilinear by construction).
+            let dx = cx - away[0], dy = cy - away[1];
+            const dl = Math.sqrt(dx * dx + dy * dy) || 1;
+            vx = d * dx / dl; vy = d * dy / dl;
+          }
+          const out = new Array<{ p: Pixel; edgeId: string; arc: number }>(st.marks.length);
+          let ok = true;
+          for (const { idx, u } of legs) {
+            const a0 = st.marks[idx[0]].pos;
+            const A: Pixel = [a0[0] + vx, a0[1] + vy];
+            for (const i of idx) {
+              const mk = st.marks[i];
+              let p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT), A, u, mk.pos);
+              if (!p) {
+                // wide-window retry (mirrors placement escalation at solveRows)
+                p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2), A, u, mk.pos);
+              }
+              if (!p) { ok = false; break; }
+              const ea = laneEdgeArc(mk, p);
+              out[i] = { p, edgeId: ea.edgeId, arc: ea.arc };
+            }
+            if (!ok) break;
+          }
+          if (ok) return out;
+        }
+        // Fallback for 1-mark stations (no spine to bend), corner stations with
+        // single-dot arms (applyCorners salvages the bend), and rows whose lanes
+        // run parallel to the row (perpendicular translation can't re-cross):
+        // the proven per-dot along-lane slide. applySlide's octilinearity guard
+        // DECLINES any candidate that bends, so this can never box.
+        const lp = st.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, away, d));
+        if (lp.some((q) => !q)) return null;
+        return lp.map((q) => ({ p: q!.p, edgeId: q!.edgeId, arc: d }));
+      };
       // commit a slide: move the dots, trim terminating lanes, recompute the
-      // derived corners on the slid dots, box if the spine bent off octilinear.
-      const applySlide = (st: StMarks, moved: Array<{ p: Pixel; edgeId: string }>, d: number) => {
+      // derived corners on the slid dots. A DRY-RUN octilinearity guard runs
+      // first on a clone; rigid candidates pass by construction, so on a
+      // (should-be-impossible) bent result we DECLINE — leave the station at
+      // rest, NO box — and return false. Returns true when committed.
+      const applySlide = (
+        st: StMarks,
+        moved: Array<{ p: Pixel; edgeId: string; arc?: number }>,
+        d: number,
+      ): boolean => {
+        // dry-run: predict the slid spine on a clone without mutating anything
+        const clone = st.marks.map((m) => ({
+          ...m,
+          pos: [m.pos[0], m.pos[1]] as Pixel,
+          cornerAfter: m.cornerAfter ? ([m.cornerAfter[0], m.cornerAfter[1]] as Pixel) : undefined,
+        }));
+        const dcap = captureCorners(clone);
+        for (let i = 0; i < clone.length; i++) clone[i].pos = moved[i].p;
+        applyCorners(dcap);
+        if (!spineOctilinear(clone)) {
+          // TEMP diag: dump leg structure + the worst off-axis segment so we can
+          // see WHY the candidate bent in-engine (rigid vs fallback path).
+          const lg = rowsOf(st.marks).map((l) => l.idx.length).join('+');
+          const ord = [...clone].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
+          const vs: Pixel[] = [];
+          for (const mk of ord) { vs.push(mk.pos); if (mk.cornerAfter) vs.push(mk.cornerAfter); }
+          let worst = '(none)';
+          let worstGap = -Infinity;
+          for (let i = 1; i < vs.length; i++) {
+            const dx = vs[i][0] - vs[i - 1][0], dy = vs[i][1] - vs[i - 1][1];
+            const len = hyp(dx, dy);
+            if (len < 1) continue;
+            const m = ((Math.atan2(dy, dx) % QPI) + QPI) % QPI;
+            const off = Math.min(m, QPI - m);
+            const bar = Math.max(Math.PI / 180, Math.asin(Math.min(1, 0.85 / len)));
+            if (off - bar > worstGap) {
+              worstGap = off - bar;
+              worst = `seg${i} len=${len.toFixed(1)} off=${(off * 180 / Math.PI).toFixed(1)}deg bar=${(bar * 180 / Math.PI).toFixed(1)}deg`;
+            }
+          }
+          const corners = st.marks.filter((m) => m.cornerAfter).length;
+          console.error(`[stops] rigid slide declined (non-octilinear) ${st.nodeId}: legs=${lg} marks=${st.marks.length} corners=${corners} worst[${worst}]`);
+          return false;
+        }
+        // Intra-station dot floor: re-seating dots on the translated line can
+        // bring two dots below minGap (stacked bullets) — invisible while the
+        // station boxed (the box hid them), visible now. Enforce the SAME floor
+        // rowPlace uses at placement; decline a stacking candidate so the sweep
+        // picks a non-stacking d (or the station stays at its spaced rest pose).
+        const dotFloor = Math.max(2, 2 * r - 0.05 - minGapSlack);
+        for (let i = 0; i < clone.length; i++) {
+          for (let j = i + 1; j < clone.length; j++) {
+            const dx = clone[i].pos[0] - clone[j].pos[0];
+            const dy = clone[i].pos[1] - clone[j].pos[1];
+            if (dx * dx + dy * dy < dotFloor * dotFloor - 1e-6) {
+              console.error(`[stops] slide declined (would stack dots) ${st.nodeId}: ${Math.sqrt(dx * dx + dy * dy).toFixed(1)}px < floor ${dotFloor.toFixed(1)}`);
+              return false;
+            }
+          }
+        }
         const cap = captureCorners(st.marks); // old leg dirs before the slide
         for (let i = 0; i < st.marks.length; i++) {
           const mk = st.marks[i];
@@ -939,22 +1166,22 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             if (!drawsOn(mk.lineId, e.id)) continue;
             incident++;
           }
-          if (incident <= 1 && moved[i].edgeId) trimLaneAt(moved[i].edgeId, mk.lineId, mk.flagNode, d);
+          if (incident <= 1 && moved[i].edgeId) trimLaneAt(moved[i].edgeId, mk.lineId, mk.flagNode, moved[i].arc ?? d);
         }
         applyCorners(cap); // recompute corners on the slid dots (spec R1)
-        if (!spineOctilinear(st.marks)) { for (const mk of st.marks) mk.mega = true; slideBoxed++; }
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const mk of st.marks) {
           x0 = Math.min(x0, mk.pos[0]); y0 = Math.min(y0, mk.pos[1]);
           x1 = Math.max(x1, mk.pos[0]); y1 = Math.max(y1, mk.pos[1]);
         }
         slid.push({ nodeId: st.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
+        return true;
       };
       // reachable lane offsets for a capsule sliding away from `away`: index 0 =
       // rest (current dots), 1.. = slid by 4,8,… up to `cap`, stopping at the
       // first offset that runs off a lane or fails to clear a mega box. A pinned
       // capsule (already slid this resolution) contributes only its rest offset.
-      type Cand = { moved: Array<{ p: Pixel; edgeId: string }>; d: number; hull: Hull };
+      type Cand = { moved: Array<{ p: Pixel; edgeId: string; arc?: number }>; d: number; hull: Hull };
       const buildCands = (st: StMarks, away: Pixel, cap: number, pinned: boolean): Cand[] => {
         const rest: Cand = {
           moved: st.marks.map((mk) => ({ p: mk.pos, edgeId: '' })),
@@ -964,9 +1191,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         if (pinned) return [rest];
         const out: Cand[] = [rest];
         for (let d = 4; d <= cap; d += 4) {
-          const moved = st.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, away, d));
-          if (moved.some((p) => !p)) break;
-          const mv = moved.map((m) => ({ p: m!.p, edgeId: m!.edgeId }));
+          const mv = rigidSlide(st, away, d); // rigid: collinear/octilinear by construction
+          if (!mv) break;
           let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
           for (const m of mv) {
             x0 = Math.min(x0, m.p[0]); y0 = Math.min(y0, m.p[1]);
@@ -1004,23 +1230,24 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             const center = centerOf(O);
             let resolved = false;
             for (let d = 4; d <= 32; d += 4) {
-              const moved = S.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
-              if (moved.some((p) => !p)) break;
+              const moved = rigidSlide(S, center, d);
+              if (!moved) break;
               let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
               for (const t of moved) {
-                x0 = Math.min(x0, t!.p[0]); y0 = Math.min(y0, t!.p[1]);
-                x1 = Math.max(x1, t!.p[0]); y1 = Math.max(y1, t!.p[1]);
+                x0 = Math.min(x0, t.p[0]); y0 = Math.min(y0, t.p[1]);
+                x1 = Math.max(x1, t.p[0]); y1 = Math.max(y1, t.p[1]);
               }
               const pad = r + 3;
               const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
                 x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
-              const trialHull = hullsOf(S.marks, (i) => moved[i]!.p);
+              const trialHull = hullsOf(S.marks, (i) => moved[i].p);
               if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
-              applySlide(S, moved.map((m) => ({ p: m!.p, edgeId: m!.edgeId })), d);
-              if (mutualEnabled) slidNodes.add(S.nodeId);
-              movedAny = true;
-              resolved = true;
-              break;
+              if (applySlide(S, moved, d)) {
+                if (mutualEnabled) slidNodes.add(S.nodeId);
+                movedAny = true;
+                resolved = true;
+                break;
+              }
             }
             if (resolved || !mutualEnabled) continue;
             // --- stage 2: escalate — slide BOTH apart (best-effort) ---
@@ -1028,13 +1255,55 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
             const candsB = buildCands(B, centerOf(A), 32, pinnedB);
             const { ka, kb } = chooseMutualSlide(candsA.map((c) => c.hull), candsB.map((c) => c.hull));
             if (ka > 0 || kb > 0) {
-              if (ka > 0) { applySlide(A, candsA[ka].moved, candsA[ka].d); slidNodes.add(A.nodeId); }
-              if (kb > 0) { applySlide(B, candsB[kb].moved, candsB[kb].d); slidNodes.add(B.nodeId); }
-              movedAny = true;
+              let did = false;
+              if (ka > 0 && applySlide(A, candsA[ka].moved, candsA[ka].d)) { slidNodes.add(A.nodeId); did = true; }
+              if (kb > 0 && applySlide(B, candsB[kb].moved, candsB[kb].d)) { slidNodes.add(B.nodeId); did = true; }
+              if (did) movedAny = true;
             }
           }
         }
         if (!movedAny) break;
+      }
+      // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps — bullet rings
+      // (radius r+0.75, diameter 2r+1.5) crossing where they shouldn't. XSTN =
+      // two DIFFERENT stations' bullets overlap; INSTN = two bullets of ONE
+      // station that are NOT same-row-adjacent (a folded spine / piled junction).
+      // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
+      // + node ids so the spot can be cropped (dev/_raster.ts).
+      if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
+      const ringDia = 2 * r + 1.5;
+      const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
+      for (let ai = 0; ai < smalls.length; ai++) {
+        for (let bi = ai + 1; bi < smalls.length; bi++) {
+          const A = smalls[ai], B = smalls[bi];
+          let md = Infinity, mx = 0, my = 0;
+          for (const p of A.marks) for (const q of B.marks) {
+            const dx = p.pos[0] - q.pos[0], dy = p.pos[1] - q.pos[1];
+            const dd = Math.sqrt(dx * dx + dy * dy);
+            if (dd < md) { md = dd; mx = (p.pos[0] + q.pos[0]) / 2; my = (p.pos[1] + q.pos[1]) / 2; }
+          }
+          if (md < ringDia) ovls.push({ kind: 'XSTN', a: A.nodeId, b: B.nodeId, dist: md, x: mx, y: my });
+        }
+      }
+      for (const s of gathered) {
+        if (s.marks.length < 2 || s.marks.some((m) => m.mega)) continue;
+        const ord = [...s.marks].sort((a, b) => (a.chain ?? 0) - (b.chain ?? 0));
+        for (let i = 0; i < ord.length; i++) {
+          for (let j = i + 1; j < ord.length; j++) {
+            if (j === i + 1 && !ord[i].cornerAfter) continue; // same-row-adjacent = normal
+            const dx = ord[i].pos[0] - ord[j].pos[0], dy = ord[i].pos[1] - ord[j].pos[1];
+            const dd = Math.sqrt(dx * dx + dy * dy);
+            if (dd < ringDia) {
+              ovls.push({ kind: 'INSTN', a: s.nodeId, b: `${i}~${j}${ord[i].cornerAfter ? '/cnr' : ''}`, dist: dd, x: (ord[i].pos[0] + ord[j].pos[0]) / 2, y: (ord[i].pos[1] + ord[j].pos[1]) / 2 });
+            }
+          }
+        }
+      }
+      ovls.sort((p, q) => p.dist - q.dist);
+      for (const o of ovls.slice(0, 25)) {
+        console.error(`[stops] ${o.kind} ${o.dist.toFixed(1)}px ${o.a} vs ${o.b} @(${o.x.toFixed(0)},${o.y.toFixed(0)})`);
+      }
+      console.error(`[stops] egregious overlaps: ${ovls.length} (ringDia=${ringDia.toFixed(1)})`);
       }
     }
     if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
@@ -1067,7 +1336,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const L2 = vx * vx + vy * vy;
         const seg = Math.sqrt(L2);
         const t = L2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((target[0] - ax) * vx + (target[1] - ay) * vy) / L2));
-        const d = Math.hypot(target[0] - (ax + vx * t), target[1] - (ay + vy * t));
+        const d = hyp(target[0] - (ax + vx * t), target[1] - (ay + vy * t));
         if (d < bestD) { bestD = d; best = acc + seg * t; }
         acc += seg;
       }
@@ -1106,7 +1375,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const vx = b[0] - a[0], vy = b[1] - a[1];
         const l2 = vx * vx + vy * vy;
         const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
-        return Math.hypot(px - (a[0] + vx * t), py - (a[1] + vy * t));
+        return hyp(px - (a[0] + vx * t), py - (a[1] + vy * t));
       };
       const spineSegsOf = (st: StMarks): Array<[Pixel, Pixel]> => {
         const ord = [...st.marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
@@ -1128,7 +1397,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         for (const o of capsules) {
           if (o.nodeId === selfNode) continue;
           for (const [a, b] of spineSegsOf(o)) if (ptSegD(p[0], p[1], a, b) < need) return false;
-          for (const om of o.marks) if (Math.hypot(p[0] - om.pos[0], p[1] - om.pos[1]) < 2 * r) return false;
+          for (const om of o.marks) if (hyp(p[0] - om.pos[0], p[1] - om.pos[1]) < 2 * r) return false;
         }
         return true;
       };
@@ -1173,7 +1442,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           const anchor = pts[pts.length - 1];
           const ox = pts[pts.length - 2][0] - anchor[0];
           const oy = pts[pts.length - 2][1] - anchor[1];
-          const ol = Math.hypot(ox, oy) || 1;
+          const ol = hyp(ox, oy) || 1;
           const odir: Pixel = [ox / ol, oy / ol];
           // octilinear axes ranked by closeness to the original outward dir
           const ranked = [...OCT].sort(
@@ -1275,7 +1544,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const pa = lineEndAt(a.edgeId, lineId, endA);
       const pb = lineEndAt(b.edgeId, lineId, startB);
       if (!pa || !pb) continue;
-      const gap = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+      const gap = hyp(pb[0] - pa[0], pb[1] - pa[1]);
       if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
@@ -1288,7 +1557,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const prevA = ea.from === endA ? polyA[1] : polyA[polyA.length - 2];
       const nextB = eb.from === startB ? polyB[1] : polyB[polyB.length - 2];
       const unitTo = (from: Pixel, to: Pixel): Pixel => {
-        const len = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
+        const len = hyp(to[0] - from[0], to[1] - from[1]) || 1;
         return [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
       };
       // longer tangents spread the S over more of the corridor (sketch-style
@@ -1303,7 +1572,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       // hairpin east of the node, so it degrades to a plain crossover chord.
       const tx = dirA[0] + dirB[0];
       const ty = dirA[1] + dirB[1];
-      const tLen = Math.hypot(tx, ty) || 1;
+      const tLen = hyp(tx, ty) || 1;
       const lon = Math.abs(((pb[0] - pa[0]) * tx + (pb[1] - pa[1]) * ty) / tLen);
       const k = Math.min(Math.min(spacing * 4, Math.max(gap, spacing * 2)), lon);
       // the chord must progress along BOTH tangents, else the bezier loops
@@ -1406,7 +1675,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         if (m.pos[1] > maxY) maxY = m.pos[1];
       }
       const center: Pixel = [(minX + maxX) / 2, (minY + maxY) / 2];
-      const radius = Math.hypot(maxX - minX, maxY - minY) / 2 + dotR;
+      const radius = hyp(maxX - minX, maxY - minY) / 2 + dotR;
       return { center, radius };
     };
     transferPart = renderTransferConnectors(

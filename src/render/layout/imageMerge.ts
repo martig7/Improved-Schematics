@@ -252,7 +252,7 @@ export function mergeCoincidentPaths(
     let bestD = Infinity;
     for (const [vk, nid] of vertNode) {
       const q = vPos.get(vk)!;
-      const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      const d = Math.sqrt((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2); // correctly-rounded cross-V8
       if (d < bestD) { bestD = d; best = nid; }
     }
     return best;
@@ -321,7 +321,7 @@ export function separateFusedStations(
   img: Image,
   minSep: number,
 ): void {
-  const dist = (a: Pixel, b: Pixel) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const dist = (a: Pixel, b: Pixel) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2);
 
   const byNode = new Map<string, SupportStation[]>();
   for (const st of h.stations.values()) {
@@ -340,7 +340,8 @@ export function separateFusedStations(
     // keeper = closest to the drawn node; others split off when far enough
     // from the keeper's true position
     withTrue.sort(
-      (a, b) => dist(a.truePos!, nodePos) - dist(b.truePos!, nodePos) || a.id.localeCompare(b.id),
+      (a, b) => (dist(a.truePos!, nodePos) - dist(b.truePos!, nodePos)) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0), // raw compare (localeCompare is engine-dependent)
     );
     const keeper = withTrue[0];
 
@@ -434,7 +435,7 @@ export function separateFusedStations(
         const dy = st.truePos![1] - nodePos[1];
         return (c.p[0] - nodePos[0]) * dx + (c.p[1] - nodePos[1]) * dy > 0 ? 0 : 1;
       };
-      candidates.sort((x, y) => side(x) - side(y) || x.d - y.d);
+      candidates.sort((x, y) => (side(x) - side(y)) || (x.d - y.d) || (x.p[0] - y.p[0]) || (x.p[1] - y.p[1])); // total tie-break by position (cross-V8 stable)
 
       // try candidates closest-first until one yields a split point with real
       // visual separation from the fused node (an edge can pass right next to

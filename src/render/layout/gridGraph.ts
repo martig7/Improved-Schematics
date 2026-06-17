@@ -546,13 +546,13 @@ export class OctiGridGraph {
         const b = c * this.rows + r;
         if (this.ndClosed[b] || this.ndSettled[b]) continue;
         const pos = this.basePos(b);
-        const d = Math.hypot(pos[0] - p[0], pos[1] - p[1]);
+        const d = Math.sqrt((pos[0] - p[0]) ** 2 + (pos[1] - p[1]) ** 2); // correctly-rounded cross-V8
         if (d >= maxD) continue;
         if (this.getGrNdDeg(b, adjSettledBases) < combDeg) continue;
         out.push({ b, d });
       }
     }
-    out.sort((x, y) => x.d - y.d);
+    out.sort((x, y) => (x.d - y.d) || (x.b - y.b)); // total tie-break: base index is unique (cross-V8 stable)
     return out.map((x) => x.b);
   }
 
@@ -564,7 +564,7 @@ export class OctiGridGraph {
     const horiCost = bendCosts[0] + Math.min(pens.horizontalPen, pens.verticalPen + pens.diagonalPen + bendCosts[3]);
     const penPerGrid = pens.ndMovePen + Math.max(diagCost, Math.max(vertCost, horiCost));
     const pos = this.basePos(b);
-    const d = Math.hypot(pos[0] - p[0], pos[1] - p[1]);
+    const d = Math.sqrt((pos[0] - p[0]) ** 2 + (pos[1] - p[1]) ** 2); // correctly-rounded cross-V8
     return (d / this.cellSize) * penPerGrid;
   }
 

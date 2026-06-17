@@ -9,6 +9,10 @@
 import type { Pixel } from './types';
 import { type LaneCurve, curvePoint, curveTangent } from './chainPlace';
 
+// sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not), so marker
+// placement (and the box-vs-row decision it feeds) is bit-identical on any engine.
+const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
+
 export interface RowOpts {
   minGap: number;        // 2r - 0.05
   arcLimit: number;      // slide window each side (24; caller escalates to 48)
@@ -69,13 +73,19 @@ interface BundleStat {
  *  segment collinear with the row line that admits its endpoints, which is
  *  enough: the truly degenerate row-along-own-lane states either die on the
  *  floor checks or belong to single-member bundles (special-cased below). */
-const lineCrossNearest = (c: LaneCurve, A: Pixel, u: Pixel, near: Pixel): Pixel | null => {
+export const lineCrossNearest = (c: LaneCurve, A: Pixel, u: Pixel, near: Pixel): Pixel | null => {
   const nx = -u[1];
   const ny = u[0];
   let best: Pixel | null = null;
   let bestD = Infinity;
   const consider = (p: Pixel) => {
-    const d = Math.hypot(p[0] - near[0], p[1] - near[1]);
+    // squared distance — monotone-equivalent to the true distance for the
+    // nearest-crossing pick, but correctly-rounded (no Math.hypot), so the
+    // choice is bit-stable across V8 engines (matters when a folded lane
+    // admits two crossings; the collision slide reuses this primitive).
+    const dx = p[0] - near[0];
+    const dy = p[1] - near[1];
+    const d = dx * dx + dy * dy;
     if (d < bestD) { bestD = d; best = p; }
   };
   let f1 = (c.pts[0][0] - A[0]) * nx + (c.pts[0][1] - A[1]) * ny;
@@ -131,7 +141,9 @@ export function solveRows(
       mx += tg[0] * sgn;
       my += tg[1] * sgn;
     }
-    const perpAng = Math.atan2(mx, -my); // angle of the perp vector (-my, mx)
+    // Quantize atan2 (not correctly-rounded cross-V8) to 1e-6 rad — absorbs the
+    // engine ULP diff while preserving the rest-axis snap (round below).
+    const perpAng = Math.round(Math.atan2(mx, -my) * 1e6) / 1e6; // angle of the perp vector (-my, mx)
     const restIdx = ((Math.round(perpAng / QUARTER) % 4) + 4) % 4;
     const m = Math.max(0, Math.round(arcLimit / step));
     const states: RowState[] = [];
@@ -181,7 +193,7 @@ export function solveRows(
           }
         }
         if (!feas) continue;
-        const asc = dots.map((_, gi) => gi).sort((x, y) => pr[x] - pr[y]);
+        const asc = dots.map((_, gi) => gi).sort((x, y) => (pr[x] - pr[y]) || (x - y)); // total tie-break: index unique (cross-V8 stable)
         const dIdx = (((axis - restIdx) % 4) + 4) % 4;
         const rot = Math.min(dIdx, 4 - dIdx); // 45° steps from rest: 0..2
         states.push({
@@ -261,7 +273,7 @@ export function solveRows(
     // whole solve to mega even though feasible configurations exist.
     for (const p of P.dots) {
       for (const q of Q.dots) {
-        if (Math.hypot(p[0] - q[0], p[1] - q[1]) < minGap) return null;
+        if (hyp(p[0] - q[0], p[1] - q[1]) < minGap) return null;
       }
     }
     const e1 = op ? P.a : P.b;
@@ -296,8 +308,8 @@ export function solveRows(
       const d1 = (corner[0] - e1[0]) * o1x + (corner[1] - e1[1]) * o1y;
       const d2 = (corner[0] - e2[0]) * o2x + (corner[1] - e2[1]) * o2y;
       if (d1 < -0.5 || d2 < -0.5) return null;
-      ext1 = Math.hypot(corner[0] - e1[0], corner[1] - e1[1]);
-      ext2 = Math.hypot(corner[0] - e2[0], corner[1] - e2[1]);
+      ext1 = hyp(corner[0] - e1[0], corner[1] - e1[1]);
+      ext2 = hyp(corner[0] - e2[0], corner[1] - e2[1]);
     }
     if (ext1 > extCap || ext2 > extCap) return null; // markers stay local
     // the corner must clear every dot of BOTH rows (spec §2.2). Applied to
@@ -305,10 +317,10 @@ export function solveRows(
     // the gap closes, which the spec's blanket clearance clause forbids —
     // this also keeps degenerate slid-together joins out of the DP.
     for (const d of P.dots) {
-      if (Math.hypot(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
+      if (hyp(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
     }
     for (const d of Q.dots) {
-      if (Math.hypot(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
+      if (hyp(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
     }
     return { cost: ext1 + ext2, corner };
   };
@@ -321,6 +333,38 @@ export function solveRows(
     states: RowState[]; // chosen state per chain position
     corners: Pixel[];   // corner after chain position k (length g-1)
   }
+  // §2.2 station-level floors (all-pairs NON-adjacent dot floor + corner
+  // clearance; adjacent pairs are already floored in pairEval). Run per
+  // (seq,mask) inside runDP (idea ③) so a colliding pairing is rejected and the
+  // search keeps going, instead of nulling the whole station after the global
+  // min-cost pairing was chosen (the mn199 / "7 St" box class).
+  let dbgMinNonAdj = Infinity; // OCTI_PLACE_DEBUG: closest non-adjacent gap seen
+  const stationFloorsOk = (states: RowState[], corners: Pixel[]): boolean => {
+    for (let i = 0; i < states.length; i++) {
+      for (let j = i + 1; j < states.length; j++) {
+        for (const p of states[i].dots) {
+          for (const q of states[j].dots) {
+            const dd = hyp(p[0] - q[0], p[1] - q[1]);
+            if (dd < minGap - 1e-9) {
+              if (dbg) dbgMinNonAdj = Math.min(dbgMinNonAdj, dd);
+              return false;
+            }
+          }
+        }
+      }
+    }
+    for (let i = 0; i < corners.length; i++) {
+      for (let j = i + 1; j < corners.length; j++) {
+        if (hyp(corners[i][0] - corners[j][0], corners[i][1] - corners[j][1]) < minGap - 1e-9) return false;
+      }
+      for (const st of states) {
+        for (const d of st.dots) {
+          if (hyp(corners[i][0] - d[0], corners[i][1] - d[1]) < minGap - 1e-9) return false;
+        }
+      }
+    }
+    return true;
+  };
   const runDP = (seq: number[], mask: number): DPResult | null => {
     const orients = seq.map((_, k) => (mask >> k) & 1);
     let prev = bundleStates[seq[0]].map((st) => st.cost);
@@ -361,13 +405,12 @@ export function solveRows(
     const chosen = new Array<number>(seq.length);
     chosen[seq.length - 1] = end;
     for (let k = seq.length - 1; k >= 1; k--) chosen[k - 1] = back[k - 1][chosen[k]];
-    return {
-      cost: prev[end],
-      seq,
-      orients,
-      states: seq.map((bi, k) => bundleStates[bi][chosen[k]]),
-      corners: seq.slice(1).map((_, k) => cornerAt[k][chosen[k + 1]]),
-    };
+    const states = seq.map((bi, k) => bundleStates[bi][chosen[k]]);
+    const corners = seq.slice(1).map((_, k) => cornerAt[k][chosen[k + 1]]);
+    // idea ③: reject this (seq,mask) if its min-cost chain violates a station
+    // floor, so tryPairing keeps searching other permutations/orientations.
+    if (!stationFloorsOk(states, corners)) return null;
+    return { cost: prev[end], seq, orients, states, corners };
   };
 
   let best: DPResult | null = null;
@@ -409,7 +452,7 @@ export function solveRows(
       for (let i = 0; i < g; i++) {
         if (used[i]) continue;
         const head = anchorPos[groups[i][0]];
-        const d = Math.hypot(head[0] - tail[0], head[1] - tail[1]);
+        const d = hyp(head[0] - tail[0], head[1] - tail[1]);
         if (d < bd) { bd = d; pick = i; }
       }
       used[pick] = true;
@@ -417,37 +460,22 @@ export function solveRows(
     }
     tryPairing(seq, 0);
   }
-  if (!best) return null;
+  if (!best) {
+    if (dbg) {
+      const reason =
+        dbgMinNonAdj < Infinity
+          ? `NON-ADJACENT-FLOOR closest ${dbgMinNonAdj.toFixed(2)}px < minGap ${minGap.toFixed(2)}px → ` +
+            `${dbgMinNonAdj < 1 ? 'COINCIDENT/structural (NOT fixable by spacing)' : 'near-miss'} ` +
+            `— no pairing/orientation avoids it (idea ③ tried all g!·2^g)`
+          : `NO-PAIRING (g=${g}; cross-row dot floor / corner clearance / ext-cap / V-not-T; ` +
+            `minGap ${minGap.toFixed(2)}px)`;
+      console.error(`[rowPlace] BOX ${opts.dbgLabel ?? '?'}: ${reason}`);
+    }
+    return null;
+  }
   const win: DPResult = best;
-
-  // ---- step 4: station-level post-checks (violation ⇒ mega signal) ---------
-  // all-pairs dot floors across rows — adjacent pairs already floored in
-  // pairEval, so this guards NON-adjacent rows; 1e-9 slack so re-checking
-  // pair-level accepts is float-stable
-  for (let i = 0; i < g; i++) {
-    for (let j = i + 1; j < g; j++) {
-      for (const p of win.states[i].dots) {
-        for (const q of win.states[j].dots) {
-          if (Math.hypot(p[0] - q[0], p[1] - q[1]) < minGap - 1e-9) return null;
-        }
-      }
-    }
-  }
-  // corner-vs-corner and corner-vs-dot (dots of non-paired rows included)
-  for (let i = 0; i < win.corners.length; i++) {
-    for (let j = i + 1; j < win.corners.length; j++) {
-      const ci = win.corners[i];
-      const cj = win.corners[j];
-      if (Math.hypot(ci[0] - cj[0], ci[1] - cj[1]) < minGap - 1e-9) return null;
-    }
-    for (const st of win.states) {
-      for (const d of st.dots) {
-        if (Math.hypot(win.corners[i][0] - d[0], win.corners[i][1] - d[1]) < minGap - 1e-9) {
-          return null;
-        }
-      }
-    }
-  }
+  // station-level non-adjacent + corner floors are now enforced INSIDE runDP per
+  // (seq,mask) (idea ③), so `best` already satisfies them — no post-check here.
 
   // ---- step 5: output -------------------------------------------------------
   const pos: Pixel[] = new Array(n);

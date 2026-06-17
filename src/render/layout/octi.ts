@@ -65,8 +65,12 @@ const DBG: boolean =
   typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
 
 function dist(a: Pixel, b: Pixel): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const dx = a[0] - b[0], dy = a[1] - b[1];
+  return Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded cross-V8 (hypot is not)
 }
+// Engine-independent string order for sort tie-breaks — localeCompare is
+// ICU/engine-dependent; raw code-unit compare is identical on every V8 build.
+const cmpStr = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export function medianEdgeLength(h: SupportGraph): number {
   const lens: number[] = [];
@@ -282,7 +286,7 @@ export function planarize(h: SupportGraph): { hP: SupportGraph; splits: Map<stri
       outEdges.set(e.id, e);
       continue;
     }
-    cs.sort((x, y) => x.d - y.d);
+    cs.sort((x, y) => (x.d - y.d) || cmpStr(x.nodeId, y.nodeId)); // total tie-break (cross-V8 stable)
     // drop duplicate/near-duplicate cuts (multi-pair hits at the same spot)
     const uniq: Array<{ d: number; nodeId: string }> = [];
     for (const c of cs) {
@@ -625,9 +629,14 @@ function buildCombCtx(
         acc += dist(pts[i - 1], pts[i]);
         if (acc >= grid.cellSize) { ref = pts[i]; break; }
       }
-      entries.push({ eid, ang: Math.atan2(ref[1] - nd.pos[1], ref[0] - nd.pos[0]) });
+      // Quantize atan2 (not correctly-rounded cross-V8) to absorb the ~1e-16
+      // engine ULP diff while preserving the exact port order — 1e-6 rad is far
+      // finer than any real angular gap between a node's incident edges. This
+      // ordering blocks ports (topoBlockPen), so a 1-ULP flip here reroutes the
+      // whole layout: it is THE primary discrete divergence point.
+      entries.push({ eid, ang: Math.round(Math.atan2(ref[1] - nd.pos[1], ref[0] - nd.pos[0]) * 1e6) / 1e6 });
     }
-    entries.sort((a, b) => (b.ang - a.ang) || a.eid.localeCompare(b.eid));
+    entries.sort((a, b) => (b.ang - a.ang) || cmpStr(a.eid, b.eid));
     const m = new Map<string, number>();
     entries.forEach((en, i) => m.set(en.eid, i));
     orderPos.set(id, m);
@@ -740,11 +749,11 @@ function pointToSegment(p: Pixel, a: Pixel, b: Pixel): number {
   const wx = p[0] - a[0];
   const wy = p[1] - a[1];
   const c1 = vx * wx + vy * wy;
-  if (c1 <= 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  if (c1 <= 0) return Math.sqrt((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2);
   const c2 = vx * vx + vy * vy;
-  if (c2 <= c1) return Math.hypot(p[0] - b[0], p[1] - b[1]);
+  if (c2 <= c1) return Math.sqrt((p[0] - b[0]) ** 2 + (p[1] - b[1]) ** 2);
   const t = c1 / c2;
-  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+  return Math.sqrt((p[0] - (a[0] + t * vx)) ** 2 + (p[1] - (a[1] + t * vy)) ** 2);
 }
 
 // ---- drawing (LOOM combgraph/Drawing) --------------------------------------
@@ -1249,14 +1258,14 @@ function getOrdering(method: OrderMethod, ctx: CombCtx): SupportEdge[] {
     const aMin = Math.min(key(a.from), key(a.to));
     const bMax = Math.max(key(b.from), key(b.to));
     const bMin = Math.min(key(b.from), key(b.to));
-    return (bMax - aMax) || (bMin - aMin) || a.id.localeCompare(b.id);
+    return (bMax - aMax) || (bMin - aMin) || cmpStr(a.id, b.id);
   };
 
   switch (method) {
     case 'NUM_LINES':
-      return edges.sort((a, b) => (b.lineIds.size - a.lineIds.size) || a.id.localeCompare(b.id));
+      return edges.sort((a, b) => (b.lineIds.size - a.lineIds.size) || cmpStr(a.id, b.id));
     case 'LENGTH':
-      return edges.sort((a, b) => (straight(a) - straight(b)) || a.id.localeCompare(b.id));
+      return edges.sort((a, b) => (straight(a) - straight(b)) || cmpStr(a.id, b.id));
     case 'ADJ_ND_DEGREE':
       return edges.sort(pairDesc(ctx.deg));
     case 'ADJ_ND_LDEGREE':
@@ -1296,7 +1305,7 @@ function growthOrder(ctx: CombCtx, key: (nd: string) => number): SupportEdge[] {
       const adj = ctx.adjEdges(n).slice().sort((a, b) => {
         const ka = Math.max(key(a.from), key(a.to));
         const kb = Math.max(key(b.from), key(b.to));
-        return (kb - ka) || a.id.localeCompare(b.id);
+        return (kb - ka) || cmpStr(a.id, b.id);
       });
       for (const e of adj) {
         const other = e.from === n ? e.to : e.from;
@@ -1371,7 +1380,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     if (traceP) {
       const [tx, ty] = traceP.split(',').map(Number);
       for (const [id, p] of paths) {
-        if (p.some((q) => Math.hypot(q[0] - tx, q[1] - ty) < 30)) {
+        if (p.some((q) => (q[0] - tx) ** 2 + (q[1] - ty) ** 2 < 900)) {
           console.error(`[octi] path ${id}: ${p.map((q) => `(${q[0].toFixed(0)},${q[1].toFixed(0)})`).join(' ')}`);
         }
       }
@@ -1505,7 +1514,7 @@ function nearestArcOn(path: readonly Pixel[], q: Pixel): number {
     const vy = b[1] - a[1];
     const c2 = vx * vx + vy * vy;
     const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / c2));
-    const d = Math.hypot(q[0] - (a[0] + vx * t), q[1] - (a[1] + vy * t));
+    const d = Math.sqrt((q[0] - (a[0] + vx * t)) ** 2 + (q[1] - (a[1] + vy * t)) ** 2);
     const seg = Math.sqrt(c2);
     if (d < bestD) {
       bestD = d;
@@ -1584,7 +1593,7 @@ function expandImage(imageC: Image, h: SupportGraph, hC: SupportGraph, info: Col
         const [tx, ty] = traceNd.split(',').map(Number);
         return chain.nodes.some((n) => {
           const p = h.nodes.get(n)?.pos;
-          return p && Math.hypot(p[0] - tx, p[1] - ty) < 30;
+          return p && (p[0] - tx) ** 2 + (p[1] - ty) ** 2 < 900;
         });
       }
       return chain.nodes.includes(traceNd);
@@ -1682,6 +1691,8 @@ function tryDraw(
   // and applies only the single best per iteration (a side effect of its
   // parallel batch design). Single-threaded we converge much faster by
   // accepting every improving move immediately as we sweep.
+  let locConverged = false; // TEMP DEBUG (revert)
+  let locSweeps = 0; // TEMP DEBUG (revert)
   for (let iter = 0; iter < iters; iter++) {
     let sweepImp = 0;
 
@@ -1698,7 +1709,7 @@ function tryDraw(
       const adjE = ctx.adjEdges(a).slice().sort((x, y) => {
         const sx = dist(ctx.posOf(x.from), ctx.posOf(x.to));
         const sy = dist(ctx.posOf(y.from), ctx.posOf(y.to));
-        return (sy - sx) || x.id.localeCompare(y.id);
+        return (sy - sx) || cmpStr(x.id, y.id);
       });
 
       // un-draw a's incident edges and a itself
@@ -1771,8 +1782,19 @@ function tryDraw(
         `vios=${drawing.violations} (imp ${sweepImp.toFixed(2)}, ${Date.now() - t0}ms total)`,
       );
     }
-    if (sweepImp < CONVERGENCE_THRESHOLD) break;
+    locSweeps = iter + 1;
+    if (sweepImp < CONVERGENCE_THRESHOLD) { locConverged = true; break; }
   }
+
+  // OCTI_DEBUG telemetry: why the local search stopped. No wall-clock budget
+  // (removed) — only convergence or the iters cap — and the search is now
+  // engine-deterministic, so this reads identically for a given input on any
+  // V8 build (offline == in-game).
+  if (DBG)
+    console.log(
+      `[octi] localSearch stop: ${locConverged ? 'CONVERGED' : 'ITERS-CAP'} ` +
+      `after ${locSweeps}/${iters} sweeps, residual vios=${drawing.violations}, score=${drawing.score().toFixed(1)}`,
+    );
 
   if (DBG) {
     console.error(`[octi] final score=${drawing.score().toFixed(1)} vios=${drawing.violations}`);

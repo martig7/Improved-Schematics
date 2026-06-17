@@ -182,10 +182,12 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     let ref = pts.length > 1 ? pts[pts.length - 1] : pts[0];
     let acc = 0;
     for (let i = 1; i < pts.length; i++) {
-      acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      acc += Math.sqrt((pts[i][0] - pts[i - 1][0]) ** 2 + (pts[i][1] - pts[i - 1][1]) ** 2);
       if (acc >= TANGENT_WALK) { ref = pts[i]; break; }
     }
-    return Math.atan2(ref[1] - pts[0][1], ref[0] - pts[0][0]);
+    // Quantize atan2 (not correctly-rounded cross-V8) — 1e-6 rad preserves the
+    // branch order while absorbing the engine ULP diff (cf. octi.ts port order).
+    return Math.round(Math.atan2(ref[1] - pts[0][1], ref[0] - pts[0][0]) * 1e6) / 1e6;
   };
 
   // ---- LOOM untangle rewrites: Y / dogbone trunk splits -----------------------
@@ -264,13 +266,13 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       if (e.from === nd) {
         const dx = path[1][0] - path[0][0];
         const dy = path[1][1] - path[0][1];
-        const len = Math.hypot(dx, dy) || 1;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8
         return [dx / len, dy / len];
       }
       if (e.to === nd) {
         const dx = path[path.length - 2][0] - path[path.length - 1][0];
         const dy = path[path.length - 2][1] - path[path.length - 1][1];
-        const len = Math.hypot(dx, dy) || 1;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8
         return [dx / len, dy / len];
       }
     }
@@ -573,10 +575,13 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     return [...e.lines].sort((a, b) => {
       const ga = exitAt(e, S, a);
       const gb = exitAt(e, S, b);
-      if (ga !== gb) return angAt(ga, S) - angAt(gb, S);
+      // Two DISTINCT exit edges can share an angle → angAt diff is 0; must fall
+      // through to the next criterion (not return a 0 "tie"), else the order of
+      // those lines depends on the engine's sort tie behavior (cross-V8).
+      if (ga !== gb) { const d = angAt(ga, S) - angAt(gb, S); if (d) return d; }
       const fa = exitAt(e, far, a);
       const fb = exitAt(e, far, b);
-      if (fa !== fb) return angAt(fa, far) - angAt(fb, far);
+      if (fa !== fb) { const d = angAt(fa, far) - angAt(fb, far); if (d) return d; }
       return a < b ? -1 : a > b ? 1 : 0;
     });
   };
@@ -888,7 +893,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
   }
   for (const sibs of stackMembers.values()) {
-    sibs.sort((a, b) => a.stackIdx! - b.stackIdx!);
+    sibs.sort((a, b) => (a.stackIdx! - b.stackIdx!) || (a.id - b.id)); // total tie-break: OptEdge.id is unique (cross-V8 stable)
     const chainOrder = sibs.flatMap((s) => expand(cfg.get(s.id)!));
     for (const part of sibs[0].parts) {
       part.edge.lineOrder = part.rev ? [...chainOrder].reverse() : [...chainOrder];

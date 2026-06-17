@@ -56,19 +56,14 @@ const CARDINALS: ReadonlyArray<{ dir: [number, number]; name: string }> = [
 
 /** Index (0..3) of the cardinal bucket whose direction is closest to (vx,vy). */
 function bucketFor(vx: number, vy: number): number {
-  const len = Math.hypot(vx, vy) || 1;
-  const ux = vx / len;
-  const uy = vy / len;
-  let best = 0;
-  let bestDot = -Infinity;
-  for (let i = 0; i < CARDINALS.length; i++) {
-    const [cx, cy] = CARDINALS[i].dir;
-    const dot = ux * cx + uy * cy;
-    if (dot > bestDot) {
-      bestDot = dot;
-      best = i;
-    }
-  }
+  // argmax of dot(dir, cardinal) over E,S,W,N = {vx, vy, -vx, -vy}. The length
+  // normalization is irrelevant to the argmax, so it is dropped — Math.hypot is
+  // not correctly-rounded cross-V8; this is pure +,-,compare. Strict > with
+  // E-first preserves the original lowest-index tie order (and vx=vy=0 → E).
+  let best = 0, bestDot = vx;                       // E [1,0]
+  if (vy > bestDot) { bestDot = vy; best = 1; }      // S [0,1]
+  if (-vx > bestDot) { bestDot = -vx; best = 2; }    // W [-1,0]
+  if (-vy > bestDot) { best = 3; }                   // N [0,-1]
   return best;
 }
 

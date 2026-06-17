@@ -196,7 +196,9 @@ function groupEdgeKey(a: string, b: string): string {
 /** Equirectangular meters projection centered at `lat0` (degrees). */
 function projectFactory(lat0: number): (lng: number, lat: number) => [number, number] {
   const R = 6371e3;
-  const cosLat = Math.cos((lat0 * Math.PI) / 180);
+  // Quantize cos (see projection.ts): the single transcendental scaling every
+  // projected x; rounding makes the meters projection bit-identical cross-V8.
+  const cosLat = Math.round(Math.cos((lat0 * Math.PI) / 180) * 1e9) / 1e9;
   return (lng, lat) => [(R * lng * Math.PI * cosLat) / 180, (R * lat * Math.PI) / 180];
 }
 
@@ -212,7 +214,8 @@ export function appendTrackCoords(points: Coordinate[], track: Track, reversed: 
 const CORRIDOR_TOL = 1e-5; // ~1 m in degrees
 
 function distDeg(a: Coordinate, b: Coordinate): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const dx = a[0] - b[0], dy = a[1] - b[1];
+  return Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded cross-V8 (hypot is not)
 }
 
 function trackEndpoints(track: Track, reversed: boolean): [Coordinate, Coordinate] {
@@ -318,9 +321,11 @@ export function walkRouteVisits(
       (c.distance ?? 0) > 8 * median &&
       !gFwd.has(gOf(c.endStNodeId) + '>' + gOf(c.startStNodeId));
     const suppressedCombos = new Set<(typeof combos)[number]>();
+    const ckey = (c: (typeof combos)[number]) => c.startStNodeId + '>' + c.endStNodeId;
     const candidates = combos
       .filter(isCandidate)
-      .sort((a, b) => (b.distance ?? 0) - (a.distance ?? 0));
+      .sort((a, b) => ((b.distance ?? 0) - (a.distance ?? 0)) ||
+        (ckey(a) < ckey(b) ? -1 : ckey(a) > ckey(b) ? 1 : 0)); // total tie-break (cross-V8 stable)
     if (candidates.length > 0) {
       const allGroups = new Set<string>();
       for (const c of combos) {

@@ -89,7 +89,11 @@ function axisWarp(
   const kernel = new Float64Array(2 * r + 1);
   let ksum = 0;
   for (let i = -r; i <= r; i++) {
-    kernel[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma));
+    // Quantize the Gaussian weights: Math.exp is not correctly-rounded across
+    // V8 builds, and this run-invariant kernel convolves the histogram → CDF →
+    // every warped coordinate fed to the chaotic octi search. Rounding to 1e-12
+    // (sub-ULP at coordinate scale) makes the warp map bit-identical cross-V8.
+    kernel[i + r] = Math.round(Math.exp(-(i * i) / (2 * sigma * sigma)) * 1e12) / 1e12;
     ksum += kernel[i + r];
   }
   const hs = new Float64Array(B);
