@@ -69,6 +69,8 @@ export function SchematicPanel() {
   // build took, surfaced as "Finished in X.XXs".
   const [smoothedReady, setSmoothedReady] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // Brief spinner shown while a labels/stations toggle forces an SVG re-render.
+  const [rerendering, setRerendering] = useState(false);
   const [genMs, setGenMs] = useState<number | null>(null);
   const genMsRef = useRef<number | null>(null);
 
@@ -78,10 +80,17 @@ export function SchematicPanel() {
   const labelGroups = useRef<Element[]>([]);
   const viewRef = useRef<View | null>(null);
   const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
+  // The rect that Fit/export crop to: the renderer's `data-frame` (the geography
+  // water/green extent in pixel space) when present, else the full intrinsic
+  // canvas. Decoupled from svgBoxRef, which stays the full canvas for pan/zoom.
+  const fitBoxRef = useRef<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE });
 
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
   const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
+  // True while the tile harvest is in flight, so the top bar can show the small
+  // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
+  const [geoLoading, setGeoLoading] = useState(false);
   useEffect(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.();
     if (!city) return;
@@ -102,13 +111,21 @@ export function SchematicPanel() {
     }
     if (!harvestBbox) {
       const b = computeBounds(api.gameState.getStations().map((s) => ({ points: [s.coords] })));
-      if (!b) return; // no demand data and no stations yet → nothing to frame
+      if (!b) return; // no demand data and no stations yet → nothing to harvest
       harvestBbox = padBounds(b, 0.15);
     }
     let alive = true;
-    generateGeography(city, harvestBbox).then((g) => {
-      if (alive && g) setGeography(g);
-    });
+    setGeoLoading(true);
+    generateGeography(city, harvestBbox).then(
+      (g) => {
+        if (!alive) return;
+        if (g) setGeography(g);
+        setGeoLoading(false);
+      },
+      () => {
+        if (alive) setGeoLoading(false);
+      },
+    );
     return () => {
       alive = false;
     };
@@ -229,11 +246,22 @@ export function SchematicPanel() {
     return generateSchematicSVG(buildInput());
   }, [mode, showStations, showLabels, geography, smoothedReady]);
 
-  // Save the pristine generated SVG (full map at intrinsic bounds — not the
-  // DOM copy, whose viewBox/width are mutated for pan/zoom).
+  // Save the generated SVG cropped to the frame (data-frame = the geography
+  // water/green extent), so the file outlines it — content outside is clipped by
+  // the viewBox. Falls back to the full canvas when there's no frame.
   const downloadSvg = useCallback(() => {
     if (!svg) return;
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    let out = svg;
+    const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    const fr = root.getAttribute('data-frame')?.split(/\s+/).map(Number);
+    if (fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0) {
+      root.setAttribute('viewBox', `${fr[0]} ${fr[1]} ${fr[2]} ${fr[3]}`);
+      root.setAttribute('width', String(fr[2]));
+      root.setAttribute('height', String(fr[3]));
+      root.removeAttribute('data-frame');
+      out = new XMLSerializer().serializeToString(root);
+    }
+    const blob = new Blob([out], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -269,12 +297,14 @@ export function SchematicPanel() {
     const VPW = vp.clientWidth;
     const VPH = vp.clientHeight;
     if (!VPW || !VPH) return;
-    const { w: SW, h: SH } = svgBoxRef.current;
-    const scale = Math.min(VPW / SW, VPH / SH) || 1;
+    // Frame the fit box (geography water/green extent, or full canvas as
+    // fallback), not the whole canvas — so the default view hugs the map.
+    const { x: FX, y: FY, w: FW, h: FH } = fitBoxRef.current;
+    const scale = clamp(Math.min(VPW / FW, VPH / FH) || 1, MIN_SCALE, MAX_SCALE);
     viewRef.current = {
       scale,
-      vx: SW / 2 - VPW / (2 * scale),
-      vy: SH / 2 - VPH / (2 * scale),
+      vx: FX + FW / 2 - VPW / (2 * scale),
+      vy: FY + FH / 2 - VPH / (2 * scale),
     };
     applyToDom(true);
   }, [applyToDom]);
@@ -300,6 +330,13 @@ export function SchematicPanel() {
       const w = vb && vb.length === 4 ? vb[2] : parseFloat(svgEl.getAttribute('width') || '') || GEO_SIZE;
       const h = vb && vb.length === 4 ? vb[3] : parseFloat(svgEl.getAttribute('height') || '') || GEO_SIZE;
       svgBoxRef.current = { w, h };
+      // Fit/export frame: the geography water/green extent in pixel space
+      // (data-frame="x y w h"), emitted by the renderer. Absent → full canvas.
+      const fr = svgEl.getAttribute('data-frame')?.split(/\s+/).map(Number);
+      fitBoxRef.current =
+        fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0
+          ? { x: fr[0], y: fr[1], w: fr[2], h: fr[3] }
+          : { x: 0, y: 0, w, h };
       svgEl.setAttribute('width', '100%');
       svgEl.setAttribute('height', '100%');
       svgEl.style.display = 'block';
@@ -339,13 +376,18 @@ export function SchematicPanel() {
     if (svg) setGenerating(false);
   }, [svg, mode, fit, applyToDom]);
 
-  // Re-fit on mode switch (different layout shape). Smoothed mode opens the gate
-  // immediately when a generated map is already stored for this city (so switching
-  // back doesn't lose it); otherwise it shows the Generate Map button.
+  // Re-fit on mode switch (different layout shape). When a generated map is stored
+  // for this city, re-enter the generating flow rather than opening the gate
+  // outright: redrawing the cached layout back in still runs the (synchronous)
+  // ribbon render, so the big loading overlay should cover it. Keeping the gate
+  // closed + generating=true lets the generating→double-rAF→smoothedReady effect
+  // paint the spinner first, then flip the gate to trigger the draw. With no
+  // stored map it just shows the Generate Map button.
   useEffect(() => {
-    setGenerating(false);
     const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    setSmoothedReady(mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity);
+    const hasStored = mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity;
+    setSmoothedReady(false);
+    setGenerating(hasStored);
     const id = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(id);
   }, [mode, fit]);
@@ -402,6 +444,27 @@ export function SchematicPanel() {
     setDragging(false);
   };
 
+  // Labels/stations toggles recompute the SVG synchronously. Flash the small
+  // spinner first — the double rAF guarantees a composited frame before the
+  // redraw blocks the thread — then apply the toggle.
+  const rerenderStartRef = useRef(0);
+  const requestToggle = useCallback((apply: () => void) => {
+    rerenderStartRef.current = performance.now();
+    setRerendering(true);
+    requestAnimationFrame(() => requestAnimationFrame(apply));
+  }, []);
+
+  // Drop the spinner once the toggle has been applied + drawn (keyed on the
+  // toggles, so it clears even when the redraw produced no SVG change). The
+  // redraw is near-instant, so hold the spinner for a short MIN so it's actually
+  // perceptible instead of flashing for one frame.
+  useEffect(() => {
+    const MIN_MS = 450;
+    const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
+    const t = setTimeout(() => setRerendering(false), wait);
+    return () => clearTimeout(t);
+  }, [showLabels, showStations]);
+
   const toggleStyle = (active: boolean) => ({
     fontSize: 12,
     padding: '2px 8px',
@@ -413,6 +476,9 @@ export function SchematicPanel() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Spinner keyframes — defined once here so both the small rerender
+            spinner and the generating overlay can use it regardless of mode. */}
+        <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
         <div style={{ display: 'flex', gap: 4 }}>
           {MODES.map((m) => (
             <button key={m.id} onClick={() => setMode(m.id)} style={toggleStyle(mode === m.id)}>
@@ -421,16 +487,33 @@ export function SchematicPanel() {
           ))}
         </div>
         <span style={{ opacity: 0.4 }}>|</span>
-        <button onClick={() => setShowStations((v) => !v)} style={toggleStyle(showStations)}>
+        <button onClick={() => requestToggle(() => setShowStations((v) => !v))} style={toggleStyle(showStations)}>
           {showStations ? '✓ Stations' : 'Stations'}
         </button>
-        <button onClick={() => setShowLabels((v) => !v)} style={toggleStyle(showLabels)}>
+        <button onClick={() => requestToggle(() => setShowLabels((v) => !v))} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
         {mode === 'smoothed' && smoothedReady && !generating && (
           <button onClick={regenerate} style={toggleStyle(false)} title="Rebuild the smoothed map from current game state">
             ↻ Regenerate
           </button>
+        )}
+        {(rerendering || geoLoading) && (
+          <span
+            title={geoLoading ? 'Loading map…' : 'Rerendering…'}
+            aria-label={geoLoading ? 'Loading map' : 'Rerendering'}
+            style={{
+              display: 'inline-block',
+              width: 14,
+              height: 14,
+              flex: '0 0 auto',
+              borderRadius: '50%',
+              border: '2px solid rgba(136, 136, 136, 0.3)',
+              borderTopColor: '#888',
+              animation: 'imp-spin 0.8s linear infinite',
+              willChange: 'transform',
+            }}
+          />
         )}
         <span style={{ flex: 1 }} />
         {mode === 'smoothed' && genMs != null && (

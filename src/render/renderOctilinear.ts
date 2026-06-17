@@ -142,8 +142,8 @@ export interface RenderRibbonsArgs {
 
 /** Tight pixel-space bbox of the drawn network — node dots + edge centerlines —
  *  padded so offset lanes, capsule markers and casing aren't clipped, then
- *  clamped to the canvas. Octi-based modes (smoothed, schematic) have no
- *  geographic demand bbox to project, so this is their fit/export frame. */
+ *  clamped to the canvas. Used as the fit/export frame for octi-based modes
+ *  (smoothed, schematic) when there's no geography extent to frame on. */
 function contentFrame(
   nodePx: Map<string, Pixel>,
   edges: Layout['edges'],
@@ -1926,8 +1926,8 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     );
   }
 
-  // Geographic-topo passes an explicit demand frame; octi modes (smoothed,
-  // schematic) fall back to the rendered network's pixel extent.
+  // Geographic-topo/smoothed pass an explicit geography frame; absent (e.g. no
+  // geography, or pure-octi schematic) → fall back to the rendered network extent.
   const fr = args.frame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
   const frameAttr =
     ' data-frame="' + fr.x.toFixed(1) + ' ' + fr.y.toFixed(1) + ' ' + fr.w.toFixed(1) + ' ' + fr.h.toFixed(1) + '"';

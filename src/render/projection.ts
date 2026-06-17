@@ -64,6 +64,62 @@ export function createProjection(
   };
 }
 
+/** An axis-aligned rectangle in SVG pixel space. */
+export interface FrameRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Pixel-space bounding rect of an arbitrary set of geographic coords projected
+ * through `proj`, clamped to the viewport. Returns null when `coords` is empty.
+ *
+ * Unlike `frameRect` (which projects only a bbox's 4 corners and so assumes an
+ * axis-aligned projection), this projects EVERY point — correct under the
+ * smoothed mode's non-axis-aligned density-warp projection, where the furthest
+ * pixel can come from a non-corner vertex.
+ */
+export function projectedBounds(proj: Projection, coords: Coordinate[]): FrameRect | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const c of coords) {
+    const [x, y] = proj.toSVG(c);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (!isFinite(minX)) return null;
+  // Clamp to the canvas so the frame never reaches outside the drawn SVG.
+  minX = Math.max(0, minX);
+  minY = Math.max(0, minY);
+  maxX = Math.min(proj.width, maxX);
+  maxY = Math.min(proj.height, maxY);
+  return { x: minX, y: minY, w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) };
+}
+
+/**
+ * Project a geographic bbox through `proj` into an axis-aligned pixel rect,
+ * clamped to the projection's viewport. This is the projected bbox WITHOUT the
+ * projection's padding margin — used to frame fit-to-view and SVG export on a
+ * specific extent (e.g. the demand bbox) rather than the whole padded canvas.
+ */
+export function frameRect(proj: Projection, bbox: BoundingBox): FrameRect {
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  return (
+    projectedBounds(proj, [
+      [minLng, minLat],
+      [maxLng, minLat],
+      [maxLng, maxLat],
+      [minLng, maxLat],
+    ]) ?? { x: 0, y: 0, w: 0, h: 0 }
+  );
+}
+
 /** Compute the bounding box covering all coordinates in the given polylines. */
 export function computeBounds(lines: { points: Coordinate[] }[]): BoundingBox | null {
   let minLng = Infinity;

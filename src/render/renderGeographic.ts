@@ -8,7 +8,7 @@ import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
 import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cell, EdgeStop, SupportGraph } from './layout/types';
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
-import { createProjection, computeBounds, padBounds, type Projection } from './projection';
+import { createProjection, computeBounds, padBounds, projectedBounds, type Projection, type FrameRect } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './layout/graph';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
@@ -64,6 +64,22 @@ function geoFramePts(geo: GeographyData | undefined): { points: Coordinate[] }[]
   if (!geo) return [];
   const [minLng, minLat, maxLng, maxLat] = geo.bbox;
   return [{ points: [[minLng, minLat], [maxLng, maxLat]] }];
+}
+
+/** Fit/export frame: the pixel-space extent of the furthest water/green geometry
+ *  projected through `proj` (the visible backdrop). Both geographic and smoothed
+ *  frame on this; smoothed passes its warped proj so the frame rides the warp.
+ *  Null when there's no geography to frame. */
+export function geographyFrame(geo: GeographyData | undefined, proj: Projection): FrameRect | null {
+  if (!geo) return null;
+  const coords: Coordinate[] = [];
+  for (const feats of [geo.water, geo.green]) {
+    for (const f of feats) {
+      if (f.geometry.type !== 'Polygon') continue;
+      for (const ring of f.geometry.coordinates) for (const c of ring) coords.push(c);
+    }
+  }
+  return projectedBounds(proj, coords);
 }
 
 function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
@@ -313,7 +329,9 @@ export function renderGeographic(input: GeoInput): string {
     parts.push(renderGeoNodes(graph, nodePx, opts, dark, segments));
   }
 
-  return svgWrap(parts, width, height);
+  // Frame on the water/green geography extent.
+  const frame = geographyFrame(input.geography, proj);
+  return svgWrap(parts, width, height, frame);
 }
 
 function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
@@ -385,6 +403,9 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
     showStations: opts.showStations,
     transfers,
     gridOverlay: waterOverlay,
+    // Topo geographic keeps the real projection, so it frames on water/green
+    // exactly like plain geographic mode.
+    frame: geographyFrame(input.geography, proj) ?? undefined,
   });
 }
 
@@ -401,6 +422,10 @@ export interface SmoothedPrecomputed {
   width: number;
   height: number;
   dark: boolean;
+  /** Fit/export frame (furthest water/green through the warped projection).
+   *  Undefined when there's no geography — renderRibbons falls back to the
+   *  rendered-content extent. */
+  frame?: FrameRect;
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -754,7 +779,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     stopNodes: st.stopNodes ?? new Map<string, string>(),
   }));
 
-  return { layout, nodePx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark };
+  // Frame on the furthest water/green through the WARPED proj — so smoothed fit/
+  // export hug the same backdrop extent geographic does. Undefined (no geography)
+  // → renderRibbons frames on the rendered network instead.
+  const frame = geographyFrame(input.geography, proj) ?? undefined;
+
+  return { layout, nodePx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
@@ -775,6 +805,7 @@ export function drawSmoothed(
     transfers: pre.transfers,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
+    frame: pre.frame,
   });
 }
 
@@ -827,9 +858,12 @@ function buildOctiGridSvg(grid: OctiGrid, dark: boolean): string {
   return '<g class="octi-grid">' + lines.join('') + dots.join('') + '</g>';
 }
 
-function svgWrap(parts: string[], width: number, height: number): string {
+function svgWrap(parts: string[], width: number, height: number, frame?: FrameRect | null): string {
+  // data-frame is the fit/export crop rect (the geography water/green extent in
+  // pixel space). The UI uses it for "fit to view" and SVG export; absent → full canvas.
+  const frameAttr = frame ? ` data-frame="${r(frame.x)} ${r(frame.y)} ${r(frame.w)} ${r(frame.h)}"` : '';
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
-    `width="${width}" height="${height}">${parts.join('')}</svg>`
+    `width="${width}" height="${height}"${frameAttr}>${parts.join('')}</svg>`
   );
 }
