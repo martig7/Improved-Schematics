@@ -43,7 +43,7 @@ if (!api) {
       api.ui.addFloatingPanel({
         id: PANEL_ID,
         title: 'Improved Schematic',
-        icon: 'Map',
+        icon: 'Waypoints',
         defaultWidth: 840,
         defaultHeight: 880,
         render: SchematicPanel,
@@ -52,7 +52,7 @@ if (!api) {
       api.ui.addButton('escape-menu', {
         id: 'improved-schematic-button',
         label: 'Improved Schematic',
-        icon: 'Map',
+        icon: 'Waypoints',
         onClick: () => {
           api.ui.showNotification('Open the Improved Schematic panel from the toolbar.', 'info');
         },
