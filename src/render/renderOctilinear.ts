@@ -598,11 +598,74 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       for (const [lineId, flagNode] of st.stopNodes) {
         const line = lineById.get(lineId);
         if (!line) continue;
-        const p = drawnEndAt.get(flagNode + '|' + lineId);
-        if (!p) continue;
-        marks.push({ lineId, color: line.color, flagNode, pos: [p[0], p[1]] });
+        let p = drawnEndAt.get(flagNode + '|' + lineId);
+        let anchorNode = flagNode;
+        if (!p) {
+          // The flag node has no drawn lane for this line: its lane there was a
+          // terminus-retrace sliver that suppression correctly removed (the
+          // line only doubles back into a foreign corridor it doesn't really
+          // travel — Court's grays touch the cyan me75 but actually run on
+          // me575). Anchor the dot to the line's NEAREST genuine drawn lane
+          // endpoint instead, and move the lane node with it so the rigid
+          // solver builds the curve from that real lane. This keeps the dot on
+          // the line's true corridor (the grays bundle ~minGap apart on me575,
+          // not 6 lanes apart across the cyan bundle) — a compact capsule.
+          const ref = nodePx.get(flagNode);
+          if (ref) {
+            let bestD = Infinity;
+            for (const e of layout.edges) {
+              const poly = segPath.get(e.id + '|' + lineId);
+              if (!poly || poly.length === 0) continue;
+              const cand: Array<[Pixel, string]> = [[poly[0], e.from], [poly[poly.length - 1], e.to]];
+              for (const [pt, nd] of cand) {
+                const dd = hyp(pt[0] - ref[0], pt[1] - ref[1]);
+                if (dd < bestD) { bestD = dd; p = pt; anchorNode = nd; }
+              }
+            }
+          }
+          if (!p) continue;
+        }
+        marks.push({ lineId, color: line.color, flagNode: anchorNode, pos: [p[0], p[1]] });
       }
       gathered.push({ nodeId: st.nodeId, members: st.members, marks });
+    }
+
+    // ---- VANISHED-station diagnostic (OCTI_DEBUG) -------------------------
+    // A station whose marks ALL fail to resolve renders nothing — renderStops
+    // skips zero-mark nodes (`if (marks.length === 0) continue`) — yet its
+    // line edges still draw, leaving a line passing through empty space where
+    // a station should be (symptom: "Court" gone — no capsule, no dots). The
+    // per-line trace pins the cause:
+    //   =!pos  the line's drawn endpoint (flagNode|line) was never produced —
+    //          ribbon/join geometry missing at that support node
+    //   =!line the stop references a line id absent from this render
+    //   (no stopNodes) — the station was stripped upstream (its node did not
+    //          survive imageMerge's node remap), so it never had marks to lose
+    if (
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    ) {
+      let vanished = 0;
+      for (let i = 0; i < args.stations.length; i++) {
+        if (gathered[i].marks.length > 0) continue;
+        const st = args.stations[i];
+        const label = layout.nodes.get(st.nodeId)?.label ?? st.nodeId;
+        const trace: string[] = [];
+        for (const [lineId, flagNode] of st.stopNodes) {
+          const why = !lineById.get(lineId)
+            ? '!line'
+            : drawnEndAt.has(flagNode + '|' + lineId) ? 'ok' : '!pos';
+          trace.push(`${lineById.get(lineId)?.label ?? lineId}@${flagNode}=${why}`);
+        }
+        console.error(
+          `[stops] VANISHED "${label}" node=${st.nodeId} members=${st.members} ` +
+          `stops=${st.stopNodes.size}: ${trace.join(' ') || '(no stopNodes)'}`,
+        );
+        vanished++;
+      }
+      if (vanished > 0) {
+        console.error(`[stops] vanished stations (edge drawn, no marker): ${vanished}`);
+      }
     }
 
     // ---- marker collision backup ------------------------------------------
