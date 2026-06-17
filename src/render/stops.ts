@@ -20,6 +20,19 @@ export function renderStops(
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
+  // Option C — shrink the rendered marker ONLY inside capsules (multi-line
+  // stations), where corner-flanking / multi-arm bullet rings overlap; single
+  // standalone dots stay full size. Layout/spacing is unchanged — only the
+  // rendered dot radius + ring stroke + capsule width + font shrink, so the
+  // ring diameter drops below the minGap floor (≈4.35px) and rings separate.
+  // IS_MARKER_SCALE overrides (1 = no shrink); 0.65 → ring dia ≈4.2px.
+  const markerScale = (() => {
+    const env = typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.IS_MARKER_SCALE)
+      : NaN;
+    return Number.isFinite(env) && env > 0 ? env : 0.65;
+  })();
+  const rCap = r * markerScale; // dot/capsule radius INSIDE a capsule
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
   const nameFill = dark ? '#ffffff' : '#111111';
@@ -33,13 +46,14 @@ export function renderStops(
 
   // One dot per stopping line: hollow disc on the line's own lane, ring in
   // the line's color, route bullet centered inside (always upright/north-up).
-  const dotOf = (mk: StopMark): string => {
+  const dotOf = (mk: StopMark, dr: number): string => {
+    const dStroke = 1.5 * (dr / r); // ring stroke scales with the dot
     let s =
       '<circle cx="' + mk.pos[0].toFixed(1) + '" cy="' + mk.pos[1].toFixed(1) +
-      '" r="' + r.toFixed(1) + '" fill="' + fill + '" stroke="' + escapeXml(mk.color) +
-      '" stroke-width="1.5" data-line="' + escapeXml(mk.lineId) + '"/>';
+      '" r="' + dr.toFixed(1) + '" fill="' + fill + '" stroke="' + escapeXml(mk.color) +
+      '" stroke-width="' + dStroke.toFixed(2) + '" data-line="' + escapeXml(mk.lineId) + '"/>';
     if (showNames && mk.name) {
-      const fs = mk.name.length <= 1 ? r * 1.7 : Math.min(r * 1.7, (2 * r * 0.92) / (0.6 * mk.name.length));
+      const fs = mk.name.length <= 1 ? dr * 1.7 : Math.min(dr * 1.7, (2 * dr * 0.92) / (0.6 * mk.name.length));
       s +=
         '<text x="' + mk.pos[0].toFixed(1) + '" y="' + (mk.pos[1] + fs * 0.36).toFixed(1) +
         '" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif"' +
@@ -71,7 +85,7 @@ export function renderStops(
     const lineIds = marks.map((m) => m.lineId).join(',');
     const attrs =
       ' data-stops="' + escapeXml(lineIds) + '" data-station-id="' + escapeXml(nodeId) + '"';
-    const dots = marks.map(dotOf).join('');
+    const dots = marks.map((mk) => dotOf(mk, capsule ? rCap : r)).join(''); // shrink only capsule dots
 
     if (!capsule) {
       // single line at a single station: just its dot
@@ -147,7 +161,9 @@ export function renderStops(
       '" stroke-width="' + w.toFixed(1) +
       '" stroke-linecap="round" stroke-linejoin="round"' +
       (withAttrs ? attrs : '') + '/>';
-    const inner = pathSvg(stroke, 2 * r + 6, false) + pathSvg(fill, 2 * r + 3, true);
+    // scale the capsule padding too, so the platform hugs the shrunk dots with
+    // the same proportional gap/outline as a full-size capsule (not a loose one)
+    const inner = pathSvg(stroke, 2 * rCap + 6 * markerScale, false) + pathSvg(fill, 2 * rCap + 3 * markerScale, true);
     const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
     const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
     out.push(wrap(cx, cy, inner + dots));
