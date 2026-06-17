@@ -4,18 +4,24 @@ debug/
 *.log
 .DS_Store
 .claude/
-# dev render artifacts
-dev/out*.svg
-dev/out*.png
-dev/water-out.geojson
 loom-master/
 *.png
 *.svg
 *.json
 *.geojson
-# keep essential config tracked despite the broad *.json rule above
+# essential config (tracked despite the broad *.json rule above)
 !package.json
 !tsconfig.json
 !manifest.json
-dev/
+# active test dumps the diagnostics/convergence run on (tracked despite *.json;
+# other/older dumps and all *.geojson stay ignored — regenerated from the game)
+!improvedschematics-input-chi.json
+!improvedschematics-dump-sea-w-geo.json
+!improvedschematics-input-nyc.json
+# dev tooling: track the scripts (harnesses + probes), keep artifacts ignored.
+# NOTE: `dev/*` (not `dev/`) so the `!` re-include below can take effect —
+# git can't re-include a file whose parent DIRECTORY is excluded. Images
+# (*.png/*.svg) and dev data (*.json/*.geojson) stay ignored via the globals.
+dev/*
+!dev/*.ts
 examplesave_seattle/
