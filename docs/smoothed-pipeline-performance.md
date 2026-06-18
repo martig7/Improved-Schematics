@@ -402,10 +402,22 @@ Per component, the optimizer **branches on solution-space size**:
 
 In practice this almost never bites, because component decomposition (`:647`), partner-block
 collapse (`:345-374`), and the 500-cap exhaustive fallback keep `m`, `b`, and `solSpace`
-tiny. **Allocation hot spot:** `crossSepsPair` (`:448-452`) allocates a `rank` Map + two
-arrays **on every call**, and it's called `O(deg²)` times per move per iteration — the
-largest pressure point in untangle. (`OCTI_NO_UNTANGLE=1` keeps the barycenter order, a
+tiny. `crossSepsPair` (`:448-452`) allocates a `rank` Map + two arrays on every call, called
+`O(deg²)` times per move per iteration. (`OCTI_NO_UNTANGLE=1` keeps the barycenter order, a
 useful A/B for isolating its cost.)
+
+**Measured: untangle is COMPUTE-bound, not allocation-bound — the heap trick does NOT
+transfer.** Reusing those `crossSepsPair`/`diffSweep` scratch buffers (a `Map.clear()` +
+hoisted arrays, the same idea that won ~29% in octi §6.7) was tried and **regressed untangle
+by ~10–15%** under a controlled interleaved A/B on the NYC dump (OPT 4840–4955ms vs BASE
+4276–4503ms, checksum identical). Two reasons: (1) V8 already allocates these tiny,
+short-lived `Map`s/arrays of a few string keys very cheaply in the young generation, and a
+shared cleared-and-refilled `Map` is *more* work (and risks dictionary-mode); (2) hoisting
+the buffers to the enclosing scope turns cheap fresh locals into captured mutable closure
+state, defeating V8's optimization of these hot inner functions. GC was only ~7% of the
+profile, so removing allocation can't move the needle — the time is genuinely in the
+`O(deg²·b²)` nested loops + `inversions`, run over the unbounded hill climb. **A real
+untangle win must cut compute, not allocation** (see §11 #1).
 
 ### 8.3 `offsets.ts` — per-edge lane offsets
 
@@ -484,10 +496,15 @@ profile on large dense maps — a pure artifact, not algorithmic necessity.
 
 0. **✅ DONE — A\* heap micro-opt (§6.7).** Output-identical, ~29% octi speedup on NYC.
 1. **Untangle hill-climb (§8.2) — now the metro-scale bottleneck (~50%).** Per §2.1,
-   `untangleLineOrder` is the largest single stage on the NYC dump. The `crossSepsPair`
-   per-call `rank` Map + array allocations (`untangle.ts:448-452`), called `O(deg²)` times
-   per move per iteration, are the top target; memoizing/ reusing them is output-preserving.
-   *Highest remaining payoff at metro scale.*
+   `untangleLineOrder` is the largest single stage on the NYC dump. It is **compute-bound,
+   not allocation-bound** — scratch-reuse was measured to *regress* it (§8.2), so the win
+   has to cut work, not garbage. The real lever is **incremental scoring**: the hill climb
+   (`untangle.ts:744-783`) recomputes `nodeScore(oe.from)` + `nodeScore(oe.to)` from scratch
+   for every candidate move, but `cfg` only changes when a move is *accepted* — so a
+   `nodeScore` memo keyed by node id, invalidated only for the two endpoints an accepted
+   move touches, would eliminate most of the `O(deg²·b²)` recomputation. Higher effort and
+   needs careful cfg-version tracking to stay bit-identical (determinism), so it's a
+   deliberate change, not a micro-opt. *Highest remaining payoff at metro scale.*
 2. **Octi `Drawing.clone()` (§6.4).** Millions of 9-Map deep clones inside the trial loops
    are the top *allocation* cost. A copy-on-write / delta-undo scheme would remove most of
    it — but `drawOrder`'s partial-failure paths make a correct, bit-identical undo
