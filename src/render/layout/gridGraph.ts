@@ -133,6 +133,11 @@ export class OctiGridGraph {
   private readonly parentEdge: Int32Array;
   private readonly parentNode: Int32Array;
   private generation = 0;
+  // Reusable A* binary-heap scratch (route() is non-reentrant). Kept across
+  // calls and truncated per route to avoid re-allocating two arrays on every
+  // one of the millions of shortest-path queries the local search issues.
+  private readonly heapF: number[] = [];
+  private readonly heapN: number[] = [];
 
   constructor(bounds: Bounds, cellSize: number, pens: Penalties = DEFAULT_PENALTIES, padCells = 2) {
     this.cellSize = cellSize;
@@ -612,9 +617,13 @@ export class OctiGridGraph {
       return best;
     };
 
-    // Binary heap of (f, node).
-    const heapF: number[] = [];
-    const heapN: number[] = [];
+    // Binary heap of (f, node). Reuses instance arrays (truncated here) and
+    // swaps via temporaries — array-destructuring swaps allocate a throwaway
+    // array per swap, ruinous in this innermost loop.
+    const heapF = this.heapF;
+    const heapN = this.heapN;
+    heapF.length = 0;
+    heapN.length = 0;
     const push = (f: number, n: number) => {
       let i = heapF.length;
       heapF.push(f);
@@ -622,8 +631,8 @@ export class OctiGridGraph {
       while (i > 0) {
         const p = (i - 1) >> 1;
         if (heapF[p] <= heapF[i]) break;
-        [heapF[p], heapF[i]] = [heapF[i], heapF[p]];
-        [heapN[p], heapN[i]] = [heapN[i], heapN[p]];
+        const tf = heapF[p]; heapF[p] = heapF[i]; heapF[i] = tf;
+        const tn = heapN[p]; heapN[p] = heapN[i]; heapN[i] = tn;
         i = p;
       }
     };
@@ -642,8 +651,8 @@ export class OctiGridGraph {
           if (l < heapF.length && heapF[l] < heapF[m]) m = l;
           if (r < heapF.length && heapF[r] < heapF[m]) m = r;
           if (m === i) break;
-          [heapF[m], heapF[i]] = [heapF[i], heapF[m]];
-          [heapN[m], heapN[i]] = [heapN[i], heapN[m]];
+          const tf = heapF[m]; heapF[m] = heapF[i]; heapF[i] = tf;
+          const tn = heapN[m]; heapN[m] = heapN[i]; heapN[i] = tn;
           i = m;
         }
       }

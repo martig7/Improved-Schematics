@@ -70,6 +70,27 @@ Ordered by share of wall-clock on a real metro-scale network (NYC/Seattle dumps)
 The rest of this document drills into each, with the deep dives reserved for §5, §6,
 and §8 where the real complexity lives.
 
+### 2.1 Measured breakdown (NYC dump, metro-scale)
+
+Stage timing on `improvedschematics-input-nyc.json` (552 stations, 491 groups, 621
+support edges), via `OCTI_PERF=1 tsx dev/_bench-octi.ts` (median of 3 runs):
+
+| Stage | Time | Share |
+|---|---|---|
+| graphBuild | ~64ms | 1% |
+| warpBuild | ~49ms | 1% |
+| topoMerge | ~1074ms | 12% |
+| **octi** | **~2342ms** (post-opt; ~3321ms before) | ~30% |
+| mergeCoincident | ~27ms | <1% |
+| **untangle** | **~4382ms** | ~50% |
+
+**Important nuance:** the "~70s octi pass" comment (`renderGeographic.ts:673`) reflects
+**bus-scale** networks (Seattle, `support.edges > 800`) where the grid `G ∝ 1/cellSize²`
+explodes and the local search runs many sweeps. At **metro scale** (NYC) the local search
+converges in **3 sweeps**, so octi is ~30% and **`untangleLineOrder` is actually the
+single largest stage (~50%)**. Optimization priority is therefore input-dependent: octi
+for bus-scale, untangle for metro-scale. See §6.7 for the shipped octi win.
+
 **Notation used throughout:** `N` = graph/support nodes (station groups), `E` = edges
 (corridors), `L` = lines, `b` = bundle width (lines per edge), `G` = grid cells
 (`G ∝ canvas_area / cellSize²`), `S` = sample points (per-edge resample count, or warp
@@ -300,6 +321,25 @@ from scratch.
 
 ---
 
+### 6.7 Shipped optimization — A\* heap (output-identical, ~29% octi)
+
+The A\* binary heap in `route` (`gridGraph.ts`) sifted with array-destructuring swaps
+(`[heapF[p], heapF[i]] = [heapF[i], heapF[p]]`), which allocate a throwaway array **per
+swap** in the innermost loop of the most-called function in the pipeline, and reallocated
+the two heap backing arrays on **every** `route()` call. Replacing the swaps with
+temporary-variable swaps and reusing two instance-level heap arrays (truncated per call;
+`route` is non-reentrant) cut octi from a **median 3321ms → 2342ms (~29%)** on the NYC
+dump, with a **bit-identical layout checksum** — a binary heap with temp-var swaps pops in
+exactly the same order, so the routed paths and node placements are unchanged. This is the
+ideal kind of octi optimization: pure constant-factor, zero output change, so the
+determinism guarantee (offline == in-game) is preserved.
+
+Rejected as too risky for the determinism guarantee: eliding the `Drawing.clone()` calls in
+the local-search trial loop via draw-and-undo (`drawOrder` has many partial-failure paths
+whose exact undo is error-prone), and capping the initial-draw ordering count (changes
+which ordering wins, hence the layout). Clones were also not the dominant cost — GC was
+only ~7% of the profile.
+
 ## 7. Coincident-path merge (`imageMerge.ts`)
 
 `mergeCoincidentPaths` (`imageMerge.ts`) rebuilds the support graph from drawn pixel
@@ -442,10 +482,16 @@ profile on large dense maps — a pure artifact, not algorithmic necessity.
 
 ## 11. Optimization opportunities (ranked by expected payoff)
 
-1. **Octi `Drawing.clone()` (§6.4).** Millions of 9-Map deep clones inside the trial loops
-   are the top allocation cost in the whole pipeline. A copy-on-write / delta-undo scheme
-   (record the few mutated entries per trial and roll them back) would remove most of it.
-   *Highest payoff.*
+0. **✅ DONE — A\* heap micro-opt (§6.7).** Output-identical, ~29% octi speedup on NYC.
+1. **Untangle hill-climb (§8.2) — now the metro-scale bottleneck (~50%).** Per §2.1,
+   `untangleLineOrder` is the largest single stage on the NYC dump. The `crossSepsPair`
+   per-call `rank` Map + array allocations (`untangle.ts:448-452`), called `O(deg²)` times
+   per move per iteration, are the top target; memoizing/ reusing them is output-preserving.
+   *Highest remaining payoff at metro scale.*
+2. **Octi `Drawing.clone()` (§6.4).** Millions of 9-Map deep clones inside the trial loops
+   are the top *allocation* cost. A copy-on-write / delta-undo scheme would remove most of
+   it — but `drawOrder`'s partial-failure paths make a correct, bit-identical undo
+   delicate, so it needs care to preserve determinism.
 2. **Octi grid size (§6.2/6.6).** `cellSize` is quadratic. The adaptive divisor already
    coarsens big graphs; revisiting the thresholds (and capping `G` for huge bus networks)
    directly attacks the `~1/cellSize²` term.

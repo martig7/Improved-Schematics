@@ -434,6 +434,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
+  // Stage timing (dev): OCTI_PERF=1 logs per-stage wall-clock to stderr so the
+  // octi pass can be isolated from topo merge / untangle / render when profiling.
+  const PERF = typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_PERF;
+  let _perfT = PERF ? performance.now() : 0;
+  const lap = (label: string): void => {
+    if (!PERF) return;
+    const now = performance.now();
+    console.error(`[perf] ${label}: ${(now - _perfT).toFixed(0)}ms`);
+    _perfT = now;
+  };
   // Canonicalize input ORDER by id. The layout's Map/Set insertion order — and
   // thus octi's greedy search PATH — follows the input array order, so the
   // offline dump and the game's live data (iterated in a different order) would
@@ -450,6 +460,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });
   }
+  lap('graphBuild');
 
   const bounds = (() => {
     const framePts: { points: Coordinate[] }[] = [...graph.nodes.values()].map((n) => ({ points: [n.lngLat] }));
@@ -705,7 +716,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     stationCandidateRadius: 2 * dHat,
     preserveStations: false,
   };
+  lap('warpBuild');
   const support = buildSupportGraph(graph, groups, topoParams);
+  lap('topoMerge');
   const medLen = medianEdgeLength(support);
   const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
   // Grid fineness vs contraction: octi contracts away everything shorter
@@ -788,13 +801,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // absolute positions, giving the user-preferred more-vertical layout.
   // Weight 8 (spacing benefit saturates ≥1). OCTI_LENPRES=<n> overrides.
   octiOpts.lenPresW = 1.5;
+  lap('octiSetup');
   const imageRaw = octi(support, octiOpts);
+  lap('octi');
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
   // edges share grid segments; consolidate coincident runs into single edges
   // carrying the union of lines so the renderer fans them into a bundle
   // instead of drawing one line invisibly on top of the other.
   const merged = mergeCoincidentPaths(support, imageRaw);
+  lap('mergeCoincident');
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation
   // exceeds the merge radius; closer pairs stay a shared interchange capsule.
@@ -869,6 +885,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   ) {
     untangleLineOrder(layout);
   }
+  lap('untangle');
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
