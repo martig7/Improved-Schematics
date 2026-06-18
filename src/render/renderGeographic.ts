@@ -16,6 +16,7 @@ import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
+import { buildBoxExpandWarp, buildSepBoxWarp } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -36,7 +37,15 @@ import type { GeographyData } from '../geography/types';
 // space is dilated. `nodes`/`edges` are in the SAME pre-octi warped pixel space
 // the warp operates in, so they overlay the magnification grid coherently.
 export let __warpDebug:
-  | { warp: WarpFn; width: number; height: number; nodes: Pixel[]; edges: [number, number][] }
+  | {
+      warp: WarpFn;
+      width: number;
+      height: number;
+      nodes: Pixel[]; // warped (post-warp) node positions
+      nodesRaw: Pixel[]; // UNWARPED (baseProj) node positions — apply a tuned warp for previews
+      edges: [number, number][];
+      samples: Pixel[]; // unwarped weighted warp samples (drive density / box-finding)
+    }
   | null = null;
 
 export interface GeoInput {
@@ -487,12 +496,23 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
-  // Warp mode. DEFAULT 2d (the mild local density warp, densityWarp2d.ts) — under
-  // in-game evaluation vs the separable (rows/columns) warp; OCTI_WARP_MODE=separable
-  // restores the old behaviour. OCTI_WARP_SIGMA sets the 2D kernel radius in px
-  // (how local); unset → ~width/49 (the mild setting, ≈55px at the 2700 canvas).
+  // Warp mode. DEFAULT 'both' (buildSepBoxWarp): the separable warp supplies the
+  // GLOBAL magnification that blows the dense network up to readable size, then
+  // the dense-box expansion (densityBoxWarp.ts) adds LOCAL rectilinear room on
+  // the magnified core to declutter it — geography stays faithful elsewhere.
+  // OCTI_WARP_MODE=separable = separable only (the proven baseline); =box = box
+  // expansion only (no global magnification); =2d = the (rejected) density-
+  // equalizing 2D warp.
+  // Box knobs (tune by eye): OCTI_BOX_FRAC (cutoff as fraction of peak density,
+  // default 0.4), OCTI_BOX_EXPAND (factor, default 4), OCTI_BOX_MARGIN (taper
+  // fraction of box half-extent, default 3).
   const warpMode =
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
+  const envNum = (k: string): number =>
+    typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[k]) : NaN;
+  const boxFrac = Number.isFinite(envNum('OCTI_BOX_FRAC')) && envNum('OCTI_BOX_FRAC') > 0 ? envNum('OCTI_BOX_FRAC') : 0.4;
+  const boxExpand = Number.isFinite(envNum('OCTI_BOX_EXPAND')) && envNum('OCTI_BOX_EXPAND') >= 1 ? envNum('OCTI_BOX_EXPAND') : 4;
+  const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
   const warpSigmaPx = (() => {
     const env =
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
@@ -568,23 +588,34 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
+  const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin };
+  const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale };
   const warp =
-    warpMode !== 'separable'
-      ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
-      : buildDensityWarp(warpSamples, warpBox, { alpha: warpAlpha, maxScale: warpMaxScale });
+    warpMode === 'separable'
+      ? buildDensityWarp(warpSamples, warpBox, sepOpts)
+      : warpMode === '2d'
+        ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
+        : warpMode === 'box'
+          ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts)
+          : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts); // default 'both'
   const proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+  const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
+  if (env?.OCTI_WARP_DEBUG || env?.OCTI_WARP_CAPTURE_ONLY) {
     const ids = [...graph.nodes.keys()];
     const idx = new Map(ids.map((id, i) => [id, i]));
     const nodes = ids.map((id) => graph.nodes.get(id)!.pos as Pixel);
+    const nodesRaw = ids.map((id) => baseProj.toSVG(graph.nodes.get(id)!.lngLat) as Pixel);
     const edges = [...graph.edges]
       .map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined])
       .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
-    __warpDebug = { warp, width, height, nodes, edges };
+    __warpDebug = { warp, width, height, nodes, nodesRaw, edges, samples: warpSamples.map((s) => [s[0], s[1]] as Pixel) };
+    // Skip the ~70s octi pass: dev/warp-preview.ts only needs the captured warp
+    // inputs to render a fast no-octi preview while tuning the warp.
+    if (env?.OCTI_WARP_CAPTURE_ONLY) return 'CAPTURE_ONLY';
   }
 
   // LOOM topo merge: collapse geographically parallel transit edges into
