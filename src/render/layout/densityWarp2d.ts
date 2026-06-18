@@ -161,3 +161,41 @@ export function foldSafeAlpha(
   if (!(M > 0)) return alphaTarget;
   return Math.min(alphaTarget, 0.9 / M);
 }
+
+// Public entry: build the 2D local density warp. Same signature as
+// buildDensityWarp (densityWarp.ts) so it is a drop-in in renderGeographic.
+export function buildDensityWarp2D(
+  samples: readonly Pixel[],
+  box: WarpBox,
+  opts: DensityWarp2DOptions = {},
+): WarpFn {
+  const alphaTarget = opts.alpha ?? 0.8;
+  if (samples.length === 0 || alphaTarget <= 0) return (p) => [p[0], p[1]];
+  const sigmaPx = opts.sigmaPx ?? (box.maxX - box.minX) / 12;
+
+  const grid = densityGrid2D(samples, box, opts);
+  const { Fx, Fy } = displacementField2D(grid, sigmaPx);
+  const alpha = foldSafeAlpha(Fx, Fy, grid, alphaTarget);
+  const { bins: B, x0, y0, cw, ch } = grid;
+
+  // bilinear sample of (Fx,Fy) at pixel p; cell i centre = origin + (i+0.5)·size.
+  // u,v clamped to [0, B-1] so out-of-box points use the edge field (no fold).
+  return (p) => {
+    let u = (p[0] - x0) / cw - 0.5;
+    if (u < 0) u = 0;
+    else if (u > B - 1) u = B - 1;
+    let v = (p[1] - y0) / ch - 0.5;
+    if (v < 0) v = 0;
+    else if (v > B - 1) v = B - 1;
+    const i0 = Math.min(B - 2, Math.floor(u));
+    const j0 = Math.min(B - 2, Math.floor(v));
+    const tu = u - i0;
+    const tv = v - j0;
+    const s = (A: Float64Array): number =>
+      A[j0 * B + i0] * (1 - tu) * (1 - tv) +
+      A[j0 * B + i0 + 1] * tu * (1 - tv) +
+      A[(j0 + 1) * B + i0] * (1 - tu) * tv +
+      A[(j0 + 1) * B + i0 + 1] * tu * tv;
+    return [p[0] + alpha * s(Fx), p[1] + alpha * s(Fy)];
+  };
+}
