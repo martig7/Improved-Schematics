@@ -37,6 +37,19 @@ export interface DensityWarpOptions {
    * ceiling — distortion is then bounded only by the density of the input.
    */
   maxScale?: number;
+  /**
+   * Floor on local linear scale — the symmetric counterpart of maxScale. The
+   * warp magnifies the dense core by COMPRESSING the sparse periphery; left
+   * unbounded that compression crushes peripheral station spacing below the octi
+   * grid cell, so octi contracts the (now sub-cell) edges and strands terminus
+   * markers off their line (the Newark/Queens edge-terminus disconnections).
+   * Clamping the local scale >= minScale keeps peripheral gaps wide enough to
+   * survive octilinearization. The natural unclamped minimum is 1 - alpha*beta
+   * (~0.58 at the defaults), so any minScale at or below that is a no-op.
+   * Default 0 (no extra floor). Raising it trades a little core magnification
+   * for peripheral spacing (the canvas budget is fixed).
+   */
+  minScale?: number;
 }
 
 export type WarpFn = (p: Pixel) => Pixel;
@@ -112,13 +125,18 @@ function axisWarp(
   const rho = new Float64Array(B);
   for (let i = 0; i < B; i++) rho[i] = (1 - beta) / B + (beta * hs[i]) / hsum;
 
-  // clamp the implied local scale s_i = (1-alpha) + alpha·B·rho_i to maxScale:
-  // clip and renormalize a few times (converges since B·rhoCap > 1)
+  // clamp the implied local scale s_i = (1-alpha) + alpha·B·rho_i into
+  // [minScale, maxScale]: water-fill (clip both ends + renormalize) a few times.
+  // rhoCap·B > 1 > rhoFloor·B keeps a valid distribution; rhoFloor floors the
+  // sparse-region compression so peripheral gaps survive the octi grid.
+  const minScale = opts.minScale ?? 0;
   const rhoCap = (maxScale - (1 - alpha)) / (alpha * B);
-  for (let it = 0; it < 5; it++) {
+  const rhoFloor = Math.max(0, (minScale - (1 - alpha)) / (alpha * B));
+  for (let it = 0; it < 16; it++) {
     let sum = 0;
     for (let i = 0; i < B; i++) {
       if (rho[i] > rhoCap) rho[i] = rhoCap;
+      else if (rho[i] < rhoFloor) rho[i] = rhoFloor;
       sum += rho[i];
     }
     if (Math.abs(sum - 1) < 1e-9) break;

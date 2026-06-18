@@ -23,6 +23,22 @@ export const LINE_WIDTH =
     Number((process as { env?: Record<string, string> }).env?.IS_LINE_WIDTH)) ||
   LINE_WIDTH_DEFAULT;
 export const LINE_GAP = 2;
+
+/** Capsule markers render at this fraction of full radius (commit 8f1a5e5) so
+ *  bullet rings inside a capsule clear each other. SHARED so the rigid-row
+ *  solver's intra-capsule gap floor (renderOctilinear) uses the SAME scale the
+ *  markers are drawn at — flooring at the full radius boxed stations whose
+ *  scaled rings actually clear (the nyc/chi false-negative boxes).
+ *  IS_MARKER_SCALE overrides (1 = no shrink). Browser-safe: process is
+ *  undefined inside the game renderer. */
+export const MARKER_SCALE = (() => {
+  const env =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.IS_MARKER_SCALE)
+      : NaN;
+  return Number.isFinite(env) && env > 0 ? env : 0.65;
+})();
+
 export const PAD = 24;
 export const LABEL_FONT_SIZE = 11;
 export const LABEL_CHAR_WIDTH = 6;

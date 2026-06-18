@@ -7,7 +7,7 @@
 // bullet) inside, upright, toggled by the stations toggle.
 
 import type { Pixel, StopMark } from './layout/types';
-import { LINE_WIDTH, MEGA_BOXES } from './constants';
+import { LINE_WIDTH, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { escapeXml } from './escape';
 import { rdpSimplify } from './layout/chainPlace';
 
@@ -23,16 +23,10 @@ export function renderStops(
   // Option C — shrink the rendered marker ONLY inside capsules (multi-line
   // stations), where corner-flanking / multi-arm bullet rings overlap; single
   // standalone dots stay full size. Layout/spacing is unchanged — only the
-  // rendered dot radius + ring stroke + capsule width + font shrink, so the
-  // ring diameter drops below the minGap floor (≈4.35px) and rings separate.
-  // IS_MARKER_SCALE overrides (1 = no shrink); 0.65 → ring dia ≈4.2px.
-  const markerScale = (() => {
-    const env = typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.IS_MARKER_SCALE)
-      : NaN;
-    return Number.isFinite(env) && env > 0 ? env : 0.65;
-  })();
-  const rCap = r * markerScale; // dot/capsule radius INSIDE a capsule
+  // rendered dot radius + ring stroke + capsule width + font shrink. The rigid-
+  // row solver floors intra-capsule dot gaps at this SAME scaled ring diameter
+  // (MARKER_SCALE lives in constants.ts so the two can't drift).
+  const rCap = r * MARKER_SCALE; // dot/capsule radius INSIDE a capsule
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
   const nameFill = dark ? '#ffffff' : '#111111';
@@ -163,7 +157,7 @@ export function renderStops(
       (withAttrs ? attrs : '') + '/>';
     // scale the capsule padding too, so the platform hugs the shrunk dots with
     // the same proportional gap/outline as a full-size capsule (not a loose one)
-    const inner = pathSvg(stroke, 2 * rCap + 6 * markerScale, false) + pathSvg(fill, 2 * rCap + 3 * markerScale, true);
+    const inner = pathSvg(stroke, 2 * rCap + 6 * MARKER_SCALE, false) + pathSvg(fill, 2 * rCap + 3 * MARKER_SCALE, true);
     const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
     const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
     out.push(wrap(cx, cy, inner + dots));

@@ -14,7 +14,9 @@ import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
-import { buildDensityWarp } from './layout/densityWarp';
+import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
+import { buildDensityWarp2D } from './layout/densityWarp2d';
+import { buildBoxExpandWarp, buildSepBoxWarp } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -28,6 +30,23 @@ import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
 import { geographyBackdrop } from './geographyBackdrop';
 import type { GeographyData } from '../geography/types';
+
+// Diagnostic stash (set only when OCTI_WARP_DEBUG is in the env, so the game
+// never retains it): the exact density-warp map + canvas size + warped network
+// the last smoothed render built, for dev/warp-heatmap.ts to visualize where
+// space is dilated. `nodes`/`edges` are in the SAME pre-octi warped pixel space
+// the warp operates in, so they overlay the magnification grid coherently.
+export let __warpDebug:
+  | {
+      warp: WarpFn;
+      width: number;
+      height: number;
+      nodes: Pixel[]; // warped (post-warp) node positions
+      nodesRaw: Pixel[]; // UNWARPED (baseProj) node positions — apply a tuned warp for previews
+      edges: [number, number][];
+      samples: Pixel[]; // unwarped weighted warp samples (drive density / box-finding)
+    }
+  | null = null;
 
 export interface GeoInput {
   routes: Route[];
@@ -465,7 +484,23 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       typeof process !== 'undefined'
         ? Number((process as { env?: Record<string, string> }).env?.OCTI_MAXSCALE)
         : NaN;
-    return Number.isFinite(env) && env > 0 ? env : 8;
+    return Number.isFinite(env) && env > 0 ? env : 12;
+  })();
+  // Compression floor for the separable warp: stops it from crushing peripheral
+  // station spacing below the octi cell, which would contract the sub-cell edges
+  // and strand terminus markers (the Newark/Queens edge disconnections). The
+  // default 1 floors every local scale to >= 1 — i.e. NO compression — which (the
+  // canvas budget being fixed) forces the separable map to the identity: the
+  // dense-core magnification then comes entirely from the box layer, with no
+  // separable cross and no peripheral compression to disconnect termini. Lower it
+  // toward the natural unclamped min (~0.58) to re-admit separable magnification
+  // at the cost of edge compression. OCTI_MINSCALE overrides (0 = no floor).
+  const warpMinScale = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINSCALE)
+        : NaN;
+    return Number.isFinite(env) && env >= 0 ? env : 1;
   })();
   // Per-station warp weight is its line count, UNCAPPED by default so a 10-line
   // interchange outweighs a 4-line one — the old Math.min(4, …) throttle is gone.
@@ -476,6 +511,39 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         ? Number((process as { env?: Record<string, string> }).env?.OCTI_LINECAP)
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
+  })();
+  // Warp mode. DEFAULT 'both' (buildSepBoxWarp): the separable warp supplies the
+  // GLOBAL magnification that blows the dense network up to readable size, then
+  // the dense-box expansion (densityBoxWarp.ts) adds LOCAL rectilinear room on
+  // the magnified core to declutter it — geography stays faithful elsewhere.
+  // OCTI_WARP_MODE=separable = separable only (the proven baseline); =box = box
+  // expansion only (no global magnification); =2d = the (rejected) density-
+  // equalizing 2D warp.
+  // Box knobs (tune by eye): OCTI_BOX_FRAC (cutoff as fraction of peak density,
+  // default 0.4), OCTI_BOX_EXPAND (relative core magnification, default 4),
+  // OCTI_BOX_MARGIN (saturation margin as fraction of box half-extent, default
+  // 3), OCTI_BOX_GROWTH (how much the overall map may grow; 1 = canvas-preserving
+  // like separable, 1.2 = up to 20% bigger; default 1).
+  const warpMode =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
+  const envNum = (k: string): number =>
+    typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[k]) : NaN;
+  const boxFrac = Number.isFinite(envNum('OCTI_BOX_FRAC')) && envNum('OCTI_BOX_FRAC') > 0 ? envNum('OCTI_BOX_FRAC') : 0.4;
+  const boxExpand = Number.isFinite(envNum('OCTI_BOX_EXPAND')) && envNum('OCTI_BOX_EXPAND') >= 1 ? envNum('OCTI_BOX_EXPAND') : 4;
+  const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
+  const boxGrowth = Number.isFinite(envNum('OCTI_BOX_GROWTH')) && envNum('OCTI_BOX_GROWTH') >= 1 ? envNum('OCTI_BOX_GROWTH') : 1.2;
+  const warpSigmaPx = (() => {
+    const env =
+      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
+    return Number.isFinite(env) && env > 0 ? env : width / 49;
+  })();
+  // Flow iterations for the 2D warp (Gastner–Newman). 1 = weak single pass;
+  // higher composes small fold-safe steps into a stronger local warp. Default 10
+  // is the MILD setting (keeps the map geographically faithful).
+  const warpIters = (() => {
+    const env =
+      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_ITERS) : NaN;
+    return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 10;
   })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
@@ -538,16 +606,73 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const w = Math.max(1, Math.round(lineWeight * crowd));
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
-  const warp = buildDensityWarp(
-    warpSamples,
-    { minX: 0, minY: 0, maxX: width, maxY: height },
-    { alpha: warpAlpha, maxScale: warpMaxScale },
-  );
-  const proj: Projection = {
+  const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
+  const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin, growthCap: boxGrowth };
+  const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
+  const warp =
+    warpMode === 'separable'
+      ? buildDensityWarp(warpSamples, warpBox, sepOpts)
+      : warpMode === '2d'
+        ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
+        : warpMode === 'box'
+          ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts)
+          : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts); // default 'both'
+  let proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
+  // Re-fit to the WARPED content extent. The warp pushes content outward, and the
+  // geography (which reaches past the network) can land OUTSIDE the [0,width]
+  // canvas — where the land-base rect, viewBox and export frame don't reach, so
+  // it renders on the panel's black void when you pan/zoom out. The pre-warp
+  // `bounds` can't know how far the warp expands, so measure it AFTER warping:
+  // take the bbox of every drawn thing (network nodes + edge courses + water/
+  // green vertices) and rescale it per axis back inside the canvas, with a small
+  // margin for edge labels. Now the background and frame cover all the warp made.
+  {
+    const pts: Pixel[] = [];
+    for (const n of graph.nodes.values()) pts.push(proj.toSVG(n.lngLat));
+    for (const e of graph.edges) if (e.geo) for (const c of e.geo) pts.push(proj.toSVG(c));
+    if (input.geography) {
+      for (const feats of [input.geography.water, input.geography.green]) {
+        for (const f of feats) {
+          if (f.geometry.type !== 'Polygon') continue;
+          for (const ring of f.geometry.coordinates) for (const c of ring) pts.push(proj.toSVG(c));
+        }
+      }
+    }
+    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+    for (const p of pts) {
+      if (p[0] < mnX) mnX = p[0];
+      if (p[0] > mxX) mxX = p[0];
+      if (p[1] < mnY) mnY = p[1];
+      if (p[1] > mxY) mxY = p[1];
+    }
+    if (mnX < mxX && mnY < mxY) {
+      const m = 0; // flush fill — content reaches the canvas edge (the panel zooms for labels)
+      const sx = (width * (1 - 2 * m)) / (mxX - mnX);
+      const sy = (height * (1 - 2 * m)) / (mxY - mnY);
+      const ox = width * m - mnX * sx;
+      const oy = height * m - mnY * sy;
+      const inner = proj;
+      proj = { ...inner, toSVG: (c: Coordinate) => { const p = inner.toSVG(c); return [p[0] * sx + ox, p[1] * sy + oy]; } };
+    }
+  }
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
+  const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
+  if (env?.OCTI_WARP_DEBUG || env?.OCTI_WARP_CAPTURE_ONLY) {
+    const ids = [...graph.nodes.keys()];
+    const idx = new Map(ids.map((id, i) => [id, i]));
+    const nodes = ids.map((id) => graph.nodes.get(id)!.pos as Pixel);
+    const nodesRaw = ids.map((id) => baseProj.toSVG(graph.nodes.get(id)!.lngLat) as Pixel);
+    const edges = [...graph.edges]
+      .map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined])
+      .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
+    __warpDebug = { warp, width, height, nodes, nodesRaw, edges, samples: warpSamples.map((s) => [s[0], s[1]] as Pixel) };
+    // Skip the ~70s octi pass: dev/warp-preview.ts only needs the captured warp
+    // inputs to render a fast no-octi preview while tuning the warp.
+    if (env?.OCTI_WARP_CAPTURE_ONLY) return 'CAPTURE_ONLY';
+  }
 
   // LOOM topo merge: collapse geographically parallel transit edges into
   // single support edges carrying the union of their line ids (Brosi & Bast
@@ -603,6 +728,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
+  if (env?.OCTI_TRACE) console.error(`[trace] cellSize=${octiOpts.cellSize.toFixed(1)} (medLen=${medLen.toFixed(1)} divisor=${divisor}) contract<${(octiOpts.cellSize / 2).toFixed(1)}`);
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)
   if (

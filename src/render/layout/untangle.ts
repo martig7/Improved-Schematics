@@ -806,7 +806,13 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
           if (ca !== cb) {
             const fa = famMean.get(ca)!;
             const fb = famMean.get(cb)!;
-            return fa.sum / fa.n - fb.sum / fb.n;
+            const d = fa.sum / fa.n - fb.sum / fb.n;
+            if (d) return d;
+            // Two DISTINCT colors can share a family-mean slot → diff is 0; fall
+            // through to the color string (not a 0 "tie"), else the order of those
+            // families depends on the engine's sort tie behavior (cross-V8). NYC
+            // trunk colours collide here where smaller networks never do.
+            return ca < cb ? -1 : 1;
           }
           return pos.get(a)! - pos.get(b)!;
         });
