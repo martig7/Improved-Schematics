@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { densityGrid2D } from './densityWarp2d';
+import { densityGrid2D, displacementField2D } from './densityWarp2d';
 import type { Pixel } from './types';
 
 const BOX = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
@@ -23,4 +23,18 @@ test('densityGrid2D: dense corner has positive excess, empty corner negative', (
     g.e[Math.min(15, (py / (100 / 16)) | 0) * 16 + Math.min(15, (px / (100 / 16)) | 0)];
   assert.ok(at(11, 11) > 0, 'dense cell positive');
   assert.ok(at(90, 90) < 0, 'empty cell negative');
+});
+
+test('displacementField2D: pushes outward from a dense cluster', () => {
+  const samples: Pixel[] = [];
+  for (let k = 0; k < 80; k++) samples.push([50 + ((k % 4) - 2), 50 + (((k / 4) | 0) % 4 - 2)]); // cluster at center (50,50)
+  const grid = densityGrid2D(samples, BOX, { bins: 32, sigmaBins: 1.5, beta: 0.8 });
+  const { Fx, Fy } = displacementField2D(grid, 10);
+  const idx = (px: number, py: number) => Math.min(31, (py / (100 / 32)) | 0) * 32 + Math.min(31, (px / (100 / 32)) | 0);
+  // a point to the RIGHT of center should be pushed further right (Fx > 0)
+  assert.ok(Fx[idx(62, 50)] > 0, `right of cluster pushed right, got ${Fx[idx(62, 50)]}`);
+  // a point ABOVE center (smaller y) pushed further up (Fy < 0)
+  assert.ok(Fy[idx(50, 38)] < 0, `above cluster pushed up, got ${Fy[idx(50, 38)]}`);
+  // radial both ways: a point LEFT of center is pushed further left (Fx < 0)
+  assert.ok(Fx[idx(38, 50)] < 0, `left of cluster pushed left, got ${Fx[idx(38, 50)]}`);
 });

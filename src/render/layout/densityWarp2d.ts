@@ -84,3 +84,55 @@ export function densityGrid2D(
 
   return { e, bins: B, x0: box.minX, y0: box.minY, cw, ch };
 }
+
+// Radial repulsion displacement field: F(x) = Σ_cells e_c·(x−c)·w(|x−c|), so a
+// dense cell (e>0) pushes nearby space outward (expands its sector) and a sparse
+// cell (e<0) pulls inward. Computed per grid cell with the kernel precomputed
+// once (the only exp calls), then bilinearly sampled by buildDensityWarp2D.
+export function displacementField2D(
+  grid: DensityGrid2D,
+  sigmaPx: number,
+): { Fx: Float64Array; Fy: Float64Array } {
+  const { e, bins: B, cw, ch } = grid;
+  const Fx = new Float64Array(B * B);
+  const Fy = new Float64Array(B * B);
+  const cell = Math.min(cw, ch);
+  const rad = Math.max(1, Math.ceil((3 * sigmaPx) / cell));
+  const s2 = 2 * sigmaPx * sigmaPx;
+
+  // precompute kernel per cell-offset o = (source − query): the query is pushed
+  // by e·(query − source)·w(|·|) = e·(−o·cellSize)·w. Store kxw/kyw.
+  const span = 2 * rad + 1;
+  const kxw = new Float64Array(span * span);
+  const kyw = new Float64Array(span * span);
+  for (let oy = -rad; oy <= rad; oy++)
+    for (let ox = -rad; ox <= rad; ox++) {
+      const ddx = ox * cw;
+      const ddy = oy * ch;
+      const w = qexp(-(ddx * ddx + ddy * ddy) / s2);
+      kxw[(oy + rad) * span + (ox + rad)] = -ddx * w; // query − source = −(source − query)
+      kyw[(oy + rad) * span + (ox + rad)] = -ddy * w;
+    }
+
+  for (let qy = 0; qy < B; qy++)
+    for (let qx = 0; qx < B; qx++) {
+      let fx = 0;
+      let fy = 0;
+      for (let oy = -rad; oy <= rad; oy++) {
+        const cy = qy + oy;
+        if (cy < 0 || cy >= B) continue;
+        for (let ox = -rad; ox <= rad; ox++) {
+          const cx = qx + ox;
+          if (cx < 0 || cx >= B) continue;
+          const ec = e[cy * B + cx];
+          if (ec === 0) continue;
+          const ki = (oy + rad) * span + (ox + rad);
+          fx += ec * kxw[ki];
+          fy += ec * kyw[ki];
+        }
+      }
+      Fx[qy * B + qx] = fx;
+      Fy[qy * B + qx] = fy;
+    }
+  return { Fx, Fy };
+}
