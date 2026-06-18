@@ -504,8 +504,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // expansion only (no global magnification); =2d = the (rejected) density-
   // equalizing 2D warp.
   // Box knobs (tune by eye): OCTI_BOX_FRAC (cutoff as fraction of peak density,
-  // default 0.4), OCTI_BOX_EXPAND (factor, default 4), OCTI_BOX_MARGIN (taper
-  // fraction of box half-extent, default 3).
+  // default 0.4), OCTI_BOX_EXPAND (relative core magnification, default 4),
+  // OCTI_BOX_MARGIN (saturation margin as fraction of box half-extent, default
+  // 3), OCTI_BOX_GROWTH (how much the overall map may grow; 1 = canvas-preserving
+  // like separable, 1.2 = up to 20% bigger; default 1).
   const warpMode =
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
   const envNum = (k: string): number =>
@@ -513,6 +515,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const boxFrac = Number.isFinite(envNum('OCTI_BOX_FRAC')) && envNum('OCTI_BOX_FRAC') > 0 ? envNum('OCTI_BOX_FRAC') : 0.4;
   const boxExpand = Number.isFinite(envNum('OCTI_BOX_EXPAND')) && envNum('OCTI_BOX_EXPAND') >= 1 ? envNum('OCTI_BOX_EXPAND') : 4;
   const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
+  const boxGrowth = Number.isFinite(envNum('OCTI_BOX_GROWTH')) && envNum('OCTI_BOX_GROWTH') >= 1 ? envNum('OCTI_BOX_GROWTH') : 1.2;
   const warpSigmaPx = (() => {
     const env =
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
@@ -588,7 +591,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
-  const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin };
+  const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin, growthCap: boxGrowth };
   const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale };
   const warp =
     warpMode === 'separable'
@@ -598,10 +601,47 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : warpMode === 'box'
           ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts)
           : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts); // default 'both'
-  const proj: Projection = {
+  let proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
+  // Re-fit to the WARPED content extent. The warp pushes content outward, and the
+  // geography (which reaches past the network) can land OUTSIDE the [0,width]
+  // canvas — where the land-base rect, viewBox and export frame don't reach, so
+  // it renders on the panel's black void when you pan/zoom out. The pre-warp
+  // `bounds` can't know how far the warp expands, so measure it AFTER warping:
+  // take the bbox of every drawn thing (network nodes + edge courses + water/
+  // green vertices) and rescale it per axis back inside the canvas, with a small
+  // margin for edge labels. Now the background and frame cover all the warp made.
+  {
+    const pts: Pixel[] = [];
+    for (const n of graph.nodes.values()) pts.push(proj.toSVG(n.lngLat));
+    for (const e of graph.edges) if (e.geo) for (const c of e.geo) pts.push(proj.toSVG(c));
+    if (input.geography) {
+      for (const feats of [input.geography.water, input.geography.green]) {
+        for (const f of feats) {
+          if (f.geometry.type !== 'Polygon') continue;
+          for (const ring of f.geometry.coordinates) for (const c of ring) pts.push(proj.toSVG(c));
+        }
+      }
+    }
+    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+    for (const p of pts) {
+      if (p[0] < mnX) mnX = p[0];
+      if (p[0] > mxX) mxX = p[0];
+      if (p[1] < mnY) mnY = p[1];
+      if (p[1] > mxY) mxY = p[1];
+    }
+    if (mnX < mxX && mnY < mxY) {
+      const m = 0; // flush fill — content reaches the canvas edge (the panel zooms for labels)
+      const sx = (width * (1 - 2 * m)) / (mxX - mnX);
+      const sy = (height * (1 - 2 * m)) / (mxY - mnY);
+      const ox = width * m - mnX * sx;
+      const oy = height * m - mnY * sy;
+      const inner = proj;
+      proj = { ...inner, toSVG: (c: Coordinate) => { const p = inner.toSVG(c); return [p[0] * sx + ox, p[1] * sy + oy]; } };
+    }
+  }
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
   const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
   if (env?.OCTI_WARP_DEBUG || env?.OCTI_WARP_CAPTURE_ONLY) {
