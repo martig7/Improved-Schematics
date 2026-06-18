@@ -51,6 +51,20 @@ interface SvgBox {
   h: number;
 }
 
+type ExportFormat = 'svg' | 'png' | 'jpeg';
+
+// Raster exports upscale the (cropped) SVG by this factor before drawing to the
+// canvas, so PNG/JPEG come out crisp rather than blurry at the SVG's intrinsic
+// pixel size.
+const RASTER_SCALE = 2;
+const JPEG_QUALITY = 0.92;
+
+const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
+  { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
+  { id: 'png', label: 'PNG (image)', ext: 'png', mime: 'image/png' },
+  { id: 'jpeg', label: 'JPEG (image)', ext: 'jpg', mime: 'image/jpeg' },
+];
+
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 // Persists the generated smoothed map across mode switches AND panel close, so
@@ -63,6 +77,11 @@ export function SchematicPanel() {
   const [showStations, setShowStations] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Export controls live in a small settings popover opened via the gear icon in
+  // the top-right of the panel. The chosen format drives the Download button.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
+  const settingsRef = useRef<HTMLDivElement>(null);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
@@ -246,31 +265,80 @@ export function SchematicPanel() {
     return generateSchematicSVG(buildInput());
   }, [mode, showStations, showLabels, geography, smoothedReady]);
 
-  // Save the generated SVG cropped to the frame (data-frame = the geography
-  // water/green extent), so the file outlines it — content outside is clipped by
-  // the viewBox. Falls back to the full canvas when there's no frame.
-  const downloadSvg = useCallback(() => {
-    if (!svg) return;
-    let out = svg;
+  // Crop the generated SVG to the frame (data-frame = the geography water/green
+  // extent), so exports outline it — content outside is clipped by the viewBox.
+  // Falls back to the full canvas when there's no frame. Returns the serialized
+  // markup plus the pixel dimensions raster exports need.
+  const buildExportSvg = useCallback((): { markup: string; width: number; height: number } | null => {
+    if (!svg) return null;
     const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    const vb = root.getAttribute('viewBox')?.split(/\s+/).map(Number);
+    let width = (vb && vb.length === 4 ? vb[2] : parseFloat(root.getAttribute('width') || '')) || GEO_SIZE;
+    let height = (vb && vb.length === 4 ? vb[3] : parseFloat(root.getAttribute('height') || '')) || GEO_SIZE;
     const fr = root.getAttribute('data-frame')?.split(/\s+/).map(Number);
     if (fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0) {
       root.setAttribute('viewBox', `${fr[0]} ${fr[1]} ${fr[2]} ${fr[3]}`);
       root.setAttribute('width', String(fr[2]));
       root.setAttribute('height', String(fr[3]));
       root.removeAttribute('data-frame');
-      out = new XMLSerializer().serializeToString(root);
+      width = fr[2];
+      height = fr[3];
     }
-    const blob = new Blob([out], { type: 'image/svg+xml' });
+    return { markup: new XMLSerializer().serializeToString(root), width, height };
+  }, [svg]);
+
+  // Trigger a browser download for a generated blob.
+  const triggerDownload = useCallback((blob: Blob, ext: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `improvedschematics-${mode}.svg`;
+    a.download = `improvedschematics-${mode}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }, [svg, mode]);
+  }, [mode]);
+
+  // Export the current map in the chosen format. SVG is the serialized markup
+  // verbatim; PNG/JPEG rasterize that markup onto an upscaled canvas. JPEG has no
+  // alpha channel, so the canvas is first flooded with the theme background (the
+  // SVG's own land rect covers the full canvas, but this guards rounding edges).
+  const downloadImage = useCallback(() => {
+    const built = buildExportSvg();
+    if (!built) return;
+    const fmt = FORMATS.find((f) => f.id === exportFormat) ?? FORMATS[0];
+    if (fmt.id === 'svg') {
+      triggerDownload(new Blob([built.markup], { type: fmt.mime }), fmt.ext);
+      return;
+    }
+    const svgUrl = URL.createObjectURL(new Blob([built.markup], { type: 'image/svg+xml' }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(built.width * RASTER_SCALE));
+      canvas.height = Math.max(1, Math.round(built.height * RASTER_SCALE));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        URL.revokeObjectURL(svgUrl);
+        return;
+      }
+      if (fmt.id === 'jpeg') {
+        ctx.fillStyle = api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(svgUrl);
+      canvas.toBlob(
+        (blob) => {
+          if (blob) triggerDownload(blob, fmt.ext);
+        },
+        fmt.mime,
+        JPEG_QUALITY,
+      );
+    };
+    img.onerror = () => URL.revokeObjectURL(svgUrl);
+    img.src = svgUrl;
+  }, [buildExportSvg, exportFormat, triggerDownload]);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
@@ -465,6 +533,16 @@ export function SchematicPanel() {
     return () => clearTimeout(t);
   }, [showLabels, showStations]);
 
+  // Close the settings popover when clicking anywhere outside it (or its gear).
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!settingsRef.current?.contains(e.target as Node)) setSettingsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [settingsOpen]);
+
   const toggleStyle = (active: boolean) => ({
     fontSize: 12,
     padding: '2px 8px',
@@ -543,15 +621,86 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0</span>
-        {svg && !generating && (
-          <button onClick={downloadSvg} style={toggleStyle(false)} title="Download as SVG">
-            ↓ SVG
-          </button>
-        )}
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.3.0</span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
+        {/* Settings gear (top-right): opens a popover with the export-format
+            dropdown + Download button. */}
+        <div ref={settingsRef} style={{ position: 'relative' }}>
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            style={{ ...toggleStyle(settingsOpen), fontSize: 16, lineHeight: 1 }}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+          >
+            ⚙
+          </button>
+          {settingsOpen && (
+            <div
+              role="menu"
+              style={{
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                marginTop: 6,
+                zIndex: 10,
+                minWidth: 200,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+                padding: 12,
+                borderRadius: 8,
+                background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                border: '1px solid rgba(136,136,136,0.35)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+              }}
+            >
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                <span style={{ opacity: 0.8 }}>Export format</span>
+                <select
+                  value={exportFormat}
+                  onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 6px',
+                    borderRadius: 6,
+                    border: '1px solid rgba(136,136,136,0.4)',
+                    background: 'inherit',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {FORMATS.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                onClick={downloadImage}
+                disabled={!svg || generating}
+                title={`Download map as ${exportFormat.toUpperCase()}`}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  border: 'none',
+                  cursor: !svg || generating ? 'default' : 'pointer',
+                  opacity: !svg || generating ? 0.5 : 1,
+                  background: '#2563eb',
+                  color: '#ffffff',
+                }}
+              >
+                ↓ Download {exportFormat.toUpperCase()}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div
