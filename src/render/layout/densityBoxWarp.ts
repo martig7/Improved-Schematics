@@ -1,12 +1,27 @@
 // Dense-box expansion warp. NOT density-equalizing — it finds the densest
-// regions (cells above a percentile cutoff, grouped into axis-aligned bounding
-// boxes) and modestly EXPANDS each to lower its crowding, leaving the rest of
-// the map geographically faithful. Rectilinear by construction: the expansion
-// window tapers by BOX (Chebyshev) distance, so a box grows into a bigger box
-// rather than a circle (the radial-kernel approach rounded the whole map).
-// Modest expansion ⇒ small gradients ⇒ fold-safe in a single pass (no flow, no
-// global-α starvation). Determinism: + − × ÷ √ plus densityGrid2D's quantized
-// exp → bit-identical cross-V8.
+// regions (cells above a fraction-of-peak cutoff, grouped into axis-aligned
+// bounding boxes) and EXPANDS each to lower its crowding, leaving the far field
+// geographically faithful. Rectilinear by construction (per-axis box bands, not
+// a radial kernel that would round the whole map).
+//
+// Two stages. (1) SATURATE: each axis ramps at unit slope inside the box, eases
+// the slope to 0 across the margin, then HOLDS constant — so the surround is
+// carried outward rather than crammed back to identity. Tapering back to identity
+// (the previous box-window) forced, by area conservation, a compression ring just
+// outside the box — the "weirdly thin geography at the edge of growth". A
+// saturating push keeps the per-axis map monotone (slope in [1, 1+strength]), so
+// the raw expansion is fold-free at any strength and has NO localized thinning.
+// (2) NORMALIZE: the saturating push grows the overall bbox, so rescale the
+// warped canvas back to fit growthCap × the canvas PER AXIS — exactly the
+// "balance" the separable warp gets for free (its CDF maps the canvas onto
+// itself, filling it). This makes `expand` a RELATIVE core magnification instead
+// of an absolute size multiplier (no 10× blowup), and the compensating shrink is
+// one global per-axis rescale spread evenly across the whole map — so the only
+// compression anywhere is that gentle factor, never a ring. Per axis (not a
+// single uniform scale) so the warped canvas FILLS the canvas instead of
+// letterboxing — a uniform scale leaves a bare-land margin that renders as
+// "black edges" round the map.
+// Determinism: + − × ÷ and min only → bit-identical cross-V8.
 
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
@@ -28,51 +43,21 @@ export interface BoxWarpOptions extends DensityWarp2DOptionsLike {
   frac?: number;
   /** Target expansion factor for a dense box (≥1). Default 1.4. */
   expand?: number;
-  /** Taper margin as a fraction of the box's larger half-extent. Default 1. */
+  /** Saturation margin as a fraction of the box's larger half-extent: the
+   *  per-axis slope eases from 1+strength back to 1 across this width, beyond
+   *  which the push holds constant and the surround rigidly translates outward.
+   *  Larger = softer box edge + more outward growth. Default 1. */
   marginFrac?: number;
+  /** How much the overall map may grow: the warped canvas is uniformly rescaled
+   *  to fit growthCap × the original canvas (1 = canvas-preserving, like the
+   *  separable warp; 1.2 = allow 20% bigger). This is what keeps `expand` from
+   *  blowing the map up — it makes `expand` a RELATIVE core magnification rather
+   *  than an absolute size multiplier. Default 1. */
+  growthCap?: number;
 }
 
 // (BoxWarpOptions extends the same option bag densityGrid2D reads.)
 type DensityWarp2DOptionsLike = DensityWarpOptions & { sigmaPx?: number };
-
-const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
-
-// Largest strength s for which W = p + s·field stays fold-free, i.e. the Jacobian
-// det = 1 + s·tr(∇field) + s²·det(∇field) ≥ `floor` at every grid cell. This is
-// the TRUE limit — far higher than a Frobenius-norm bound, which the box's
-// uniform-scale interior (∇field=I, always fold-free) would peg at 0.9/√2.
-// Binary search (fixed iters → deterministic); floor keeps any cell from
-// compressing below `floor` area. Pure arithmetic, cross-V8 stable.
-function foldSafeStrength(
-  Fx: Float64Array, Fy: Float64Array, B: number, cw: number, ch: number, target: number, floor: number,
-): number {
-  const a: number[] = [], b: number[] = [], c: number[] = [], d: number[] = [];
-  for (let y = 1; y < B - 1; y++)
-    for (let x = 1; x < B - 1; x++) {
-      a.push((Fx[y * B + x + 1] - Fx[y * B + x - 1]) / (2 * cw)); // dFx/dx
-      b.push((Fx[(y + 1) * B + x] - Fx[(y - 1) * B + x]) / (2 * ch)); // dFx/dy
-      c.push((Fy[y * B + x + 1] - Fy[y * B + x - 1]) / (2 * cw)); // dFy/dx
-      d.push((Fy[(y + 1) * B + x] - Fy[(y - 1) * B + x]) / (2 * ch)); // dFy/dy
-    }
-  const n = a.length;
-  const minDet = (s: number): number => {
-    let m = Infinity;
-    for (let i = 0; i < n; i++) {
-      const det = 1 + s * (a[i] + d[i]) + s * s * (a[i] * d[i] - b[i] * c[i]);
-      if (det < m) m = det;
-    }
-    return m;
-  };
-  if (minDet(target) >= floor) return target;
-  let lo = 0;
-  let hi = target;
-  for (let it = 0; it < 40; it++) {
-    const mid = (lo + hi) / 2;
-    if (minDet(mid) >= floor) lo = mid;
-    else hi = mid;
-  }
-  return lo;
-}
 
 /** Find the densest regions as axis-aligned bounding boxes (pixel coords):
  *  threshold the smoothed excess-density grid at the pct-th percentile, then
@@ -145,51 +130,78 @@ export function buildBoxExpandWarp(
     const cy = (b.y0 + b.y1) / 2;
     const hx = (b.x1 - b.x0) / 2;
     const hy = (b.y1 - b.y0) / 2;
-    const m = Math.max(1, marginFrac * Math.max(hx, hy)); // taper width (≥1px)
+    const m = Math.max(1, marginFrac * Math.max(hx, hy)); // saturation margin (≥1px)
     return { cx, cy, hx, hy, m };
   });
 
-  // displacement at strength 1: push each point outward by a BOX-windowed amount
-  // (wx·wy, each axis tapering linearly over the margin) so the box grows into a
-  // bigger box and the surround returns to identity beyond the margin.
+  // Smooth saturating per-axis push (the strength-1 displacement). Inside the box
+  // half-extent h the map ramps at unit slope (expansion); across the margin m
+  // the slope eases linearly 1→0 (so there is no slope crease at the box edge);
+  // beyond that the push is constant — the surround is rigidly translated
+  // outward, NOT crammed back to identity. Odd-symmetric; the slope is in [0,1]
+  // everywhere, so p + strength·push is monotone per axis ⇒ det ≥ 1 (no
+  // thinning) and fold-free at any strength. ux depends only on px and uy only
+  // on py, so the Jacobian is diagonal and det = (1+s·push'x)(1+s·push'y) ≥ 1.
+  const push = (t: number, h: number, m: number): number => {
+    const a = t < 0 ? -t : t; // |t|
+    let p: number;
+    if (a <= h) p = a;
+    else if (a <= h + m) { const u = a - h; p = a - (u * u) / (2 * m); }
+    else p = h + m / 2;
+    return t < 0 ? -p : p;
+  };
   const field = (px: number, py: number): [number, number] => {
     let ux = 0;
     let uy = 0;
     for (const b of bs) {
-      const dx = px - b.cx;
-      const dy = py - b.cy;
-      const wx = clamp01(1 - Math.max(0, Math.abs(dx) - b.hx) / b.m);
-      const wy = clamp01(1 - Math.max(0, Math.abs(dy) - b.hy) / b.m);
-      const w = wx * wy;
-      ux += dx * w;
-      uy += dy * w;
+      ux += push(px - b.cx, b.hx, b.m);
+      uy += push(py - b.cy, b.hy, b.m);
     }
     return [ux, uy];
   };
 
-  // fold-safe strength: u = strength·field, so det(I+∇u)>0 ⇐ strength·max‖∇field‖<1.
-  // Sample ‖∇field‖ on a grid and clamp (reuses foldSafeAlpha).
-  const B = opts.bins ?? 96;
-  const cw = (box.maxX - box.minX) / B;
-  const ch = (box.maxY - box.minY) / B;
-  const Fx = new Float64Array(B * B);
-  const Fy = new Float64Array(B * B);
-  for (let j = 0; j < B; j++)
-    for (let i = 0; i < B; i++) {
-      const [fx, fy] = field(box.minX + (i + 0.5) * cw, box.minY + (j + 0.5) * ch);
-      Fx[j * B + i] = fx;
-      Fy[j * B + i] = fy;
-    }
-  // true fold limit (floor 0.1 = no cell compresses below 10% area)
-  const strength = foldSafeStrength(Fx, Fy, B, cw, ch, strengthTarget, 0.1);
+  // No fold-clamp: the saturating push is monotone per axis, so det ≥ 1 at any
+  // strength. On its own the push grows the bbox by ~2·strength·(h + m/2) per box
+  // per axis — the raw (pre-normalization) expansion.
+  const strength = strengthTarget;
+  const raw = (px: number, py: number): Pixel => {
+    const [ux, uy] = field(px, py);
+    return [px + strength * ux, py + strength * uy];
+  };
+
+  // Canvas-preserving normalization — restores the separable warp's "balance".
+  // The raw push grows the overall bbox; rescale the warped canvas back to fit
+  // growthCap × the original canvas, PER AXIS (like the separable warp's fx/fy),
+  // so the warped canvas fills the canvas exactly instead of letterboxing. A
+  // single (uniform) scale would leave a bare-canvas margin on the shorter axis —
+  // that margin renders as the empty land base, the "black edges" round the map.
+  // Per-axis fill removes it; the slight x-vs-y scale difference is a global
+  // aspect adjustment (exactly what separable does), NOT localized thinning.
+  // Net: the dense core is magnified RELATIVE to its surround, the compensating
+  // shrink is one global per-axis rescale spread evenly across the map (no
+  // compression ring, no blowup). `field` is monotone per axis and independent
+  // across axes, so the warped canvas corners are the bbox extremes (no search).
+  const cap = opts.growthCap ?? 1;
+  const xl = raw(box.minX, box.minY)[0];
+  const xr = raw(box.maxX, box.minY)[0];
+  const yt = raw(box.minX, box.minY)[1];
+  const yb = raw(box.minX, box.maxY)[1];
+  const cw2 = box.maxX - box.minX;
+  const ch2 = box.maxY - box.minY;
+  const sx = (cw2 * cap) / (xr - xl);
+  const sy = (ch2 * cap) / (yb - yt);
+  const cxCanvas = (box.minX + box.maxX) / 2;
+  const cyCanvas = (box.minY + box.maxY) / 2;
+  const cxWarp = (xl + xr) / 2;
+  const cyWarp = (yt + yb) / 2;
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
     const sz = bs.map((b) => `${(2 * b.hx).toFixed(0)}x${(2 * b.hy).toFixed(0)}`).join(',');
-    console.error(`[boxwarp] boxes=${bs.length} strengthTarget=${strengthTarget.toFixed(2)} strength=${strength.toFixed(3)} (fold-clamped) sizes=[${sz}]`);
+    console.error(`[boxwarp] boxes=${bs.length} strength=${strength.toFixed(2)} rawGrowth=${((xr - xl) / cw2).toFixed(2)}x scale=${sx.toFixed(3)},${sy.toFixed(3)} (per-axis fill, cap=${cap}) sizes=[${sz}]`);
   }
 
   return (p) => {
-    const [ux, uy] = field(p[0], p[1]);
-    return [p[0] + strength * ux, p[1] + strength * uy];
+    const q = raw(p[0], p[1]);
+    return [cxCanvas + (q[0] - cxWarp) * sx, cyCanvas + (q[1] - cyWarp) * sy];
   };
 }
 

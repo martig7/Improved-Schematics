@@ -43,24 +43,37 @@ test('findDenseBoxes: higher cutoff selects a smaller (or equal) dense area', ()
   assert.ok(area(hi) <= area(lo) + 1e-6, `stricter cutoff ≤ area: ${area(hi)} vs ${area(lo)}`);
 });
 
-test('buildBoxExpandWarp: expands inside the dense box, identity far away, fold-free', () => {
+test('buildBoxExpandWarp: magnifies the core relative to its surround, with no localized thinning', () => {
   const W = buildBoxExpandWarp(clusterAt(50, 50, 160), BOX, { bins: 48, frac: 0.4, expand: 1.4, marginFrac: 1 });
-  const jIn = jacDet(W, [50, 50]); // inside the dense box → expanded
-  const jFar = jacDet(W, [92, 8]); // opposite corner, far → untouched
-  assert.ok(jIn > 1.1, `dense box expands, J=${jIn.toFixed(2)}`);
-  assert.ok(Math.abs(jFar - 1) < 0.05, `far is identity, J=${jFar.toFixed(2)}`);
-  // fold-free everywhere
+  const jCore = jacDet(W, [50, 50]); // inside the dense box → magnified
+  const jFar = jacDet(W, [96, 4]); // far corner → the uniform global shrink factor
+  assert.ok(jCore > jFar * 1.05, `core magnified vs surround, core=${jCore.toFixed(3)} far=${jFar.toFixed(3)}`);
+  // No LOCALIZED thinning: after normalization the ONLY compression anywhere is
+  // the gentle uniform global rescale (jFar). Nothing is thinner than that — the
+  // old taper's compression ring is gone, not replaced by a localized dip.
   for (let y = 2; y < 100; y += 4) for (let x = 2; x < 100; x += 4) {
-    assert.ok(jacDet(W, [x, y]) > 0, `det>0 at (${x},${y})`);
+    assert.ok(jacDet(W, [x, y]) > jFar - 0.03, `no point thinner than the global shrink at (${x},${y}), J=${jacDet(W, [x, y]).toFixed(3)} vs ${jFar.toFixed(3)}`);
   }
 });
 
-test('buildBoxExpandWarp: LOCAL — a far same-row point is not co-expanded', () => {
-  const W = buildBoxExpandWarp(clusterAt(50, 50, 160), BOX, { bins: 48, frac: 0.4, expand: 1.5, marginFrac: 1 });
-  const jBox = jacDet(W, [50, 50]);
-  const jSameRow = jacDet(W, [92, 50]); // same row as the box, far in x
-  assert.ok(jBox > 1.1, `box expands, J=${jBox.toFixed(2)}`);
-  assert.ok(jSameRow < 1.1, `same-row far point not co-expanded, J=${jSameRow.toFixed(2)}`);
+test('buildBoxExpandWarp: bounded — the warped canvas fits growthCap, no blowup', () => {
+  const opts = { bins: 48, frac: 0.4, expand: 4, marginFrac: 3 } as const;
+  const bbox = (W: (p: Pixel) => Pixel) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let y = 0; y <= 100; y += 2) for (let x = 0; x <= 100; x += 2) {
+      const [wx, wy] = W([x, y]);
+      if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+      if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+    }
+    return { w: maxX - minX, h: maxY - minY };
+  };
+  // growthCap 1 = canvas-preserving (like the separable warp): even at expand 4
+  // the warped canvas does not exceed the 100×100 box.
+  const b1 = bbox(buildBoxExpandWarp(clusterAt(50, 50, 300), BOX, { ...opts, growthCap: 1 }));
+  assert.ok(b1.w <= 100.1 && b1.h <= 100.1, `growthCap 1 stays bounded, got ${b1.w.toFixed(1)}×${b1.h.toFixed(1)}`);
+  // a larger growthCap deliberately allows the map to grow a little more
+  const b2 = bbox(buildBoxExpandWarp(clusterAt(50, 50, 300), BOX, { ...opts, growthCap: 1.5 }));
+  assert.ok(b2.w > b1.w + 1, `growthCap 1.5 grows more than 1.0, ${b2.w.toFixed(1)} vs ${b1.w.toFixed(1)}`);
 });
 
 test('buildBoxExpandWarp: deterministic; expand=1 or no samples → identity', () => {
