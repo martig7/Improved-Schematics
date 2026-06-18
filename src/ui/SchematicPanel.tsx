@@ -137,6 +137,15 @@ export function SchematicPanel() {
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
     applied.mapMargin !== mapMargin;
+  // True when both the draft sliders and the applied values are already at the
+  // defaults — nothing for Reset to do.
+  const appearanceAtDefaults =
+    lineWidth === DEFAULT_LINE_WIDTH &&
+    stationRadius === DEFAULT_STATION_RADIUS &&
+    mapMargin === DEFAULT_MAP_MARGIN &&
+    applied.lineWidth === DEFAULT_LINE_WIDTH &&
+    applied.stationRadius === DEFAULT_STATION_RADIUS &&
+    applied.mapMargin === DEFAULT_MAP_MARGIN;
   const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -760,29 +769,56 @@ export function SchematicPanel() {
                 display={`${Math.round(mapMargin * 100)}%`}
                 onChange={setMapMargin}
               />
-              {/* Sliders only stage values; Save commits them to the renderer. */}
-              <button
-                onClick={() => setApplied({ lineWidth, stationRadius, mapMargin })}
-                disabled={!appearanceDirty}
-                title={
-                  appearanceDirty
-                    ? 'Apply appearance changes'
-                    : 'No unsaved appearance changes'
-                }
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  padding: '6px 10px',
-                  borderRadius: 6,
-                  border: 'none',
-                  cursor: appearanceDirty ? 'pointer' : 'default',
-                  opacity: appearanceDirty ? 1 : 0.5,
-                  background: '#2563eb',
-                  color: '#ffffff',
-                }}
-              >
-                {appearanceDirty ? 'Save changes' : 'Saved'}
-              </button>
+              {/* Sliders only stage values; Save commits them to the renderer,
+                  Reset restores (and applies) the defaults. */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => {
+                    setLineWidth(DEFAULT_LINE_WIDTH);
+                    setStationRadius(DEFAULT_STATION_RADIUS);
+                    setMapMargin(DEFAULT_MAP_MARGIN);
+                    setApplied({
+                      lineWidth: DEFAULT_LINE_WIDTH,
+                      stationRadius: DEFAULT_STATION_RADIUS,
+                      mapMargin: DEFAULT_MAP_MARGIN,
+                    });
+                  }}
+                  disabled={appearanceAtDefaults}
+                  title="Reset appearance to defaults"
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    cursor: appearanceAtDefaults ? 'default' : 'pointer',
+                    opacity: appearanceAtDefaults ? 0.5 : 1,
+                    background: 'transparent',
+                    color: 'inherit',
+                    border: '1px solid rgba(136,136,136,0.5)',
+                  }}
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() => setApplied({ lineWidth, stationRadius, mapMargin })}
+                  disabled={!appearanceDirty}
+                  title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
+                  style={{
+                    flex: 1,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: appearanceDirty ? 'pointer' : 'default',
+                    opacity: appearanceDirty ? 1 : 0.5,
+                    background: '#2563eb',
+                    color: '#ffffff',
+                  }}
+                >
+                  {appearanceDirty ? 'Save changes' : 'Saved'}
+                </button>
+              </div>
 
               <div style={{ height: 1, background: 'rgba(136,136,136,0.3)', margin: '2px 0' }} />
 
