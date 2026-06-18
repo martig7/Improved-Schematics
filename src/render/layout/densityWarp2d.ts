@@ -1,0 +1,86 @@
+// 2D LOCAL density-equalizing warp (vs. the separable rows/columns warp in
+// densityWarp.ts). Builds a 2D excess-density grid, convolves it with a radial
+// repulsion kernel that pushes space OUTWARD from dense cells, auto-clamps the
+// strength so the Jacobian stays positive everywhere (unconditionally fold-free),
+// and returns a closure that bilinearly interpolates x + α·F(x). Expansion
+// concentrates on dense SECTORS, not whole rows/columns. Determinism: only
+// + − × ÷ √ plus Math.exp QUANTIZED to 1e-12, so it is bit-identical cross-V8.
+// Spec: docs/superpowers/specs/2026-06-17-2d-density-warp-design.md
+
+import type { Pixel } from './types';
+import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
+
+export interface DensityWarp2DOptions extends DensityWarpOptions {
+  /** Repulsion kernel radius in PIXELS — how local the expansion is. */
+  sigmaPx?: number;
+}
+
+export interface DensityGrid2D {
+  e: Float64Array; // excess density, mean 0, row-major bins×bins
+  bins: number;
+  x0: number;
+  y0: number;
+  cw: number; // cell width (px)
+  ch: number; // cell height (px)
+}
+
+// Quantize exp to 1e-12 (sub-ULP at coordinate scale) so the smoothing kernel is
+// bit-identical across V8 builds — identical discipline to densityWarp.ts.
+const qexp = (x: number): number => Math.round(Math.exp(x) * 1e12) / 1e12;
+
+export function densityGrid2D(
+  samples: readonly Pixel[],
+  box: WarpBox,
+  opts: DensityWarp2DOptions = {},
+): DensityGrid2D {
+  const B = opts.bins ?? 96;
+  const sigmaBins = opts.sigmaBins ?? 2.5;
+  const beta = opts.beta ?? 0.7;
+  const cw = (box.maxX - box.minX) / B;
+  const ch = (box.maxY - box.minY) / B;
+
+  const h = new Float64Array(B * B);
+  for (const s of samples) {
+    const ix = Math.min(B - 1, Math.max(0, Math.floor((s[0] - box.minX) / cw)));
+    const iy = Math.min(B - 1, Math.max(0, Math.floor((s[1] - box.minY) / ch)));
+    h[iy * B + ix]++;
+  }
+
+  // separable Gaussian smoothing (clamped borders), quantized kernel
+  const r = Math.max(1, Math.ceil(sigmaBins * 3));
+  const kernel = new Float64Array(2 * r + 1);
+  let ksum = 0;
+  for (let i = -r; i <= r; i++) {
+    kernel[i + r] = qexp(-(i * i) / (2 * sigmaBins * sigmaBins));
+    ksum += kernel[i + r];
+  }
+  const tmp = new Float64Array(B * B);
+  for (let y = 0; y < B; y++)
+    for (let x = 0; x < B; x++) {
+      let v = 0;
+      for (let j = -r; j <= r; j++) {
+        const xx = Math.min(B - 1, Math.max(0, x + j));
+        v += h[y * B + xx] * kernel[j + r];
+      }
+      tmp[y * B + x] = v / ksum;
+    }
+  const hs = new Float64Array(B * B);
+  for (let y = 0; y < B; y++)
+    for (let x = 0; x < B; x++) {
+      let v = 0;
+      for (let j = -r; j <= r; j++) {
+        const yy = Math.min(B - 1, Math.max(0, y + j));
+        v += tmp[yy * B + x] * kernel[j + r];
+      }
+      hs[y * B + x] = v / ksum;
+    }
+
+  // rho has mean 1 ((1-beta)·1 + beta·1); e = rho - 1 has mean exactly 0
+  let hsum = 0;
+  for (let i = 0; i < B * B; i++) hsum += hs[i];
+  const mean = hsum / (B * B) || 1;
+  const e = new Float64Array(B * B);
+  for (let i = 0; i < B * B; i++) e[i] = (1 - beta) + beta * (hs[i] / mean) - 1;
+
+  return { e, bins: B, x0: box.minX, y0: box.minY, cw, ch };
+}
