@@ -75,12 +75,24 @@ export function densityGrid2D(
       hs[y * B + x] = v / ksum;
     }
 
-  // rho has mean 1 ((1-beta)·1 + beta·1); e = rho - 1 has mean exactly 0
+  // rho has mean 1 ((1-beta)·1 + beta·1). CLIP rho to maxScale (the 1D warp's
+  // dynamic-range cap): without it one super-dense spot (Manhattan ≈ 55× mean)
+  // dominates max‖∇F‖ and collapses the global fold-safe α to ~0, suppressing
+  // the warp everywhere. Re-centre afterwards so e stays mean-zero (no drift).
+  const maxScale = opts.maxScale ?? 8;
   let hsum = 0;
   for (let i = 0; i < B * B; i++) hsum += hs[i];
   const mean = hsum / (B * B) || 1;
   const e = new Float64Array(B * B);
-  for (let i = 0; i < B * B; i++) e[i] = (1 - beta) + beta * (hs[i] / mean) - 1;
+  let esum = 0;
+  for (let i = 0; i < B * B; i++) {
+    let rho = (1 - beta) + beta * (hs[i] / mean);
+    if (rho > maxScale) rho = maxScale;
+    e[i] = rho;
+    esum += rho;
+  }
+  const emean = esum / (B * B);
+  for (let i = 0; i < B * B; i++) e[i] -= emean;
 
   return { e, bins: B, x0: box.minX, y0: box.minY, cw, ch };
 }
@@ -177,6 +189,11 @@ export function buildDensityWarp2D(
   const { Fx, Fy } = displacementField2D(grid, sigmaPx);
   const alpha = foldSafeAlpha(Fx, Fy, grid, alphaTarget);
   const { bins: B, x0, y0, cw, ch } = grid;
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+    let fmax = 0, emax = 0;
+    for (let i = 0; i < Fx.length; i++) { const m = Math.sqrt(Fx[i] * Fx[i] + Fy[i] * Fy[i]); if (m > fmax) fmax = m; if (grid.e[i] > emax) emax = grid.e[i]; }
+    console.error(`[warp2d] sigmaPx=${sigmaPx.toFixed(0)} alphaTarget=${alphaTarget} alpha=${alpha.toExponential(2)} |F|max=${fmax.toFixed(1)} e_max=${emax.toFixed(1)}`);
+  }
 
   // bilinear sample of (Fx,Fy) at pixel p; cell i centre = origin + (i+0.5)·size.
   // u,v clamped to [0, B-1] so out-of-box points use the edge field (no fold).

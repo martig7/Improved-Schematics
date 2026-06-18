@@ -14,7 +14,8 @@ import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
-import { buildDensityWarp } from './layout/densityWarp';
+import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
+import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -28,6 +29,15 @@ import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
 import { geographyBackdrop } from './geographyBackdrop';
 import type { GeographyData } from '../geography/types';
+
+// Diagnostic stash (set only when OCTI_WARP_DEBUG is in the env, so the game
+// never retains it): the exact density-warp map + canvas size + warped network
+// the last smoothed render built, for dev/warp-heatmap.ts to visualize where
+// space is dilated. `nodes`/`edges` are in the SAME pre-octi warped pixel space
+// the warp operates in, so they overlay the magnification grid coherently.
+export let __warpDebug:
+  | { warp: WarpFn; width: number; height: number; nodes: Pixel[]; edges: [number, number][] }
+  | null = null;
 
 export interface GeoInput {
   routes: Route[];
@@ -477,6 +487,17 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
+  // OCTI_WARP_MODE=2d swaps the separable (rows/columns) warp for the 2D local
+  // density warp (densityWarp2d.ts). Default stays 'separable' until the 2D warp
+  // is validated and signed off on visually. OCTI_WARP_SIGMA sets its kernel
+  // radius in px (how local the expansion is); unset → module default (box/12).
+  const warpMode =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
+  const warpSigmaPx = (() => {
+    const env =
+      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
+    return Number.isFinite(env) && env > 0 ? env : undefined;
+  })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
   //    proportional to its line fan, not just its station count).
@@ -538,16 +559,25 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const w = Math.max(1, Math.round(lineWeight * crowd));
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
-  const warp = buildDensityWarp(
-    warpSamples,
-    { minX: 0, minY: 0, maxX: width, maxY: height },
-    { alpha: warpAlpha, maxScale: warpMaxScale },
-  );
+  const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
+  const warp =
+    warpMode === '2d'
+      ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx })
+      : buildDensityWarp(warpSamples, warpBox, { alpha: warpAlpha, maxScale: warpMaxScale });
   const proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+    const ids = [...graph.nodes.keys()];
+    const idx = new Map(ids.map((id, i) => [id, i]));
+    const nodes = ids.map((id) => graph.nodes.get(id)!.pos as Pixel);
+    const edges = [...graph.edges]
+      .map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined])
+      .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
+    __warpDebug = { warp, width, height, nodes, edges };
+  }
 
   // LOOM topo merge: collapse geographically parallel transit edges into
   // single support edges carrying the union of their line ids (Brosi & Bast
