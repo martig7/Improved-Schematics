@@ -136,3 +136,28 @@ export function displacementField2D(
     }
   return { Fx, Fy };
 }
+
+// W(x) = x + α·F(x) is fold-free iff det(I + α·∇F) > 0 everywhere. ‖∇F‖·α < 1 is
+// a sufficient condition, so clamp α to 0.9/M where M = max grid Frobenius ‖∇F‖
+// (an upper bound on the spectral norm — conservative, never under-clamps, and
+// pure √ + arithmetic, no eigenvalue solve).
+export function foldSafeAlpha(
+  Fx: Float64Array,
+  Fy: Float64Array,
+  grid: DensityGrid2D,
+  alphaTarget: number,
+): number {
+  const { bins: B, cw, ch } = grid;
+  let M = 0;
+  for (let y = 1; y < B - 1; y++)
+    for (let x = 1; x < B - 1; x++) {
+      const dFxdx = (Fx[y * B + x + 1] - Fx[y * B + x - 1]) / (2 * cw);
+      const dFxdy = (Fx[(y + 1) * B + x] - Fx[(y - 1) * B + x]) / (2 * ch);
+      const dFydx = (Fy[y * B + x + 1] - Fy[y * B + x - 1]) / (2 * cw);
+      const dFydy = (Fy[(y + 1) * B + x] - Fy[(y - 1) * B + x]) / (2 * ch);
+      const fro = Math.sqrt(dFxdx * dFxdx + dFxdy * dFxdy + dFydx * dFydx + dFydy * dFydy);
+      if (fro > M) M = fro;
+    }
+  if (!(M > 0)) return alphaTarget;
+  return Math.min(alphaTarget, 0.9 / M);
+}

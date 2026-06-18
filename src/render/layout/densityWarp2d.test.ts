@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { densityGrid2D, displacementField2D } from './densityWarp2d';
+import { densityGrid2D, displacementField2D, foldSafeAlpha } from './densityWarp2d';
 import type { Pixel } from './types';
 
 const BOX = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
@@ -37,4 +37,20 @@ test('displacementField2D: pushes outward from a dense cluster', () => {
   assert.ok(Fy[idx(50, 38)] < 0, `above cluster pushed up, got ${Fy[idx(50, 38)]}`);
   // radial both ways: a point LEFT of center is pushed further left (Fx < 0)
   assert.ok(Fx[idx(38, 50)] < 0, `left of cluster pushed left, got ${Fx[idx(38, 50)]}`);
+});
+
+test('foldSafeAlpha: clamps below 0.9/M, never above target', () => {
+  const samples: Pixel[] = [];
+  for (let k = 0; k < 300; k++) samples.push([50, 50]); // pathological spike → large ∇F
+  const grid = densityGrid2D(samples, BOX, { bins: 32, sigmaBins: 1.5, beta: 0.9 });
+  const { Fx, Fy } = displacementField2D(grid, 8);
+  const a = foldSafeAlpha(Fx, Fy, grid, 0.8);
+  assert.ok(a > 0 && a <= 0.8, `0 < α ≤ target, got ${a}`);
+});
+
+test('foldSafeAlpha: flat field → returns target unchanged', () => {
+  const grid = densityGrid2D([], BOX, { bins: 16 }); // no samples → e all 0
+  const Fx = new Float64Array(16 * 16);
+  const Fy = new Float64Array(16 * 16); // F = 0 → M = 0
+  assert.equal(foldSafeAlpha(Fx, Fy, grid, 0.8), 0.8);
 });
