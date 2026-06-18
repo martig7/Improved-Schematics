@@ -63,6 +63,17 @@ const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
 const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
 const DEFAULT_JPEG_QUALITY = 0.92;
 
+// Smoothed-mode "realism" sliders run on a normalized [-1, +1] position where 0
+// is the tuned default (center), -1 is the most geographically realistic, and +1
+// the most stylized. These map a position to the actual LOOM parameters.
+const DEFAULT_REALISM_POS = 0;
+// Warp strength: realistic (left) = less warp; default 0.8; stylized (right) =
+// more warp. Linear so 0 → 0.8.
+const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
+// Geographic-course affinity: realistic (left) = stronger course-keeping (up to
+// ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
+const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
+
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
   { id: 'png', label: 'PNG (image)', ext: 'png', mime: 'image/png' },
@@ -128,24 +139,37 @@ export function SchematicPanel() {
   const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
   const [stationRadius, setStationRadius] = useState(DEFAULT_STATION_RADIUS);
   const [mapMargin, setMapMargin] = useState(DEFAULT_MAP_MARGIN);
+  // Smoothed-mode realism positions in [-1, +1] (0 = default). These bake into
+  // the expensive precompute, so they ride the same draft→Save flow and a Save
+  // in smoothed mode regenerates the layout.
+  const [warpPos, setWarpPos] = useState(DEFAULT_REALISM_POS);
+  const [linePos, setLinePos] = useState(DEFAULT_REALISM_POS);
   const [applied, setApplied] = useState({
     lineWidth: DEFAULT_LINE_WIDTH,
     stationRadius: DEFAULT_STATION_RADIUS,
     mapMargin: DEFAULT_MAP_MARGIN,
+    warpPos: DEFAULT_REALISM_POS,
+    linePos: DEFAULT_REALISM_POS,
   });
   const appearanceDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
-    applied.mapMargin !== mapMargin;
+    applied.mapMargin !== mapMargin ||
+    applied.warpPos !== warpPos ||
+    applied.linePos !== linePos;
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
     lineWidth === DEFAULT_LINE_WIDTH &&
     stationRadius === DEFAULT_STATION_RADIUS &&
     mapMargin === DEFAULT_MAP_MARGIN &&
+    warpPos === DEFAULT_REALISM_POS &&
+    linePos === DEFAULT_REALISM_POS &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
-    applied.mapMargin === DEFAULT_MAP_MARGIN;
+    applied.mapMargin === DEFAULT_MAP_MARGIN &&
+    applied.warpPos === DEFAULT_REALISM_POS &&
+    applied.linePos === DEFAULT_REALISM_POS;
   const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -293,6 +317,8 @@ export function SchematicPanel() {
         showLabels,
         dark,
         padding: applied.mapMargin,
+        warpAlpha: warpAlphaFromPos(applied.warpPos),
+        geographicAffinity: affinityFromPos(applied.linePos),
         theme: {
           ...(dark ? DARK_THEME : DEFAULT_THEME),
           lineWidth: applied.lineWidth,
@@ -769,6 +795,33 @@ export function SchematicPanel() {
                 display={`${Math.round(mapMargin * 100)}%`}
                 onChange={setMapMargin}
               />
+
+              {/* Smoothed-mode realism. Centered sliders: left = more
+                  geographically realistic, right = more stylized. They bake into
+                  the layout, so Saving regenerates the smoothed map. */}
+              {mode === 'smoothed' && (
+                <>
+                  <Slider
+                    label="Geography warp"
+                    value={warpPos}
+                    min={-1}
+                    max={1}
+                    step={0.1}
+                    display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'}
+                    onChange={setWarpPos}
+                  />
+                  <Slider
+                    label="Line accuracy"
+                    value={linePos}
+                    min={-1}
+                    max={1}
+                    step={0.1}
+                    display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'}
+                    onChange={setLinePos}
+                  />
+                </>
+              )}
+
               {/* Sliders only stage values; Save commits them to the renderer,
                   Reset restores (and applies) the defaults. */}
               <div style={{ display: 'flex', gap: 6 }}>
@@ -777,11 +830,17 @@ export function SchematicPanel() {
                     setLineWidth(DEFAULT_LINE_WIDTH);
                     setStationRadius(DEFAULT_STATION_RADIUS);
                     setMapMargin(DEFAULT_MAP_MARGIN);
+                    setWarpPos(DEFAULT_REALISM_POS);
+                    setLinePos(DEFAULT_REALISM_POS);
                     setApplied({
                       lineWidth: DEFAULT_LINE_WIDTH,
                       stationRadius: DEFAULT_STATION_RADIUS,
                       mapMargin: DEFAULT_MAP_MARGIN,
+                      warpPos: DEFAULT_REALISM_POS,
+                      linePos: DEFAULT_REALISM_POS,
                     });
+                    // Smoothed bakes these into the precompute → rebuild.
+                    if (mode === 'smoothed' && smoothedReady) regenerate();
                   }}
                   disabled={appearanceAtDefaults}
                   title="Reset appearance to defaults"
@@ -800,7 +859,11 @@ export function SchematicPanel() {
                   Reset
                 </button>
                 <button
-                  onClick={() => setApplied({ lineWidth, stationRadius, mapMargin })}
+                  onClick={() => {
+                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos });
+                    // Smoothed bakes these into the precompute → rebuild if shown.
+                    if (mode === 'smoothed' && smoothedReady) regenerate();
+                  }}
                   disabled={!appearanceDirty}
                   title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
                   style={{

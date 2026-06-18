@@ -474,7 +474,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       typeof process !== 'undefined'
         ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP)
         : NaN;
-    return Number.isFinite(env) ? env : 0.8;
+    if (Number.isFinite(env)) return env; // dev sweep override wins
+    if (typeof opts.warpAlpha === 'number' && Number.isFinite(opts.warpAlpha)) return opts.warpAlpha;
+    return 0.8;
   })();
   // How hard a single dense locale may magnify. Raised from 3 → 8 so line-rich
   // hubs dilate proportionally to their fan; OCTI_MAXSCALE overrides (set high
@@ -745,13 +747,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // over-constrains (terminal rings return). The density warp was exonerated
   // (and is load-bearing: disabling it snarls the core, 35-57 violations).
   // (dev override: OCTI_AFFINITY=<n> for sweeps)
-  octiOpts.geographicAffinity = 0.05;
+  octiOpts.geographicAffinity =
+    typeof opts.geographicAffinity === 'number' && Number.isFinite(opts.geographicAffinity)
+      ? opts.geographicAffinity
+      : 0.05;
   const affEnv =
     typeof process !== 'undefined'
       ? Number((process as { env?: Record<string, string> }).env?.OCTI_AFFINITY)
       : NaN;
   if (Number.isFinite(affEnv) && affEnv > 0) {
-    octiOpts.geographicAffinity = affEnv;
+    octiOpts.geographicAffinity = affEnv; // dev sweep override wins
   }
   // (dev override: OCTI_DENSITY=<n> for sweeps — the chain spring weight that
   // resists drawing a deg-2 station chain on fewer grid hops than it has
