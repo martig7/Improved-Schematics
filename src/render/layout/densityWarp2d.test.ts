@@ -119,3 +119,28 @@ test('buildDensityWarp2D: empty samples or alpha<=0 → identity', () => {
   const Wa = buildDensityWarp2D([[50, 50]], BOX, { alpha: 0 });
   assert.deepEqual(Wa([33, 44]), [33, 44]);
 });
+
+test('buildDensityWarp2D: iterating expands more than single-pass (beats global-α starvation), still fold-free', () => {
+  // an EXTREME spike that, single-pass, starves the global fold-clamp (mirrors
+  // real data) + a secondary modest cluster we want to expand.
+  const samples: Pixel[] = [];
+  for (let k = 0; k < 400; k++) samples.push([50, 50]); // extreme spike
+  for (let k = 0; k < 60; k++) samples.push([20 + (k % 8), 75 + ((k / 8) | 0)]); // secondary cluster
+  const single = buildDensityWarp2D(samples, BOX, { alpha: 0.8, bins: 48, sigmaPx: 12, iterations: 1 });
+  const flowed = buildDensityWarp2D(samples, BOX, { alpha: 0.8, bins: 48, sigmaPx: 12, iterations: 30 });
+  const j1 = jacDet(single, [23, 78]);
+  const jn = jacDet(flowed, [23, 78]);
+  assert.ok(jn > j1 + 0.1, `iterating expands the secondary cluster more: ${jn.toFixed(2)} vs single ${j1.toFixed(2)}`);
+  // composite of 30 fold-free steps is still fold-free
+  for (let y = 2; y < 100; y += 5) for (let x = 2; x < 100; x += 5) {
+    assert.ok(jacDet(flowed, [x, y]) > 0, `det>0 at (${x},${y})`);
+  }
+});
+
+test('buildDensityWarp2D: iterations=1 unchanged (identity on uniform, deterministic)', () => {
+  const samples: Pixel[] = [];
+  for (let y = 1; y < 100; y += 2.5) for (let x = 1; x < 100; x += 2.5) samples.push([x, y]);
+  const W = buildDensityWarp2D(samples, BOX, { alpha: 0.8, bins: 32, sigmaPx: 10, iterations: 1 });
+  const out = W([50, 50]);
+  assert.ok(Math.hypot(out[0] - 50, out[1] - 50) < 2, 'iterations=1 still near-identity on uniform');
+});

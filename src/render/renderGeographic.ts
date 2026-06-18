@@ -498,6 +498,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
     return Number.isFinite(env) && env > 0 ? env : undefined;
   })();
+  // Flow iterations for the 2D warp (Gastner–Newman). 1 = weak single pass;
+  // higher composes small fold-safe steps into a strong local warp.
+  const warpIters = (() => {
+    const env =
+      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_ITERS) : NaN;
+    return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 40;
+  })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
   //    proportional to its line fan, not just its station count).
@@ -562,7 +569,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   const warp =
     warpMode === '2d'
-      ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx })
+      ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
       : buildDensityWarp(warpSamples, warpBox, { alpha: warpAlpha, maxScale: warpMaxScale });
   const proj: Projection = {
     ...baseProj,

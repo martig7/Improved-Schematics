@@ -13,6 +13,33 @@ import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
 export interface DensityWarp2DOptions extends DensityWarpOptions {
   /** Repulsion kernel radius in PIXELS — how local the expansion is. */
   sigmaPx?: number;
+  /** Flow iterations (Gastner–Newman style). 1 = single pass (weak on extreme
+   *  dynamic range — the global fold-clamp starves dense centres). >1 composes
+   *  small fold-safe steps into a strong, density-equalizing warp. Default 1. */
+  iterations?: number;
+}
+
+// Bilinear sample of a scalar grid A at pixel (px,py); edge-clamped so out-of-box
+// points use the edge field (keeps the composite map fold-free).
+function sampleGrid(
+  A: Float64Array, B: number, x0: number, y0: number, cw: number, ch: number, px: number, py: number,
+): number {
+  let u = (px - x0) / cw - 0.5;
+  if (u < 0) u = 0;
+  else if (u > B - 1) u = B - 1;
+  let v = (py - y0) / ch - 0.5;
+  if (v < 0) v = 0;
+  else if (v > B - 1) v = B - 1;
+  const i0 = Math.min(B - 2, Math.floor(u));
+  const j0 = Math.min(B - 2, Math.floor(v));
+  const tu = u - i0;
+  const tv = v - j0;
+  return (
+    A[j0 * B + i0] * (1 - tu) * (1 - tv) +
+    A[j0 * B + i0 + 1] * tu * (1 - tv) +
+    A[(j0 + 1) * B + i0] * (1 - tu) * tv +
+    A[(j0 + 1) * B + i0 + 1] * tu * tv
+  );
 }
 
 export interface DensityGrid2D {
@@ -176,6 +203,11 @@ export function foldSafeAlpha(
 
 // Public entry: build the 2D local density warp. Same signature as
 // buildDensityWarp (densityWarp.ts) so it is a drop-in in renderGeographic.
+// Iterates the repulsion field (Gastner–Newman flow): each step is a small
+// fold-safe displacement, re-measured on the advected samples; the composite of
+// fold-free maps is fold-free, and the cumulative warp is strong enough to
+// expand dense sectors that a single pass cannot (global-α starvation). The
+// returned WarpFn replays the stored steps in sequence on any query point.
 export function buildDensityWarp2D(
   samples: readonly Pixel[],
   box: WarpBox,
@@ -184,35 +216,46 @@ export function buildDensityWarp2D(
   const alphaTarget = opts.alpha ?? 0.8;
   if (samples.length === 0 || alphaTarget <= 0) return (p) => [p[0], p[1]];
   const sigmaPx = opts.sigmaPx ?? (box.maxX - box.minX) / 12;
+  const iters = Math.max(1, Math.floor(opts.iterations ?? 1));
+  const B = opts.bins ?? 96;
+  const x0 = box.minX;
+  const y0 = box.minY;
+  const cw = (box.maxX - box.minX) / B;
+  const ch = (box.maxY - box.minY) / B;
 
-  const grid = densityGrid2D(samples, box, opts);
-  const { Fx, Fy } = displacementField2D(grid, sigmaPx);
-  const alpha = foldSafeAlpha(Fx, Fy, grid, alphaTarget);
-  const { bins: B, x0, y0, cw, ch } = grid;
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
-    let fmax = 0, emax = 0;
-    for (let i = 0; i < Fx.length; i++) { const m = Math.sqrt(Fx[i] * Fx[i] + Fy[i] * Fy[i]); if (m > fmax) fmax = m; if (grid.e[i] > emax) emax = grid.e[i]; }
-    console.error(`[warp2d] sigmaPx=${sigmaPx.toFixed(0)} alphaTarget=${alphaTarget} alpha=${alpha.toExponential(2)} |F|max=${fmax.toFixed(1)} e_max=${emax.toFixed(1)}`);
+  const steps: { Fx: Float64Array; Fy: Float64Array; alpha: number }[] = [];
+  const pos: Pixel[] = samples.map((s) => [s[0], s[1]]); // advected through the flow
+  for (let k = 0; k < iters; k++) {
+    const grid = densityGrid2D(pos, box, opts);
+    const { Fx, Fy } = displacementField2D(grid, sigmaPx);
+    const alpha = foldSafeAlpha(Fx, Fy, grid, alphaTarget);
+    if (!(alpha > 0)) break;
+    steps.push({ Fx, Fy, alpha });
+    if (k < iters - 1) {
+      for (const p of pos) {
+        const fx = sampleGrid(Fx, B, x0, y0, cw, ch, p[0], p[1]);
+        const fy = sampleGrid(Fy, B, x0, y0, cw, ch, p[0], p[1]);
+        p[0] += alpha * fx;
+        p[1] += alpha * fy;
+      }
+    }
   }
 
-  // bilinear sample of (Fx,Fy) at pixel p; cell i centre = origin + (i+0.5)·size.
-  // u,v clamped to [0, B-1] so out-of-box points use the edge field (no fold).
-  return (p) => {
-    let u = (p[0] - x0) / cw - 0.5;
-    if (u < 0) u = 0;
-    else if (u > B - 1) u = B - 1;
-    let v = (p[1] - y0) / ch - 0.5;
-    if (v < 0) v = 0;
-    else if (v > B - 1) v = B - 1;
-    const i0 = Math.min(B - 2, Math.floor(u));
-    const j0 = Math.min(B - 2, Math.floor(v));
-    const tu = u - i0;
-    const tv = v - j0;
-    const s = (A: Float64Array): number =>
-      A[j0 * B + i0] * (1 - tu) * (1 - tv) +
-      A[j0 * B + i0 + 1] * tu * (1 - tv) +
-      A[(j0 + 1) * B + i0] * (1 - tu) * tv +
-      A[(j0 + 1) * B + i0 + 1] * tu * tv;
-    return [p[0] + alpha * s(Fx), p[1] + alpha * s(Fy)];
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+    const a0 = steps[0]?.alpha ?? 0;
+    const aN = steps[steps.length - 1]?.alpha ?? 0;
+    console.error(`[warp2d] iters=${steps.length}/${iters} sigmaPx=${sigmaPx.toFixed(0)} alpha[0]=${a0.toExponential(2)} alpha[last]=${aN.toExponential(2)}`);
+  }
+
+  return (q) => {
+    let x = q[0];
+    let y = q[1];
+    for (const st of steps) {
+      const fx = sampleGrid(st.Fx, B, x0, y0, cw, ch, x, y);
+      const fy = sampleGrid(st.Fy, B, x0, y0, cw, ch, x, y);
+      x += st.alpha * fx;
+      y += st.alpha * fy;
+    }
+    return [x, y];
   };
 }
