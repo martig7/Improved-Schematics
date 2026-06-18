@@ -19,6 +19,7 @@ import {
 } from '../render/schematic';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
+import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { generateGeography } from '../geography/geography';
 import type { GeographyData } from '../geography/types';
 import type { BoundingBox } from '../types/core';
@@ -53,11 +54,14 @@ interface SvgBox {
 
 type ExportFormat = 'svg' | 'png' | 'jpeg';
 
-// Raster exports upscale the (cropped) SVG by this factor before drawing to the
-// canvas, so PNG/JPEG come out crisp rather than blurry at the SVG's intrinsic
-// pixel size.
-const RASTER_SCALE = 2;
-const JPEG_QUALITY = 0.92;
+// Render/export tunables exposed as sliders in the settings popover. The first
+// three feed the renderer via SchematicOptions (theme.lineWidth, theme
+// .stationRadius, padding); the last two are applied during raster export.
+const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
+const DEFAULT_STATION_RADIUS = 2.5; // matches DEFAULT_THEME.stationRadius
+const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
+const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
+const DEFAULT_JPEG_QUALITY = 0.92;
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -66,6 +70,41 @@ const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] 
 ];
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// Labeled range slider for the settings popover. `display` is the formatted
+// current value shown to the right of the label.
+function Slider(props: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  const { label, value, min, max, step, display, onChange, disabled } = props;
+  return (
+    <label
+      style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, opacity: disabled ? 0.45 : 1 }}
+    >
+      <span style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.85 }}>
+        <span>{label}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7 }}>{display}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ width: '100%', cursor: disabled ? 'default' : 'pointer', accentColor: '#2563eb' }}
+      />
+    </label>
+  );
+}
 
 // Persists the generated smoothed map across mode switches AND panel close, so
 // switching to geographic or reopening the panel doesn't discard it. Keyed by
@@ -82,6 +121,13 @@ export function SchematicPanel() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
   const settingsRef = useRef<HTMLDivElement>(null);
+  // Render tunables (line/station/margin feed the renderer; raster scale +
+  // JPEG quality apply at export time).
+  const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
+  const [stationRadius, setStationRadius] = useState(DEFAULT_STATION_RADIUS);
+  const [mapMargin, setMapMargin] = useState(DEFAULT_MAP_MARGIN);
+  const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
+  const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
@@ -219,7 +265,16 @@ export function SchematicPanel() {
       stations: api.gameState.getStations(),
       stationGroups: resolveStationGroupsFromGameState(api.gameState),
       geography,
-      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
+      options: {
+        mode,
+        width: GEO_SIZE,
+        height: GEO_SIZE,
+        showStations,
+        showLabels,
+        dark,
+        padding: mapMargin,
+        theme: { ...(dark ? DARK_THEME : DEFAULT_THEME), lineWidth, stationRadius },
+      },
     });
 
     if (mode === 'smoothed') {
@@ -263,7 +318,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, geography, smoothedReady]);
+  }, [mode, showStations, showLabels, geography, smoothedReady, lineWidth, stationRadius, mapMargin]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -315,8 +370,8 @@ export function SchematicPanel() {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(built.width * RASTER_SCALE));
-      canvas.height = Math.max(1, Math.round(built.height * RASTER_SCALE));
+      canvas.width = Math.max(1, Math.round(built.width * rasterScale));
+      canvas.height = Math.max(1, Math.round(built.height * rasterScale));
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         URL.revokeObjectURL(svgUrl);
@@ -333,12 +388,12 @@ export function SchematicPanel() {
           if (blob) triggerDownload(blob, fmt.ext);
         },
         fmt.mime,
-        JPEG_QUALITY,
+        jpegQuality,
       );
     };
     img.onerror = () => URL.revokeObjectURL(svgUrl);
     img.src = svgUrl;
-  }, [buildExportSvg, exportFormat, triggerDownload]);
+  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
@@ -621,7 +676,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.3.0</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.4.0</span>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
@@ -646,7 +701,7 @@ export function SchematicPanel() {
                 right: 0,
                 marginTop: 6,
                 zIndex: 10,
-                minWidth: 200,
+                minWidth: 230,
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 10,
@@ -658,8 +713,47 @@ export function SchematicPanel() {
                 boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
               }}
             >
+              {/* Appearance — feeds the renderer live in Geographic mode;
+                  applies to Smoothed on the next Regenerate. */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
+                Appearance
+              </span>
+              <Slider
+                label="Line thickness"
+                value={lineWidth}
+                min={1}
+                max={8}
+                step={0.5}
+                display={`${lineWidth.toFixed(1)} px`}
+                onChange={setLineWidth}
+              />
+              <Slider
+                label="Station size"
+                value={stationRadius}
+                min={1}
+                max={6}
+                step={0.5}
+                display={`${stationRadius.toFixed(1)} px`}
+                onChange={setStationRadius}
+              />
+              <Slider
+                label="Map margin"
+                value={mapMargin}
+                min={0}
+                max={0.15}
+                step={0.01}
+                display={`${Math.round(mapMargin * 100)}%`}
+                onChange={setMapMargin}
+              />
+
+              <div style={{ height: 1, background: 'rgba(136,136,136,0.3)', margin: '2px 0' }} />
+
+              {/* Export */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
+                Export
+              </span>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-                <span style={{ opacity: 0.8 }}>Export format</span>
+                <span style={{ opacity: 0.85 }}>Format</span>
                 <select
                   value={exportFormat}
                   onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
@@ -680,6 +774,28 @@ export function SchematicPanel() {
                   ))}
                 </select>
               </label>
+              {/* Resolution scales the rasterized PNG/JPEG; SVG is vector so it
+                  ignores both. JPEG quality only applies to JPEG. */}
+              <Slider
+                label="Export resolution"
+                value={rasterScale}
+                min={1}
+                max={4}
+                step={1}
+                display={`${rasterScale}×`}
+                onChange={setRasterScale}
+                disabled={exportFormat === 'svg'}
+              />
+              <Slider
+                label="JPEG quality"
+                value={jpegQuality}
+                min={0.5}
+                max={1}
+                step={0.05}
+                display={`${Math.round(jpegQuality * 100)}%`}
+                onChange={setJpegQuality}
+                disabled={exportFormat !== 'jpeg'}
+              />
               <button
                 onClick={downloadImage}
                 disabled={!svg || generating}
