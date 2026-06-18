@@ -1488,7 +1488,12 @@ export function buildSupportGraph(
       if (d > radius) return;
       let served = 0;
       for (const eid of adj.get(nid) ?? []) {
-        for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
+        // adj can hold a stale edge id that edges no longer has (a merge/collapse
+        // that didn't prune adj). A non-existent edge serves nothing — skip it
+        // rather than crash on `.lineIds` of undefined (2D-warp geometry hits this).
+        const e = edges.get(eid);
+        if (!e) continue;
+        for (const l of e.lineIds) if (wantLines.has(l)) served++;
       }
       if (served === 0) return;
       if (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) < 1e-9 && served > best.served)) {

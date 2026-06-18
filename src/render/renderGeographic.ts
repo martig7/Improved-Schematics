@@ -487,23 +487,24 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
-  // OCTI_WARP_MODE=2d swaps the separable (rows/columns) warp for the 2D local
-  // density warp (densityWarp2d.ts). Default stays 'separable' until the 2D warp
-  // is validated and signed off on visually. OCTI_WARP_SIGMA sets its kernel
-  // radius in px (how local the expansion is); unset → module default (box/12).
+  // Warp mode. DEFAULT 2d (the mild local density warp, densityWarp2d.ts) — under
+  // in-game evaluation vs the separable (rows/columns) warp; OCTI_WARP_MODE=separable
+  // restores the old behaviour. OCTI_WARP_SIGMA sets the 2D kernel radius in px
+  // (how local); unset → ~width/49 (the mild setting, ≈55px at the 2700 canvas).
   const warpMode =
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
   const warpSigmaPx = (() => {
     const env =
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
-    return Number.isFinite(env) && env > 0 ? env : undefined;
+    return Number.isFinite(env) && env > 0 ? env : width / 49;
   })();
   // Flow iterations for the 2D warp (Gastner–Newman). 1 = weak single pass;
-  // higher composes small fold-safe steps into a strong local warp.
+  // higher composes small fold-safe steps into a stronger local warp. Default 10
+  // is the MILD setting (keeps the map geographically faithful).
   const warpIters = (() => {
     const env =
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_ITERS) : NaN;
-    return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 40;
+    return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 10;
   })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
@@ -568,7 +569,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   const warp =
-    warpMode === '2d'
+    warpMode !== 'separable'
       ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
       : buildDensityWarp(warpSamples, warpBox, { alpha: warpAlpha, maxScale: warpMaxScale });
   const proj: Projection = {
