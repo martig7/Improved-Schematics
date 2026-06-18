@@ -5,7 +5,7 @@
 
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import type { WaterCollection } from './types';
-import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES } from './constants';
+import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
@@ -811,22 +811,25 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       return n;
     };
     const r = LINE_WIDTH * 0.7;
-    // Near-miss tolerance for the rigid-row dot floor. octi's grid placement can
-    // seat an interchange bundle a sub-pixel below minGap, boxing the whole
-    // station; and because the chaotic greedy local search reaches slightly
-    // different optima across runtimes (offline Node vs the game's V8), that
-    // sub-pixel margin flips boxes on/off between environments. Slackening the
-    // INTRA-station floor by a fraction of a pixel (imperceptible ring overlap
-    // inside the capsule) makes box-vs-row robust to that jitter. Cross-station
-    // separation (the §6 mask below) stays strict. OCTI_MINGAP_SLACK overrides
-    // (0 = strict, the pre-fix behavior).
+    // Intra-capsule dot floor. Markers shrink to MARKER_SCALE inside a capsule
+    // (stops.ts), so two adjacent dots' rings clear once their centers are one
+    // SCALED ring-diameter (2·r·MARKER_SCALE ≈ 3.19px) apart. The old floor used
+    // the FULL 2r (≈4.9px) — stale since the 0.65× shrink (commit 8f1a5e5) — and
+    // boxed interchanges whose scaled rings actually clear (the nyc/chi false-
+    // negatives, gaps 3.7–3.9px). minGapSlack shaves an extra sub-pixel margin
+    // for octi's cross-engine seating jitter (imperceptible ring overlap inside
+    // the capsule); default 0 = floor exactly at the touching diameter, zero
+    // overlap. Cross-station separation (the §6 mask below) stays strict at the
+    // full 2r so two distinct stations never merge visually. OCTI_MINGAP_SLACK
+    // overrides (raise it to clear more genuine pinches at the cost of overlap).
     const minGapSlack = (() => {
       const env =
         typeof process !== 'undefined'
           ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINGAP_SLACK)
           : NaN;
-      return Number.isFinite(env) && env >= 0 ? env : 0.5;
+      return Number.isFinite(env) && env >= 0 ? env : 0;
     })();
+    const intraGap = Math.max(2, 2 * r * MARKER_SCALE - minGapSlack);
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
@@ -905,7 +908,26 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     // box (R4), never a partially-degraded chain.
     const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
     let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
-    for (const s of gathered) {
+    // Placement order (spec §6): an earlier station's dots mask a later one's
+    // row states, so a station boxed ONLY because a flexible neighbor claimed
+    // its space first (the MASKED class) is freed by visiting the more-
+    // constrained station first. Default = most-marks-first (the biggest
+    // interchanges have the least placement freedom, so they claim space before
+    // single-line stops slide around them); tie-break by nodeId (code-unit, not
+    // localeCompare — cross-V8 stable). This reorders the SAME deterministic
+    // placement — no geometry changes — so offline==in-game still holds.
+    // OCTI_PLACE_ORDER=input restores the legacy id-order (debugging).
+    const placeOrderKey =
+      typeof process !== 'undefined'
+        ? (process as { env?: Record<string, string> }).env?.OCTI_PLACE_ORDER
+        : undefined;
+    const byId = (a: number, b: number) =>
+      gathered[a].nodeId < gathered[b].nodeId ? -1 : gathered[a].nodeId > gathered[b].nodeId ? 1 : 0;
+    const placeSeq = gathered.map((_, i) => i);
+    if (placeOrderKey !== 'input') {
+      placeSeq.sort((a, b) => (gathered[b].marks.length - gathered[a].marks.length) || byId(a, b));
+    }
+    for (const s of placeSeq.map((i) => gathered[i])) {
       if (s.marks.length === 1) {
         s.marks[0].chain = 0;
       } else if (s.marks.length > 1) {
@@ -966,12 +988,21 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           const len = hyp(mx, my) || 1;
           const nx = -my / len;
           const ny = mx / len;
-          return [...idx].sort((a, b) =>
-            (s.marks[a].pos[0] * nx + s.marks[a].pos[1] * ny) -
-            (s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny));
+          return [...idx].sort((a, b) => {
+            const da = s.marks[a].pos[0] * nx + s.marks[a].pos[1] * ny;
+            const db = s.marks[b].pos[0] * nx + s.marks[b].pos[1] * ny;
+            if (da !== db) return da - db;
+            // Two lanes at the SAME lateral projection (coincident at a pinched
+            // bundle) → diff is 0; tie-break by line id (raw code-unit, cross-V8
+            // stable), else the bundle's dot order — and the box-vs-capsule
+            // decision solveRows derives from it — flips on the engine's sort tie.
+            const la = s.marks[a].lineId;
+            const lb = s.marks[b].lineId;
+            return la < lb ? -1 : la > lb ? 1 : 0;
+          });
         });
         const ropts = {
-          minGap: Math.max(2, 2 * r - 0.05 - minGapSlack),
+          minGap: intraGap,
           arcLimit: CHAIN_ARC_LIMIT,
           extCap: 6 * spacing,
           dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
@@ -1337,7 +1368,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         // station boxed (the box hid them), visible now. Enforce the SAME floor
         // rowPlace uses at placement; decline a stacking candidate so the sweep
         // picks a non-stacking d (or the station stays at its spaced rest pose).
-        const dotFloor = Math.max(2, 2 * r - 0.05 - minGapSlack);
+        const dotFloor = intraGap;
         for (let i = 0; i < clone.length; i++) {
           for (let j = i + 1; j < clone.length; j++) {
             const dx = clone[i].pos[0] - clone[j].pos[0];
