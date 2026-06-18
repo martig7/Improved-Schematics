@@ -484,7 +484,23 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       typeof process !== 'undefined'
         ? Number((process as { env?: Record<string, string> }).env?.OCTI_MAXSCALE)
         : NaN;
-    return Number.isFinite(env) && env > 0 ? env : 8;
+    return Number.isFinite(env) && env > 0 ? env : 12;
+  })();
+  // Compression floor for the separable warp: stops it from crushing peripheral
+  // station spacing below the octi cell, which would contract the sub-cell edges
+  // and strand terminus markers (the Newark/Queens edge disconnections). The
+  // default 1 floors every local scale to >= 1 — i.e. NO compression — which (the
+  // canvas budget being fixed) forces the separable map to the identity: the
+  // dense-core magnification then comes entirely from the box layer, with no
+  // separable cross and no peripheral compression to disconnect termini. Lower it
+  // toward the natural unclamped min (~0.58) to re-admit separable magnification
+  // at the cost of edge compression. OCTI_MINSCALE overrides (0 = no floor).
+  const warpMinScale = (() => {
+    const env =
+      typeof process !== 'undefined'
+        ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINSCALE)
+        : NaN;
+    return Number.isFinite(env) && env >= 0 ? env : 1;
   })();
   // Per-station warp weight is its line count, UNCAPPED by default so a 10-line
   // interchange outweighs a 4-line one — the old Math.min(4, …) throttle is gone.
@@ -592,7 +608,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin, growthCap: boxGrowth };
-  const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale };
+  const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
   const warp =
     warpMode === 'separable'
       ? buildDensityWarp(warpSamples, warpBox, sepOpts)
@@ -712,6 +728,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
+  if (env?.OCTI_TRACE) console.error(`[trace] cellSize=${octiOpts.cellSize.toFixed(1)} (medLen=${medLen.toFixed(1)} divisor=${divisor}) contract<${(octiOpts.cellSize / 2).toFixed(1)}`);
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)
   if (
