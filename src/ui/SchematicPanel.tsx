@@ -122,10 +122,21 @@ export function SchematicPanel() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
   const settingsRef = useRef<HTMLDivElement>(null);
   // Render tunables (line/station/margin feed the renderer; raster scale +
-  // JPEG quality apply at export time).
+  // JPEG quality apply at export time). The appearance sliders edit DRAFT values
+  // freely; only Save commits them to `applied`, which is what the renderer reads
+  // — so dragging a slider doesn't trigger an (expensive) re-render mid-drag.
   const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
   const [stationRadius, setStationRadius] = useState(DEFAULT_STATION_RADIUS);
   const [mapMargin, setMapMargin] = useState(DEFAULT_MAP_MARGIN);
+  const [applied, setApplied] = useState({
+    lineWidth: DEFAULT_LINE_WIDTH,
+    stationRadius: DEFAULT_STATION_RADIUS,
+    mapMargin: DEFAULT_MAP_MARGIN,
+  });
+  const appearanceDirty =
+    applied.lineWidth !== lineWidth ||
+    applied.stationRadius !== stationRadius ||
+    applied.mapMargin !== mapMargin;
   const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -272,8 +283,12 @@ export function SchematicPanel() {
         showStations,
         showLabels,
         dark,
-        padding: mapMargin,
-        theme: { ...(dark ? DARK_THEME : DEFAULT_THEME), lineWidth, stationRadius },
+        padding: applied.mapMargin,
+        theme: {
+          ...(dark ? DARK_THEME : DEFAULT_THEME),
+          lineWidth: applied.lineWidth,
+          stationRadius: applied.stationRadius,
+        },
       },
     });
 
@@ -318,7 +333,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, geography, smoothedReady, lineWidth, stationRadius, mapMargin]);
+  }, [mode, showStations, showLabels, geography, smoothedReady, applied]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -745,6 +760,29 @@ export function SchematicPanel() {
                 display={`${Math.round(mapMargin * 100)}%`}
                 onChange={setMapMargin}
               />
+              {/* Sliders only stage values; Save commits them to the renderer. */}
+              <button
+                onClick={() => setApplied({ lineWidth, stationRadius, mapMargin })}
+                disabled={!appearanceDirty}
+                title={
+                  appearanceDirty
+                    ? 'Apply appearance changes'
+                    : 'No unsaved appearance changes'
+                }
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  border: 'none',
+                  cursor: appearanceDirty ? 'pointer' : 'default',
+                  opacity: appearanceDirty ? 1 : 0.5,
+                  background: '#2563eb',
+                  color: '#ffffff',
+                }}
+              >
+                {appearanceDirty ? 'Save changes' : 'Saved'}
+              </button>
 
               <div style={{ height: 1, background: 'rgba(136,136,136,0.3)', margin: '2px 0' }} />
 
