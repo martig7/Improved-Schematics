@@ -414,7 +414,7 @@ export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
   transfers: TransferPair[];
-  stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
+  stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string>; splitNodeIds?: string[] }>;
   /** Static overlay drawn between water and routes (water polygons + optional
    *  Γ' grid); independent of the label/station toggles. */
   gridOverlay: string;
@@ -909,6 +909,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     nodeId: st.nodeId,
     members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),
     stopNodes: st.stopNodes ?? new Map<string, string>(),
+    // Hub-split (2026-06-14, C3): carry the split leaves so the renderer
+    // gathers the station's per-line marks from ALL leaves into ONE capsule.
+    ...(st.splitNodeIds && st.splitNodeIds.length > 1 ? { splitNodeIds: st.splitNodeIds } : {}),
   }));
 
   // Frame on the furthest water/green through the WARPED proj — so smoothed fit/

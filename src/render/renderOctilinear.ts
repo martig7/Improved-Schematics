@@ -133,7 +133,7 @@ export interface RenderRibbonsArgs {
    *  node — capsule iff the group has multiple member stations — gathering
    *  the marks of its lines from their per-line stop-flag nodes. Without
    *  this, markers fall back to the legacy per-node edge.stops model. */
-  stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
+  stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string>; splitNodeIds?: string[] }>;
   /** Fit/export crop rect in pixel space, emitted as `data-frame` on the root
    *  svg. Set by topo-geographic mode (which keeps a real projection); octi
    *  modes leave it unset so fit/export use the already-tight content viewBox. */
@@ -710,6 +710,11 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     };
     interface StMarks {
       nodeId: string;
+      // Hub-split (2026-06-14, C3): the splitGroup leaves this station spans.
+      // For an ordinary station this is just [nodeId]; for a split hub it is
+      // the leaf set, so boxOf/solveRows/collision run over the UNION of the
+      // leaves' per-line marks and ONE elongated capsule spans the group.
+      nodeIds: string[];
       members: number;
       marks: Array<{
         lineId: string;
@@ -757,7 +762,78 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         }
         marks.push({ lineId, color: line.color, flagNode: anchorNode, pos: [p[0], p[1]] });
       }
-      gathered.push({ nodeId: st.nodeId, members: st.members, marks });
+      const nodeIds =
+        st.splitNodeIds && st.splitNodeIds.length > 1
+          ? [...new Set(st.splitNodeIds)]
+          : [st.nodeId];
+
+      // Hub-split (2026-06-14, C3): reunite the leaves under ONE capsule.
+      // splitHubs rehomes a line's stop flag onto the leaf it was PARTITIONED
+      // to, but octi/imageMerge frequently collapse those flags onto a single
+      // leaf (Liverpool Street: all 13 bullets land on one leaf -> the capsule
+      // would sit on one node, markFlagSpan=1, not spanning). Re-anchor each
+      // line's bullet to whichever splitGroup LEAF its drawn lane physically
+      // attaches to — the leaf the line actually arrives on — so the bullets
+      // spread across the leaves and the existing rigid-row solver elongates
+      // ONE capsule along the spine (design §4: "no new marker math, just more
+      // sub-nodes for the existing capsule to span"). Lines whose lane touches
+      // neither leaf endpoint keep their gathered anchor (residual).
+      if (nodeIds.length > 1) {
+        const leafSet = new Set(nodeIds);
+        const leafPx = nodeIds.map((n) => nodePx.get(n)).filter((p): p is Pixel => !!p);
+        for (const m of marks) {
+          // Does this line already attach to a leaf via a drawn lane endpoint?
+          let onLeaf: { p: Pixel; node: string } | null = null;
+          for (const e of layout.edges) {
+            const poly = segPath.get(e.id + '|' + m.lineId);
+            if (!poly || poly.length === 0) continue;
+            if (leafSet.has(e.from)) { onLeaf = { p: poly[0], node: e.from }; break; }
+            if (leafSet.has(e.to)) { onLeaf = { p: poly[poly.length - 1], node: e.to }; break; }
+          }
+          if (onLeaf) { m.pos = [onLeaf.p[0], onLeaf.p[1]]; m.flagNode = onLeaf.node; continue; }
+          // No drawn lane reaches a leaf: snap the bullet to the NEAREST leaf
+          // position so it still lands on the spine (keeps the capsule compact
+          // and spanning rather than floating at a stale flag node).
+          if (leafPx.length > 1) {
+            let bd = Infinity;
+            let bp: Pixel | null = null;
+            let bn = m.flagNode;
+            for (let li = 0; li < nodeIds.length; li++) {
+              const lp = nodePx.get(nodeIds[li]);
+              if (!lp) continue;
+              const dd = hyp(lp[0] - m.pos[0], lp[1] - m.pos[1]);
+              if (dd < bd) { bd = dd; bp = lp; bn = nodeIds[li]; }
+            }
+            if (bp) { m.pos = [bp[0], bp[1]]; m.flagNode = bn; }
+          }
+        }
+      }
+      gathered.push({ nodeId: st.nodeId, nodeIds, members: st.members, marks });
+    }
+
+    // ---- split-station capsule-span diagnostic (OCTI_SPLIT_DEBUG) ---------
+    // C3 reunite verification: a split station's marks must be gathered from
+    // ALL its splitGroup leaves so ONE capsule spans the group. Report, per
+    // station whose marks land on >1 distinct flagNode (leaf), the leaf count
+    // and per-leaf mark distribution. markFlagSpan == number of distinct
+    // leaves the marks sit on; ==1 means the capsule did NOT span (bad).
+    if (
+      typeof process !== 'undefined' &&
+      (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_DEBUG === '1'
+    ) {
+      for (const s of gathered) {
+        const isSplit = s.nodeIds.length > 1;
+        const byLeaf = new Map<string, number>();
+        for (const m of s.marks) byLeaf.set(m.flagNode, (byLeaf.get(m.flagNode) ?? 0) + 1);
+        if (byLeaf.size < 2 && !isSplit) continue;
+        const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
+        const dist = [...byLeaf.entries()].map(([n, c]) => `${n}:${c}`).join(' ');
+        const tag = isSplit ? 'SPLIT' : 'group';
+        console.error(
+          `[capsule-span] ${tag} "${label}" anchor=${s.nodeId} nodeIds[${s.nodeIds.join(',')}] ` +
+          `members=${s.members} marks=${s.marks.length} markFlagSpan=${byLeaf.size} leaves[${dist}]`,
+        );
+      }
     }
 
     // ---- VANISHED-station diagnostic (OCTI_DEBUG) -------------------------
