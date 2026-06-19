@@ -105,6 +105,11 @@ const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
  * Closest by squared distance; first mark wins exact ties (deterministic).
  */
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
+  // Diagnostic A/B switch: OCTI_NO_LABEL_REANCHOR=1 forces the pre-fix behaviour
+  // (label hangs off the bare node centre) for before/after comparison.
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_LABEL_REANCHOR === '1') {
+    return center;
+  }
   if (!marks || marks.length < 2) return center;
   let best = marks[0].pos;
   let bestD = Infinity;
