@@ -18,6 +18,7 @@ import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { buildBoxExpandWarp, buildSepBoxWarp } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
+import { splitHubs } from './layout/splitHubs';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -248,6 +249,7 @@ function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string,
       cell: [n.pos[0], n.pos[1]] as Cell,
       label: labelByNode.get(id) ?? '',
       lngLat: [n.pos[0] / 1e5, n.pos[1] / 1e5] as Coordinate,
+      ...(n.splitGroup ? { splitGroup: n.splitGroup } : {}),
     });
     nodePx.set(id, n.pos);
   }
@@ -721,6 +723,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   lap('warpBuild');
   const support = buildSupportGraph(graph, groups, topoParams);
   lap('topoMerge');
+  // Hub split (2026-06-14): virtual perpendicular split of over-bundled hubs so
+  // their trunk lines depart in distinct directions. Behind OCTI_SPLIT_HUBS;
+  // no-op otherwise (byte-identical baseline). A capsule reunites the leaves.
+  splitHubs(support);
   const medLen = medianEdgeLength(support);
   const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
   // Grid fineness vs contraction: octi contracts away everything shorter

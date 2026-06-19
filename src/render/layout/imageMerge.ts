@@ -113,11 +113,17 @@ export function mergeCoincidentPaths(
   // topology nodes need their own graph nodes), plus any vertex where the
   // owner set changes (handled by the grouping itself).
   const nodeVerts = new Map<string, string>(); // vertex key -> old node id (first)
-  for (const [nid] of h.nodes) {
+  // Hub-split guard (2026-06-14): carry each old node's splitGroup onto the
+  // vertex it placed at, so the merged node materialized there inherits it and
+  // (a) the renderer can reunite the leaves under one capsule, (b) the split
+  // siblings are never re-fused by separateFusedStations.
+  const vertSplitGroup = new Map<string, string>(); // vertex key -> splitGroup
+  for (const [nid, n] of h.nodes) {
     const p = img.placement.get(nid);
     if (p) {
       const k = vKey(p);
       if (!nodeVerts.has(k)) nodeVerts.set(k, nid);
+      if (n.splitGroup && !vertSplitGroup.has(k)) vertSplitGroup.set(k, n.splitGroup);
     }
   }
 
@@ -177,7 +183,8 @@ export function mergeCoincidentPaths(
     if (id) return id;
     id = 'mn' + nSeq++;
     vertNode.set(vk, id);
-    newNodes.set(id, { id, pos: vPos.get(vk)!.slice() as Pixel });
+    const sg = vertSplitGroup.get(vk);
+    newNodes.set(id, { id, pos: vPos.get(vk)!.slice() as Pixel, ...(sg ? { splitGroup: sg } : {}) });
     return id;
   };
 
@@ -267,7 +274,20 @@ export function mergeCoincidentPaths(
       const mapped = mapOldNode(oldNid);
       if (mapped) stopNodes.set(lineId, mapped);
     }
-    stations.set(gid, { ...st, nodeId: nid, stopNodes });
+    // Hub-split (2026-06-14): remap the split leaves onto their merged nodes,
+    // dropping duplicates (two leaves may merge to one mn). The capsule spans
+    // the deduped set; one leaf collapsing to the same mn is a benign no-op.
+    let splitNodeIds: string[] | undefined;
+    if (st.splitNodeIds && st.splitNodeIds.length) {
+      const seen = new Set<string>();
+      splitNodeIds = [];
+      for (const leaf of st.splitNodeIds) {
+        const m = mapOldNode(leaf);
+        if (m && !seen.has(m)) { seen.add(m); splitNodeIds.push(m); }
+      }
+      if (splitNodeIds.length < 2) splitNodeIds = undefined; // collapsed: no capsule span
+    }
+    stations.set(gid, { ...st, nodeId: nid, stopNodes, ...(splitNodeIds ? { splitNodeIds } : { splitNodeIds: undefined }) });
   }
 
   const stopAt = new Set<string>();
@@ -336,6 +356,10 @@ export function separateFusedStations(
     if (withTrue.length < 2) continue;
     const nodePos = h.nodes.get(nid)?.pos;
     if (!nodePos) continue;
+    // Hub-split guard (2026-06-14): a split sub-node is an intentional, internal
+    // platform of one interchange — never tear its hosted stations apart (that
+    // would defeat the capsule reunite). The split leaves stay one place.
+    if (h.nodes.get(nid)?.splitGroup) continue;
 
     // keeper = closest to the drawn node; others split off when far enough
     // from the keeper's true position

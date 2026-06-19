@@ -61,6 +61,9 @@ export interface LayoutNode {
   cell: Cell;
   label: string;
   lngLat: Coordinate;
+  /** Carried through from the support node so the renderer can group a split
+   *  hub's sub-nodes into one capsule (hub-split, 2026-06-14). */
+  splitGroup?: string;
 }
 
 export interface LayoutEdge {
@@ -113,6 +116,10 @@ export interface StopMark {
 export interface SupportNode {
   id: string;
   pos: Pixel;
+  /** All sub-nodes split from one hub share this id (= the station-group / origin
+   *  node id). Lets the renderer reunite them under one capsule and lets
+   *  octi/imageMerge guards preserve them (hub-split, 2026-06-14). */
+  splitGroup?: string;
 }
 
 /** A merged corridor edge in H. `points[0]` is from.pos, `points.at(-1)` is
@@ -123,6 +130,10 @@ export interface SupportEdge {
   to: string;
   points: Pixel[];
   lineIds: Set<string>;
+  /** A spine/fan edge internal to a split hub. Must not be contracted or merged
+   *  away (octi.combineDeg2 / contractShortEdges / imageMerge skip it) so the
+   *  split survives to the renderer (hub-split, 2026-06-14). */
+  splitInternal?: boolean;
 }
 
 /** A station placed onto the support graph by insertStations. */
@@ -141,6 +152,9 @@ export interface SupportStation {
   /** Per line: the support node carrying this line's stop flag (lines through
    *  one station can ride diverged corridors — flags re-home per line). */
   stopNodes?: Map<string, string>;
+  /** When this station's hub was split (hub-split, 2026-06-14): the leaf
+   *  sub-node ids the capsule must span. `nodeId` stays the primary anchor. */
+  splitNodeIds?: string[];
 }
 
 /** Output of topo: corridors as single edges + stations re-inserted. */
