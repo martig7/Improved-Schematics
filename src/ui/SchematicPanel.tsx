@@ -260,6 +260,7 @@ export function SchematicPanel() {
   const [dumpStatus, setDumpStatus] = useState<string | null>(null);
   const downloadDump = useCallback(() => {
     try {
+      const dark = api.ui.getResolvedTheme() === 'dark';
       const payload = JSON.stringify({
         at: new Date().toISOString(),
         stationGroups: resolveStationGroupsFromGameState(api.gameState),
@@ -270,6 +271,28 @@ export function SchematicPanel() {
         // it must be captured or an offline repro projects the network into
         // different bounds → a different octi layout than the game produces.
         geography,
+        // The live render options (mode + appearance sliders, applied values),
+        // mirroring buildInput().options below, so an offline repro reproduces
+        // the user's current settings instead of the script's hardcoded ones.
+        // Derived values (warpAlpha/geographicAffinity/theme) are baked in so a
+        // script can pass `options` straight through without re-deriving them.
+        options: {
+          mode,
+          showStations,
+          showLabels,
+          dark,
+          padding: applied.mapMargin,
+          warpAlpha: warpAlphaFromPos(applied.warpPos),
+          geographicAffinity: affinityFromPos(applied.linePos),
+          theme: {
+            ...(dark ? DARK_THEME : DEFAULT_THEME),
+            lineWidth: applied.lineWidth,
+            stationRadius: applied.stationRadius,
+          },
+        },
+        // Export-time controls (raster scale, JPEG quality, chosen format) —
+        // not render inputs, but captured so scripts can match the exported file.
+        exportOptions: { format: exportFormat, rasterScale, jpegQuality },
       });
       const blob = new Blob([payload], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -284,7 +307,7 @@ export function SchematicPanel() {
     } catch (err) {
       setDumpStatus('failed: ' + String(err));
     }
-  }, [geography]);
+  }, [geography, mode, showStations, showLabels, applied, exportFormat, rasterScale, jpegQuality]);
 
   // Per-mount cache of the expensive smoothed layout, hydrated from smoothedStore
   // (which persists across mounts). Reused for label/station toggles so those are
@@ -899,13 +922,23 @@ export function SchematicPanel() {
                     padding: '4px 6px',
                     borderRadius: 6,
                     border: '1px solid rgba(136,136,136,0.4)',
-                    background: 'inherit',
-                    color: 'inherit',
+                    // Explicit theme colors (not `inherit`): the native option
+                    // list popup ignores inherited color, so in dark mode it
+                    // renders as light-on-light unless set on the option itself.
+                    background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                    color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
                     cursor: 'pointer',
                   }}
                 >
                   {FORMATS.map((f) => (
-                    <option key={f.id} value={f.id}>
+                    <option
+                      key={f.id}
+                      value={f.id}
+                      style={{
+                        background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                        color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                      }}
+                    >
                       {f.label}
                     </option>
                   ))}
