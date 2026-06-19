@@ -5,8 +5,10 @@ import { splitHubs } from './splitHubs';
 import { combineDeg2 } from './octi';
 
 // Build a star hub: one centre node `hub` with `arms` spokes, each carrying a
-// distinct line. The hub is a station group `G`.
-function starHub(arms: number, linesPerArm = 2): SupportGraph {
+// bundle of distinct lines. The hub is a station group `G`. linesPerArm defaults
+// to 5 so the hub qualifies under the Phase-1 predicate (directionality >= 3 AND
+// maxBundle >= 5): it is both a real fan-out and a big welded trunk.
+function starHub(arms: number, linesPerArm = 5): SupportGraph {
   const nodes = new Map<string, SupportNode>();
   const edges = new Map<string, SupportEdge>();
   const adj = new Map<string, string[]>();
@@ -51,7 +53,7 @@ test('splitHubs: no-op when flag is off (byte-identical)', () => {
 
 test('splitHubs: splits a high-degree hub into splitGroup leaves with a spine', () => {
   process.env.OCTI_SPLIT_HUBS = '1';
-  const h = starHub(6); // deg 6 > cap 5
+  const h = starHub(6); // dir 3 >= DIRMIN, maxBundle 5 >= BUNDLEMIN
   splitHubs(h);
   delete process.env.OCTI_SPLIT_HUBS;
 

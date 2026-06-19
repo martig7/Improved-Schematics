@@ -78,9 +78,58 @@ function deg(h: SupportGraph, nodeId: string): number {
   return n;
 }
 
+/** maxBundle(n) = the biggest welded trunk through n: the max over the node's
+ *  EXTERNAL incident edges of edge.lineIds.size. A big maxBundle is the signal
+ *  that a single coincident trunk carries many lines that want to fan out. */
+function maxBundle(h: SupportGraph, nodeId: string): number {
+  let m = 0;
+  for (const eid of h.adj.get(nodeId) ?? []) {
+    const e = h.edges.get(eid);
+    if (!e || e.splitInternal) continue;
+    if (e.lineIds.size > m) m = e.lineIds.size;
+  }
+  return m;
+}
+
+/** directionality(n) = number of DISTINCT exit bearings across the node's
+ *  EXTERNAL incident edges, so two near-collinear arms count as ONE direction.
+ *  This separates a genuine fan-out (deg-3+ with distinct bearings) from a
+ *  2-way pass-through (two opposite arms = 1 axis) or a near-straight trunk
+ *  whose arms happen to be split into >2 collinear edges. Bearings within
+ *  `tolDeg` of each other (same OR opposite, since a pass-through is one axis)
+ *  collapse to a single direction. Returns the distinct-axis count (0 if no
+ *  external edges); a 2-way pass-through and a T/4-way cross both score low. */
+function directionality(h: SupportGraph, nodeId: string, step: number, tolDeg: number): number {
+  const angs: number[] = [];
+  for (const eid of h.adj.get(nodeId) ?? []) {
+    const e = h.edges.get(eid);
+    if (!e || e.splitInternal) continue;
+    const dir = exitDir(h, e, nodeId, step);
+    // axis angle in [0, 180): collinear OR opposite arms collapse to one axis.
+    let a = (Math.atan2(dir[1], dir[0]) * 180) / Math.PI;
+    a = ((a % 180) + 180) % 180;
+    angs.push(a);
+  }
+  if (angs.length === 0) return 0;
+  angs.sort((x, y) => x - y);
+  // Count clusters of axis-angles separated by > tolDeg, wrapping at 180.
+  let clusters = 1;
+  for (let i = 1; i < angs.length; i++) {
+    if (angs[i] - angs[i - 1] > tolDeg) clusters++;
+  }
+  // wrap-around: first and last in the same cluster if within tol across 180.
+  if (clusters > 1 && angs.length > 1) {
+    const wrap = angs[0] + 180 - angs[angs.length - 1];
+    if (wrap <= tolDeg) clusters--;
+  }
+  return clusters;
+}
+
 interface SplitOpts {
-  degCap: number;
-  ldegCap: number;
+  dirMin: number;
+  bundleMin: number;
+  ldegRecurse: number; // recursion density floor: keep cutting a leaf while ldeg > this
+  tolDeg: number; // bearing tolerance for distinct-direction clustering
   offset: number;
   step: number; // tangent step for exit bearings (~1 cell)
   maxLeaves: number;
@@ -105,11 +154,18 @@ function splitNode(
 
   const d = deg(h, nodeId);
   const ld = ldeg(h, nodeId);
-  // Recursion bound: stop once both caps satisfied, or we'd exceed the leaf
-  // budget / depth, or the node is too small to cut. Depth cap is a hard
-  // backstop against any non-progressing partition.
+  const dir = directionality(h, nodeId, opts.step, opts.tolDeg);
+  const mb = maxBundle(h, nodeId);
+  // Recursion bound — DECOUPLED from the candidate filter. Which hubs we START
+  // on is (dir >= DIRMIN AND maxBundle >= BUNDLEMIN); but once a chosen hub's
+  // trunk is broken into sub-BUNDLEMIN pieces, its leaf can still carry many
+  // lines and must keep splitting to seat as a clean capsule segment. So recurse
+  // while the leaf is STILL too dense (ldeg > LDEG_RECURSE, default 6 — the
+  // design's LDEG_CAP); stop otherwise. (Gating recursion on maxBundle instead
+  // halts after one cut and loses the densest hub's needed 2nd cut.) Plus the
+  // existing leaf-budget / depth / too-small (deg < 3) backstops.
   if (
-    (d <= opts.degCap && ld <= opts.ldegCap) ||
+    ld <= opts.ldegRecurse ||
     leaves.size >= opts.maxLeaves ||
     depth >= opts.maxLeaves ||
     d < 3
@@ -241,7 +297,7 @@ function splitNode(
   if (DBG()) {
     // eslint-disable-next-line no-console
     console.error(
-      `[splitHubs] split ${nodeId} (deg=${d} ldeg=${ld}) -> +[${plusEdges.length}e/${plusLines.size}l] -[${minusEdges.length}e/${minusLines.size}l] spine=${spineLines.size}`,
+      `[splitHubs] split ${nodeId} (deg=${d} ldeg=${ld} dir=${dir} maxBundle=${mb}) -> +[${plusEdges.length}e/${plusLines.size}l] -[${minusEdges.length}e/${minusLines.size}l] spine=${spineLines.size}`,
     );
   }
 
@@ -259,8 +315,10 @@ export function splitHubs(h: SupportGraph): SupportGraph {
   if (!enabled()) return h;
 
   const opts: SplitOpts = {
-    degCap: numEnv('OCTI_SPLIT_DEGCAP', 5),
-    ldegCap: numEnv('OCTI_SPLIT_LDEGCAP', 6),
+    dirMin: numEnv('OCTI_SPLIT_DIRMIN', 3),
+    bundleMin: numEnv('OCTI_SPLIT_BUNDLEMIN', 5),
+    ldegRecurse: numEnv('OCTI_SPLIT_LDEG_RECURSE', 6),
+    tolDeg: numEnv('OCTI_SPLIT_DIRTOL', 20),
     offset: numEnv('OCTI_SPLIT_OFFSET', 0),
     step: 0,
     maxLeaves: numEnv('OCTI_SPLIT_MAXLEAVES', 8),
@@ -286,12 +344,26 @@ export function splitHubs(h: SupportGraph): SupportGraph {
   const stationByNode = new Map<string, string>(); // nodeId -> station group id
   for (const st of h.stations.values()) stationByNode.set(st.nodeId, st.id);
 
+  // Candidate predicate (Phase-1): a hub qualifies ONLY if it is BOTH a real
+  // fan-out (directionality >= DIRMIN, default 3 — excludes 2-way pass-throughs)
+  // AND has a big welded trunk (maxBundle >= BUNDLEMIN, default 5). Both
+  // required (AND). This excludes fat-but-straight trunks (low directionality)
+  // and thin high-deg junctions (small maxBundle) — the wrong hubs whose leaves
+  // crowded each other when the old deg/ldeg predicate split them blindly.
   const candidates = [...h.nodes.keys()].filter((id) => {
-    const d = deg(h, id);
-    const ld = ldeg(h, id);
-    return d > opts.degCap || ld > opts.ldegCap;
+    const dir = directionality(h, id, opts.step, opts.tolDeg);
+    const mb = maxBundle(h, id);
+    return dir >= opts.dirMin && mb >= opts.bundleMin;
   });
-  candidates.sort((a, b) => (ldeg(h, b) - ldeg(h, a)) || (a < b ? -1 : 1));
+  // densest line-occupancy first (preserves Phase-0 hub selection so the cap=1
+  // default still picks the genuine fan-fold trunk / Liverpool St), then biggest
+  // welded trunk, then id for determinism.
+  candidates.sort(
+    (a, b) =>
+      (ldeg(h, b) - ldeg(h, a)) ||
+      (maxBundle(h, b) - maxBundle(h, a)) ||
+      (a < b ? -1 : 1),
+  );
 
   // Cap on how many hubs to split, densest-first. Default 1 (Phase-0
   // conservatism): on dense networks (London) splitting many ADJACENT dense
@@ -317,9 +389,9 @@ export function splitHubs(h: SupportGraph): SupportGraph {
     // delete the hub node, only reattach its edges), but its degree may have
     // changed if it was a leaf of another hub. Re-check.
     if (!h.nodes.get(nodeId)) continue;
-    const d = deg(h, nodeId);
-    const ld = ldeg(h, nodeId);
-    if (d <= opts.degCap && ld <= opts.ldegCap) continue;
+    const dir = directionality(h, nodeId, opts.step, opts.tolDeg);
+    const mb = maxBundle(h, nodeId);
+    if (!(dir >= opts.dirMin && mb >= opts.bundleMin)) continue;
 
     const originId = stationByNode.get(nodeId) ?? nodeId;
     const leaves = new Set<string>();
