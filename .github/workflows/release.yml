@@ -1,0 +1,93 @@
+name: Release
+
+# Publishes a GitHub Release whenever a version tag is pushed, matching the
+# format of the existing releases:
+#   - tag:      vX.Y.Z
+#   - name:     "Improved Schematics vX.Y.Z"
+#   - body:     the annotated tag message (your hand-written "What's new" notes),
+#               falling back to auto-generated notes for a lightweight tag
+#   - assets:   improved-schematics-vX.Y.Z.zip  (index.js + manifest.json)
+#               manifest.json                    (standalone, for the mod manager)
+#
+# Cut a release with, e.g.:
+#   git tag -a v1.3.0          # opens an editor; first line is ignored by the
+#                              # body, write your "## What's new in v1.3.0" notes
+#   git push origin v1.3.0
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches package.json / manifest.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          MAN="$(node -p "require('./manifest.json').version")"
+          echo "tag=$TAG package.json=$PKG manifest.json=$MAN"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$MAN" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json ($PKG) / manifest.json ($MAN)"
+            exit 1
+          fi
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Package mod
+        run: |
+          cd dist
+          zip -r "../improved-schematics-${GITHUB_REF_NAME}.zip" index.js manifest.json
+
+      - name: Extract release notes from tag
+        id: notes
+        run: |
+          BODY="$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")"
+          if [ -z "$BODY" ]; then
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<__RELEASE_NOTES_EOF__"
+              echo "$BODY"
+              echo "__RELEASE_NOTES_EOF__"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Improved Schematics ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.body }}
+          generate_release_notes: ${{ steps.notes.outputs.has_notes == 'false' }}
+          files: |
+            improved-schematics-${{ github.ref_name }}.zip
+            manifest.json
