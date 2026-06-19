@@ -1040,6 +1040,20 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // (the mega branch in stops.ts renders it).
           megaFallbacks++;
           for (const mk of s.marks) mk.mega = true;
+          // Regime probe (OCTI_PLACE_DEBUG): deg = incident DRAWN edges (octi
+          // ports/directions used), ldeg = total lines through the node. deg<=8
+          // with ldeg>deg means lines are welded onto few corridors → fan-fold /
+          // over-weld (fix = de-weld). deg>8 means genuine 8-direction saturation
+          // (fix = split the hub; we cannot add directions without breaking octi).
+          if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
+            let deg = 0;
+            for (const e of layout.edges) if (e.from === s.nodeId || e.to === s.nodeId) deg++;
+            console.error(
+              `[box-regime] ${s.nodeId} deg=${deg} ldeg=${ldegOf(s.nodeId)} ` +
+                `bundles=${groups.length} members=[${groups.map((gr) => gr.length).join(',')}] → ` +
+                (deg > 8 ? 'PORT-SATURATION (deg>8)' : 'OVER-WELD/FAN-FOLD (deg<=8, lines bundled)'),
+            );
+          }
         }
       }
       for (const mk of s.marks) placedDots.push(mk.pos);
