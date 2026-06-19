@@ -497,13 +497,47 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     let sameDouble = 0; // raw count (feeds the diff-seg correction)
     let sameWeighted = 0; // corner-discounted (feeds the score)
     let seps = 0;
+    // Inlined crossSepsPair with the rank map hoisted to the ea loop: it was
+    // rebuilt for every (ea, eb) PAIR (deg² Map allocations per node — the
+    // metro-scale hot path), but the rank depends only on ea's order. The
+    // pair-specific `rev` merely flips the index sign (rev ? L-1-i : i),
+    // applied per pair below, so the per-pair values, the accumulation order
+    // and thus the score stay BIT-IDENTICAL to crossSepsPair. (crossSepsPair
+    // itself is kept for its other caller in the diagnostics block.)
     for (const ea of adj) {
+      const cea = cfg.get(ea.id)!;
+      const revA = ea.from !== nd;
+      const L = cea.length;
+      const baseRank = new Map<string, number>();
+      for (let i = 0; i < L; i++) baseRank.set(cea[i], i);
       for (const eb of adj) {
         if (ea === eb) continue;
-        const r = crossSepsPair(nd, ea, eb, cfg);
-        sameDouble += r.cross;
-        sameWeighted += r.cross * cornerFactor(nd, ea, eb);
-        seps += r.seps;
+        const revB = eb.from !== nd;
+        const rev = revA === revB; // === !(revA !== revB)
+        const ceb = cfg.get(eb.id)!;
+        const relCross: number[] = [];
+        const relSep: number[] = [];
+        for (const line of ceb) {
+          const br = baseRank.get(line);
+          if (br === undefined || !connOccurs(line, nd, ea, eb)) {
+            relSep.push(Number.MAX_SAFE_INTEGER);
+            continue;
+          }
+          const r = rev ? L - 1 - br : br;
+          relCross.push(r);
+          relSep.push(r);
+        }
+        let pairSeps = 0;
+        for (let i = 1; i < relSep.length; i++) {
+          const a = relSep[i - 1];
+          const b = relSep[i];
+          if (a === Number.MAX_SAFE_INTEGER || b === Number.MAX_SAFE_INTEGER) continue;
+          if (Math.abs(b - a) > 1) pairSeps++;
+        }
+        const cross = inversions(relCross);
+        sameDouble += cross;
+        sameWeighted += cross * cornerFactor(nd, ea, eb);
+        seps += pairSeps;
       }
     }
     let diff = 0;
