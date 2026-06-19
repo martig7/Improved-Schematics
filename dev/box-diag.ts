@@ -4,8 +4,11 @@
  * per boxed station, WHY its rigid-row solve failed:
  *   NO-CROSSING — lanes never admit a row-line crossing (divergent/coincident;
  *                 NOT fixable by sliding or spacing)
- *   PINCHED     — octi seated the lanes closer than minGap (fixable UPSTREAM:
- *                 octi placement / OCTI_SNAP)
+ *   COINCIDENT  — best achievable gap ≤ 0: member lanes interlined/crossed on
+ *                 one drawn edge (e.g. octi 8-port overflow). NOT spacing-fixable;
+ *                 needs an upstream octi/topo de-weld. Reports minAnchorSep too.
+ *   PINCHED     — octi seated distinct lanes closer than minGap, but still
+ *                 positively ordered (fixable UPSTREAM: octi placement / OCTI_SNAP)
  *   MASKED      — every crossing state vetoed by an already-placed station
  *                 (§6 mask; ordering-dependent)
  *
