@@ -28,6 +28,14 @@ export function boxesOverlap(a: Box, b: Box): boolean {
   return !(a.x + a.w <= b.x || a.x >= b.x + b.w || a.y + a.h <= b.y || a.y >= b.y + b.h);
 }
 
+/** Euclidean gap between two axis-aligned boxes (0 when they overlap/touch).
+ *  sqrt-based → correctly rounded cross-V8 (engine-stable for the tie-break). */
+export function boxGap(a: Box, b: Box): number {
+  const dx = Math.max(0, b.x - (a.x + a.w), a.x - (b.x + b.w));
+  const dy = Math.max(0, b.y - (a.y + a.h), a.y - (b.y + b.h));
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
 export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
   const x1 = box.x;
   const x2 = box.x + box.w;
@@ -88,6 +96,25 @@ export function placeLabels(
   const placedBoxes: Box[] = [];
   const stationBoxes: Box[] = [];
   const markerR = LINE_WIDTH * 0.7;
+  // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
+  // counts only HARD overlaps (integers), so many labels tie — most commonly the
+  // left/right pair at an isolated stop, today resolved to 'right' by enumeration
+  // order. Among cost-tied placements, prefer the one with the most open space
+  // around it (largest summed clearance to nearby markers + already-placed
+  // labels), nudging labels off crowded flanks into white space. Clearance is an
+  // unscored dimension (cost ignores near-misses); boxGap is sqrt-based and the
+  // argmin is a total order (cost → −clearance → enumeration), so deterministic.
+  const LABEL_TIEBREAK =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_LABEL_TIEBREAK === '1';
+  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale for "crowding"
+  // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
+  const crowding = (box: Box): number => {
+    let c = 0;
+    for (const b of placedBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
+    for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
+    return c;
+  };
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -137,14 +164,17 @@ export function placeLabels(
 
     let best = candidates[0];
     let bestCost = Infinity;
+    let bestCrowd = Infinity;
     for (const cand of candidates) {
       let cost = 0;
       for (const b of placedBoxes) if (boxesOverlap(cand.box, b)) cost += 100;
       for (const b of stationBoxes) if (boxesOverlap(cand.box, b)) cost += 30;
       for (const s of segments) if (segmentIntersectsBox(s.p1, s.p2, cand.box)) cost += 12;
       cost += cand.priority;
-      if (cost < bestCost) {
+      const crowd = LABEL_TIEBREAK ? crowding(cand.box) : 0;
+      if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
         bestCost = cost;
+        bestCrowd = crowd;
         best = cand;
       }
     }
