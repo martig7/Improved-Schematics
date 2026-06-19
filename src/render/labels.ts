@@ -86,17 +86,26 @@ export interface LabelNode {
   label: string;
 }
 
+/** A capsule is "slid" — its centre stranded in empty space — only when its
+ *  nearest dot is at least this far from the node centre. Below it the centre
+ *  still sits on/among the dots, so the label hangs off the centre as before.
+ *  Pitched above a normal capsule's half-dot-spacing (~LINE_WIDTH) so ordinary
+ *  interchanges keep the centre anchor (and don't perturb the greedy label
+ *  packer); only genuinely displaced capsules re-seat. */
+const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
+
 /**
  * The pixel point a station's label should hang off. Defaults to the node
- * centre, but when the station renders as several dots (an interchange capsule)
- * those dots can be slid away from the centre by the collision passes
- * (capsuleSlide etc.) — leaving a label pinned to the centre floating in empty
- * space. Anchor it instead to the capsule dot CLOSEST to the centre, so the
- * label stays attached to a real marker even as the dots move. Closest by
- * squared distance; first mark wins exact ties (marks order is deterministic).
+ * centre. Only a MULTI-dot capsule whose dots have been slid well off the centre
+ * (by the collision passes — capsuleSlide etc.) re-anchors, to the dot CLOSEST
+ * to the centre, so a label that would otherwise float in empty space stays
+ * attached to a real marker. Single stops and tightly-packed capsules keep the
+ * centre — identical to the pre-fix behaviour — so the fix is confined to the
+ * capsules that actually drift and doesn't churn the rest of the label layout.
+ * Closest by squared distance; first mark wins exact ties (deterministic).
  */
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
-  if (!marks || marks.length === 0) return center;
+  if (!marks || marks.length < 2) return center;
   let best = marks[0].pos;
   let bestD = Infinity;
   for (const m of marks) {
@@ -108,7 +117,7 @@ export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
       best = m.pos;
     }
   }
-  return best;
+  return bestD > ANCHOR_SLID_DIST * ANCHOR_SLID_DIST ? best : center;
 }
 
 export function placeLabels(
