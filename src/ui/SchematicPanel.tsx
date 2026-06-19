@@ -19,6 +19,7 @@ import {
 } from '../render/schematic';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
+import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { generateGeography } from '../geography/geography';
 import type { GeographyData } from '../geography/types';
 import type { BoundingBox } from '../types/core';
@@ -51,7 +52,70 @@ interface SvgBox {
   h: number;
 }
 
+type ExportFormat = 'svg' | 'png' | 'jpeg';
+
+// Render/export tunables exposed as sliders in the settings popover. The first
+// three feed the renderer via SchematicOptions (theme.lineWidth, theme
+// .stationRadius, padding); the last two are applied during raster export.
+const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
+const DEFAULT_STATION_RADIUS = 2.5; // matches DEFAULT_THEME.stationRadius
+const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
+const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
+const DEFAULT_JPEG_QUALITY = 0.92;
+
+// Smoothed-mode "realism" sliders run on a normalized [-1, +1] position where 0
+// is the tuned default (center), -1 is the most geographically realistic, and +1
+// the most stylized. These map a position to the actual LOOM parameters.
+const DEFAULT_REALISM_POS = 0;
+// Warp strength: realistic (left) = less warp; default 0.8; stylized (right) =
+// more warp. Linear so 0 → 0.8.
+const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
+// Geographic-course affinity: realistic (left) = stronger course-keeping (up to
+// ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
+const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
+
+const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
+  { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
+  { id: 'png', label: 'PNG (image)', ext: 'png', mime: 'image/png' },
+  { id: 'jpeg', label: 'JPEG (image)', ext: 'jpg', mime: 'image/jpeg' },
+];
+
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// Labeled range slider for the settings popover. `display` is the formatted
+// current value shown to the right of the label.
+function Slider(props: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  const { label, value, min, max, step, display, onChange, disabled } = props;
+  return (
+    <label
+      style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, opacity: disabled ? 0.45 : 1 }}
+    >
+      <span style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.85 }}>
+        <span>{label}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7 }}>{display}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ width: '100%', cursor: disabled ? 'default' : 'pointer', accentColor: '#2563eb' }}
+      />
+    </label>
+  );
+}
 
 // Persists the generated smoothed map across mode switches AND panel close, so
 // switching to geographic or reopening the panel doesn't discard it. Keyed by
@@ -63,6 +127,51 @@ export function SchematicPanel() {
   const [showStations, setShowStations] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Export controls live in a small settings popover opened via the gear icon in
+  // the top-right of the panel. The chosen format drives the Download button.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
+  const settingsRef = useRef<HTMLDivElement>(null);
+  // Render tunables (line/station/margin feed the renderer; raster scale +
+  // JPEG quality apply at export time). The appearance sliders edit DRAFT values
+  // freely; only Save commits them to `applied`, which is what the renderer reads
+  // — so dragging a slider doesn't trigger an (expensive) re-render mid-drag.
+  const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
+  const [stationRadius, setStationRadius] = useState(DEFAULT_STATION_RADIUS);
+  const [mapMargin, setMapMargin] = useState(DEFAULT_MAP_MARGIN);
+  // Smoothed-mode realism positions in [-1, +1] (0 = default). These bake into
+  // the expensive precompute, so they ride the same draft→Save flow and a Save
+  // in smoothed mode regenerates the layout.
+  const [warpPos, setWarpPos] = useState(DEFAULT_REALISM_POS);
+  const [linePos, setLinePos] = useState(DEFAULT_REALISM_POS);
+  const [applied, setApplied] = useState({
+    lineWidth: DEFAULT_LINE_WIDTH,
+    stationRadius: DEFAULT_STATION_RADIUS,
+    mapMargin: DEFAULT_MAP_MARGIN,
+    warpPos: DEFAULT_REALISM_POS,
+    linePos: DEFAULT_REALISM_POS,
+  });
+  const appearanceDirty =
+    applied.lineWidth !== lineWidth ||
+    applied.stationRadius !== stationRadius ||
+    applied.mapMargin !== mapMargin ||
+    applied.warpPos !== warpPos ||
+    applied.linePos !== linePos;
+  // True when both the draft sliders and the applied values are already at the
+  // defaults — nothing for Reset to do.
+  const appearanceAtDefaults =
+    lineWidth === DEFAULT_LINE_WIDTH &&
+    stationRadius === DEFAULT_STATION_RADIUS &&
+    mapMargin === DEFAULT_MAP_MARGIN &&
+    warpPos === DEFAULT_REALISM_POS &&
+    linePos === DEFAULT_REALISM_POS &&
+    applied.lineWidth === DEFAULT_LINE_WIDTH &&
+    applied.stationRadius === DEFAULT_STATION_RADIUS &&
+    applied.mapMargin === DEFAULT_MAP_MARGIN &&
+    applied.warpPos === DEFAULT_REALISM_POS &&
+    applied.linePos === DEFAULT_REALISM_POS;
+  const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
+  const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
@@ -151,6 +260,7 @@ export function SchematicPanel() {
   const [dumpStatus, setDumpStatus] = useState<string | null>(null);
   const downloadDump = useCallback(() => {
     try {
+      const dark = api.ui.getResolvedTheme() === 'dark';
       const payload = JSON.stringify({
         at: new Date().toISOString(),
         stationGroups: resolveStationGroupsFromGameState(api.gameState),
@@ -161,6 +271,28 @@ export function SchematicPanel() {
         // it must be captured or an offline repro projects the network into
         // different bounds → a different octi layout than the game produces.
         geography,
+        // The live render options (mode + appearance sliders, applied values),
+        // mirroring buildInput().options below, so an offline repro reproduces
+        // the user's current settings instead of the script's hardcoded ones.
+        // Derived values (warpAlpha/geographicAffinity/theme) are baked in so a
+        // script can pass `options` straight through without re-deriving them.
+        options: {
+          mode,
+          showStations,
+          showLabels,
+          dark,
+          padding: applied.mapMargin,
+          warpAlpha: warpAlphaFromPos(applied.warpPos),
+          geographicAffinity: affinityFromPos(applied.linePos),
+          theme: {
+            ...(dark ? DARK_THEME : DEFAULT_THEME),
+            lineWidth: applied.lineWidth,
+            stationRadius: applied.stationRadius,
+          },
+        },
+        // Export-time controls (raster scale, JPEG quality, chosen format) —
+        // not render inputs, but captured so scripts can match the exported file.
+        exportOptions: { format: exportFormat, rasterScale, jpegQuality },
       });
       const blob = new Blob([payload], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -175,7 +307,7 @@ export function SchematicPanel() {
     } catch (err) {
       setDumpStatus('failed: ' + String(err));
     }
-  }, [geography]);
+  }, [geography, mode, showStations, showLabels, applied, exportFormat, rasterScale, jpegQuality]);
 
   // Per-mount cache of the expensive smoothed layout, hydrated from smoothedStore
   // (which persists across mounts). Reused for label/station toggles so those are
@@ -200,7 +332,22 @@ export function SchematicPanel() {
       stations: api.gameState.getStations(),
       stationGroups: resolveStationGroupsFromGameState(api.gameState),
       geography,
-      options: { mode, width: GEO_SIZE, height: GEO_SIZE, showStations, showLabels, dark },
+      options: {
+        mode,
+        width: GEO_SIZE,
+        height: GEO_SIZE,
+        showStations,
+        showLabels,
+        dark,
+        padding: applied.mapMargin,
+        warpAlpha: warpAlphaFromPos(applied.warpPos),
+        geographicAffinity: affinityFromPos(applied.linePos),
+        theme: {
+          ...(dark ? DARK_THEME : DEFAULT_THEME),
+          lineWidth: applied.lineWidth,
+          stationRadius: applied.stationRadius,
+        },
+      },
     });
 
     if (mode === 'smoothed') {
@@ -244,33 +391,82 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, geography, smoothedReady]);
+  }, [mode, showStations, showLabels, geography, smoothedReady, applied]);
 
-  // Save the generated SVG cropped to the frame (data-frame = the geography
-  // water/green extent), so the file outlines it — content outside is clipped by
-  // the viewBox. Falls back to the full canvas when there's no frame.
-  const downloadSvg = useCallback(() => {
-    if (!svg) return;
-    let out = svg;
+  // Crop the generated SVG to the frame (data-frame = the geography water/green
+  // extent), so exports outline it — content outside is clipped by the viewBox.
+  // Falls back to the full canvas when there's no frame. Returns the serialized
+  // markup plus the pixel dimensions raster exports need.
+  const buildExportSvg = useCallback((): { markup: string; width: number; height: number } | null => {
+    if (!svg) return null;
     const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    const vb = root.getAttribute('viewBox')?.split(/\s+/).map(Number);
+    let width = (vb && vb.length === 4 ? vb[2] : parseFloat(root.getAttribute('width') || '')) || GEO_SIZE;
+    let height = (vb && vb.length === 4 ? vb[3] : parseFloat(root.getAttribute('height') || '')) || GEO_SIZE;
     const fr = root.getAttribute('data-frame')?.split(/\s+/).map(Number);
     if (fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0) {
       root.setAttribute('viewBox', `${fr[0]} ${fr[1]} ${fr[2]} ${fr[3]}`);
       root.setAttribute('width', String(fr[2]));
       root.setAttribute('height', String(fr[3]));
       root.removeAttribute('data-frame');
-      out = new XMLSerializer().serializeToString(root);
+      width = fr[2];
+      height = fr[3];
     }
-    const blob = new Blob([out], { type: 'image/svg+xml' });
+    return { markup: new XMLSerializer().serializeToString(root), width, height };
+  }, [svg]);
+
+  // Trigger a browser download for a generated blob.
+  const triggerDownload = useCallback((blob: Blob, ext: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `improvedschematics-${mode}.svg`;
+    a.download = `improvedschematics-${mode}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }, [svg, mode]);
+  }, [mode]);
+
+  // Export the current map in the chosen format. SVG is the serialized markup
+  // verbatim; PNG/JPEG rasterize that markup onto an upscaled canvas. JPEG has no
+  // alpha channel, so the canvas is first flooded with the theme background (the
+  // SVG's own land rect covers the full canvas, but this guards rounding edges).
+  const downloadImage = useCallback(() => {
+    const built = buildExportSvg();
+    if (!built) return;
+    const fmt = FORMATS.find((f) => f.id === exportFormat) ?? FORMATS[0];
+    if (fmt.id === 'svg') {
+      triggerDownload(new Blob([built.markup], { type: fmt.mime }), fmt.ext);
+      return;
+    }
+    const svgUrl = URL.createObjectURL(new Blob([built.markup], { type: 'image/svg+xml' }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(built.width * rasterScale));
+      canvas.height = Math.max(1, Math.round(built.height * rasterScale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        URL.revokeObjectURL(svgUrl);
+        return;
+      }
+      if (fmt.id === 'jpeg') {
+        ctx.fillStyle = api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(svgUrl);
+      canvas.toBlob(
+        (blob) => {
+          if (blob) triggerDownload(blob, fmt.ext);
+        },
+        fmt.mime,
+        jpegQuality,
+      );
+    };
+    img.onerror = () => URL.revokeObjectURL(svgUrl);
+    img.src = svgUrl;
+  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
@@ -465,6 +661,16 @@ export function SchematicPanel() {
     return () => clearTimeout(t);
   }, [showLabels, showStations]);
 
+  // Close the settings popover when clicking anywhere outside it (or its gear).
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!settingsRef.current?.contains(e.target as Node)) setSettingsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [settingsOpen]);
+
   const toggleStyle = (active: boolean) => ({
     fontSize: 12,
     padding: '2px 8px',
@@ -544,14 +750,243 @@ export function SchematicPanel() {
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
         <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0</span>
-        {svg && !generating && (
-          <button onClick={downloadSvg} style={toggleStyle(false)} title="Download as SVG">
-            ↓ SVG
-          </button>
-        )}
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
+        {/* Settings gear (top-right): opens a popover with the export-format
+            dropdown + Download button. */}
+        <div ref={settingsRef} style={{ position: 'relative' }}>
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            style={{ ...toggleStyle(settingsOpen), fontSize: 16, lineHeight: 1 }}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+          >
+            ⚙
+          </button>
+          {settingsOpen && (
+            <div
+              role="menu"
+              style={{
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                marginTop: 6,
+                zIndex: 10,
+                minWidth: 230,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+                padding: 12,
+                borderRadius: 8,
+                background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                border: '1px solid rgba(136,136,136,0.35)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+              }}
+            >
+              {/* Appearance — feeds the renderer live in Geographic mode;
+                  applies to Smoothed on the next Regenerate. */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
+                Appearance
+              </span>
+              <Slider
+                label="Line thickness"
+                value={lineWidth}
+                min={1}
+                max={8}
+                step={0.5}
+                display={`${lineWidth.toFixed(1)} px`}
+                onChange={setLineWidth}
+              />
+              <Slider
+                label="Station size"
+                value={stationRadius}
+                min={1}
+                max={6}
+                step={0.5}
+                display={`${stationRadius.toFixed(1)} px`}
+                onChange={setStationRadius}
+              />
+              <Slider
+                label="Map margin"
+                value={mapMargin}
+                min={0}
+                max={0.15}
+                step={0.01}
+                display={`${Math.round(mapMargin * 100)}%`}
+                onChange={setMapMargin}
+              />
+
+              {/* Smoothed-mode realism. Centered sliders: left = more
+                  geographically realistic, right = more stylized. They bake into
+                  the layout, so Saving regenerates the smoothed map. */}
+              {mode === 'smoothed' && (
+                <>
+                  <Slider
+                    label="Geography warp"
+                    value={warpPos}
+                    min={-1}
+                    max={1}
+                    step={0.1}
+                    display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'}
+                    onChange={setWarpPos}
+                  />
+                  <Slider
+                    label="Line accuracy"
+                    value={linePos}
+                    min={-1}
+                    max={1}
+                    step={0.1}
+                    display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'}
+                    onChange={setLinePos}
+                  />
+                </>
+              )}
+
+              {/* Sliders only stage values; Save commits them to the renderer,
+                  Reset restores (and applies) the defaults. */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => {
+                    setLineWidth(DEFAULT_LINE_WIDTH);
+                    setStationRadius(DEFAULT_STATION_RADIUS);
+                    setMapMargin(DEFAULT_MAP_MARGIN);
+                    setWarpPos(DEFAULT_REALISM_POS);
+                    setLinePos(DEFAULT_REALISM_POS);
+                    setApplied({
+                      lineWidth: DEFAULT_LINE_WIDTH,
+                      stationRadius: DEFAULT_STATION_RADIUS,
+                      mapMargin: DEFAULT_MAP_MARGIN,
+                      warpPos: DEFAULT_REALISM_POS,
+                      linePos: DEFAULT_REALISM_POS,
+                    });
+                    // Smoothed bakes these into the precompute → rebuild.
+                    if (mode === 'smoothed' && smoothedReady) regenerate();
+                  }}
+                  disabled={appearanceAtDefaults}
+                  title="Reset appearance to defaults"
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    cursor: appearanceAtDefaults ? 'default' : 'pointer',
+                    opacity: appearanceAtDefaults ? 0.5 : 1,
+                    background: 'transparent',
+                    color: 'inherit',
+                    border: '1px solid rgba(136,136,136,0.5)',
+                  }}
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() => {
+                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos });
+                    // Smoothed bakes these into the precompute → rebuild if shown.
+                    if (mode === 'smoothed' && smoothedReady) regenerate();
+                  }}
+                  disabled={!appearanceDirty}
+                  title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
+                  style={{
+                    flex: 1,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: appearanceDirty ? 'pointer' : 'default',
+                    opacity: appearanceDirty ? 1 : 0.5,
+                    background: '#2563eb',
+                    color: '#ffffff',
+                  }}
+                >
+                  {appearanceDirty ? 'Save changes' : 'Saved'}
+                </button>
+              </div>
+
+              <div style={{ height: 1, background: 'rgba(136,136,136,0.3)', margin: '2px 0' }} />
+
+              {/* Export */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
+                Export
+              </span>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                <span style={{ opacity: 0.85 }}>Format</span>
+                <select
+                  value={exportFormat}
+                  onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 6px',
+                    borderRadius: 6,
+                    border: '1px solid rgba(136,136,136,0.4)',
+                    // Explicit theme colors (not `inherit`): the native option
+                    // list popup ignores inherited color, so in dark mode it
+                    // renders as light-on-light unless set on the option itself.
+                    background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                    color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {FORMATS.map((f) => (
+                    <option
+                      key={f.id}
+                      value={f.id}
+                      style={{
+                        background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                        color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                      }}
+                    >
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {/* Resolution scales the rasterized PNG/JPEG; SVG is vector so it
+                  ignores both. JPEG quality only applies to JPEG. */}
+              <Slider
+                label="Export resolution"
+                value={rasterScale}
+                min={1}
+                max={4}
+                step={1}
+                display={`${rasterScale}×`}
+                onChange={setRasterScale}
+                disabled={exportFormat === 'svg'}
+              />
+              <Slider
+                label="JPEG quality"
+                value={jpegQuality}
+                min={0.5}
+                max={1}
+                step={0.05}
+                display={`${Math.round(jpegQuality * 100)}%`}
+                onChange={setJpegQuality}
+                disabled={exportFormat !== 'jpeg'}
+              />
+              <button
+                onClick={downloadImage}
+                disabled={!svg || generating}
+                title={`Download map as ${exportFormat.toUpperCase()}`}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  border: 'none',
+                  cursor: !svg || generating ? 'default' : 'pointer',
+                  opacity: !svg || generating ? 0.5 : 1,
+                  background: '#2563eb',
+                  color: '#ffffff',
+                }}
+              >
+                ↓ Download {exportFormat.toUpperCase()}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div

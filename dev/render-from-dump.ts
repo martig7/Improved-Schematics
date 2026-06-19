@@ -8,11 +8,16 @@
  * Usage: npx tsx dev/render-from-dump.ts [dump.json] [out-prefix]
  *   dump.json default: %APPDATA%/metro-maker4/mod-data/improvedschematics.json
  *   IS_DARK=1 renders dark mode (the in-game default look).
+ *
+ * If the dump carries an `options` block (the user's live settings — mode,
+ * appearance sliders, theme), those are used as the render base so the offline
+ * repro matches what the user saw in-game. IS_DARK / IS_LABELS still override.
  */
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { Resvg } from '@resvg/resvg-js';
 import { generateSchematicSVG } from '../src/render/schematic';
 import { keepLargestWaterBodies } from '../src/water/bodies';
+import { DARK_THEME, DEFAULT_THEME } from '../src/render/types';
 import type { WaterCollection } from '../src/render/types';
 
 const dumpPath =
@@ -40,6 +45,20 @@ if (existsSync('sea_water.geojson')) {
   );
 }
 
+// The user's captured live settings, if the dump carries them. Env vars still
+// win so existing IS_DARK/IS_LABELS workflows are unchanged; when unset, fall
+// back to the dumped values.
+const dumped = dump.options ?? {};
+const dark = process.env.IS_DARK === '1' || (process.env.IS_DARK == null && !!dumped.dark);
+const showLabels = process.env.IS_LABELS === '1' || (process.env.IS_LABELS == null && !!dumped.showLabels);
+// dark and theme are coupled (each has its own base palette), so rebuild the
+// theme on the base matching the resolved `dark`, preserving only the user's
+// line-width / station-radius slider customizations from the dump.
+const baseTheme = dark ? DARK_THEME : DEFAULT_THEME;
+const theme = dumped.theme
+  ? { ...baseTheme, lineWidth: dumped.theme.lineWidth, stationRadius: dumped.theme.stationRadius }
+  : baseTheme;
+
 const svg = generateSchematicSVG({
   routes,
   tracks,
@@ -50,9 +69,14 @@ const svg = generateSchematicSVG({
     mode: 'smoothed',
     width: 2700,
     height: 2700,
-    showStations: true,
-    showLabels: process.env.IS_LABELS === '1',
-    dark: process.env.IS_DARK === '1',
+    showStations: dumped.showStations ?? true,
+    // Carry the user's appearance settings through when present.
+    ...(dumped.padding !== undefined ? { padding: dumped.padding } : {}),
+    ...(dumped.warpAlpha !== undefined ? { warpAlpha: dumped.warpAlpha } : {}),
+    ...(dumped.geographicAffinity !== undefined ? { geographicAffinity: dumped.geographicAffinity } : {}),
+    theme,
+    showLabels,
+    dark,
   },
 });
 writeFileSync(outPrefix + '.svg', svg);

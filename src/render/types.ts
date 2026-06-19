@@ -72,6 +72,14 @@ export interface SchematicOptions {
   useTopoMerge?: boolean;
   /** Which render mode to use. Defaults to 'geographic'. */
   mode: RenderMode;
+  /** Smoothed mode only: density-warp strength (LOOM warp alpha). 0 disables
+   *  the warp (geography stays faithful); higher magnifies dense cores more.
+   *  Default 0.8. Ignored by the geographic/schematic renderers. */
+  warpAlpha?: number;
+  /** Smoothed mode only: how strongly octi keeps each line on its true
+   *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher = more
+   *  realistic courses; 0 = freely octilinear. Default 0.05. */
+  geographicAffinity?: number;
   /** Render with a dark background/palette. */
   dark: boolean;
   theme: SchematicTheme;
