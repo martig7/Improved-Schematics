@@ -86,6 +86,31 @@ export interface LabelNode {
   label: string;
 }
 
+/**
+ * The pixel point a station's label should hang off. Defaults to the node
+ * centre, but when the station renders as several dots (an interchange capsule)
+ * those dots can be slid away from the centre by the collision passes
+ * (capsuleSlide etc.) — leaving a label pinned to the centre floating in empty
+ * space. Anchor it instead to the capsule dot CLOSEST to the centre, so the
+ * label stays attached to a real marker even as the dots move. Closest by
+ * squared distance; first mark wins exact ties (marks order is deterministic).
+ */
+export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
+  if (!marks || marks.length === 0) return center;
+  let best = marks[0].pos;
+  let bestD = Infinity;
+  for (const m of marks) {
+    const dx = m.pos[0] - center[0];
+    const dy = m.pos[1] - center[1];
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = m.pos;
+    }
+  }
+  return best;
+}
+
 export function placeLabels(
   graph: { nodes: Map<string, LabelNode> },
   nodePx: Map<string, Pixel>,
@@ -150,7 +175,9 @@ export function placeLabels(
     const tw = estimateTextWidth(node.label);
     const fh = LABEL_FONT_SIZE + 2;
     const off = LABEL_OFFSET;
-    const [cx, cy] = p;
+    // Hang the label off the capsule dot nearest the node centre (not the bare
+    // centre), so it tracks the markers when collision passes slide them.
+    const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
     const candidates: Candidate[] = [
       { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
       { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },

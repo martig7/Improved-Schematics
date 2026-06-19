@@ -12,7 +12,7 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, type Hull } from './layout/capsuleSlide';
 import { renderStops } from './stops';
-import { placeLabels, renderLabel, type Segment } from './labels';
+import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
@@ -1913,8 +1913,12 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   for (const n of layout.nodes.values()) {
     if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
-    const anchor = nodePx.get(n.id);
-    if (!placement || !anchor) continue;
+    const center = nodePx.get(n.id);
+    if (!placement || !center) continue;
+    // Anchor to the same closest-dot point placeLabels positioned around, so the
+    // label hangs off a real capsule marker (and zoom pivots there) rather than
+    // the node centre the dots may have slid away from.
+    const anchor = labelAnchor(center, stopsByNode.get(n.id));
     labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark));
   }
 
