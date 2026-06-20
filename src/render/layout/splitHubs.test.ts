@@ -232,6 +232,96 @@ test('splitHubs traversal A/B: OCTI_NO_STITCH reproduces the drawn break (checke
   assert.equal(r.ok, false, 'without the stitch, LP traversal MUST have a node gap (the bug)');
 });
 
+// ---- Phase-2 density-aware throttle ---------------------------------------
+// Build TWO qualifying star hubs whose centres are `sep` px apart (each a
+// distinct station group). Both qualify under the Phase-1 predicate, so with the
+// throttle off BOTH split; with a minSep that exceeds `sep`, only the DENSER one
+// (more linesPerArm) splits and the near neighbour is throttled.
+function twoHubs(sep: number, armsA = 6, linesA = 6, armsB = 6, linesB = 5): SupportGraph {
+  const nodes = new Map<string, SupportNode>();
+  const edges = new Map<string, SupportEdge>();
+  const adj = new Map<string, string[]>();
+  const lineRefs = new Map<string, { id: string; label: string; color: string }>();
+  const stopAt = new Set<string>();
+  const stations = new Map();
+  let lineSeq = 0;
+  const build = (hubId: string, center: Pixel, arms: number, linesPerArm: number, grp: string) => {
+    nodes.set(hubId, { id: hubId, pos: center });
+    adj.set(hubId, []);
+    const stopNodes = new Map<string, string>();
+    for (let i = 0; i < arms; i++) {
+      const ang = (i / arms) * Math.PI * 2;
+      const tip: Pixel = [center[0] + Math.cos(ang) * 200, center[1] + Math.sin(ang) * 200];
+      const tipId = hubId + '_t' + i;
+      nodes.set(tipId, { id: tipId, pos: tip });
+      adj.set(tipId, []);
+      const lineIds = new Set<string>();
+      for (let k = 0; k < linesPerArm; k++) {
+        const lid = 'L' + lineSeq++;
+        lineIds.add(lid);
+        lineRefs.set(lid, { id: lid, label: lid, color: '#000' });
+        stopNodes.set(lid, hubId);
+        stopAt.add(lid + '|' + hubId);
+      }
+      const eid = hubId + '_e' + i;
+      edges.set(eid, { id: eid, from: hubId, to: tipId, points: [center.slice() as Pixel, tip], lineIds });
+      adj.get(hubId)!.push(eid);
+      adj.get(tipId)!.push(eid);
+    }
+    stations.set(grp, { id: grp, label: grp, lngLat: [0, 0], nodeId: hubId, members: 4, stopNodes });
+  };
+  build('hubA', [0, 0], armsA, linesA, 'GA'); // denser (linesA > linesB)
+  build('hubB', [sep, 0], armsB, linesB, 'GB');
+  return { nodes, edges, adj, lineRefs, lineTraversals: new Map(), stations, stopAt };
+}
+
+test('splitHubs throttle: a near neighbour is skipped, the denser hub still splits', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  process.env.OCTI_SPLIT_MAXHUBS = '0'; // uncapped: throttle is the only gate
+  // Hubs 60px apart; offset ~ med/3 of 200px edges ≈ 66.7, so minSep factor 5 is
+  // huge relative to 60 -> hubB is throttled. (We assert relative behaviour, not
+  // a px value, to stay robust to the offset heuristic.)
+  process.env.OCTI_SPLIT_MINSEP = '5';
+  const h = twoHubs(60);
+  splitHubs(h);
+  const aSplit = !!h.stations.get('GA')!.splitNodeIds;
+  const bSplit = !!h.stations.get('GB')!.splitNodeIds;
+  delete process.env.OCTI_SPLIT_HUBS;
+  delete process.env.OCTI_SPLIT_MAXHUBS;
+  delete process.env.OCTI_SPLIT_MINSEP;
+  assert.ok(aSplit, 'the denser hub A splits');
+  assert.ok(!bSplit, 'the near neighbour hub B is throttled (not split)');
+});
+
+test('splitHubs throttle: MINSEP=0 disables the throttle (both near hubs split)', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  process.env.OCTI_SPLIT_MAXHUBS = '0';
+  process.env.OCTI_SPLIT_MINSEP = '0'; // throttle off
+  const h = twoHubs(60);
+  splitHubs(h);
+  const aSplit = !!h.stations.get('GA')!.splitNodeIds;
+  const bSplit = !!h.stations.get('GB')!.splitNodeIds;
+  delete process.env.OCTI_SPLIT_HUBS;
+  delete process.env.OCTI_SPLIT_MAXHUBS;
+  delete process.env.OCTI_SPLIT_MINSEP;
+  assert.ok(aSplit && bSplit, 'with the throttle off, both near hubs split');
+});
+
+test('splitHubs throttle: inert at cap=1 (single split, no neighbour check)', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  // cap defaults to 1; the throttle must never fire (no prior committed hub).
+  delete process.env.OCTI_SPLIT_MAXHUBS;
+  process.env.OCTI_SPLIT_MINSEP = '5';
+  const h = twoHubs(60);
+  splitHubs(h);
+  const splitCount = [h.stations.get('GA')!.splitNodeIds, h.stations.get('GB')!.splitNodeIds].filter(Boolean).length;
+  delete process.env.OCTI_SPLIT_HUBS;
+  delete process.env.OCTI_SPLIT_MINSEP;
+  // exactly the densest one splits (cap=1), and that decision is unaffected by the
+  // throttle (it would split at cap=1 regardless of MINSEP).
+  assert.equal(splitCount, 1, 'cap=1 splits exactly one hub; throttle is inert');
+});
+
 test('splitHubs contiguity: a planted through-line survives a recursive cut', () => {
   process.env.OCTI_SPLIT_HUBS = '1';
   // Build a hub where one line LP threads straight through (two opposite arms),

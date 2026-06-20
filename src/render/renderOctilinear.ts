@@ -1151,7 +1151,9 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           minGap: intraGap,
           arcLimit: CHAIN_ARC_LIMIT,
           extCap: 6 * spacing,
-          dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
+          dbgLabel:
+            (layout.nodes.get(s.nodeId)?.label ?? s.nodeId) +
+            `#${s.nodeId}@(${s.marks[0].pos[0].toFixed(0)},${s.marks[0].pos[1].toFixed(0)})`, // OCTI_PLACE_DEBUG: per-box root-cause classifier (label#id@pos for cross-reflow box matching)
           // spec §6 mask: dots of already-placed stations veto row states —
           // never dropped in this model (a masked station boxes instead)
           blocked: (p: Pixel) => {

@@ -458,6 +458,54 @@ export interface SmoothedPrecomputed {
   frame?: FrameRect;
 }
 
+/**
+ * Remove mid-route out-and-back spur steps from line traversals: the merge can
+ * pin a line's course onto a neighbouring corridor it merely crosses for a few
+ * px (the 9 poking into the red trunk south of Butler St), leaving an immediate
+ * edge+reverse pair in the traversal whose drawn lane dead-ends as a stub. Drop
+ * such pairs when the line has no stop at the spur's far node — a terminus
+ * retrace keeps its steps (its flag is set).
+ *
+ * SPINE EXEMPTION (recursive hub-split, drawn-contiguity, 2026-06): a
+ * splitInternal spine/fan edge's far node is a VIRTUAL sub-node of ONE real
+ * station (the leaf of a hub split). A through-line that the splitNode stitch
+ * routed onto a DEEPER leaf (e.g. h49 -> h49_sp-0 -> h49_sp-0_sp-1) can have its
+ * onward external arm pulled by mergeCoincidentPaths back onto the SHALLOWER
+ * leaf's corridor — so the merged walk reaches the deep leaf on the spine and
+ * must immediately retrace it to rejoin the arm. That retrace is an out-and-back
+ * whose drawn spine lane dead-ends in open space at the deep leaf (the
+ * doubly-recursive STUB). Because the leaf carries the line's rehomed stop flag,
+ * flagAtFar is set and the plain guard KEEPS the retrace — leaving the stub. But
+ * a spine retrace is NEVER a legitimate terminus (the station is one place,
+ * reunited by the capsule): drop it regardless of flagAtFar. Edge-property
+ * based, so it self-corrects at ANY recursion depth. Mutates layout.
+ */
+export function removeOutAndBackSpurs(layout: Layout): void {
+  const eById = new Map(layout.edges.map((e) => [e.id, e]));
+  for (const [lineId, trav] of layout.lineTraversals) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i + 1 < trav.length; i++) {
+        const a = trav[i];
+        const b = trav[i + 1];
+        if (a.edgeId !== b.edgeId || a.reversed === b.reversed) continue;
+        const e = eById.get(a.edgeId);
+        if (!e) continue;
+        const spine = !!(e as { splitInternal?: boolean }).splitInternal;
+        if (!spine) {
+          const stop = e.stops.get(lineId);
+          const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
+          if (flagAtFar) continue;
+        }
+        trav.splice(i, 2);
+        changed = true;
+        break;
+      }
+    }
+  }
+}
+
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
  *  → line ordering/untangle. Independent of the label/station toggles, so the
  *  UI caches this on first Generate and redraws cheaply via drawSmoothed when
@@ -892,34 +940,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const routed = image.paths.get(e.id);
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
   }
-  // Remove mid-route out-and-back spur steps from line traversals: the merge
-  // can pin a line's course onto a neighbouring corridor it merely crosses
-  // for a few px (the 9 poking into the red trunk south of Butler St),
-  // leaving an immediate edge+reverse pair in the traversal whose drawn lane
-  // dead-ends as a stub. Drop such pairs when the line has no stop at the
-  // spur's far node — a terminus retrace keeps its steps (its flag is set).
-  {
-    const eById = new Map(layout.edges.map((e) => [e.id, e]));
-    for (const [lineId, trav] of layout.lineTraversals) {
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (let i = 0; i + 1 < trav.length; i++) {
-          const a = trav[i];
-          const b = trav[i + 1];
-          if (a.edgeId !== b.edgeId || a.reversed === b.reversed) continue;
-          const e = eById.get(a.edgeId);
-          if (!e) continue;
-          const stop = e.stops.get(lineId);
-          const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
-          if (flagAtFar) continue;
-          trav.splice(i, 2);
-          changed = true;
-          break;
-        }
-      }
-    }
-  }
+  // Remove mid-route out-and-back spur steps (merge artifacts + recursive
+  // hub-split spine retraces). See removeOutAndBackSpurs for the full rationale.
+  removeOutAndBackSpurs(layout);
   orderLines(layout);
   // capsule rule counts only SERVED members: a routeless platform in a
   // group must not promote it to an interchange capsule

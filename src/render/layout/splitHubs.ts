@@ -360,7 +360,7 @@ function splitNode(
   if (DBG()) {
     // eslint-disable-next-line no-console
     console.error(
-      `[splitHubs] split ${nodeId} (deg=${d} ldeg=${ld} dir=${dir} maxBundle=${mb}) -> +[${plusEdges.length}e/${plusLines.size}l] -[${minusEdges.length}e/${minusLines.size}l] spine=${spineLines.size}`,
+      `[splitHubs] split ${nodeId} @(${node.pos[0].toFixed(0)},${node.pos[1].toFixed(0)}) (deg=${d} ldeg=${ld} dir=${dir} maxBundle=${mb}) -> +[${plusEdges.length}e/${plusLines.size}l] -[${minusEdges.length}e/${minusLines.size}l] spine=${spineLines.size}`,
     );
   }
 
@@ -445,7 +445,39 @@ export function splitHubs(h: SupportGraph): SupportGraph {
         ? maxHubs
         : Infinity;
 
+  // PHASE-2 DENSITY-AWARE THROTTLE (neighbor-crowding guard).
+  // Splitting a hub fans its lines out into two leaves offset ±perp·offset. If a
+  // NEAR-NEIGHBOUR hub is also split, the two splits' leaves land in adjacent
+  // grid cells; octi cannot seat them apart and a NEW pinched/coincident box
+  // appears at (or beside) the neighbour (uncapped London: Farringdon /
+  // Canada Water beside the King's-Cross / Whitechapel splits). The throttle
+  // walks candidates DENSEST-FIRST (so the most-deserving hub always wins) and
+  // SKIPS a candidate whose origin sits within minSep of an ALREADY-COMMITTED
+  // split hub: only the denser of two close hubs splits. minSep is expressed as
+  // a multiple of the leaf offset (OCTI_SPLIT_MINSEP, the leaf-spread scale), so
+  // it tracks the actual crowding radius regardless of network/zoom.
+  //   minSep = OCTI_SPLIT_MINSEP * opts.offset   (0 disables the throttle)
+  // The guard is INERT at cap=1 (one split → no prior committed hub to clear) and
+  // when the flag is off (splitHubs returns early), so both the shipped default
+  // and the cap=1 path stay byte-identical regardless of this factor.
+  // Default factor 5 was tuned by sweep on uncapped London (OCTI_WARP=1.6): it is
+  // the value that drives uncapped to ZERO new boxes vs flag-off (only Whitechapel
+  // stays boxed, as it is flag-off too), keeping the King's-Cross + Ealing-Broadway
+  // resolutions and the Whitechapel de-weld. NOTE the box count is highly reflow-
+  // sensitive to this factor (4.5→13 boxes, 5.0→1 box, 5.5→8): factor 5 is an
+  // isolated optimum, NOT a robust plateau — see the report. It only matters on the
+  // multi-hub path; raise/override OCTI_SPLIT_MINSEP for further sweeps.
+  const minSepFactor = (() => {
+    const raw = env('OCTI_SPLIT_MINSEP');
+    if (raw === undefined || raw === '') return 5; // sweep-tuned default; inert at cap=1
+    const v = Number(raw);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  })();
+  const minSep = minSepFactor * opts.offset;
+  const committed: Pixel[] = []; // origin positions of hubs we've already split
+
   let splits = 0;
+  let throttled = 0;
   for (const nodeId of candidates) {
     if (splits >= limit) break;
     // node may have been consumed/renamed by a prior split (it can't — we never
@@ -456,11 +488,33 @@ export function splitHubs(h: SupportGraph): SupportGraph {
     const mb = maxBundle(h, nodeId);
     if (!(dir >= opts.dirMin && mb >= opts.bundleMin)) continue;
 
+    // Neighbor-crowding throttle: defer this split if a denser hub already split
+    // close by (its leaves would otherwise crowd this neighbour into a new box).
+    if (minSep > 0) {
+      const node = h.nodes.get(nodeId)!;
+      let tooClose = false;
+      for (const c of committed) {
+        if (dist(node.pos, c) < minSep) { tooClose = true; break; }
+      }
+      if (tooClose) {
+        throttled++;
+        if (DBG()) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[splitHubs] THROTTLE skip ${nodeId} @(${h.nodes.get(nodeId)!.pos[0].toFixed(0)},${h.nodes.get(nodeId)!.pos[1].toFixed(0)}) ldeg=${ldeg(h, nodeId)} (within ${minSep.toFixed(1)}px of a committed split)`,
+          );
+        }
+        continue;
+      }
+    }
+
     const originId = stationByNode.get(nodeId) ?? nodeId;
+    const splitPos: Pixel = h.nodes.get(nodeId)!.pos.slice() as Pixel;
     const leaves = new Set<string>();
     splitNode(h, nodeId, originId, opts, 0, leaves);
     if (leaves.size < 2) continue; // no progress
 
+    committed.push(splitPos);
     splits++;
     // C3: record the leaves on the station so the capsule spans the group.
     if (stationByNode.has(nodeId)) {
@@ -475,7 +529,7 @@ export function splitHubs(h: SupportGraph): SupportGraph {
 
   if (DBG()) {
     // eslint-disable-next-line no-console
-    console.error(`[splitHubs] split ${splits} hub(s) of ${candidates.length} candidate(s)`);
+    console.error(`[splitHubs] split ${splits} hub(s) of ${candidates.length} candidate(s); throttled ${throttled} (minSep=${minSep.toFixed(1)}px, offset=${opts.offset.toFixed(1)})`);
   }
   return h;
 }
