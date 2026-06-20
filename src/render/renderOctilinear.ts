@@ -37,6 +37,30 @@ const snapAxis = (dx: number, dy: number): Pixel => {
   return AXES4[best];
 };
 
+// ---- DRAWN-contiguity capture (dev diagnostic) --------------------------
+// Populated by renderRibbons when OCTI_SPLIT_CAPTURE=1. Holds, per line, the
+// post-suppression lane-presence along its traversal, plus the suppressed lane
+// keys. The graph-level contiguity checker reads this to flag DRAWN gaps the
+// layout-edge graph cannot reveal (a line is graph-connected but its drawn
+// ribbon has an interior suppressed lane → a visible gap). See check-contiguity.
+export interface RibbonDrawnCapture {
+  /** lineId -> ordered traversal steps with drawn-lane presence. */
+  drawn: Record<string, Array<{ edgeId: string; present: boolean; splitInternal: boolean }>>;
+  /** suppressed lane keys (edgeId|lineId). */
+  suppressed: string[];
+}
+export let __ribbonDrawn: RibbonDrawnCapture | undefined;
+// dev A/B switch: when set, the suppression loop does NOT skip splitInternal
+// edges — reproducing the pre-fix DRAWN break (the spine lane is suppressed and
+// the through-line's ribbon develops a gap at the hub split). Used to prove the
+// drawn-contiguity check catches the bug. Off by default → fix is active.
+const noSplitFixDisabled = (): boolean =>
+  typeof process !== 'undefined' &&
+  (process as { env?: Record<string, string> }).env?.OCTI_NO_SPLIT_FIX === '1';
+const ribbonDrawnCapture = (): boolean =>
+  typeof process !== 'undefined' &&
+  (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_CAPTURE === '1';
+
 export interface OctiOptions {
   dark?: boolean;
   showLabels?: boolean;
@@ -388,6 +412,15 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const step = traversal[i];
         const e = edgeById.get(step.edgeId);
         if (!e) continue;
+        // Hub-split spine/fan: NEVER suppress a splitInternal edge's lane. It is
+        // intentionally short (~0.5 cell) and laterally offset between the + and -
+        // bundles, so it matches the jog-dominated sliver test exactly — but it is
+        // the ONLY drawn segment carrying the through-line across the split. Drop
+        // it and the ribbon has a visible gap even though the graph stays connected
+        // through the spine edge (hub-split drawn-contiguity, 2026-06).
+        // (dev A/B switch: OCTI_NO_SPLIT_FIX=1 disables this skip to reproduce
+        // the pre-fix drawn break and prove the check catches it.)
+        if (e.splitInternal && noSplitFixDisabled() === false) continue;
         const key = e.id + '|' + lineId;
         if (suppressed.has(key)) continue;
         const poly = segPath.get(key);
@@ -409,6 +442,43 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         suppressed.add(key);
         segPath.delete(key);
       }
+    }
+  }
+
+  // DRAWN-contiguity capture (dev diagnostic, env OCTI_SPLIT_CAPTURE=1). The
+  // graph-level checker (check-contiguity.ts) walks layout-edge incidence and
+  // cannot see this suppression pass — a line can be graph-connected yet have a
+  // GAP in its drawn ribbon because an interior lane was suppressed. Stash, per
+  // line, the drawn (post-suppression) lane presence along its traversal so the
+  // checker flags any interior hole. Also stash which suppressed lanes sat on a
+  // splitInternal edge — those are the hub-split gaps this fix closes.
+  if (ribbonDrawnCapture()) {
+    const drawn: Record<string, Array<{ edgeId: string; present: boolean; splitInternal: boolean }>> = {};
+    for (const [lineId, traversal] of layout.lineTraversals) {
+      if (!lineById.has(lineId)) continue;
+      const steps: Array<{ edgeId: string; present: boolean; splitInternal: boolean }> = [];
+      for (const step of traversal) {
+        const e = edgeById.get(step.edgeId);
+        if (!e) continue;
+        const key = e.id + '|' + lineId;
+        steps.push({
+          edgeId: e.id,
+          present: segPath.has(key) && !suppressed.has(key),
+          splitInternal: !!(e as { splitInternal?: boolean }).splitInternal,
+        });
+      }
+      drawn[lineId] = steps;
+    }
+    __ribbonDrawn = { drawn, suppressed: [...suppressed] };
+    if (process.env.OCTI_SPLIT_DEBUG === '1') {
+      let siEdges = 0; let siSuppressed = 0;
+      for (const e of layout.edges) if ((e as { splitInternal?: boolean }).splitInternal) siEdges++;
+      for (const k of suppressed) {
+        const eid = k.slice(0, k.lastIndexOf('|'));
+        const e = edgeById.get(eid);
+        if (e && (e as { splitInternal?: boolean }).splitInternal) siSuppressed++;
+      }
+      console.error(`[ribbon-drawn] layout edges=${layout.edges.length} splitInternal=${siEdges} | suppressed=${suppressed.size} of-which-splitInternal=${siSuppressed}`);
     }
   }
 

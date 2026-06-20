@@ -156,6 +156,82 @@ test('splitHubs contiguity: through-lines stay connected across a RECURSIVE spli
   assert.deepEqual(broken, [], `no line may break across a split; broken: ${broken.join(',')}`);
 });
 
+// ---- DRAWN-contiguity invariant: the spine must be in the line TRAVERSAL ----
+// The graph-level `brokenLines` check above is necessary but NOT sufficient: the
+// renderer draws and bridges strictly along `lineTraversals`. A through-line can
+// be graph-connected (its arms + spine form one component) yet still render as a
+// dangling stub if the spine edge is MISSING from its traversal — the renderer
+// then hops from the + arm (ending at the + leaf) straight to the − arm (starting
+// at the − leaf) and the connector pass refuses to bridge two lanes meeting at
+// DIFFERENT nodes (`endA !== startB`), leaving a visible free end (Stratford /
+// Poplar, 2026-06). This test asserts the traversal stitch: after a split, every
+// step boundary in a through-line's traversal is node-contiguous, and a spine
+// step is present where the line crosses the cut.
+function travContiguous(h: SupportGraph, lineId: string): { ok: boolean; spineSteps: number; gap?: string } {
+  const trav = h.lineTraversals.get(lineId);
+  if (!trav) return { ok: true, spineSteps: 0 };
+  const endOf = (s: { edgeId: string; reversed: boolean }) => {
+    const e = h.edges.get(s.edgeId)!;
+    return s.reversed ? e.from : e.to;
+  };
+  const startOf = (s: { edgeId: string; reversed: boolean }) => {
+    const e = h.edges.get(s.edgeId)!;
+    return s.reversed ? e.to : e.from;
+  };
+  let spineSteps = 0;
+  for (const s of trav) if (h.edges.get(s.edgeId)?.splitInternal) spineSteps++;
+  for (let i = 1; i < trav.length; i++) {
+    const a = endOf(trav[i - 1]);
+    const b = startOf(trav[i]);
+    if (a !== b) return { ok: false, spineSteps, gap: `step ${i - 1}->${i}: ${a} != ${b}` };
+  }
+  return { ok: true, spineSteps };
+}
+
+test('splitHubs traversal: the spine is spliced into a through-line traversal (drawn contiguity)', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  delete process.env.OCTI_NO_STITCH;
+  // Hub with a through-line LP threaded across two opposite arms, with an actual
+  // TRAVERSAL: enter via e0 (t0 -> hub), leave via e3 (hub -> t3). The split puts
+  // e0 and e3 on opposite leaves; the stitch must insert the spine between them.
+  const h = starHub(6, 6);
+  h.lineRefs.set('LP', { id: 'LP', label: 'LP', color: '#f00' });
+  h.edges.get('e0')!.lineIds.add('LP');
+  h.edges.get('e3')!.lineIds.add('LP');
+  h.lineTraversals.set('LP', [
+    { edgeId: 'e0', reversed: true },  // t0 -> hub
+    { edgeId: 'e3', reversed: false }, // hub -> t3
+  ]);
+  splitHubs(h);
+  delete process.env.OCTI_SPLIT_HUBS;
+
+  const r = travContiguous(h, 'LP');
+  assert.ok(r.ok, `LP traversal must be node-contiguous after split: ${r.gap}`);
+  assert.ok(r.spineSteps >= 1, `LP traversal must ride at least one spine step, got ${r.spineSteps}`);
+});
+
+test('splitHubs traversal A/B: OCTI_NO_STITCH reproduces the drawn break (checker is real)', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  process.env.OCTI_NO_STITCH = '1'; // disable the stitch -> pre-fix behaviour
+  const h = starHub(6, 6);
+  h.lineRefs.set('LP', { id: 'LP', label: 'LP', color: '#f00' });
+  h.edges.get('e0')!.lineIds.add('LP');
+  h.edges.get('e3')!.lineIds.add('LP');
+  h.lineTraversals.set('LP', [
+    { edgeId: 'e0', reversed: true },
+    { edgeId: 'e3', reversed: false },
+  ]);
+  splitHubs(h);
+  delete process.env.OCTI_SPLIT_HUBS;
+  delete process.env.OCTI_NO_STITCH;
+
+  // Pre-fix: the two arms land on DIFFERENT leaves with no spine step between
+  // them -> the traversal has a node gap (the exact discontinuity that renders as
+  // a dangling stub). This proves the stitched test above is meaningful.
+  const r = travContiguous(h, 'LP');
+  assert.equal(r.ok, false, 'without the stitch, LP traversal MUST have a node gap (the bug)');
+});
+
 test('splitHubs contiguity: a planted through-line survives a recursive cut', () => {
   process.env.OCTI_SPLIT_HUBS = '1';
   // Build a hub where one line LP threads straight through (two opposite arms),

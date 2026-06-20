@@ -33,8 +33,9 @@
  * other dev scripts / tests can assert on it.
  */
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { precomputeSmoothedSchematic } from '../src/render/schematic';
+import { precomputeSmoothedSchematic, drawSmoothedSchematic } from '../src/render/schematic';
 import { __splitDebug, type SplitCaptureEdge } from '../src/render/renderGeographic';
+import { __ribbonDrawn } from '../src/render/renderOctilinear';
 import { keepLargestWaterBodies } from '../src/water/bodies';
 import type { WaterCollection } from '../src/render/types';
 
@@ -72,11 +73,60 @@ export interface LevelReport {
   /** lineId -> the node-id sets of each component (only for broken-ish lines). */
   componentNodes: Record<string, string[][]>;
 }
+/** DRAWN-level report: the graph can be connected while the rendered RIBBON has
+ *  a gap, because renderRibbons' jog-dominated sliver suppression deletes an
+ *  interior lane. A line is drawn-broken when, walking its traversal, a lane is
+ *  suppressed/missing BETWEEN two drawn lanes (an interior hole), or the drawn
+ *  lanes form more than one contiguous run. */
+export interface DrawnReport {
+  /** lineId -> number of contiguous DRAWN runs (1 = contiguous ribbon). */
+  runs: Record<string, number>;
+  /** lineId -> the edge ids of each suppressed/missing INTERIOR step (the gaps). */
+  gaps: Record<string, string[]>;
+  /** lineId -> true iff at least one suppressed interior gap is on a splitInternal edge. */
+  splitGap: Record<string, boolean>;
+}
 export interface ContiguityReport {
   afterSplit: LevelReport;
   finalLayout: LevelReport;
+  /** Present only when drawSmoothed ran with OCTI_SPLIT_CAPTURE=1. */
+  drawn?: DrawnReport;
   splitGroupNodes: string[];
   lineIds: string[];
+}
+
+/** Count contiguous drawn runs and locate interior gaps from the captured
+ *  post-suppression lane presence (renderOctilinear.__ribbonDrawn). */
+function drawnReport(cap: NonNullable<typeof __ribbonDrawn>): DrawnReport {
+  const runs: Record<string, number> = {};
+  const gaps: Record<string, string[]> = {};
+  const splitGap: Record<string, boolean> = {};
+  for (const [lineId, steps] of Object.entries(cap.drawn)) {
+    if (steps.length === 0) { runs[lineId] = 0; gaps[lineId] = []; splitGap[lineId] = false; continue; }
+    // Trim leading/trailing absent steps (a terminus stub is not a GAP; only
+    // an absent lane sandwiched between present lanes breaks the ribbon).
+    let lo = 0; let hi = steps.length - 1;
+    while (lo <= hi && !steps[lo].present) lo++;
+    while (hi >= lo && !steps[hi].present) hi--;
+    let runCount = steps[lo]?.present ? 1 : 0;
+    let prevPresent = lo <= hi ? steps[lo].present : false;
+    const lineGaps: string[] = [];
+    let lineSplitGap = false;
+    for (let i = lo + 1; i <= hi; i++) {
+      const s = steps[i];
+      if (!s.present) {
+        // interior absent lane -> a gap
+        lineGaps.push(s.edgeId);
+        if (s.splitInternal) lineSplitGap = true;
+      }
+      if (s.present && !prevPresent) runCount++;
+      prevPresent = s.present;
+    }
+    runs[lineId] = runCount;
+    gaps[lineId] = lineGaps;
+    splitGap[lineId] = lineSplitGap;
+  }
+  return { runs, gaps, splitGap };
 }
 
 function levelReport(edges: SplitCaptureEdge[]): LevelReport {
@@ -98,7 +148,7 @@ export function runContiguity(dump: {
 }): ContiguityReport {
   // precomputeSmoothedSchematic drives the full smoothed layout once and
   // populates renderGeographic.__splitDebug (needs OCTI_SPLIT_CAPTURE=1).
-  precomputeSmoothedSchematic({
+  const pre = precomputeSmoothedSchematic({
     routes: dump.routes as never,
     tracks: dump.tracks as never,
     stations: dump.stations as never,
@@ -110,15 +160,24 @@ export function runContiguity(dump: {
   if (!__splitDebug) {
     throw new Error('OCTI_SPLIT_CAPTURE=1 not set, or pipeline returned early (CAPTURE_ONLY / empty graph)');
   }
+  // DRAWN level: drive the ribbon renderer so its jog-dominated sliver
+  // suppression runs and populates renderOctilinear.__ribbonDrawn. The
+  // graph-level capture above happens during precompute (before renderRibbons),
+  // so it CANNOT see suppression — that is precisely the gap that slipped past.
+  let drawn: DrawnReport | undefined;
+  if (typeof pre !== 'string') {
+    drawSmoothedSchematic(pre, { showStations: true, showLabels: false });
+    if (__ribbonDrawn) drawn = drawnReport(__ribbonDrawn);
+  }
   const afterSplit = levelReport(__splitDebug.afterSplit.edges);
   const finalLayout = levelReport(__splitDebug.finalLayout.edges);
   const lineIds = [...new Set([...Object.keys(afterSplit.components), ...Object.keys(finalLayout.components)])].sort();
-  return { afterSplit, finalLayout, splitGroupNodes: __splitDebug.afterSplit.splitGroupNodes, lineIds };
+  return { afterSplit, finalLayout, drawn, splitGroupNodes: __splitDebug.afterSplit.splitGroupNodes, lineIds };
 }
 
 // ---- CLI -----------------------------------------------------------------
 function brokenCount(rep: ContiguityReport, base?: ContiguityReport): {
-  afterSplit: number; finalLayout: number; details: string[];
+  afterSplit: number; finalLayout: number; drawn: number; details: string[];
 } {
   const details: string[] = [];
   const count = (
@@ -141,7 +200,45 @@ function brokenCount(rep: ContiguityReport, base?: ContiguityReport): {
     }
     return n;
   };
-  return { afterSplit: count('afterSplit'), finalLayout: count('finalLayout'), details };
+  // DRAWN level: a line's rendered ribbon has an interior gap (a suppressed/
+  // missing lane between two drawn lanes). This is the level that CATCHES the
+  // hub-split bug — the graph stays connected through the spine EDGE but the
+  // spine LANE was suppressed, so the drawn ribbon broke.
+  //
+  // The DRAWN break this gate fails on is precise and unambiguous: an interior
+  // gap on a SPLIT-INTERNAL edge. That means a through-line lost the ONLY drawn
+  // segment carrying it across the split (the + and - bundles are too far apart
+  // for the node-connector bridge to close the gap), so the rendered ribbon is
+  // visibly discontinuous even though the graph stays connected through the
+  // spine edge. A healthy split has 0 of these.
+  //
+  // NOTE on the noisy `runs` metric: many lines render as several contiguous
+  // drawn runs even flag-OFF, because the jog-dominated sliver suppression
+  // intentionally drops short retrace/spur lanes that the node connectors then
+  // bridge — a suppressed NON-split lane is NOT a visible gap. So a raw run
+  // count is not a contiguity signal; only a suppressed SPLIT-INTERNAL lane is.
+  // `runs`/`gaps` stay in the report (and details, with --verbose) for triage.
+  const verbose = process.argv.includes('--verbose');
+  const countDrawn = (): number => {
+    let n = 0;
+    if (!rep.drawn) return 0;
+    for (const lid of Object.keys(rep.drawn.runs)) {
+      const split = rep.drawn.splitGap[lid] === true;
+      if (split) {
+        n++;
+        const g = rep.drawn.gaps[lid] ?? [];
+        details.push(
+          `  [drawn] line ${lid}: ${rep.drawn.runs[lid]} drawn runs SPLIT-INTERNAL gap(s) -> {${g.slice(0, 4).join(',')}${g.length > 4 ? ',…' : ''}}`,
+        );
+      } else if (verbose && rep.drawn.runs[lid] > 1) {
+        details.push(
+          `  [drawn] line ${lid}: ${rep.drawn.runs[lid]} drawn runs (non-split suppressed slivers, bridged by connectors)`,
+        );
+      }
+    }
+    return n;
+  };
+  return { afterSplit: count('afterSplit'), finalLayout: count('finalLayout'), drawn: countDrawn(), details };
 }
 
 function main(): void {
@@ -169,7 +266,7 @@ function main(): void {
     basePath && existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf-8')) : undefined;
   const broken = brokenCount(rep, base);
   console.log(`lines=${rep.lineIds.length} splitGroupNodes=${rep.splitGroupNodes.length}`);
-  console.log(`BROKEN afterSplit=${broken.afterSplit}  finalLayout=${broken.finalLayout}` + (base ? ` (vs baseline ${basePath})` : ' (vs expected=1)'));
+  console.log(`BROKEN afterSplit=${broken.afterSplit}  finalLayout=${broken.finalLayout}  drawn=${rep.drawn ? broken.drawn : 'n/a'}` + (base ? ` (vs baseline ${basePath})` : ' (vs expected=1)'));
   for (const d of broken.details.slice(0, 60)) console.log(d);
   if (broken.details.length > 60) console.log(`  …and ${broken.details.length - 60} more`);
 
@@ -178,16 +275,17 @@ function main(): void {
     console.log(`wrote ${outPath}`);
   }
 
-  // Regression gate: with --assert, ANY broken line (component count above the
-  // baseline / above 1) fails the process so this is wireable into CI. A healthy
-  // hub-split keeps every subway line contiguous => 0 broken at both levels.
+  // Regression gate: with --assert, ANY broken line (graph component count above
+  // the baseline / above 1, OR a DRAWN interior gap) fails the process so this is
+  // wireable into CI. A healthy hub-split keeps every subway line contiguous both
+  // at the graph level AND in the rendered ribbon => 0 broken at every level.
   if (args.includes('--assert')) {
-    const total = broken.afterSplit + broken.finalLayout;
+    const total = broken.afterSplit + broken.finalLayout + broken.drawn;
     if (total > 0) {
-      console.error(`CONTIGUITY REGRESSION: ${total} broken (afterSplit=${broken.afterSplit} finalLayout=${broken.finalLayout})`);
+      console.error(`CONTIGUITY REGRESSION: ${total} broken (afterSplit=${broken.afterSplit} finalLayout=${broken.finalLayout} drawn=${broken.drawn})`);
       process.exit(1);
     }
-    console.log('CONTIGUITY OK: 0 broken lines.');
+    console.log('CONTIGUITY OK: 0 broken lines (graph + drawn).');
   }
 }
 

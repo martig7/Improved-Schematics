@@ -16,7 +16,7 @@
 //
 // Gated behind OCTI_SPLIT_HUBS; default off => byte-identical to baseline.
 
-import type { SupportGraph, SupportNode, SupportEdge, Pixel } from './types';
+import type { SupportGraph, SupportNode, SupportEdge, Pixel, TraversalStep } from './types';
 
 const env = (k: string): string | undefined =>
   typeof process !== 'undefined'
@@ -308,6 +308,54 @@ function splitNode(
   h.edges.set(spine.id, spine);
   h.adj.get(plusId)!.push(spine.id);
   h.adj.get(minus.id)!.push(spine.id);
+
+  // TRAVERSAL STITCH (drawn-contiguity, 2026-06): the support-graph surgery
+  // above rehomes the − side's external arms onto the minus leaf and adds the
+  // spine, but it does NOT touch lineTraversals — those were built before the
+  // split and still hop a through-line directly from its + arm (ending at
+  // plusId) to its − arm (starting at minus.id) with NO step on the spine. The
+  // renderer draws/bridges strictly along the traversal (drawsOn / connector
+  // pass are keyed off it, and the connector pass refuses to bridge two lanes
+  // that meet at DIFFERENT nodes via `endA !== startB`), so the spine lane is
+  // never drawn and the two arm lanes dead-end ~half a cell apart in open
+  // space — the visible dangling stub (Stratford mn34/mn35, Poplar). Fix: walk
+  // each spine line's traversal and, at every point where it steps directly
+  // between the two leaves (endpoint plusId ↔ minus.id, in either order),
+  // SPLICE the spine step in. Now the traversal reads arm→spine→arm, the spine
+  // lane is drawn, and consecutive lanes meet at the same node so the connector
+  // pass bridges them. Done in splitHubs (not the renderer) because this is the
+  // missing graph-traversal step, not a render-layer artifact.
+  if (spineLines.size > 0 && env('OCTI_NO_STITCH') !== '1') {
+    const endOf = (st: TraversalStep): string | undefined => {
+      const e = h.edges.get(st.edgeId);
+      if (!e) return undefined;
+      return st.reversed ? e.from : e.to;
+    };
+    const startOf = (st: TraversalStep): string | undefined => {
+      const e = h.edges.get(st.edgeId);
+      if (!e) return undefined;
+      return st.reversed ? e.to : e.from;
+    };
+    for (const lineId of spineLines) {
+      const trav = h.lineTraversals.get(lineId);
+      if (!trav || trav.length < 2) continue;
+      const out: TraversalStep[] = [trav[0]];
+      for (let i = 1; i < trav.length; i++) {
+        const prev = trav[i - 1];
+        const cur = trav[i];
+        const a = endOf(prev);
+        const b = startOf(cur);
+        // crosses the cut between the two leaves, and is not already on the spine
+        const crosses =
+          (a === plusId && b === minus.id) || (a === minus.id && b === plusId);
+        if (crosses && prev.edgeId !== spine.id && cur.edgeId !== spine.id) {
+          out.push({ edgeId: spine.id, reversed: a === minus.id });
+        }
+        out.push(cur);
+      }
+      if (out.length !== trav.length) h.lineTraversals.set(lineId, out);
+    }
+  }
 
   if (DBG()) {
     // eslint-disable-next-line no-console

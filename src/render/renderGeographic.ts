@@ -63,6 +63,8 @@ export interface SplitCaptureEdge {
   to: string;
   lines: string[];
   splitInternal?: boolean;
+  /** Pixel polyline of the routed edge (only the finalLayout capture, dev). */
+  points?: [number, number][];
 }
 export let __splitDebug:
   | {
@@ -296,6 +298,9 @@ function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string,
       lines,
       lineOrder: lines.map((l) => l.id).sort(),
       stops,
+      // Hub-split spine/fan: the renderer must never suppress this edge's lane,
+      // or the through-line's drawn ribbon breaks at the split (hub-split, 2026-06).
+      ...(e.splitInternal ? { splitInternal: true } : {}),
     });
   }
   const layout: Layout = { cellSize: 1, nodes, edges, lineTraversals: h.lineTraversals };
@@ -950,6 +955,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         from: e.from,
         to: e.to,
         lines: e.lines.map((l) => l.id),
+        ...(e.splitInternal ? { splitInternal: true } : {}),
+        points: e.path.map((c) => [c[0] * layout.cellSize, c[1] * layout.cellSize] as [number, number]),
       })),
     };
   }

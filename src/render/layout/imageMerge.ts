@@ -36,6 +36,10 @@ interface Run {
   pts: Pixel[];      // matching positions
   owners: string;    // canonical owner-set key
   lines: Set<string>;
+  /** True iff ANY owner edge of this run was a split-hub spine/fan edge. The
+   *  drawn ribbon's continuity across a hub split rides this run's lane, so the
+   *  renderer must never suppress it (hub-split, 2026-06). */
+  splitInternal?: boolean;
 }
 
 /** Split a polyline at absolute lattice crossings (multiples of `s` in x and
@@ -166,11 +170,15 @@ export function mergeCoincidentPaths(
     closeRun();
   }
 
-  // run line sets = union over owner edges
+  // run line sets = union over owner edges; a run is splitInternal if ANY
+  // owner was (the spine/fan lane must survive merge so the renderer keeps it).
   for (const run of runs) {
     for (const owner of run.owners.split(',')) {
       const oe = h.edges.get(owner);
-      if (oe) for (const l of oe.lineIds) run.lines.add(l);
+      if (oe) {
+        for (const l of oe.lineIds) run.lines.add(l);
+        if (oe.splitInternal) run.splitInternal = true;
+      }
     }
   }
 
@@ -202,6 +210,7 @@ export function mergeCoincidentPaths(
       to,
       points: run.pts.map((p) => p.slice() as Pixel),
       lineIds: new Set(run.lines),
+      ...(run.splitInternal ? { splitInternal: true } : {}),
     });
     if (!newAdj.has(from)) newAdj.set(from, []);
     if (!newAdj.has(to)) newAdj.set(to, []);
@@ -513,8 +522,9 @@ export function separateFusedStations(
 
       h.edges.delete(best.eid);
       img.paths.delete(best.eid);
-      h.edges.set(idA, { id: idA, from: e.from, to: newNid, points: head, lineIds: new Set(e.lineIds) });
-      h.edges.set(idB, { id: idB, from: newNid, to: e.to, points: tail, lineIds: new Set(e.lineIds) });
+      const si = e.splitInternal ? { splitInternal: true as const } : {};
+      h.edges.set(idA, { id: idA, from: e.from, to: newNid, points: head, lineIds: new Set(e.lineIds), ...si });
+      h.edges.set(idB, { id: idB, from: newNid, to: e.to, points: tail, lineIds: new Set(e.lineIds), ...si });
       img.paths.set(idA, head.map((p) => p.slice() as Pixel));
       img.paths.set(idB, tail.map((p) => p.slice() as Pixel));
 

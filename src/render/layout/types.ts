@@ -74,6 +74,11 @@ export interface LayoutEdge {
   lines: LineRef[];
   lineOrder: string[]; // ordered line ids (mutated by orderLines)
   stops: Map<string, EdgeStop>;
+  /** A spine/fan edge internal to a split hub (propagated from SupportEdge via
+   *  supportToLayout). The drawn ribbon's continuity across a hub split rides
+   *  this edge's lane, so the renderer must NEVER suppress its lane — see
+   *  renderOctilinear's jog-dominated sliver suppression (hub-split, 2026-06). */
+  splitInternal?: boolean;
 }
 
 export interface Layout {
