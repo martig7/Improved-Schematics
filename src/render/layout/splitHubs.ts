@@ -280,6 +280,21 @@ function splitNode(
   for (const e of plusEdges) for (const l of e.lineIds) plusLines.add(l);
   for (const e of minusEdges) for (const l of e.lineIds) minusLines.add(l);
 
+  // RECURSIVE-SPLIT FIX (contiguity): a line that arrives at THIS leaf via an
+  // INHERITED parent spine/fan edge (splitInternal) and then leaves via a single
+  // onward external arm has only ONE external arm here. That arm lands wholly on
+  // one partition side, so the line is in plusLines XOR minusLines, never the
+  // intersection — and the new spine would drop it, breaking the through-line
+  // exactly at this cut. The inherited splitInternal edges all stay on the + leaf
+  // (plusAdj keeps every non-minus edge), so they are a + side feed. Fold their
+  // lines into plusLines: a line crossing the cut (inherited-feed on +, external
+  // arm on −, or vice-versa) then lands in the intersection and rides the spine.
+  for (const eid of plusAdj) {
+    const e = h.edges.get(eid);
+    if (!e || !e.splitInternal) continue;
+    for (const l of e.lineIds) plusLines.add(l);
+  }
+
   // Spine edge +--− (the capsule axis). Carries the through-lines shared by both
   // sides; splitInternal so the guards never contract or merge it away.
   const spineLines = new Set<string>();

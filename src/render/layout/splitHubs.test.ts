@@ -105,3 +105,71 @@ test('splitHubs: stop flags re-home to the leaf carrying the line', () => {
     assert.ok(leafIds.has(nid), `stop flag ${key} homed to a split leaf`);
   }
 });
+
+// ---- contiguity invariant -------------------------------------------------
+// Per line, the edges that carry it (external arms + the splitInternal spines
+// they cross) must form ONE connected component over their {from,to} node
+// endpoints. A split that drops a through-line from a spine breaks the line into
+// 2+ components — exactly the subway-line-contiguity bug. This is the regression
+// the box-count tests never caught.
+function brokenLines(h: SupportGraph): string[] {
+  const broken: string[] = [];
+  for (const lineId of h.lineRefs.keys()) {
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let r = x;
+      while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+      return r;
+    };
+    const union = (a: string, b: string) => {
+      parent.set(a, parent.get(a) ?? a);
+      parent.set(b, parent.get(b) ?? b);
+      parent.set(find(a), find(b));
+    };
+    let carries = false;
+    for (const e of h.edges.values()) {
+      if (!e.lineIds.has(lineId)) continue;
+      carries = true;
+      union(e.from, e.to);
+    }
+    if (!carries) continue;
+    const roots = new Set<string>();
+    for (const k of parent.keys()) roots.add(find(k));
+    if (roots.size > 1) broken.push(lineId);
+  }
+  return broken;
+}
+
+test('splitHubs contiguity: through-lines stay connected across a RECURSIVE split', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  // 6 arms x 5 lines => ldeg 30 >> LDEG_RECURSE (6), so the hub recurses to a
+  // multi-level leaf chain. The depth-1 spine is where the bug manifested.
+  const h = starHub(6);
+  splitHubs(h);
+  delete process.env.OCTI_SPLIT_HUBS;
+
+  // sanity: the split actually recursed (more than one spine level)
+  const spines = [...h.edges.values()].filter((e) => e.splitInternal && e.id.includes('_spine'));
+  assert.ok(spines.length >= 2, `expected a recursive (multi-spine) split, got ${spines.length}`);
+
+  const broken = brokenLines(h);
+  assert.deepEqual(broken, [], `no line may break across a split; broken: ${broken.join(',')}`);
+});
+
+test('splitHubs contiguity: a planted through-line survives a recursive cut', () => {
+  process.env.OCTI_SPLIT_HUBS = '1';
+  // Build a hub where one line LP threads straight through (two opposite arms),
+  // so it must ride every spine it crosses. With dense bundles forcing recursion,
+  // LP previously dropped off the depth-1 spine.
+  const h = starHub(6, 6);
+  // add a dedicated through-line LP on two opposite arms (e0 and e3 are antipodal)
+  h.lineRefs.set('LP', { id: 'LP', label: 'LP', color: '#f00' });
+  h.edges.get('e0')!.lineIds.add('LP');
+  h.edges.get('e3')!.lineIds.add('LP');
+  splitHubs(h);
+  delete process.env.OCTI_SPLIT_HUBS;
+
+  const broken = brokenLines(h);
+  assert.ok(!broken.includes('LP'), `through-line LP must stay contiguous; broken: ${broken.join(',')}`);
+  assert.deepEqual(broken, [], `no line may break; broken: ${broken.join(',')}`);
+});

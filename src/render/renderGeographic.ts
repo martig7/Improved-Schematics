@@ -49,6 +49,32 @@ export let __warpDebug:
     }
   | null = null;
 
+// Hub-split contiguity capture (dev diagnostic, env OCTI_SPLIT_CAPTURE=1). Stashes
+// a per-line edge incidence at two pipeline checkpoints so dev/check-contiguity.ts
+// can count connected components per line WITHOUT re-running the pipeline twice:
+//   afterSplit — the support graph immediately after splitHubs (isolates the graph
+//                surgery). Each entry: edgeId -> { from, to, lines[], splitInternal }.
+//   finalLayout — the Layout after octi/merge/supportToLayout/untangle (catches
+//                 breaks introduced downstream of the surgery).
+// Pure data (no Map/Set) so the importing dev script needs no engine types.
+export interface SplitCaptureEdge {
+  id: string;
+  from: string;
+  to: string;
+  lines: string[];
+  splitInternal?: boolean;
+}
+export let __splitDebug:
+  | {
+      afterSplit: { edges: SplitCaptureEdge[]; splitGroupNodes: string[] };
+      finalLayout: { edges: SplitCaptureEdge[] };
+    }
+  | null = null;
+
+const splitCapture = (): boolean =>
+  typeof process !== 'undefined' &&
+  (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_CAPTURE === '1';
+
 export interface GeoInput {
   routes: Route[];
   tracks: Track[];
@@ -727,6 +753,23 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // their trunk lines depart in distinct directions. Behind OCTI_SPLIT_HUBS;
   // no-op otherwise (byte-identical baseline). A capsule reunites the leaves.
   splitHubs(support);
+  if (splitCapture()) {
+    const splitGroupNodes: string[] = [];
+    for (const n of support.nodes.values()) if (n.splitGroup) splitGroupNodes.push(n.id);
+    __splitDebug = {
+      afterSplit: {
+        edges: [...support.edges.values()].map((e) => ({
+          id: e.id,
+          from: e.from,
+          to: e.to,
+          lines: [...e.lineIds],
+          ...(e.splitInternal ? { splitInternal: true } : {}),
+        })),
+        splitGroupNodes,
+      },
+      finalLayout: { edges: [] },
+    };
+  }
   const medLen = medianEdgeLength(support);
   const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
   // Grid fineness vs contraction: octi contracts away everything shorter
@@ -897,6 +940,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     untangleLineOrder(layout);
   }
   lap('untangle');
+
+  if (splitCapture() && __splitDebug) {
+    // Final-layout edge incidence (post octi/merge/supportToLayout). Components
+    // of these per line, vs the afterSplit components, localize where a gap arose.
+    __splitDebug.finalLayout = {
+      edges: layout.edges.map((e) => ({
+        id: e.id,
+        from: e.from,
+        to: e.to,
+        lines: e.lines.map((l) => l.id),
+      })),
+    };
+  }
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
