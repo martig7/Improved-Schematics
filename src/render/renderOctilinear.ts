@@ -1973,7 +1973,17 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const pb = lineEndAt(b.edgeId, lineId, startB);
       if (!pa || !pb) continue;
       const gap = hyp(pb[0] - pa[0], pb[1] - pa[1]);
-      if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
+      // Hub-split spine boundary: where a splitInternal spine/fan meets an arm,
+      // the two slot-offset lane ends can diverge by more than the spacing*8 jog
+      // cap (NYC green line: 45.7px > 44px), so the connector would be skipped and
+      // the through-line ribbon would dead-end as two open-space stubs. A gap at a
+      // virtual hub-split's sole through-connection is never a legitimate non-jog,
+      // so always bridge it. (OCTI_NO_SPLIT_FIX reverts this for the A/B test.)
+      const spineBoundary =
+        noSplitFixDisabled() === false &&
+        (!!(ea as { splitInternal?: boolean }).splitInternal ||
+          !!(eb as { splitInternal?: boolean }).splitInternal);
+      if (gap < 0.5 || (gap > spacing * 8 && !spineBoundary)) continue; // coincident, or not a lane jog
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
       // Tangent-matched cubic instead of a straight chord: a lateral lane jog
