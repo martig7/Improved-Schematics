@@ -74,11 +74,13 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
 // Box-warp strength: the LOCAL dense-core expansion (densityBoxWarp). 0 (center)
-// = the tuned default (expand 4 / growth 1.2). Right (stylized) magnifies crowded
-// hubs more AND lets the map grow to fit, so cores gain room instead of crushing
-// the surround; left (realistic) eases the box warp toward off. Pos in [-1, +1].
-const boxExpandFromPos = (p: number) => Math.max(1, 4 + 4 * p);
-const boxGrowthFromPos = (p: number) => Math.max(1, 1.2 + 0.8 * p);
+// = the tuned default (expand 4 / growth 1.2). MULTIPLICATIVE in the slider
+// position (each step scales by a constant), so the control is symmetric and
+// uses its full range: right (stylized) magnifies crowded hubs up to expand 16 /
+// growth 3.0 — the useful ceiling (past ~16 the extra distortion reintroduces
+// boxes); left (realistic) eases the box warp toward off (expand → 1). [-1, +1].
+const boxExpandFromPos = (p: number) => Math.max(1, 4 * Math.pow(4, p));
+const boxGrowthFromPos = (p: number) => Math.max(1, 1.2 * Math.pow(2.5, p));
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
