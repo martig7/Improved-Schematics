@@ -837,13 +837,14 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     // retry walks the slack UP from 0.25px so each rescued capsule takes the
     // MINIMUM overlap that seats. Cross-station separation (the §6 blocked mask)
     // stays strict at the full 2r. A bundle still too tight past the cap stays an
-    // honest mega box. OCTI_BOX_RESCUE = cap in px (default 0 = off => identical).
+    // honest mega box. OCTI_BOX_RESCUE = cap in px; default 1.5 (the shipped
+    // declutter); OCTI_BOX_RESCUE=0 disables (legacy mega-box fallback).
     const boxRescueMax = (() => {
       const env =
         typeof process !== 'undefined'
           ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_RESCUE)
           : NaN;
-      return Number.isFinite(env) && env > 0 ? env : 0;
+      return Number.isFinite(env) && env >= 0 ? env : 1.5;
     })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;

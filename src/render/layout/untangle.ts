@@ -94,9 +94,13 @@ export const cornerTurnFactor = (dot: number): number =>
 // straight end and treats 90deg corners and sharp hairpins alike (0.15). This
 // U-shape in dot^2 minimizes at 90deg and rises to OCTI_XANGLE_K (default 6) at
 // BOTH ends, so the optimizer prefers right-angle crossings and penalizes both
-// braid directions. Default off uses cornerTurnFactor (byte-identical).
-const xAngleOn = (): boolean =>
-  typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_XANGLE === '1';
+// braid directions. Default ON (the shipped detangle); OCTI_XANGLE=0 reverts to
+// the legacy monotonic cornerTurnFactor.
+const xAngleOn = (): boolean => {
+  const v =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_XANGLE : undefined;
+  return v !== '0';
+};
 const xAngleK = (() => {
   const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XANGLE_K) : NaN;
   return Number.isFinite(v) && v > 0 ? v : 6;
