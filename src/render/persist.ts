@@ -20,6 +20,8 @@ export interface MapBundle {
   city: string;
   /** Opaque UI settings blob (mode, toggles, applied appearance, export prefs). */
   settings: unknown;
+  /** Opaque detail-area selections (plain data: id/box/color/name). */
+  selections?: unknown;
   pre: SmoothedPrecomputed | string;
 }
 

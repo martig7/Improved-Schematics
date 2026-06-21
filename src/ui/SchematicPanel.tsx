@@ -237,12 +237,21 @@ export function SchematicPanel() {
   const exportFns = useRef(new Map<string, () => ExportDescriptor | null>());
   // Live mirror of `selections`, read by the imperative dep-[] callbacks.
   const selectionsRef = useRef<Selection[]>([]);
+  // Detail areas pending restore from a loaded map file. The inject effect's
+  // layout-change branch (which normally CLEARS areas) installs these instead.
+  const restoreSelectionsRef = useRef<Selection[] | null>(null);
+  // When a load switches mode, skip the mode effect's smoothedReady blank for one
+  // run, so the restored map shows in a single settle (no transient that would
+  // race the area restore). Live mirror of `mode` for the (dep-[]) import handler.
+  const skipModeBlankRef = useRef(false);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   // Build marker — fires once when the panel mounts so the game's dev console
   // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p17 (save/load maps) loaded ✦ — Settings ⚙ → Map file → Save/Load a generated map to a file; loading restores it instantly (no rebuild)',
+      '%c[improved-schematics] BUILD popout-box-p18 (save/load maps + areas) loaded ✦ — Settings ⚙ → Map file → Save/Load; the file now also carries the detail areas, restored on load',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -595,13 +604,13 @@ export function SchematicPanel() {
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? 'map';
     const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
     try {
-      const json = serializeMap({ version: 1, city, settings, pre });
+      const json = serializeMap({ version: 1, city, settings, selections, pre });
       triggerDownload(new Blob([json], { type: 'application/json' }), 'json', `improvedschematics-map-${city}`);
       setMapMsg(`Saved · ${(json.length / 1024 / 1024).toFixed(1)} MB`);
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, triggerDownload, modState]);
+  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, selections, triggerDownload, modState]);
 
   // Load a saved map: restore the precompute + settings and draw it without
   // recomputing. The fresh `applied` object forces the svg memo to redraw from the
@@ -638,9 +647,20 @@ export function SchematicPanel() {
         setLinePos(s.applied.linePos);
         setBoxWarpPos(s.applied.boxWarpPos);
       }
+      // Queue the saved detail areas; the inject effect restores them after the
+      // new layout settles (instead of clearing). Bump the id counter past the
+      // restored ids so freshly drawn areas don't collide / reuse colors.
+      const restored = Array.isArray(bundle.selections) ? (bundle.selections as Selection[]) : [];
+      restoreSelectionsRef.current = restored;
+      selCountRef.current = restored.reduce((mx, sel) => {
+        const n = Number(/sel-(\d+)/.exec(sel.id)?.[1]);
+        return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
+      }, selCountRef.current);
       const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
       smoothedCacheRef.current = { pre: bundle.pre };
       smoothedStore = { city: currentCity, pre: bundle.pre };
+      if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
+      setSelections([]); // drop any current areas; the inject effect installs the saved ones
       setGenerating(false);
       setSmoothedReady(true);
       setMode('smoothed');
@@ -843,8 +863,14 @@ export function SchematicPanel() {
     } else {
       fit();
       // A different layout (mode switch, regen, city/water reframe) invalidates the
-      // detail areas — their boxes are in the old layout's coords. Drop them.
-      if (lastLayoutIdRef.current) clearSelections();
+      // detail areas — their boxes are in the old layout's coords. Drop them — UNLESS
+      // this layout came from a loaded map file, in which case restore its areas.
+      if (lastLayoutIdRef.current) {
+        const restore = restoreSelectionsRef.current;
+        restoreSelectionsRef.current = null;
+        if (restore) setSelections(restore);
+        else clearSelections();
+      }
     }
     lastLayoutIdRef.current = layoutIdRef.current;
     // Surface the smoothed build time (geographic renders are cheap + auto).
@@ -916,6 +942,8 @@ export function SchematicPanel() {
   // paint the spinner first, then flip the gate to trigger the draw. With no
   // stored map it just shows the Generate Map button.
   useEffect(() => {
+    // A map load already installed a ready cache + mode='smoothed'; don't blank it.
+    if (skipModeBlankRef.current) { skipModeBlankRef.current = false; return; }
     const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
     const hasStored = mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity;
     setSmoothedReady(false);
@@ -1142,7 +1170,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.13 · save-load-maps</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.14 · save-load+areas</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
