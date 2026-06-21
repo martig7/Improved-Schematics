@@ -141,6 +141,10 @@ export function SchematicPanel() {
   // (boxRef + the overlay div) to match the pan/zoom model that bypasses React.
   const [drawMode, setDrawMode] = useState(false);
   const [selBox, setSelBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // The inset/popout: a draggable callout that shows the selected region magnified.
+  // `insetOn` mounts the panel; its rect lives on the map (content coords) in a ref
+  // so the imperative positioner survives pan/zoom, like the selection box.
+  const [insetOn, setInsetOn] = useState(false);
   // Export controls live in a small settings popover opened via the gear icon in
   // the top-right of the panel. The chosen format drives the Download button.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -217,12 +221,18 @@ export function SchematicPanel() {
   const boxRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const boxOverlayRef = useRef<HTMLDivElement>(null);
+  // Inset panel: its content-space rect (source of truth for positioning), the
+  // panel div, the body that holds the magnified SVG, and the drag origin.
+  const insetRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const insetRef = useRef<HTMLDivElement>(null);
+  const insetBodyRef = useRef<HTMLDivElement>(null);
+  const insetDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   // Build marker — fires once when the panel mounts so the game's dev console
   // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p1 (area-select) loaded ✦ — "Draw area" appears in Smoothed mode after Generate Map',
+      '%c[improved-schematics] BUILD popout-box-p2 (inset) loaded ✦ — Draw a box (Smoothed mode) → a draggable "Detail" inset appears',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -520,6 +530,19 @@ export function SchematicPanel() {
     el.style.height = `${(b.y1 - b.y0) * view.scale}px`;
   }, []);
 
+  // Position the inset panel (content rect -> screen) so it stays anchored to its
+  // map location through pan/zoom. Its on-screen size scales with zoom like the map.
+  const positionInset = useCallback(() => {
+    const el = insetRef.current;
+    const view = viewRef.current;
+    const ir = insetRectRef.current;
+    if (!el || !view || !ir) return;
+    el.style.left = `${(ir.x - view.vx) * view.scale}px`;
+    el.style.top = `${(ir.y - view.vy) * view.scale}px`;
+    el.style.width = `${ir.w * view.scale}px`;
+    el.style.height = `${ir.h * view.scale}px`;
+  }, []);
+
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
   const applyToDom = useCallback((updateSizes: boolean) => {
@@ -531,6 +554,7 @@ export function SchematicPanel() {
     const h = vp.clientHeight / view.scale;
     svgEl.setAttribute('viewBox', `${view.vx} ${view.vy} ${w} ${h}`);
     positionBox();
+    positionInset();
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
@@ -678,6 +702,25 @@ export function SchematicPanel() {
     return () => vp.removeEventListener('wheel', onWheel);
   }, [applyToDom]);
 
+  // Build/refresh the inset's magnified content: re-parse the same SVG markup and
+  // frame it to the selection box (a fresh parse, so no main-view counter-scaling),
+  // then size + position the panel. Runs after mount and whenever box/map change.
+  useEffect(() => {
+    if (!insetOn || !selBox) return;
+    const body = insetBodyRef.current;
+    if (body) {
+      body.innerHTML = svg;
+      const isvg = body.querySelector('svg');
+      if (isvg) {
+        isvg.setAttribute('viewBox', `${selBox.x0} ${selBox.y0} ${selBox.x1 - selBox.x0} ${selBox.y1 - selBox.y0}`);
+        isvg.setAttribute('width', '100%');
+        isvg.setAttribute('height', '100%');
+        isvg.removeAttribute('data-frame');
+      }
+    }
+    positionInset();
+  }, [insetOn, selBox, svg, positionInset]);
+
   // Screen (client) px -> map/content coords, via the current view.
   const screenToContent = (clientX: number, clientY: number) => {
     const vp = viewportRef.current;
@@ -712,6 +755,13 @@ export function SchematicPanel() {
     viewRef.current = { ...view, vx: view.vx - e.movementX / view.scale, vy: view.vy - e.movementY / view.scale };
     applyToDom(false);
   };
+  const clearSelection = () => {
+    boxRef.current = null;
+    setSelBox(null);
+    positionBox();
+    insetRectRef.current = null;
+    setInsetOn(false);
+  };
   const endDrag = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     if (drawMode && drawStartRef.current) {
@@ -720,14 +770,41 @@ export function SchematicPanel() {
       // Commit only a real drag; a click (tiny box) clears the selection.
       if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
         setSelBox(b);
+        // Spawn the inset: a magnified (~2.5x) callout placed to the right of the
+        // source box; the user drags it wherever reads best.
+        const w = b.x1 - b.x0, h = b.y1 - b.y0;
+        const MAG = 2.5;
+        insetRectRef.current = { x: b.x1 + w * 0.4, y: b.y0, w: w * MAG, h: h * MAG };
+        setInsetOn(true);
       } else {
-        boxRef.current = null;
-        setSelBox(null);
-        positionBox();
+        clearSelection();
       }
       return;
     }
     setDragging(false);
+  };
+  // Inset panel drag — moves its content-space rect; stopPropagation so it doesn't
+  // also pan the map underneath.
+  const onInsetDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    const ir = insetRectRef.current;
+    if (!ir) return;
+    insetDragRef.current = { sx: e.clientX, sy: e.clientY, ox: ir.x, oy: ir.y };
+  };
+  const onInsetMove = (e: React.PointerEvent) => {
+    const d = insetDragRef.current;
+    const view = viewRef.current;
+    const ir = insetRectRef.current;
+    if (!d || !view || !ir) return;
+    e.stopPropagation();
+    insetRectRef.current = { ...ir, x: d.ox + (e.clientX - d.sx) / view.scale, y: d.oy + (e.clientY - d.sy) / view.scale };
+    positionInset();
+  };
+  const onInsetUp = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    insetDragRef.current = null;
   };
 
   // Labels/stations toggles recompute the SVG synchronously. Flash the small
@@ -839,7 +916,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · area-select</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -851,9 +928,9 @@ export function SchematicPanel() {
         )}
         {selBox && (
           <button
-            onClick={() => { boxRef.current = null; setSelBox(null); positionBox(); }}
+            onClick={clearSelection}
             style={toggleStyle(false)}
-            title="Clear the selected area"
+            title="Clear the selected area + inset"
           >
             ✕ Clear
           </button>
@@ -1138,6 +1215,56 @@ export function SchematicPanel() {
             boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
           }}
         />
+        {/* Inset / popout panel: a magnified callout of the selection, draggable by
+            its header; positioned imperatively (positionInset) in content space. */}
+        {insetOn && (
+          <div
+            ref={insetRef}
+            style={{
+              position: 'absolute',
+              border: '1.5px solid rgba(255,255,255,0.9)',
+              borderRadius: 6,
+              boxShadow: '0 6px 22px rgba(0,0,0,0.55)',
+              overflow: 'hidden',
+              background: '#18181b',
+            }}
+          >
+            <div
+              onPointerDown={onInsetDown}
+              onPointerMove={onInsetMove}
+              onPointerUp={onInsetUp}
+              onPointerLeave={onInsetUp}
+              style={{
+                position: 'absolute',
+                insetInline: 0,
+                top: 0,
+                height: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0 6px',
+                background: 'rgba(255,255,255,0.14)',
+                color: '#e5e5e5',
+                font: '600 9px system-ui, sans-serif',
+                letterSpacing: 0.3,
+                cursor: 'move',
+                userSelect: 'none',
+                touchAction: 'none',
+                zIndex: 1,
+              }}
+            >
+              <span>◳ DETAIL</span>
+              <span
+                onPointerDown={(e) => { e.stopPropagation(); clearSelection(); }}
+                style={{ cursor: 'pointer', padding: '0 2px' }}
+                title="Remove inset"
+              >
+                ✕
+              </span>
+            </div>
+            <div ref={insetBodyRef} style={{ position: 'absolute', inset: '16px 0 0 0' }} />
+          </div>
+        )}
         {mode === 'smoothed' && !smoothedReady && !generating && (
           <div
             style={{
