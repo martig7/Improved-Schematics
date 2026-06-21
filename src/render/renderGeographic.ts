@@ -411,6 +411,8 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
+  /** input station id -> render position (px), for the magnifier's box hit-test. */
+  stationPx: Map<string, Pixel>;
   transfers: TransferPair[];
   stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
   /** Static overlay drawn between water and routes (water polygons + optional
@@ -846,6 +848,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       nodePx.set(n.id, placed);
     }
   }
+  // Bridge for the magnifier's box-picking: input station id -> render position.
+  // Drawn markers use derived support-node ids, so map each input station through
+  // its group's support node to a pixel the UI can hit-test against the drawn box.
+  const groupById = new Map((groups as { id: string; stationIds?: string[] }[]).map((g) => [g.id, g]));
+  const stationPx = new Map<string, Pixel>();
+  for (const [gid, sp] of supportM.stations) {
+    const px = nodePx.get(sp.nodeId);
+    if (!px) continue;
+    for (const sid of groupById.get(gid)?.stationIds ?? []) stationPx.set(sid, [px[0], px[1]]);
+  }
   for (const e of layout.edges) {
     const routed = image.paths.get(e.id);
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
@@ -922,7 +934,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to

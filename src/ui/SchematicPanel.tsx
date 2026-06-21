@@ -17,6 +17,7 @@ import {
   drawSmoothedSchematic,
   type SmoothedPrecomputed,
 } from '../render/schematic';
+import { cropSubgraph } from '../render/cropSubgraph';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -232,7 +233,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p3 (inset declutter: thin lines) loaded ✦ — Draw a box → draggable Detail inset with thinned, spread-out lanes',
+      '%c[improved-schematics] BUILD popout-box-p4 (inset re-sim: cropped sub-graph) loaded ✦ — Draw a box → Detail inset re-simulates that cluster, spread out',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -366,12 +367,13 @@ export function SchematicPanel() {
   const lastLayoutIdRef = useRef<unknown>(undefined);
   const geoIdRef = useRef<{ mode: RenderMode; geography: GeographyData | undefined } | null>(null);
 
-  const svg = useMemo(() => {
+  // The game exposes its real station groups (spatial-proximity-merged platforms,
+  // used by the in-game SchematicMapMenu) via an undocumented method; falls back
+  // to trackGroupId grouping if absent. Extracted to a callback so the magnifier
+  // inset can build the SAME input to crop + re-simulate a sub-network.
+  const buildInput = useCallback(() => {
     const dark = api.ui.getResolvedTheme() === 'dark';
-    // The game exposes its real station groups (spatial-proximity-merged
-    // platforms, used by the in-game SchematicMapMenu) via an undocumented
-    // method. Falls back to trackGroupId grouping if absent or empty.
-    const buildInput = () => ({
+    return {
       routes: api.gameState.getRoutes(),
       tracks: api.gameState.getTracks(),
       stations: api.gameState.getStations(),
@@ -395,8 +397,10 @@ export function SchematicPanel() {
           stationRadius: applied.stationRadius,
         },
       },
-    });
+    };
+  }, [geography, mode, showStations, showLabels, applied]);
 
+  const svg = useMemo(() => {
     if (mode === 'smoothed') {
       // Stay blank until the user clicks Generate Map.
       if (!smoothedReady) {
@@ -438,7 +442,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, geography, smoothedReady, applied]);
+  }, [mode, showStations, showLabels, geography, smoothedReady, applied, buildInput]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -702,32 +706,55 @@ export function SchematicPanel() {
     return () => vp.removeEventListener('wheel', onWheel);
   }, [applyToDom]);
 
-  // Build/refresh the inset's magnified content: re-parse the same SVG markup and
-  // frame it to the selection box (a fresh parse, so no main-view counter-scaling),
-  // then size + position the panel. Runs after mount and whenever box/map change.
+  // The inset RE-SIMULATES the cropped sub-network: pick the input stations inside
+  // the box (via the precompute's stationPx bridge), crop the network to them + a
+  // one-hop ring, and re-precompute that small graph standalone — so the dense
+  // cluster spreads out in a full canvas and its mega-boxes resolve. Deferred
+  // behind a spinner so the re-sim doesn't jank the drag. Falls back to a magnified
+  // crop of the main map in geographic mode or when too few stations are selected.
   useEffect(() => {
     if (!insetOn || !selBox) return;
     const body = insetBodyRef.current;
-    if (body) {
+    if (!body) return;
+    const fit = (isvg: SVGSVGElement | null) => {
+      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
+      positionInset();
+    };
+    const cropFallback = () => {
       body.innerHTML = svg;
       const isvg = body.querySelector('svg');
-      if (isvg) {
-        isvg.setAttribute('viewBox', `${selBox.x0} ${selBox.y0} ${selBox.x1 - selBox.x0} ${selBox.y1 - selBox.y0}`);
-        isvg.setAttribute('width', '100%');
-        isvg.setAttribute('height', '100%');
-        isvg.removeAttribute('data-frame');
-        // "Lines smaller to fit the magnification": hold route strokes at their
-        // nominal width while the geometry magnifies, so bundled lanes separate
-        // into visible gaps instead of one fat band (vector-effect ignores the
-        // viewBox zoom for stroke width). The genuine re-layout (box-warp) for the
-        // coincident/boxed cores is the next step.
-        const st = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-        st.textContent = 'path{vector-effect:non-scaling-stroke}';
-        isvg.insertBefore(st, isvg.firstChild);
-      }
+      if (isvg) isvg.setAttribute('viewBox', `${selBox.x0} ${selBox.y0} ${selBox.x1 - selBox.x0} ${selBox.y1 - selBox.y0}`);
+      fit(isvg);
+    };
+    const pre = smoothedCacheRef.current?.pre;
+    if (!pre || typeof pre === 'string') { cropFallback(); return; }
+    const core = new Set<string>();
+    for (const [sid, px] of pre.stationPx) {
+      if (px[0] >= selBox.x0 && px[0] <= selBox.x1 && px[1] >= selBox.y0 && px[1] <= selBox.y1) core.add(sid);
     }
+    if (core.size < 2) { cropFallback(); return; }
+    body.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#999;font:11px system-ui">re-simulating…</div>';
     positionInset();
-  }, [insetOn, selBox, svg, positionInset]);
+    let cancelled = false;
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (cancelled || !insetBodyRef.current) return;
+        let out: string;
+        try {
+          const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core));
+          out = typeof subPre === 'string' ? subPre : drawSmoothedSchematic(subPre, { showLabels: false, showStations });
+        } catch {
+          cropFallback();
+          return;
+        }
+        if (cancelled || !insetBodyRef.current) return;
+        insetBodyRef.current.innerHTML = out;
+        fit(insetBodyRef.current.querySelector('svg'));
+      }),
+    );
+    return () => { cancelled = true; cancelAnimationFrame(raf); };
+  }, [insetOn, selBox, svg, showStations, positionInset, buildInput]);
 
   // Screen (client) px -> map/content coords, via the current view.
   const screenToContent = (clientX: number, clientY: number) => {
@@ -924,7 +951,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset-declutter</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset-resim</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
