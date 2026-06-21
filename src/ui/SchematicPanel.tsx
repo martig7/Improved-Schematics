@@ -17,7 +17,7 @@ import {
   drawSmoothedSchematic,
   type SmoothedPrecomputed,
 } from '../render/schematic';
-import { cropSubgraph } from '../render/cropSubgraph';
+import { DetailInset, SEL_COLORS, type Selection } from './DetailInset';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -137,15 +137,16 @@ export function SchematicPanel() {
   const [showLabels, setShowLabels] = useState(false);
   const [dragging, setDragging] = useState(false);
   // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
-  // MAP/content space (so it tracks pan + zoom) instead of panning. selBox is the
-  // committed selection (content coords); the live drag + tracking are imperative
-  // (boxRef + the overlay div) to match the pan/zoom model that bypasses React.
+  // MAP/content space (so it tracks pan + zoom) instead of panning. The live drag
+  // is imperative (boxRef + the overlay div) to match the pan/zoom model that
+  // bypasses React; on release it commits to a `selections` entry.
   const [drawMode, setDrawMode] = useState(false);
-  const [selBox, setSelBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  // The inset/popout: a draggable callout that shows the selected region magnified.
-  // `insetOn` mounts the panel; its rect lives on the map (content coords) in a ref
-  // so the imperative positioner survives pan/zoom, like the selection box.
-  const [insetOn, setInsetOn] = useState(false);
+  // Each committed selection spawns a persistent, color-coded DetailInset (its own
+  // outline on the map + a draggable re-sim panel). They live until closed. The
+  // live drag is still imperative (boxRef + the draw overlay) to match the pan/zoom
+  // model that bypasses React; each inset positions itself via a registered fn.
+  const [selections, setSelections] = useState<Selection[]>([]);
+  const selCountRef = useRef(0); // monotonic, for id + color cycling
   // Export controls live in a small settings popover opened via the gear icon in
   // the top-right of the panel. The chosen format drives the Download button.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -222,18 +223,15 @@ export function SchematicPanel() {
   const boxRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const boxOverlayRef = useRef<HTMLDivElement>(null);
-  // Inset panel: its content-space rect (source of truth for positioning), the
-  // panel div, the body that holds the magnified SVG, and the drag origin.
-  const insetRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
-  const insetRef = useRef<HTMLDivElement>(null);
-  const insetBodyRef = useRef<HTMLDivElement>(null);
-  const insetDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // Each mounted DetailInset registers a reposition fn here so applyToDom can keep
+  // every inset + its outline glued to the map through pan/zoom.
+  const repositionFns = useRef(new Map<string, () => void>());
   // Build marker — fires once when the panel mounts so the game's dev console
   // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p8 (inset re-sim + cut-out selection) loaded ✦ — Draw a box → the selected area is cleared of lines/stations on the main map (geography kept) while the Detail inset re-simulates that region',
+      '%c[improved-schematics] BUILD popout-box-p9 (multi-select detail areas) loaded ✦ — Draw MULTIPLE boxes → each becomes a persistent, color-coded (cyan/magenta/orange/green) Detail inset; each area is cut out of the main map; close them individually',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -534,17 +532,21 @@ export function SchematicPanel() {
     el.style.height = `${(b.y1 - b.y0) * view.scale}px`;
   }, []);
 
-  // Position the inset panel (content rect -> screen) so it stays anchored to its
-  // map location through pan/zoom. Its on-screen size scales with zoom like the map.
-  const positionInset = useCallback(() => {
-    const el = insetRef.current;
-    const view = viewRef.current;
-    const ir = insetRectRef.current;
-    if (!el || !view || !ir) return;
-    el.style.left = `${(ir.x - view.vx) * view.scale}px`;
-    el.style.top = `${(ir.y - view.vy) * view.scale}px`;
-    el.style.width = `${ir.w * view.scale}px`;
-    el.style.height = `${ir.h * view.scale}px`;
+  // DetailInset plumbing: each inset reads the live view through this and registers
+  // its reposition fn, so pan/zoom keeps every inset + outline glued to the map.
+  const getView = useCallback(() => viewRef.current, []);
+  const getMainPre = useCallback(() => smoothedCacheRef.current?.pre ?? null, []);
+  const registerReposition = useCallback((id: string, fn: (() => void) | null) => {
+    if (fn) repositionFns.current.set(id, fn);
+    else repositionFns.current.delete(id);
+  }, []);
+  const closeSelection = useCallback((id: string) => {
+    repositionFns.current.delete(id);
+    setSelections((xs) => xs.filter((s) => s.id !== id));
+  }, []);
+  const clearSelections = useCallback(() => {
+    repositionFns.current.clear();
+    setSelections([]);
   }, []);
 
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
@@ -558,7 +560,7 @@ export function SchematicPanel() {
     const h = vp.clientHeight / view.scale;
     svgEl.setAttribute('viewBox', `${view.vx} ${view.vy} ${w} ${h}`);
     positionBox();
-    positionInset();
+    for (const fn of repositionFns.current.values()) fn();
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
@@ -645,20 +647,23 @@ export function SchematicPanel() {
       applyToDom(true); // re-apply existing viewBox + counter-scale the new nodes
     } else {
       fit();
+      // A different layout (mode switch, regen, city/water reframe) invalidates the
+      // detail areas — their boxes are in the old layout's coords. Drop them.
+      if (lastLayoutIdRef.current) clearSelections();
     }
     lastLayoutIdRef.current = layoutIdRef.current;
     // Surface the smoothed build time (geographic renders are cheap + auto).
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
     // The map is in the DOM now — drop the generating spinner.
     if (svg) setGenerating(false);
-  }, [svg, mode, fit, applyToDom]);
+  }, [svg, mode, fit, applyToDom, clearSelections]);
 
-  // While a selection is active, "cut out" the selected area from the MAIN map:
-  // clip the route, stop and label layers to everything EXCEPT the drawn box, so
-  // the lines and stations inside it disappear (the Detail inset shows that region
-  // instead) while the geography backdrop — a separate, unclipped layer — stays
-  // visible under the box. Runs after the inject effect (shares the `svg` dep), so
-  // a content redraw re-applies it; cleared when the selection goes away.
+  // While any selections are active, "cut out" their areas from the MAIN map:
+  // clip the route, stop and label layers to everything EXCEPT the drawn boxes, so
+  // the lines and stations inside them disappear (each Detail inset shows that
+  // region instead) while the geography backdrop — a separate, unclipped layer —
+  // stays visible under the boxes. Runs after the inject effect (shares the `svg`
+  // dep), so a content redraw re-applies it; cleared when the selections go away.
   useEffect(() => {
     const svgEl = svgRef.current;
     if (!svgEl) return;
@@ -671,15 +676,14 @@ export function SchematicPanel() {
       for (const g of groups) g.removeAttribute('clip-path');
     };
     clear();
-    if (!insetOn || !selBox) return;
+    if (selections.length === 0) return;
     // Even-odd clip: a big outer rect (covers all content at any pan/zoom) minus
-    // the selection box → keep everything OUTSIDE the box. clipPathUnits is user
-    // space, so the box (content coords) stays glued to its map region on pan/zoom.
+    // every selection box → keep everything OUTSIDE the boxes. clipPathUnits is
+    // user space, so the boxes (content coords) stay glued to their map regions.
     const box = svgBoxRef.current ?? { w: GEO_SIZE, h: GEO_SIZE };
     const BIG = Math.max(box.w, box.h) * 100;
-    const d =
-      `M${-BIG} ${-BIG}H${BIG}V${BIG}H${-BIG}Z` +
-      `M${selBox.x0} ${selBox.y0}H${selBox.x1}V${selBox.y1}H${selBox.x0}Z`;
+    let d = `M${-BIG} ${-BIG}H${BIG}V${BIG}H${-BIG}Z`;
+    for (const s of selections) d += `M${s.box.x0} ${s.box.y0}H${s.box.x1}V${s.box.y1}H${s.box.x0}Z`;
     const defs = document.createElementNS(NS, 'defs');
     defs.setAttribute('class', 'imp-cutout');
     const clip = document.createElementNS(NS, 'clipPath');
@@ -693,7 +697,7 @@ export function SchematicPanel() {
     svgEl.insertBefore(defs, svgEl.firstChild);
     for (const g of groups) g.setAttribute('clip-path', 'url(#imp-cutout-clip)');
     return clear;
-  }, [insetOn, selBox, svg]);
+  }, [selections, svg]);
 
   // Re-fit on mode switch (different layout shape). When a generated map is stored
   // for this city, re-enter the generating flow rather than opening the gate
@@ -748,94 +752,7 @@ export function SchematicPanel() {
     return () => vp.removeEventListener('wheel', onWheel);
   }, [applyToDom]);
 
-  // The inset RE-SIMULATES the cropped sub-network: pick the input stations inside
-  // the box (via the precompute's stationPx bridge), crop the network to them + a
-  // one-hop ring, and re-precompute that small graph standalone — so the dense
-  // cluster spreads out in a full canvas and its mega-boxes resolve. Deferred
-  // behind a spinner so the re-sim doesn't jank the drag. Falls back to a magnified
-  // crop of the main map in geographic mode or when too few stations are selected.
-  useEffect(() => {
-    if (!insetOn || !selBox) return;
-    const body = insetBodyRef.current;
-    if (!body) return;
-    const fit = (isvg: SVGSVGElement | null) => {
-      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
-      positionInset();
-    };
-    const cropFallback = () => {
-      body.innerHTML = svg;
-      const isvg = body.querySelector('svg');
-      if (isvg) isvg.setAttribute('viewBox', `${selBox.x0} ${selBox.y0} ${selBox.x1 - selBox.x0} ${selBox.y1 - selBox.y0}`);
-      fit(isvg);
-    };
-    const pre = smoothedCacheRef.current?.pre;
-    if (!pre || typeof pre === 'string') { cropFallback(); return; }
-    const core = new Set<string>();
-    for (const [sid, px] of pre.stationPx) {
-      if (px[0] >= selBox.x0 && px[0] <= selBox.x1 && px[1] >= selBox.y0 && px[1] <= selBox.y1) core.add(sid);
-    }
-    if (core.size < 2) { cropFallback(); return; }
-    // The drawn box is a rectangle in WARPED pixel space; unproject its corners
-    // back through the main projection to the geographic region it actually covers
-    // — the correct bounds to crop the sub-graph's geography on (not the bbox of
-    // whichever stations happen to fall inside). y is flipped: y1 (bottom) = south.
-    const bl = pre.unproject([selBox.x0, selBox.y1]);
-    const tr = pre.unproject([selBox.x1, selBox.y0]);
-    const clipBbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
-    body.innerHTML =
-      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#999;font:11px system-ui">re-simulating…</div>';
-    positionInset();
-    let cancelled = false;
-    const raf = requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (cancelled || !insetBodyRef.current) return;
-        let out: string;
-        let selFrame: [number, number, number, number] | null = null;
-        try {
-          const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core, clipBbox));
-          if (typeof subPre === 'string') {
-            out = subPre;
-          } else {
-            out = drawSmoothedSchematic(subPre, { showLabels: false, showStations });
-            // Frame on exactly the selected geography: where the cropped bbox lands
-            // in the re-sim (geoBboxFrame). The ring neighbours fall outside it, so
-            // their connecting lines leave the inset edges (clipped by the viewBox).
-            // Fall back to the core stations' re-laid bbox if there's no geography.
-            const gf = subPre.geoBboxFrame;
-            if (gf && gf.w > 1 && gf.h > 1) {
-              selFrame = [gf.x, gf.y, gf.w, gf.h];
-            } else {
-              let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-              for (const id of core) {
-                const p = subPre.stationPx.get(id);
-                if (!p) continue;
-                if (p[0] < mnX) mnX = p[0];
-                if (p[0] > mxX) mxX = p[0];
-                if (p[1] < mnY) mnY = p[1];
-                if (p[1] > mxY) mxY = p[1];
-              }
-              if (mnX < mxX && mnY < mxY) selFrame = [mnX, mnY, mxX - mnX, mxY - mnY];
-            }
-          }
-        } catch {
-          cropFallback();
-          return;
-        }
-        if (cancelled || !insetBodyRef.current) return;
-        insetBodyRef.current.innerHTML = out;
-        const isvg = insetBodyRef.current.querySelector('svg');
-        if (isvg && selFrame) {
-          isvg.setAttribute('viewBox', `${selFrame[0]} ${selFrame[1]} ${selFrame[2]} ${selFrame[3]}`);
-          // Match the panel's aspect to the framed region so the geography fills
-          // edge-to-edge with no letterbox bars (keep width, adjust height).
-          const ir = insetRectRef.current;
-          if (ir) insetRectRef.current = { ...ir, h: ir.w * (selFrame[3] / selFrame[2]) };
-        }
-        fit(isvg);
-      }),
-    );
-    return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [insetOn, selBox, svg, showStations, positionInset, buildInput]);
+  // (Each DetailInset runs its own re-simulation — see DetailInset.tsx.)
 
   // Screen (client) px -> map/content coords, via the current view.
   const screenToContent = (clientX: number, clientY: number) => {
@@ -871,56 +788,22 @@ export function SchematicPanel() {
     viewRef.current = { ...view, vx: view.vx - e.movementX / view.scale, vy: view.vy - e.movementY / view.scale };
     applyToDom(false);
   };
-  const clearSelection = () => {
-    boxRef.current = null;
-    setSelBox(null);
-    positionBox();
-    insetRectRef.current = null;
-    setInsetOn(false);
-  };
   const endDrag = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     if (drawMode && drawStartRef.current) {
       drawStartRef.current = null;
       const b = boxRef.current;
-      // Commit only a real drag; a click (tiny box) clears the selection.
+      boxRef.current = null;
+      positionBox(); // hide the live draw box; a committed selection gets its own outline
+      // Commit only a real drag; a click (tiny box) just cancels. Each commit
+      // spawns a new color-cycled DetailInset that persists until closed.
       if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
-        setSelBox(b);
-        // Spawn the inset: a magnified (~2.5x) callout placed to the right of the
-        // source box; the user drags it wherever reads best.
-        const w = b.x1 - b.x0, h = b.y1 - b.y0;
-        const MAG = 2.5;
-        insetRectRef.current = { x: b.x1 + w * 0.4, y: b.y0, w: w * MAG, h: h * MAG };
-        setInsetOn(true);
-      } else {
-        clearSelection();
+        const n = selCountRef.current++;
+        setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length] }]);
       }
       return;
     }
     setDragging(false);
-  };
-  // Inset panel drag — moves its content-space rect; stopPropagation so it doesn't
-  // also pan the map underneath.
-  const onInsetDown = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    const ir = insetRectRef.current;
-    if (!ir) return;
-    insetDragRef.current = { sx: e.clientX, sy: e.clientY, ox: ir.x, oy: ir.y };
-  };
-  const onInsetMove = (e: React.PointerEvent) => {
-    const d = insetDragRef.current;
-    const view = viewRef.current;
-    const ir = insetRectRef.current;
-    if (!d || !view || !ir) return;
-    e.stopPropagation();
-    insetRectRef.current = { ...ir, x: d.ox + (e.clientX - d.sx) / view.scale, y: d.oy + (e.clientY - d.sy) / view.scale };
-    positionInset();
-  };
-  const onInsetUp = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    (e.target as Element).releasePointerCapture?.(e.pointerId);
-    insetDragRef.current = null;
   };
 
   // Labels/stations toggles recompute the SVG synchronously. Flash the small
@@ -1032,7 +915,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.4 · inset-resim+cutout</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.5 · multi-detail-areas</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1042,13 +925,13 @@ export function SchematicPanel() {
             {drawMode ? '▭ Drawing…' : '▭ Draw area'}
           </button>
         )}
-        {selBox && (
+        {selections.length > 0 && (
           <button
-            onClick={clearSelection}
+            onClick={clearSelections}
             style={toggleStyle(false)}
-            title="Clear the selected area + inset"
+            title="Clear all detail areas"
           >
-            ✕ Clear
+            ✕ Clear{selections.length > 1 ? ` (${selections.length})` : ''}
           </button>
         )}
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
@@ -1317,70 +1200,36 @@ export function SchematicPanel() {
             touchAction: 'none',
           }}
         />
-        {/* Area-select overlay: positioned imperatively (positionBox) in content
-            space so it tracks pan/zoom. pointerEvents none so drags pass through. */}
+        {/* Live draw box (in progress): positioned imperatively (positionBox) in
+            content space so it tracks pan/zoom. Neutral white; on commit it becomes
+            a color-cycled DetailInset. pointerEvents none so drags pass through. */}
         <div
           ref={boxOverlayRef}
           style={{
             position: 'absolute',
             display: 'none',
-            border: '2px dashed #38bdf8',
-            background: 'rgba(56,189,248,0.12)',
+            border: '2px dashed rgba(255,255,255,0.9)',
+            background: 'rgba(255,255,255,0.10)',
             borderRadius: 2,
             pointerEvents: 'none',
             boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
           }}
         />
-        {/* Inset / popout panel: a magnified callout of the selection, draggable by
-            its header; positioned imperatively (positionInset) in content space. */}
-        {insetOn && (
-          <div
-            ref={insetRef}
-            style={{
-              position: 'absolute',
-              border: '1.5px solid rgba(255,255,255,0.9)',
-              borderRadius: 6,
-              boxShadow: '0 6px 22px rgba(0,0,0,0.55)',
-              overflow: 'hidden',
-              background: '#18181b',
-            }}
-          >
-            <div
-              onPointerDown={onInsetDown}
-              onPointerMove={onInsetMove}
-              onPointerUp={onInsetUp}
-              onPointerLeave={onInsetUp}
-              style={{
-                position: 'absolute',
-                insetInline: 0,
-                top: 0,
-                height: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0 6px',
-                background: 'rgba(255,255,255,0.14)',
-                color: '#e5e5e5',
-                font: '600 9px system-ui, sans-serif',
-                letterSpacing: 0.3,
-                cursor: 'move',
-                userSelect: 'none',
-                touchAction: 'none',
-                zIndex: 1,
-              }}
-            >
-              <span>◳ DETAIL</span>
-              <span
-                onPointerDown={(e) => { e.stopPropagation(); clearSelection(); }}
-                style={{ cursor: 'pointer', padding: '0 2px' }}
-                title="Remove inset"
-              >
-                ✕
-              </span>
-            </div>
-            <div ref={insetBodyRef} style={{ position: 'absolute', inset: '16px 0 0 0' }} />
-          </div>
-        )}
+        {/* One persistent, color-coded detail area per committed selection: a
+            colored outline over its map region + a draggable re-sim panel. */}
+        {selections.map((s) => (
+          <DetailInset
+            key={s.id}
+            sel={s}
+            getView={getView}
+            registerReposition={registerReposition}
+            getMainPre={getMainPre}
+            buildInput={buildInput}
+            baseSvg={svg}
+            showStations={showStations}
+            onClose={closeSelection}
+          />
+        ))}
         {mode === 'smoothed' && !smoothedReady && !generating && (
           <div
             style={{
