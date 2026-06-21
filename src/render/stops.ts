@@ -7,7 +7,7 @@
 // bullet) inside, upright, toggled by the stations toggle.
 
 import type { Pixel, StopMark } from './layout/types';
-import { LINE_WIDTH, MEGA_BOXES, MARKER_SCALE } from './constants';
+import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { escapeXml } from './escape';
 import { rdpSimplify } from './layout/chainPlace';
 
@@ -27,6 +27,7 @@ export function renderStops(
   // row solver floors intra-capsule dot gaps at this SAME scaled ring diameter
   // (MARKER_SCALE lives in constants.ts so the two can't drift).
   const rCap = r * MARKER_SCALE; // dot/capsule radius INSIDE a capsule
+  const spacing = LINE_WIDTH + LINE_GAP; // lane pitch — a compact capsule is ~markCount·spacing
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
   const nameFill = dark ? '#ffffff' : '#111111';
@@ -107,10 +108,28 @@ export function renderStops(
         x0 = Math.min(x0, mk.pos[0]); y0 = Math.min(y0, mk.pos[1]);
         x1 = Math.max(x1, mk.pos[0]); y1 = Math.max(y1, mk.pos[1]);
       }
+      // Cap the box to the compact size its marks would occupy seated (~markCount
+      // lanes), centered on the per-axis MEDIAN of the marks (robust to a stray
+      // far stop). A boxed station's marks can fling far apart — two stops beyond
+      // the chain extent become a slab spanning the gap — ballooning the rect over
+      // its neighbours. Mega draws NO dots, so clamping the bound only shrinks the
+      // cover, never hides a marker.
+      const cap = Math.max(2 * r, marks.length * spacing * 1.5);
+      const medOf = (vals: number[]) => { const s = vals.slice().sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+      const mx = medOf(marks.map((m) => m.pos[0]));
+      const my = medOf(marks.map((m) => m.pos[1]));
+      x0 = Math.max(x0, mx - cap / 2); x1 = Math.min(x1, mx + cap / 2);
+      y0 = Math.max(y0, my - cap / 2); y1 = Math.min(y1, my + cap / 2);
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       const minSide = 2 * r + 3;
       if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
       if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
+      if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_PLACE_DEBUG === '1') {
+        let cx = 0, cy = 0; for (const m of marks) { cx += m.pos[0]; cy += m.pos[1]; }
+        cx /= marks.length; cy /= marks.length;
+        const ds = marks.map((m) => Math.sqrt((m.pos[0] - cx) ** 2 + (m.pos[1] - cy) ** 2)).sort((a, b) => a - b);
+        console.error(`[megabox] ${nodeId} marks=${marks.length} box=${(x1 - x0).toFixed(0)}x${(y1 - y0).toFixed(0)} centroidDist med=${ds[ds.length >> 1].toFixed(0)} p90=${ds[Math.floor(ds.length * 0.9)].toFixed(0)} max=${ds[ds.length - 1].toFixed(0)}`);
+      }
       // No internal bullet circles: a boxed station is a genuine crossing where
       // the stops converge at the crossing point, so the per-line dots overlap
       // into an unreadable cluster (user: "leave them as boxes but remove the

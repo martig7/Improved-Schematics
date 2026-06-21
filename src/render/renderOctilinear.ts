@@ -866,6 +866,17 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       }
       const mega = MEGA_BOXES && s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 12;
       const pad = mega ? r + 7 : r + 3;
+      if (mega) {
+        // Cap to the compact size the marks would occupy seated (mirrors stops.ts
+        // so the swallow/slide logic matches the drawn rect): a boxed station's
+        // marks can fling far apart and balloon the box over neighbours.
+        const cap = Math.max(2 * r, s.marks.length * spacing * 1.5);
+        const medOf = (vals: number[]) => { const ss = vals.slice().sort((a, b) => a - b); const m = ss.length >> 1; return ss.length % 2 ? ss[m] : (ss[m - 1] + ss[m]) / 2; };
+        const mx = medOf(s.marks.map((m) => m.pos[0]));
+        const my = medOf(s.marks.map((m) => m.pos[1]));
+        x0 = Math.max(x0, mx - cap / 2); x1 = Math.min(x1, mx + cap / 2);
+        y0 = Math.max(y0, my - cap / 2); y1 = Math.min(y1, my + cap / 2);
+      }
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       if (mega) {
         const minSide = 2 * r + 3;
