@@ -236,7 +236,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p14 (JSX-shim fix) loaded ✦ — fixed the react/jsx-runtime shim (keyed elements were rendering their key as a child) → the ≣ Areas manager controls work; blank name = no label',
+      '%c[improved-schematics] BUILD popout-box-p15 loaded ✦ — detail panel header shows just the name (no ◳ glyph); blank name = empty header',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -520,7 +520,7 @@ export function SchematicPanel() {
         `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="${bg}" stroke="${a.s.color}" stroke-width="${r.w * 0.006}"/>`,
         nested,
         `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${headerH}" fill="${a.s.color}" opacity="0.32"/>`,
-        `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="${dark ? '#e5e5e5' : '#1a1a1a'}">◳${label ? ' ' + esc(label) : ''}</text>`,
+        label ? `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="${dark ? '#e5e5e5' : '#1a1a1a'}">${esc(label)}</text>` : '',
       );
     }
 
@@ -1014,7 +1014,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.10 · jsx-shim-fix</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.11 · no-glyph</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}

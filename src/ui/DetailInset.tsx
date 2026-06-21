@@ -307,7 +307,7 @@ export function DetailInset({
           }}
         >
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            ◳{sel.name.trim() ? ` ${sel.name}` : ''}
+            {sel.name}
           </span>
           <span
             onPointerDown={(e) => { e.stopPropagation(); onClose(sel.id); }}
