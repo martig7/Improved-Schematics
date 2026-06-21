@@ -37,30 +37,6 @@ const snapAxis = (dx: number, dy: number): Pixel => {
   return AXES4[best];
 };
 
-// ---- DRAWN-contiguity capture (dev diagnostic) --------------------------
-// Populated by renderRibbons when OCTI_SPLIT_CAPTURE=1. Holds, per line, the
-// post-suppression lane-presence along its traversal, plus the suppressed lane
-// keys. The graph-level contiguity checker reads this to flag DRAWN gaps the
-// layout-edge graph cannot reveal (a line is graph-connected but its drawn
-// ribbon has an interior suppressed lane → a visible gap). See check-contiguity.
-export interface RibbonDrawnCapture {
-  /** lineId -> ordered traversal steps with drawn-lane presence. */
-  drawn: Record<string, Array<{ edgeId: string; present: boolean; splitInternal: boolean }>>;
-  /** suppressed lane keys (edgeId|lineId). */
-  suppressed: string[];
-}
-export let __ribbonDrawn: RibbonDrawnCapture | undefined;
-// dev A/B switch: when set, the suppression loop does NOT skip splitInternal
-// edges — reproducing the pre-fix DRAWN break (the spine lane is suppressed and
-// the through-line's ribbon develops a gap at the hub split). Used to prove the
-// drawn-contiguity check catches the bug. Off by default → fix is active.
-const noSplitFixDisabled = (): boolean =>
-  typeof process !== 'undefined' &&
-  (process as { env?: Record<string, string> }).env?.OCTI_NO_SPLIT_FIX === '1';
-const ribbonDrawnCapture = (): boolean =>
-  typeof process !== 'undefined' &&
-  (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_CAPTURE === '1';
-
 export interface OctiOptions {
   dark?: boolean;
   showLabels?: boolean;
@@ -157,7 +133,7 @@ export interface RenderRibbonsArgs {
    *  node — capsule iff the group has multiple member stations — gathering
    *  the marks of its lines from their per-line stop-flag nodes. Without
    *  this, markers fall back to the legacy per-node edge.stops model. */
-  stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string>; splitNodeIds?: string[] }>;
+  stations?: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
   /** Fit/export crop rect in pixel space, emitted as `data-frame` on the root
    *  svg. Set by topo-geographic mode (which keeps a real projection); octi
    *  modes leave it unset so fit/export use the already-tight content viewBox. */
@@ -412,15 +388,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         const step = traversal[i];
         const e = edgeById.get(step.edgeId);
         if (!e) continue;
-        // Hub-split spine/fan: NEVER suppress a splitInternal edge's lane. It is
-        // intentionally short (~0.5 cell) and laterally offset between the + and -
-        // bundles, so it matches the jog-dominated sliver test exactly — but it is
-        // the ONLY drawn segment carrying the through-line across the split. Drop
-        // it and the ribbon has a visible gap even though the graph stays connected
-        // through the spine edge (hub-split drawn-contiguity, 2026-06).
-        // (dev A/B switch: OCTI_NO_SPLIT_FIX=1 disables this skip to reproduce
-        // the pre-fix drawn break and prove the check catches it.)
-        if (e.splitInternal && noSplitFixDisabled() === false) continue;
         const key = e.id + '|' + lineId;
         if (suppressed.has(key)) continue;
         const poly = segPath.get(key);
@@ -442,43 +409,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         suppressed.add(key);
         segPath.delete(key);
       }
-    }
-  }
-
-  // DRAWN-contiguity capture (dev diagnostic, env OCTI_SPLIT_CAPTURE=1). The
-  // graph-level checker (check-contiguity.ts) walks layout-edge incidence and
-  // cannot see this suppression pass — a line can be graph-connected yet have a
-  // GAP in its drawn ribbon because an interior lane was suppressed. Stash, per
-  // line, the drawn (post-suppression) lane presence along its traversal so the
-  // checker flags any interior hole. Also stash which suppressed lanes sat on a
-  // splitInternal edge — those are the hub-split gaps this fix closes.
-  if (ribbonDrawnCapture()) {
-    const drawn: Record<string, Array<{ edgeId: string; present: boolean; splitInternal: boolean }>> = {};
-    for (const [lineId, traversal] of layout.lineTraversals) {
-      if (!lineById.has(lineId)) continue;
-      const steps: Array<{ edgeId: string; present: boolean; splitInternal: boolean }> = [];
-      for (const step of traversal) {
-        const e = edgeById.get(step.edgeId);
-        if (!e) continue;
-        const key = e.id + '|' + lineId;
-        steps.push({
-          edgeId: e.id,
-          present: segPath.has(key) && !suppressed.has(key),
-          splitInternal: !!(e as { splitInternal?: boolean }).splitInternal,
-        });
-      }
-      drawn[lineId] = steps;
-    }
-    __ribbonDrawn = { drawn, suppressed: [...suppressed] };
-    if (process.env.OCTI_SPLIT_DEBUG === '1') {
-      let siEdges = 0; let siSuppressed = 0;
-      for (const e of layout.edges) if ((e as { splitInternal?: boolean }).splitInternal) siEdges++;
-      for (const k of suppressed) {
-        const eid = k.slice(0, k.lastIndexOf('|'));
-        const e = edgeById.get(eid);
-        if (e && (e as { splitInternal?: boolean }).splitInternal) siSuppressed++;
-      }
-      console.error(`[ribbon-drawn] layout edges=${layout.edges.length} splitInternal=${siEdges} | suppressed=${suppressed.size} of-which-splitInternal=${siSuppressed}`);
     }
   }
 
@@ -780,11 +710,6 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
     };
     interface StMarks {
       nodeId: string;
-      // Hub-split (2026-06-14, C3): the splitGroup leaves this station spans.
-      // For an ordinary station this is just [nodeId]; for a split hub it is
-      // the leaf set, so boxOf/solveRows/collision run over the UNION of the
-      // leaves' per-line marks and ONE elongated capsule spans the group.
-      nodeIds: string[];
       members: number;
       marks: Array<{
         lineId: string;
@@ -832,78 +757,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
         }
         marks.push({ lineId, color: line.color, flagNode: anchorNode, pos: [p[0], p[1]] });
       }
-      const nodeIds =
-        st.splitNodeIds && st.splitNodeIds.length > 1
-          ? [...new Set(st.splitNodeIds)]
-          : [st.nodeId];
-
-      // Hub-split (2026-06-14, C3): reunite the leaves under ONE capsule.
-      // splitHubs rehomes a line's stop flag onto the leaf it was PARTITIONED
-      // to, but octi/imageMerge frequently collapse those flags onto a single
-      // leaf (Liverpool Street: all 13 bullets land on one leaf -> the capsule
-      // would sit on one node, markFlagSpan=1, not spanning). Re-anchor each
-      // line's bullet to whichever splitGroup LEAF its drawn lane physically
-      // attaches to — the leaf the line actually arrives on — so the bullets
-      // spread across the leaves and the existing rigid-row solver elongates
-      // ONE capsule along the spine (design §4: "no new marker math, just more
-      // sub-nodes for the existing capsule to span"). Lines whose lane touches
-      // neither leaf endpoint keep their gathered anchor (residual).
-      if (nodeIds.length > 1) {
-        const leafSet = new Set(nodeIds);
-        const leafPx = nodeIds.map((n) => nodePx.get(n)).filter((p): p is Pixel => !!p);
-        for (const m of marks) {
-          // Does this line already attach to a leaf via a drawn lane endpoint?
-          let onLeaf: { p: Pixel; node: string } | null = null;
-          for (const e of layout.edges) {
-            const poly = segPath.get(e.id + '|' + m.lineId);
-            if (!poly || poly.length === 0) continue;
-            if (leafSet.has(e.from)) { onLeaf = { p: poly[0], node: e.from }; break; }
-            if (leafSet.has(e.to)) { onLeaf = { p: poly[poly.length - 1], node: e.to }; break; }
-          }
-          if (onLeaf) { m.pos = [onLeaf.p[0], onLeaf.p[1]]; m.flagNode = onLeaf.node; continue; }
-          // No drawn lane reaches a leaf: snap the bullet to the NEAREST leaf
-          // position so it still lands on the spine (keeps the capsule compact
-          // and spanning rather than floating at a stale flag node).
-          if (leafPx.length > 1) {
-            let bd = Infinity;
-            let bp: Pixel | null = null;
-            let bn = m.flagNode;
-            for (let li = 0; li < nodeIds.length; li++) {
-              const lp = nodePx.get(nodeIds[li]);
-              if (!lp) continue;
-              const dd = hyp(lp[0] - m.pos[0], lp[1] - m.pos[1]);
-              if (dd < bd) { bd = dd; bp = lp; bn = nodeIds[li]; }
-            }
-            if (bp) { m.pos = [bp[0], bp[1]]; m.flagNode = bn; }
-          }
-        }
-      }
-      gathered.push({ nodeId: st.nodeId, nodeIds, members: st.members, marks });
-    }
-
-    // ---- split-station capsule-span diagnostic (OCTI_SPLIT_DEBUG) ---------
-    // C3 reunite verification: a split station's marks must be gathered from
-    // ALL its splitGroup leaves so ONE capsule spans the group. Report, per
-    // station whose marks land on >1 distinct flagNode (leaf), the leaf count
-    // and per-leaf mark distribution. markFlagSpan == number of distinct
-    // leaves the marks sit on; ==1 means the capsule did NOT span (bad).
-    if (
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_DEBUG === '1'
-    ) {
-      for (const s of gathered) {
-        const isSplit = s.nodeIds.length > 1;
-        const byLeaf = new Map<string, number>();
-        for (const m of s.marks) byLeaf.set(m.flagNode, (byLeaf.get(m.flagNode) ?? 0) + 1);
-        if (byLeaf.size < 2 && !isSplit) continue;
-        const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
-        const dist = [...byLeaf.entries()].map(([n, c]) => `${n}:${c}`).join(' ');
-        const tag = isSplit ? 'SPLIT' : 'group';
-        console.error(
-          `[capsule-span] ${tag} "${label}" anchor=${s.nodeId} nodeIds[${s.nodeIds.join(',')}] ` +
-          `members=${s.members} marks=${s.marks.length} markFlagSpan=${byLeaf.size} leaves[${dist}]`,
-        );
-      }
+      gathered.push({ nodeId: st.nodeId, members: st.members, marks });
     }
 
     // ---- VANISHED-station diagnostic (OCTI_DEBUG) -------------------------
@@ -1151,9 +1005,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           minGap: intraGap,
           arcLimit: CHAIN_ARC_LIMIT,
           extCap: 6 * spacing,
-          dbgLabel:
-            (layout.nodes.get(s.nodeId)?.label ?? s.nodeId) +
-            `#${s.nodeId}@(${s.marks[0].pos[0].toFixed(0)},${s.marks[0].pos[1].toFixed(0)})`, // OCTI_PLACE_DEBUG: per-box root-cause classifier (label#id@pos for cross-reflow box matching)
+          dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
           // spec §6 mask: dots of already-placed stations veto row states —
           // never dropped in this model (a masked station boxes instead)
           blocked: (p: Pixel) => {
@@ -1973,17 +1825,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       const pb = lineEndAt(b.edgeId, lineId, startB);
       if (!pa || !pb) continue;
       const gap = hyp(pb[0] - pa[0], pb[1] - pa[1]);
-      // Hub-split spine boundary: where a splitInternal spine/fan meets an arm,
-      // the two slot-offset lane ends can diverge by more than the spacing*8 jog
-      // cap (NYC green line: 45.7px > 44px), so the connector would be skipped and
-      // the through-line ribbon would dead-end as two open-space stubs. A gap at a
-      // virtual hub-split's sole through-connection is never a legitimate non-jog,
-      // so always bridge it. (OCTI_NO_SPLIT_FIX reverts this for the A/B test.)
-      const spineBoundary =
-        noSplitFixDisabled() === false &&
-        (!!(ea as { splitInternal?: boolean }).splitInternal ||
-          !!(eb as { splitInternal?: boolean }).splitInternal);
-      if (gap < 0.5 || (gap > spacing * 8 && !spineBoundary)) continue; // coincident, or not a lane jog
+      if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
       // Tangent-matched cubic instead of a straight chord: a lateral lane jog

@@ -18,7 +18,6 @@ import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { buildBoxExpandWarp, buildSepBoxWarp } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
-import { splitHubs } from './layout/splitHubs';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
   findTransferPairs,
@@ -48,34 +47,6 @@ export let __warpDebug:
       samples: Pixel[]; // unwarped weighted warp samples (drive density / box-finding)
     }
   | null = null;
-
-// Hub-split contiguity capture (dev diagnostic, env OCTI_SPLIT_CAPTURE=1). Stashes
-// a per-line edge incidence at two pipeline checkpoints so dev/check-contiguity.ts
-// can count connected components per line WITHOUT re-running the pipeline twice:
-//   afterSplit — the support graph immediately after splitHubs (isolates the graph
-//                surgery). Each entry: edgeId -> { from, to, lines[], splitInternal }.
-//   finalLayout — the Layout after octi/merge/supportToLayout/untangle (catches
-//                 breaks introduced downstream of the surgery).
-// Pure data (no Map/Set) so the importing dev script needs no engine types.
-export interface SplitCaptureEdge {
-  id: string;
-  from: string;
-  to: string;
-  lines: string[];
-  splitInternal?: boolean;
-  /** Pixel polyline of the routed edge (only the finalLayout capture, dev). */
-  points?: [number, number][];
-}
-export let __splitDebug:
-  | {
-      afterSplit: { edges: SplitCaptureEdge[]; splitGroupNodes: string[] };
-      finalLayout: { edges: SplitCaptureEdge[] };
-    }
-  | null = null;
-
-const splitCapture = (): boolean =>
-  typeof process !== 'undefined' &&
-  (process as { env?: Record<string, string> }).env?.OCTI_SPLIT_CAPTURE === '1';
 
 export interface GeoInput {
   routes: Route[];
@@ -277,7 +248,6 @@ function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string,
       cell: [n.pos[0], n.pos[1]] as Cell,
       label: labelByNode.get(id) ?? '',
       lngLat: [n.pos[0] / 1e5, n.pos[1] / 1e5] as Coordinate,
-      ...(n.splitGroup ? { splitGroup: n.splitGroup } : {}),
     });
     nodePx.set(id, n.pos);
   }
@@ -298,9 +268,6 @@ function supportToLayout(h: SupportGraph): { layout: Layout; nodePx: Map<string,
       lines,
       lineOrder: lines.map((l) => l.id).sort(),
       stops,
-      // Hub-split spine/fan: the renderer must never suppress this edge's lane,
-      // or the through-line's drawn ribbon breaks at the split (hub-split, 2026-06).
-      ...(e.splitInternal ? { splitInternal: true } : {}),
     });
   }
   const layout: Layout = { cellSize: 1, nodes, edges, lineTraversals: h.lineTraversals };
@@ -445,7 +412,7 @@ export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
   transfers: TransferPair[];
-  stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string>; splitNodeIds?: string[] }>;
+  stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
   /** Static overlay drawn between water and routes (water polygons + optional
    *  Γ' grid); independent of the label/station toggles. */
   gridOverlay: string;
@@ -456,54 +423,6 @@ export interface SmoothedPrecomputed {
    *  Undefined when there's no geography — renderRibbons falls back to the
    *  rendered-content extent. */
   frame?: FrameRect;
-}
-
-/**
- * Remove mid-route out-and-back spur steps from line traversals: the merge can
- * pin a line's course onto a neighbouring corridor it merely crosses for a few
- * px (the 9 poking into the red trunk south of Butler St), leaving an immediate
- * edge+reverse pair in the traversal whose drawn lane dead-ends as a stub. Drop
- * such pairs when the line has no stop at the spur's far node — a terminus
- * retrace keeps its steps (its flag is set).
- *
- * SPINE EXEMPTION (recursive hub-split, drawn-contiguity, 2026-06): a
- * splitInternal spine/fan edge's far node is a VIRTUAL sub-node of ONE real
- * station (the leaf of a hub split). A through-line that the splitNode stitch
- * routed onto a DEEPER leaf (e.g. h49 -> h49_sp-0 -> h49_sp-0_sp-1) can have its
- * onward external arm pulled by mergeCoincidentPaths back onto the SHALLOWER
- * leaf's corridor — so the merged walk reaches the deep leaf on the spine and
- * must immediately retrace it to rejoin the arm. That retrace is an out-and-back
- * whose drawn spine lane dead-ends in open space at the deep leaf (the
- * doubly-recursive STUB). Because the leaf carries the line's rehomed stop flag,
- * flagAtFar is set and the plain guard KEEPS the retrace — leaving the stub. But
- * a spine retrace is NEVER a legitimate terminus (the station is one place,
- * reunited by the capsule): drop it regardless of flagAtFar. Edge-property
- * based, so it self-corrects at ANY recursion depth. Mutates layout.
- */
-export function removeOutAndBackSpurs(layout: Layout): void {
-  const eById = new Map(layout.edges.map((e) => [e.id, e]));
-  for (const [lineId, trav] of layout.lineTraversals) {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let i = 0; i + 1 < trav.length; i++) {
-        const a = trav[i];
-        const b = trav[i + 1];
-        if (a.edgeId !== b.edgeId || a.reversed === b.reversed) continue;
-        const e = eById.get(a.edgeId);
-        if (!e) continue;
-        const spine = !!(e as { splitInternal?: boolean }).splitInternal;
-        if (!spine) {
-          const stop = e.stops.get(lineId);
-          const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
-          if (flagAtFar) continue;
-        }
-        trav.splice(i, 2);
-        changed = true;
-        break;
-      }
-    }
-  }
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -802,27 +721,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   lap('warpBuild');
   const support = buildSupportGraph(graph, groups, topoParams);
   lap('topoMerge');
-  // Hub split (2026-06-14): virtual perpendicular split of over-bundled hubs so
-  // their trunk lines depart in distinct directions. Behind OCTI_SPLIT_HUBS;
-  // no-op otherwise (byte-identical baseline). A capsule reunites the leaves.
-  splitHubs(support);
-  if (splitCapture()) {
-    const splitGroupNodes: string[] = [];
-    for (const n of support.nodes.values()) if (n.splitGroup) splitGroupNodes.push(n.id);
-    __splitDebug = {
-      afterSplit: {
-        edges: [...support.edges.values()].map((e) => ({
-          id: e.id,
-          from: e.from,
-          to: e.to,
-          lines: [...e.lineIds],
-          ...(e.splitInternal ? { splitInternal: true } : {}),
-        })),
-        splitGroupNodes,
-      },
-      finalLayout: { edges: [] },
-    };
-  }
   const medLen = medianEdgeLength(support);
   const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
   // Grid fineness vs contraction: octi contracts away everything shorter
@@ -940,9 +838,34 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const routed = image.paths.get(e.id);
     if (routed) e.path = routed.map((p) => [p[0], p[1]] as Cell);
   }
-  // Remove mid-route out-and-back spur steps (merge artifacts + recursive
-  // hub-split spine retraces). See removeOutAndBackSpurs for the full rationale.
-  removeOutAndBackSpurs(layout);
+  // Remove mid-route out-and-back spur steps from line traversals: the merge
+  // can pin a line's course onto a neighbouring corridor it merely crosses
+  // for a few px (the 9 poking into the red trunk south of Butler St),
+  // leaving an immediate edge+reverse pair in the traversal whose drawn lane
+  // dead-ends as a stub. Drop such pairs when the line has no stop at the
+  // spur's far node — a terminus retrace keeps its steps (its flag is set).
+  {
+    const eById = new Map(layout.edges.map((e) => [e.id, e]));
+    for (const [lineId, trav] of layout.lineTraversals) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let i = 0; i + 1 < trav.length; i++) {
+          const a = trav[i];
+          const b = trav[i + 1];
+          if (a.edgeId !== b.edgeId || a.reversed === b.reversed) continue;
+          const e = eById.get(a.edgeId);
+          if (!e) continue;
+          const stop = e.stops.get(lineId);
+          const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
+          if (flagAtFar) continue;
+          trav.splice(i, 2);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
   orderLines(layout);
   // capsule rule counts only SERVED members: a routeless platform in a
   // group must not promote it to an interchange capsule
@@ -969,21 +892,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   lap('untangle');
 
-  if (splitCapture() && __splitDebug) {
-    // Final-layout edge incidence (post octi/merge/supportToLayout). Components
-    // of these per line, vs the afterSplit components, localize where a gap arose.
-    __splitDebug.finalLayout = {
-      edges: layout.edges.map((e) => ({
-        id: e.id,
-        from: e.from,
-        to: e.to,
-        lines: e.lines.map((l) => l.id),
-        ...(e.splitInternal ? { splitInternal: true } : {}),
-        points: e.path.map((c) => [c[0] * layout.cellSize, c[1] * layout.cellSize] as [number, number]),
-      })),
-    };
-  }
-
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
   // The support graph carries no lngLat for renderRibbons' affine map, so draw
@@ -995,9 +903,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     nodeId: st.nodeId,
     members: Math.max(1, servedMembers.get(st.id) ?? st.members ?? 1),
     stopNodes: st.stopNodes ?? new Map<string, string>(),
-    // Hub-split (2026-06-14, C3): carry the split leaves so the renderer
-    // gathers the station's per-line marks from ALL leaves into ONE capsule.
-    ...(st.splitNodeIds && st.splitNodeIds.length > 1 ? { splitNodeIds: st.splitNodeIds } : {}),
   }));
 
   // Frame on the furthest water/green through the WARPED proj — so smoothed fit/

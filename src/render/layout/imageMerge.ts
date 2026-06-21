@@ -36,10 +36,6 @@ interface Run {
   pts: Pixel[];      // matching positions
   owners: string;    // canonical owner-set key
   lines: Set<string>;
-  /** True iff ANY owner edge of this run was a split-hub spine/fan edge. The
-   *  drawn ribbon's continuity across a hub split rides this run's lane, so the
-   *  renderer must never suppress it (hub-split, 2026-06). */
-  splitInternal?: boolean;
 }
 
 /** Split a polyline at absolute lattice crossings (multiples of `s` in x and
@@ -117,17 +113,11 @@ export function mergeCoincidentPaths(
   // topology nodes need their own graph nodes), plus any vertex where the
   // owner set changes (handled by the grouping itself).
   const nodeVerts = new Map<string, string>(); // vertex key -> old node id (first)
-  // Hub-split guard (2026-06-14): carry each old node's splitGroup onto the
-  // vertex it placed at, so the merged node materialized there inherits it and
-  // (a) the renderer can reunite the leaves under one capsule, (b) the split
-  // siblings are never re-fused by separateFusedStations.
-  const vertSplitGroup = new Map<string, string>(); // vertex key -> splitGroup
-  for (const [nid, n] of h.nodes) {
+  for (const [nid] of h.nodes) {
     const p = img.placement.get(nid);
     if (p) {
       const k = vKey(p);
       if (!nodeVerts.has(k)) nodeVerts.set(k, nid);
-      if (n.splitGroup && !vertSplitGroup.has(k)) vertSplitGroup.set(k, n.splitGroup);
     }
   }
 
@@ -170,15 +160,11 @@ export function mergeCoincidentPaths(
     closeRun();
   }
 
-  // run line sets = union over owner edges; a run is splitInternal if ANY
-  // owner was (the spine/fan lane must survive merge so the renderer keeps it).
+  // run line sets = union over owner edges
   for (const run of runs) {
     for (const owner of run.owners.split(',')) {
       const oe = h.edges.get(owner);
-      if (oe) {
-        for (const l of oe.lineIds) run.lines.add(l);
-        if (oe.splitInternal) run.splitInternal = true;
-      }
+      if (oe) for (const l of oe.lineIds) run.lines.add(l);
     }
   }
 
@@ -191,8 +177,7 @@ export function mergeCoincidentPaths(
     if (id) return id;
     id = 'mn' + nSeq++;
     vertNode.set(vk, id);
-    const sg = vertSplitGroup.get(vk);
-    newNodes.set(id, { id, pos: vPos.get(vk)!.slice() as Pixel, ...(sg ? { splitGroup: sg } : {}) });
+    newNodes.set(id, { id, pos: vPos.get(vk)!.slice() as Pixel });
     return id;
   };
 
@@ -210,7 +195,6 @@ export function mergeCoincidentPaths(
       to,
       points: run.pts.map((p) => p.slice() as Pixel),
       lineIds: new Set(run.lines),
-      ...(run.splitInternal ? { splitInternal: true } : {}),
     });
     if (!newAdj.has(from)) newAdj.set(from, []);
     if (!newAdj.has(to)) newAdj.set(to, []);
@@ -283,20 +267,7 @@ export function mergeCoincidentPaths(
       const mapped = mapOldNode(oldNid);
       if (mapped) stopNodes.set(lineId, mapped);
     }
-    // Hub-split (2026-06-14): remap the split leaves onto their merged nodes,
-    // dropping duplicates (two leaves may merge to one mn). The capsule spans
-    // the deduped set; one leaf collapsing to the same mn is a benign no-op.
-    let splitNodeIds: string[] | undefined;
-    if (st.splitNodeIds && st.splitNodeIds.length) {
-      const seen = new Set<string>();
-      splitNodeIds = [];
-      for (const leaf of st.splitNodeIds) {
-        const m = mapOldNode(leaf);
-        if (m && !seen.has(m)) { seen.add(m); splitNodeIds.push(m); }
-      }
-      if (splitNodeIds.length < 2) splitNodeIds = undefined; // collapsed: no capsule span
-    }
-    stations.set(gid, { ...st, nodeId: nid, stopNodes, ...(splitNodeIds ? { splitNodeIds } : { splitNodeIds: undefined }) });
+    stations.set(gid, { ...st, nodeId: nid, stopNodes });
   }
 
   const stopAt = new Set<string>();
@@ -365,10 +336,6 @@ export function separateFusedStations(
     if (withTrue.length < 2) continue;
     const nodePos = h.nodes.get(nid)?.pos;
     if (!nodePos) continue;
-    // Hub-split guard (2026-06-14): a split sub-node is an intentional, internal
-    // platform of one interchange — never tear its hosted stations apart (that
-    // would defeat the capsule reunite). The split leaves stay one place.
-    if (h.nodes.get(nid)?.splitGroup) continue;
 
     // keeper = closest to the drawn node; others split off when far enough
     // from the keeper's true position
@@ -522,9 +489,8 @@ export function separateFusedStations(
 
       h.edges.delete(best.eid);
       img.paths.delete(best.eid);
-      const si = e.splitInternal ? { splitInternal: true as const } : {};
-      h.edges.set(idA, { id: idA, from: e.from, to: newNid, points: head, lineIds: new Set(e.lineIds), ...si });
-      h.edges.set(idB, { id: idB, from: newNid, to: e.to, points: tail, lineIds: new Set(e.lineIds), ...si });
+      h.edges.set(idA, { id: idA, from: e.from, to: newNid, points: head, lineIds: new Set(e.lineIds) });
+      h.edges.set(idB, { id: idB, from: newNid, to: e.to, points: tail, lineIds: new Set(e.lineIds) });
       img.paths.set(idA, head.map((p) => p.slice() as Pixel));
       img.paths.set(idB, tail.map((p) => p.slice() as Pixel));
 

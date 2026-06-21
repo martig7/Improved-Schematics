@@ -136,12 +136,6 @@ function contractShortEdges(
       continue;
     }
     if (polyLen(e.points) >= minLen) continue;
-    // Hub-split guard (2026-06-14): never contract a spine/fan edge or merge a
-    // split sub-node back into its sibling — the split must survive to the
-    // renderer or the over-bundled hub silently re-welds.
-    if (e.splitInternal || nodes.get(e.from)?.splitGroup || nodes.get(e.to)?.splitGroup) {
-      continue;
-    }
     // Terminal-stub guard: contracting a station-bearing dead-end would merge
     // the terminus station onto its junction and drop the stub's out-and-back
     // traversal steps downstream (imageMerge silently drops empty chains).
@@ -454,12 +448,6 @@ export function combineDeg2(h: SupportGraph): { hC: SupportGraph; info: Collapse
     const ea = edges.get(ia);
     const eb = edges.get(ib);
     if (!ea || !eb) continue;
-    // Hub-split guard (2026-06-14): a binary split leaf is intentionally
-    // degree-2 (one external edge + the spine). Collapsing it would re-merge the
-    // hub and revert the split. Skip nodes tagged splitGroup or whose incident
-    // edges are splitInternal.
-    if (nodes.get(n)?.splitGroup) continue;
-    if (ea.splitInternal || eb.splitInternal) continue;
     const na = ea.from === n ? ea.to : ea.from;
     const nb = eb.from === n ? eb.to : eb.from;
     if (na === nb || na === n || nb === n) continue;
