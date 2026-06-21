@@ -86,6 +86,23 @@ const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
 export const cornerTurnFactor = (dot: number): number =>
   dot < -0.92 ? 6 : dot < -0.38 ? 0.5 : 0.15;
 
+// Angle-aware crossing cost (experimental, OCTI_XANGLE=1). dot = cos(angle
+// between the two corridors' tangents at the node). A crossing reads BEST at
+// ~90deg (dot 0) and WORST when the corridors are near-collinear — either a
+// straight pass-through swap (dot -1) or a hairpin/parallel swap (dot +1); both
+// are shallow braids. The monotonic cornerTurnFactor above penalizes only the
+// straight end and treats 90deg corners and sharp hairpins alike (0.15). This
+// U-shape in dot^2 minimizes at 90deg and rises to OCTI_XANGLE_K (default 6) at
+// BOTH ends, so the optimizer prefers right-angle crossings and penalizes both
+// braid directions. Default off uses cornerTurnFactor (byte-identical).
+const xAngleOn = (): boolean =>
+  typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_XANGLE === '1';
+const xAngleK = (() => {
+  const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XANGLE_K) : NaN;
+  return Number.isFinite(v) && v > 0 ? v : 6;
+})();
+export const xCornerTurnFactor = (dot: number): number => 0.15 + (xAngleK - 0.15) * dot * dot;
+
 function inversions(a: number[]): number {
   let inv = 0;
   for (let i = 0; i < a.length; i++) {
@@ -291,7 +308,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     if (f !== undefined) return f;
     const ta = tangentAt(a, nd);
     const tb = tangentAt(b, nd);
-    f = !ta || !tb ? 1 : cornerTurnFactor(ta[0] * tb[0] + ta[1] * tb[1]);
+    f = !ta || !tb ? 1 : (xAngleOn() ? xCornerTurnFactor : cornerTurnFactor)(ta[0] * tb[0] + ta[1] * tb[1]);
     cornerCache.set(key, f);
     return f;
   };
