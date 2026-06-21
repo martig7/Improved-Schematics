@@ -232,7 +232,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p2 (inset) loaded ✦ — Draw a box (Smoothed mode) → a draggable "Detail" inset appears',
+      '%c[improved-schematics] BUILD popout-box-p3 (inset declutter: thin lines) loaded ✦ — Draw a box → draggable Detail inset with thinned, spread-out lanes',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -716,6 +716,14 @@ export function SchematicPanel() {
         isvg.setAttribute('width', '100%');
         isvg.setAttribute('height', '100%');
         isvg.removeAttribute('data-frame');
+        // "Lines smaller to fit the magnification": hold route strokes at their
+        // nominal width while the geometry magnifies, so bundled lanes separate
+        // into visible gaps instead of one fat band (vector-effect ignores the
+        // viewBox zoom for stroke width). The genuine re-layout (box-warp) for the
+        // coincident/boxed cores is the next step.
+        const st = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+        st.textContent = 'path{vector-effect:non-scaling-stroke}';
+        isvg.insertBefore(st, isvg.firstChild);
       }
     }
     positionInset();
@@ -916,7 +924,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset-declutter</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
