@@ -135,6 +135,12 @@ export function SchematicPanel() {
   const [showStations, setShowStations] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
+  // MAP/content space (so it tracks pan + zoom) instead of panning. selBox is the
+  // committed selection (content coords); the live drag + tracking are imperative
+  // (boxRef + the overlay div) to match the pan/zoom model that bypasses React.
+  const [drawMode, setDrawMode] = useState(false);
+  const [selBox, setSelBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   // Export controls live in a small settings popover opened via the gear icon in
   // the top-right of the panel. The chosen format drives the Download button.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -206,6 +212,11 @@ export function SchematicPanel() {
   // water/green extent in pixel space) when present, else the full intrinsic
   // canvas. Decoupled from svgBoxRef, which stays the full canvas for pan/zoom.
   const fitBoxRef = useRef<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE });
+  // Area-select: source-of-truth box in content coords (read by the imperative
+  // overlay positioner so it survives pan/zoom), the drag origin, and the overlay.
+  const boxRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const drawStartRef = useRef<{ x: number; y: number } | null>(null);
+  const boxOverlayRef = useRef<HTMLDivElement>(null);
 
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
@@ -485,6 +496,21 @@ export function SchematicPanel() {
     img.src = svgUrl;
   }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
 
+  // Position the area-select overlay div from the content box + current view, so
+  // the box stays glued to its map region through pan/zoom. Hidden when no box.
+  const positionBox = useCallback(() => {
+    const el = boxOverlayRef.current;
+    const view = viewRef.current;
+    const b = boxRef.current;
+    if (!el || !view) return;
+    if (!b) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.left = `${(b.x0 - view.vx) * view.scale}px`;
+    el.style.top = `${(b.y0 - view.vy) * view.scale}px`;
+    el.style.width = `${(b.x1 - b.x0) * view.scale}px`;
+    el.style.height = `${(b.y1 - b.y0) * view.scale}px`;
+  }, []);
+
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
   const applyToDom = useCallback((updateSizes: boolean) => {
@@ -495,6 +521,7 @@ export function SchematicPanel() {
     const w = vp.clientWidth / view.scale;
     const h = vp.clientHeight / view.scale;
     svgEl.setAttribute('viewBox', `${view.vx} ${view.vy} ${w} ${h}`);
+    positionBox();
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
@@ -642,11 +669,35 @@ export function SchematicPanel() {
     return () => vp.removeEventListener('wheel', onWheel);
   }, [applyToDom]);
 
+  // Screen (client) px -> map/content coords, via the current view.
+  const screenToContent = (clientX: number, clientY: number) => {
+    const vp = viewportRef.current;
+    const view = viewRef.current;
+    if (!vp || !view) return null;
+    const rect = vp.getBoundingClientRect();
+    return { x: view.vx + (clientX - rect.left) / view.scale, y: view.vy + (clientY - rect.top) / view.scale };
+  };
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    if (drawMode) {
+      const c = screenToContent(e.clientX, e.clientY);
+      if (!c) return;
+      drawStartRef.current = c;
+      boxRef.current = { x0: c.x, y0: c.y, x1: c.x, y1: c.y };
+      positionBox();
+      return;
+    }
     setDragging(true);
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (drawMode && drawStartRef.current) {
+      const c = screenToContent(e.clientX, e.clientY);
+      if (!c) return;
+      const s = drawStartRef.current;
+      boxRef.current = { x0: Math.min(s.x, c.x), y0: Math.min(s.y, c.y), x1: Math.max(s.x, c.x), y1: Math.max(s.y, c.y) };
+      positionBox();
+      return;
+    }
     const view = viewRef.current;
     if (!dragging || !view) return;
     viewRef.current = { ...view, vx: view.vx - e.movementX / view.scale, vy: view.vy - e.movementY / view.scale };
@@ -654,6 +705,19 @@ export function SchematicPanel() {
   };
   const endDrag = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
+    if (drawMode && drawStartRef.current) {
+      drawStartRef.current = null;
+      const b = boxRef.current;
+      // Commit only a real drag; a click (tiny box) clears the selection.
+      if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
+        setSelBox(b);
+      } else {
+        boxRef.current = null;
+        setSelBox(null);
+        positionBox();
+      }
+      return;
+    }
     setDragging(false);
   };
 
@@ -767,6 +831,24 @@ export function SchematicPanel() {
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
         <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0</span>
+        {mode === 'smoothed' && smoothedReady && (
+          <button
+            onClick={() => setDrawMode((v) => !v)}
+            style={toggleStyle(drawMode)}
+            title="Draw a box on the map to select an area"
+          >
+            {drawMode ? '▭ Drawing…' : '▭ Draw area'}
+          </button>
+        )}
+        {selBox && (
+          <button
+            onClick={() => { boxRef.current = null; setSelBox(null); positionBox(); }}
+            style={toggleStyle(false)}
+            title="Clear the selected area"
+          >
+            ✕ Clear
+          </button>
+        )}
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
@@ -1029,8 +1111,22 @@ export function SchematicPanel() {
             inset: 0,
             overflow: 'hidden',
             borderRadius: 6,
-            cursor: dragging ? 'grabbing' : 'grab',
+            cursor: drawMode ? 'crosshair' : dragging ? 'grabbing' : 'grab',
             touchAction: 'none',
+          }}
+        />
+        {/* Area-select overlay: positioned imperatively (positionBox) in content
+            space so it tracks pan/zoom. pointerEvents none so drags pass through. */}
+        <div
+          ref={boxOverlayRef}
+          style={{
+            position: 'absolute',
+            display: 'none',
+            border: '2px dashed #38bdf8',
+            background: 'rgba(56,189,248,0.12)',
+            borderRadius: 2,
+            pointerEvents: 'none',
+            boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
           }}
         />
         {mode === 'smoothed' && !smoothedReady && !generating && (
