@@ -86,6 +86,27 @@ const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
 export const cornerTurnFactor = (dot: number): number =>
   dot < -0.92 ? 6 : dot < -0.38 ? 0.5 : 0.15;
 
+// Angle-aware crossing cost (experimental, OCTI_XANGLE=1). dot = cos(angle
+// between the two corridors' tangents at the node). A crossing reads BEST at
+// ~90deg (dot 0) and WORST when the corridors are near-collinear — either a
+// straight pass-through swap (dot -1) or a hairpin/parallel swap (dot +1); both
+// are shallow braids. The monotonic cornerTurnFactor above penalizes only the
+// straight end and treats 90deg corners and sharp hairpins alike (0.15). This
+// U-shape in dot^2 minimizes at 90deg and rises to OCTI_XANGLE_K (default 6) at
+// BOTH ends, so the optimizer prefers right-angle crossings and penalizes both
+// braid directions. Default ON (the shipped detangle); OCTI_XANGLE=0 reverts to
+// the legacy monotonic cornerTurnFactor.
+const xAngleOn = (): boolean => {
+  const v =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_XANGLE : undefined;
+  return v !== '0';
+};
+const xAngleK = (() => {
+  const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XANGLE_K) : NaN;
+  return Number.isFinite(v) && v > 0 ? v : 6;
+})();
+export const xCornerTurnFactor = (dot: number): number => 0.15 + (xAngleK - 0.15) * dot * dot;
+
 function inversions(a: number[]): number {
   let inv = 0;
   for (let i = 0; i < a.length; i++) {
@@ -291,7 +312,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     if (f !== undefined) return f;
     const ta = tangentAt(a, nd);
     const tb = tangentAt(b, nd);
-    f = !ta || !tb ? 1 : cornerTurnFactor(ta[0] * tb[0] + ta[1] * tb[1]);
+    f = !ta || !tb ? 1 : (xAngleOn() ? xCornerTurnFactor : cornerTurnFactor)(ta[0] * tb[0] + ta[1] * tb[1]);
     cornerCache.set(key, f);
     return f;
   };
@@ -497,13 +518,47 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     let sameDouble = 0; // raw count (feeds the diff-seg correction)
     let sameWeighted = 0; // corner-discounted (feeds the score)
     let seps = 0;
+    // Inlined crossSepsPair with the rank map hoisted to the ea loop: it was
+    // rebuilt for every (ea, eb) PAIR (deg² Map allocations per node — the
+    // metro-scale hot path), but the rank depends only on ea's order. The
+    // pair-specific `rev` merely flips the index sign (rev ? L-1-i : i),
+    // applied per pair below, so the per-pair values, the accumulation order
+    // and thus the score stay BIT-IDENTICAL to crossSepsPair. (crossSepsPair
+    // itself is kept for its other caller in the diagnostics block.)
     for (const ea of adj) {
+      const cea = cfg.get(ea.id)!;
+      const revA = ea.from !== nd;
+      const L = cea.length;
+      const baseRank = new Map<string, number>();
+      for (let i = 0; i < L; i++) baseRank.set(cea[i], i);
       for (const eb of adj) {
         if (ea === eb) continue;
-        const r = crossSepsPair(nd, ea, eb, cfg);
-        sameDouble += r.cross;
-        sameWeighted += r.cross * cornerFactor(nd, ea, eb);
-        seps += r.seps;
+        const revB = eb.from !== nd;
+        const rev = revA === revB; // === !(revA !== revB)
+        const ceb = cfg.get(eb.id)!;
+        const relCross: number[] = [];
+        const relSep: number[] = [];
+        for (const line of ceb) {
+          const br = baseRank.get(line);
+          if (br === undefined || !connOccurs(line, nd, ea, eb)) {
+            relSep.push(Number.MAX_SAFE_INTEGER);
+            continue;
+          }
+          const r = rev ? L - 1 - br : br;
+          relCross.push(r);
+          relSep.push(r);
+        }
+        let pairSeps = 0;
+        for (let i = 1; i < relSep.length; i++) {
+          const a = relSep[i - 1];
+          const b = relSep[i];
+          if (a === Number.MAX_SAFE_INTEGER || b === Number.MAX_SAFE_INTEGER) continue;
+          if (Math.abs(b - a) > 1) pairSeps++;
+        }
+        const cross = inversions(relCross);
+        sameDouble += cross;
+        sameWeighted += cross * cornerFactor(nd, ea, eb);
+        seps += pairSeps;
       }
     }
     let diff = 0;

@@ -63,6 +63,35 @@ test('OCTI_PLACE_DEBUG classifies a pinched box (lanes seated below minGap)', ()
   assert.match(box!, /PINCHED/, 'classified PINCHED; got: ' + box);
 });
 
+test('OCTI_PLACE_DEBUG classifies a coincident box (lanes interlined / crossed, non-positive best gap)', () => {
+  // three horizontal lanes whose group (lane) order does NOT match their
+  // vertical order — the middle group member sits between the outer two, so
+  // every crossing row projects them out of order and the best achievable
+  // consecutive gap is NEGATIVE (lanes crossed/interlined on one edge). The
+  // classifier must report COINCIDENT (NOT spacing-fixable), distinct from the
+  // PINCHED case where lanes are distinct but merely seated too close. Mirrors
+  // the mn198 hub (closestGap -1.37px) that minGap-slack can never recover.
+  const curves = [lane(0, 0), lane(2 * PITCH, 0), lane(PITCH, 0)];
+  const prev = process.env.OCTI_PLACE_DEBUG;
+  process.env.OCTI_PLACE_DEBUG = '1';
+  const logs: string[] = [];
+  const origErr = console.error;
+  console.error = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
+  let sol;
+  try {
+    sol = solveRows(curves, [[0, 1, 2]], { ...OPTS, dbgLabel: 'COINCNODE' });
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.OCTI_PLACE_DEBUG;
+    else process.env.OCTI_PLACE_DEBUG = prev;
+  }
+  assert.equal(sol, null, 'coincident bundle must box (null)');
+  const box = logs.find((l) => /\[rowPlace\] BOX COINCNODE/.test(l));
+  assert.ok(box, 'classifier logged a BOX line; got: ' + JSON.stringify(logs));
+  assert.match(box!, /COINCIDENT/, 'classified COINCIDENT; got: ' + box);
+  assert.doesNotMatch(box!, /PINCHED/, 'COINCIDENT must not also report PINCHED; got: ' + box);
+});
+
 test('V-not-T: corner extends beyond both rows, never pokes a side', () => {
   // two bundles meeting at 90°: horizontal lanes (row vertical) + vertical
   // lanes (row horizontal); anchors offset so the natural corner lies beyond

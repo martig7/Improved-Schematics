@@ -28,6 +28,14 @@ export function boxesOverlap(a: Box, b: Box): boolean {
   return !(a.x + a.w <= b.x || a.x >= b.x + b.w || a.y + a.h <= b.y || a.y >= b.y + b.h);
 }
 
+/** Euclidean gap between two axis-aligned boxes (0 when they overlap/touch).
+ *  sqrt-based → correctly rounded cross-V8 (engine-stable for the tie-break). */
+export function boxGap(a: Box, b: Box): number {
+  const dx = Math.max(0, b.x - (a.x + a.w), a.x - (b.x + b.w));
+  const dy = Math.max(0, b.y - (a.y + a.h), a.y - (b.y + b.h));
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
 export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
   const x1 = box.x;
   const x2 = box.x + box.w;
@@ -78,6 +86,45 @@ export interface LabelNode {
   label: string;
 }
 
+/** A capsule is "slid" — its centre stranded in empty space — only when its
+ *  nearest dot is at least this far from the node centre. Below it the centre
+ *  still sits on/among the dots, so the label hangs off the centre as before.
+ *  Pitched above a normal capsule's half-dot-spacing (~LINE_WIDTH) so ordinary
+ *  interchanges keep the centre anchor (and don't perturb the greedy label
+ *  packer); only genuinely displaced capsules re-seat. */
+const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
+
+/**
+ * The pixel point a station's label should hang off. Defaults to the node
+ * centre. Only a MULTI-dot capsule whose dots have been slid well off the centre
+ * (by the collision passes — capsuleSlide etc.) re-anchors, to the dot CLOSEST
+ * to the centre, so a label that would otherwise float in empty space stays
+ * attached to a real marker. Single stops and tightly-packed capsules keep the
+ * centre — identical to the pre-fix behaviour — so the fix is confined to the
+ * capsules that actually drift and doesn't churn the rest of the label layout.
+ * Closest by squared distance; first mark wins exact ties (deterministic).
+ */
+export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
+  // Diagnostic A/B switch: OCTI_NO_LABEL_REANCHOR=1 forces the pre-fix behaviour
+  // (label hangs off the bare node centre) for before/after comparison.
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_LABEL_REANCHOR === '1') {
+    return center;
+  }
+  if (!marks || marks.length < 2) return center;
+  let best = marks[0].pos;
+  let bestD = Infinity;
+  for (const m of marks) {
+    const dx = m.pos[0] - center[0];
+    const dy = m.pos[1] - center[1];
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = m.pos;
+    }
+  }
+  return bestD > ANCHOR_SLID_DIST * ANCHOR_SLID_DIST ? best : center;
+}
+
 export function placeLabels(
   graph: { nodes: Map<string, LabelNode> },
   nodePx: Map<string, Pixel>,
@@ -88,6 +135,25 @@ export function placeLabels(
   const placedBoxes: Box[] = [];
   const stationBoxes: Box[] = [];
   const markerR = LINE_WIDTH * 0.7;
+  // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
+  // counts only HARD overlaps (integers), so many labels tie — most commonly the
+  // left/right pair at an isolated stop, today resolved to 'right' by enumeration
+  // order. Among cost-tied placements, prefer the one with the most open space
+  // around it (largest summed clearance to nearby markers + already-placed
+  // labels), nudging labels off crowded flanks into white space. Clearance is an
+  // unscored dimension (cost ignores near-misses); boxGap is sqrt-based and the
+  // argmin is a total order (cost → −clearance → enumeration), so deterministic.
+  const LABEL_TIEBREAK =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_LABEL_TIEBREAK === '1';
+  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale for "crowding"
+  // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
+  const crowding = (box: Box): number => {
+    let c = 0;
+    for (const b of placedBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
+    for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
+    return c;
+  };
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -123,7 +189,9 @@ export function placeLabels(
     const tw = estimateTextWidth(node.label);
     const fh = LABEL_FONT_SIZE + 2;
     const off = LABEL_OFFSET;
-    const [cx, cy] = p;
+    // Hang the label off the capsule dot nearest the node centre (not the bare
+    // centre), so it tracks the markers when collision passes slide them.
+    const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
     const candidates: Candidate[] = [
       { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
       { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
@@ -137,14 +205,17 @@ export function placeLabels(
 
     let best = candidates[0];
     let bestCost = Infinity;
+    let bestCrowd = Infinity;
     for (const cand of candidates) {
       let cost = 0;
       for (const b of placedBoxes) if (boxesOverlap(cand.box, b)) cost += 100;
       for (const b of stationBoxes) if (boxesOverlap(cand.box, b)) cost += 30;
       for (const s of segments) if (segmentIntersectsBox(s.p1, s.p2, cand.box)) cost += 12;
       cost += cand.priority;
-      if (cost < bestCost) {
+      const crowd = LABEL_TIEBREAK ? crowding(cand.box) : 0;
+      if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
         bestCost = cost;
+        bestCrowd = crowd;
         best = cand;
       }
     }

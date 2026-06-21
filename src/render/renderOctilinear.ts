@@ -12,7 +12,7 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, type Hull } from './layout/capsuleSlide';
 import { renderStops } from './stops';
-import { placeLabels, renderLabel, type Segment } from './labels';
+import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
@@ -830,6 +830,22 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
       return Number.isFinite(env) && env >= 0 ? env : 0;
     })();
     const intraGap = Math.max(2, 2 * r * MARKER_SCALE - minGapSlack);
+    // Box-rescue: rather than fall back to the ugly mega box when a bundle can't
+    // seat at the touching floor, retry with a RELAXED intra-dot floor (dots
+    // overlap by up to this many px). SURGICAL — only would-be-boxed bundles are
+    // retried, so every successfully-seated station stays byte-identical; and the
+    // retry walks the slack UP from 0.25px so each rescued capsule takes the
+    // MINIMUM overlap that seats. Cross-station separation (the §6 blocked mask)
+    // stays strict at the full 2r. A bundle still too tight past the cap stays an
+    // honest mega box. OCTI_BOX_RESCUE = cap in px; default 1.5 (the shipped
+    // declutter); OCTI_BOX_RESCUE=0 disables (legacy mega-box fallback).
+    const boxRescueMax = (() => {
+      const env =
+        typeof process !== 'undefined'
+          ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_RESCUE)
+          : NaN;
+      return Number.isFinite(env) && env >= 0 ? env : 1.5;
+    })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
@@ -1016,12 +1032,31 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           },
         };
         let sol = solveRows(curves, groups, ropts);
+        let wide: typeof curves | null = null;
         if (!sol) {
           // window escalation: rebuild curves at twice the arc window
-          const wide = s.marks.map((mk) =>
+          wide = s.marks.map((mk) =>
             buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2),
           );
           sol = solveRows(wide, groups, { ...ropts, arcLimit: CHAIN_ARC_LIMIT * 2 });
+        }
+        if (!sol && boxRescueMax > 0) {
+          // box-rescue: walk the intra-dot floor DOWN (slack up, in 0.25px steps)
+          // to the smallest overlap that seats, trading the ugly mega box for a
+          // faint dot overlap. Only reached for a would-be box, so seated stations
+          // are untouched; blocked() (cross-station) stays strict.
+          if (!wide) {
+            wide = s.marks.map((mk) =>
+              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2),
+            );
+          }
+          for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol; sl += 0.25) {
+            sol = solveRows(wide, groups, {
+              ...ropts,
+              minGap: Math.max(2, intraGap - sl),
+              arcLimit: CHAIN_ARC_LIMIT * 2,
+            });
+          }
         }
         if (sol) {
           for (let k = 0; k < sol.order.length; k++) {
@@ -1040,6 +1075,23 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // (the mega branch in stops.ts renders it).
           megaFallbacks++;
           for (const mk of s.marks) mk.mega = true;
+          // Regime probe (OCTI_PLACE_DEBUG): deg = incident DRAWN edges (octi
+          // ports/directions used), ldeg = total lines through the node. deg<=8
+          // with ldeg>deg means lines are welded onto few corridors → fan-fold /
+          // over-weld (fix = de-weld). deg>8 means genuine 8-direction saturation
+          // (fix = split the hub; we cannot add directions without breaking octi).
+          if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
+            let deg = 0;
+            for (const e of layout.edges) if (e.from === s.nodeId || e.to === s.nodeId) deg++;
+            let cx = 0, cy = 0;
+            for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
+            const nm = s.marks.length || 1;
+            console.error(
+              `[box-regime] ${s.nodeId} at=(${(cx / nm).toFixed(0)},${(cy / nm).toFixed(0)}) deg=${deg} ldeg=${ldegOf(s.nodeId)} ` +
+                `bundles=${groups.length} members=[${groups.map((gr) => gr.length).join(',')}] → ` +
+                (deg > 8 ? 'PORT-SATURATION (deg>8)' : 'OVER-WELD/FAN-FOLD (deg<=8, lines bundled)'),
+            );
+          }
         }
       }
       for (const mk of s.marks) placedDots.push(mk.pos);
@@ -1913,8 +1965,12 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   for (const n of layout.nodes.values()) {
     if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
-    const anchor = nodePx.get(n.id);
-    if (!placement || !anchor) continue;
+    const center = nodePx.get(n.id);
+    if (!placement || !center) continue;
+    // Anchor to the same closest-dot point placeLabels positioned around, so the
+    // label hangs off a real capsule marker (and zoom pivots there) rather than
+    // the node centre the dots may have slid away from.
+    const anchor = labelAnchor(center, stopsByNode.get(n.id));
     labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark));
   }
 

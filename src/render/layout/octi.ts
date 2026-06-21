@@ -1686,6 +1686,19 @@ function tryDraw(
   const t0 = Date.now(); // OCTI_DEBUG timing log only — never gates control flow
   const nodes = [...h.nodes.keys()].filter((nd) => ctx.deg(nd) > 0);
   const hEdges = [...h.edges.values()];
+  // Geographic quality tie-break (OCTI_TIEBREAK=<eps>, default off). Among grid
+  // positions for a node move whose score is within <eps> cost units of the
+  // best, prefer the one closest to the node's true (warped) geographic
+  // position. eps=0 is exact-tie-only (rarely fires — ndMovePen already makes
+  // scores continuous); eps>0 lets geography win NEAR-ties, the cheap
+  // faithfulness the continuous ndMovePen can't buy without jagging junctions.
+  // dist() is sqrt-based and the argmin is a total order → deterministic.
+  const tieEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_TIEBREAK)
+      : NaN;
+  const TIEBREAK_GEO = Number.isFinite(tieEnv) && tieEnv >= 0;
+  const TIEBREAK_EPS = TIEBREAK_GEO ? tieEnv : 0;
 
   // Greedy sweep variant of LOOM's local search: LOOM scores all node moves
   // and applies only the single best per iteration (a side effect of its
@@ -1724,21 +1737,64 @@ function tryDraw(
       let bestRun: Drawing | null = null;
       let bestScore = drawing.score(); // a move must beat the status quo
 
-      for (let pos = 0; pos <= 8; pos++) {
-        const n = grid.neigh(curBase, pos);
-        if (n < 0) continue;
+      if (!TIEBREAK_GEO) {
+        for (let pos = 0; pos <= 8; pos++) {
+          const n = grid.neigh(curBase, pos);
+          if (n < 0) continue;
 
-        const run = dcp.clone();
-        const err = drawOrder(adjE, new Map([[a, n]]), grid, run, bestScore, ctx);
+          const run = dcp.clone();
+          const err = drawOrder(adjE, new Map([[a, n]]), grid, run, bestScore, ctx);
 
-        if (err === 'DRAWN' && run.score() < bestScore) {
-          bestRun = run;
-          bestScore = run.score();
+          if (err === 'DRAWN' && run.score() < bestScore) {
+            bestRun = run;
+            bestScore = run.score();
+          }
+
+          // reset the grid to the un-drawn state
+          for (const ce of adjE) run.eraseEdgeFromGrid(ce.id, grid);
+          if (grid.isSettled(a)) grid.unSettleNd(a);
+        }
+      } else {
+        // ε-band geographic tie-break: gather every drawable position, then pick
+        // the one closest to the node's true (warped) geographic position among
+        // those scoring within TIEBREAK_EPS of the best. Unlike a continuous
+        // ndMovePen (which pulls EVERY node toward geography and jags dense
+        // junctions), this only acts where the crossing/bend objective is
+        // ~indifferent, so it buys faithfulness without distorting genuine
+        // trade-offs. The status quo is candidate 0; the displacement → score →
+        // insertion-order argmin is a total, engine-stable order (deterministic).
+        const geoPos = ctx.posOf(a);
+        const cands: Array<{ run: Drawing | null; score: number; disp: number }> = [
+          { run: null, score: drawing.score(), disp: dist(grid.basePos(curBase), geoPos) },
+        ];
+        const cutoff = drawing.score() + TIEBREAK_EPS;
+        for (let pos = 0; pos <= 8; pos++) {
+          const n = grid.neigh(curBase, pos);
+          if (n < 0) continue;
+
+          const run = dcp.clone();
+          const err = drawOrder(adjE, new Map([[a, n]]), grid, run, cutoff, ctx);
+          if (err === 'DRAWN') {
+            cands.push({ run, score: run.score(), disp: dist(grid.basePos(n), geoPos) });
+          }
+
+          // reset the grid to the un-drawn state
+          for (const ce of adjE) run.eraseEdgeFromGrid(ce.id, grid);
+          if (grid.isSettled(a)) grid.unSettleNd(a);
         }
 
-        // reset the grid to the un-drawn state
-        for (const ce of adjE) run.eraseEdgeFromGrid(ce.id, grid);
-        if (grid.isSettled(a)) grid.unSettleNd(a);
+        let minScore = Infinity;
+        for (const c of cands) if (c.score < minScore) minScore = c.score;
+        const band = minScore + TIEBREAK_EPS;
+        let pick = cands[0];
+        for (const c of cands) {
+          if (c.score > band) continue;
+          if (pick.score > band || c.disp < pick.disp || (c.disp === pick.disp && c.score < pick.score)) {
+            pick = c;
+          }
+        }
+        bestRun = pick.run;
+        bestScore = pick.score;
       }
 
       if (bestRun) {

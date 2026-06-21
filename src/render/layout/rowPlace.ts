@@ -237,19 +237,40 @@ export function solveRows(
       for (let i = 0; i < groups.length; i++) {
         if (bundleStates[i].length > 0) continue;
         const s = statsArr[i];
+        const grp = groups[i];
+        // Min pairwise separation of member stop-anchors. When two members
+        // coincide here, their lanes are interlined on ONE drawn edge — the
+        // COINCIDENT failure (no spacing can separate them), as opposed to a
+        // PINCHED bundle whose lanes are distinct but merely seated too tight.
+        let minAnchorSep = Infinity;
+        for (let a = 0; a < grp.length; a++) {
+          for (let b = a + 1; b < grp.length; b++) {
+            const d = hyp(anchorPos[grp[a]][0] - anchorPos[grp[b]][0], anchorPos[grp[a]][1] - anchorPos[grp[b]][1]);
+            if (d < minAnchorSep) minAnchorSep = d;
+          }
+        }
+        // bestMinGap is the largest (over all all-lanes-crossing states) of the
+        // min consecutive signed gap. A non-positive value means even the best
+        // row has a coincident/order-reversed pair → lanes crossed/interlined,
+        // which no positive spacing (minGap relaxation) can recover. That is
+        // COINCIDENT; a positive-but-sub-minGap gap is the spacing-fixable PINCHED.
+        const crossedAny = s.bestMinGap > -Infinity;
         const cls =
           s.noCross >= s.tried
             ? 'NO-CROSSING (lanes never admit a row-line crossing → divergent/coincident; NOT slide/spacing fixable)'
-            : s.bestMinGap > -Infinity && s.bestMinGap < minGap
-              ? `PINCHED (closest gap ${s.bestMinGap.toFixed(2)}px < minGap ${minGap.toFixed(2)}px → octi seated the lanes too tight; fixable UPSTREAM)`
-              : s.blocked > 0
-                ? 'MASKED (§6: every crossing state vetoed by an already-placed station → ordering-dependent)'
-                : 'UNKNOWN';
-        const gapStr = s.bestMinGap > -Infinity ? `${s.bestMinGap.toFixed(2)}px` : 'never crossed';
+            : crossedAny && s.bestMinGap <= 0
+              ? `COINCIDENT (best gap ${s.bestMinGap.toFixed(2)}px ≤ 0 → member lanes interlined/crossed on one drawn edge; NOT spacing-fixable — needs upstream octi/topo de-weld)`
+              : crossedAny && s.bestMinGap < minGap
+                ? `PINCHED (closest gap ${s.bestMinGap.toFixed(2)}px < minGap ${minGap.toFixed(2)}px → octi seated the lanes too tight; fixable UPSTREAM)`
+                : s.blocked > 0
+                  ? 'MASKED (§6: every crossing state vetoed by an already-placed station → ordering-dependent)'
+                  : 'UNKNOWN';
+        const gapStr = crossedAny ? `${s.bestMinGap.toFixed(2)}px` : 'never crossed';
+        const sepStr = minAnchorSep === Infinity ? 'n/a' : `${minAnchorSep.toFixed(2)}px`;
         console.error(
           `[rowPlace] BOX ${opts.dbgLabel ?? '?'} bundle ${i + 1}/${g} members=${groups[i].length}: ` +
             `${s.tried} states (noCross=${s.noCross} pinch=${s.pinch} blocked=${s.blocked}) ` +
-            `closestGap=${gapStr} minGap=${minGap.toFixed(2)}px → ${cls}`,
+            `closestGap=${gapStr} minAnchorSep=${sepStr} minGap=${minGap.toFixed(2)}px → ${cls}`,
         );
       }
     }
