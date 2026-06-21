@@ -18,6 +18,7 @@ import {
   type SmoothedPrecomputed,
 } from '../render/schematic';
 import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
+import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -155,6 +156,9 @@ export function SchematicPanel() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
   const settingsRef = useRef<HTMLDivElement>(null);
+  // Save/Load a generated map to a file (skips the precompute on reload).
+  const mapFileRef = useRef<HTMLInputElement>(null);
+  const [mapMsg, setMapMsg] = useState<string | null>(null);
   // Render tunables (line/station/margin feed the renderer; raster scale +
   // JPEG quality apply at export time). The appearance sliders edit DRAFT values
   // freely; only Save commits them to `applied`, which is what the renderer reads
@@ -238,7 +242,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p16 loaded ✦ — main-map labels are hidden when their station is inside an area or their text would overlap one',
+      '%c[improved-schematics] BUILD popout-box-p17 (save/load maps) loaded ✦ — Settings ⚙ → Map file → Save/Load a generated map to a file; loading restores it instantly (no rebuild)',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -531,11 +535,11 @@ export function SchematicPanel() {
   }, [svg, selections]);
 
   // Trigger a browser download for a generated blob.
-  const triggerDownload = useCallback((blob: Blob, ext: string) => {
+  const triggerDownload = useCallback((blob: Blob, ext: string, name?: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `improvedschematics-${mode}.${ext}`;
+    a.download = name ? `${name}.${ext}` : `improvedschematics-${mode}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -582,6 +586,78 @@ export function SchematicPanel() {
     img.onerror = () => URL.revokeObjectURL(svgUrl);
     img.src = svgUrl;
   }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
+
+  // Save the generated map (precompute + settings) to a JSON file, so reloading
+  // the mod can restore it instantly instead of re-running the octi pipeline.
+  const exportMap = useCallback(() => {
+    const pre = smoothedCacheRef.current?.pre;
+    if (mode !== 'smoothed' || !pre) { setMapMsg('Generate a smoothed map first'); return; }
+    const city = modState.cityCode ?? api.utils.getCityCode?.() ?? 'map';
+    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
+    try {
+      const json = serializeMap({ version: 1, city, settings, pre });
+      triggerDownload(new Blob([json], { type: 'application/json' }), 'json', `improvedschematics-map-${city}`);
+      setMapMsg(`Saved · ${(json.length / 1024 / 1024).toFixed(1)} MB`);
+    } catch {
+      setMapMsg('Save failed');
+    }
+  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, triggerDownload, modState]);
+
+  // Load a saved map: restore the precompute + settings and draw it without
+  // recomputing. The fresh `applied` object forces the svg memo to redraw from the
+  // installed cache; storing under the CURRENT city keeps the generate/ready flow
+  // (and a later remount's hydration) happy.
+  const importMap = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let bundle: ReturnType<typeof deserializeMap>;
+      try {
+        bundle = deserializeMap(String(reader.result));
+      } catch {
+        setMapMsg('Not a valid map file');
+        return;
+      }
+      const s = (bundle.settings ?? {}) as {
+        showStations?: boolean;
+        showLabels?: boolean;
+        applied?: typeof applied;
+        rasterScale?: number;
+        jpegQuality?: number;
+        exportFormat?: ExportFormat;
+      };
+      if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
+      if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
+      if (s.rasterScale != null) setRasterScale(s.rasterScale);
+      if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
+      if (s.exportFormat) setExportFormat(s.exportFormat);
+      if (s.applied) {
+        setLineWidth(s.applied.lineWidth);
+        setStationRadius(s.applied.stationRadius);
+        setMapMargin(s.applied.mapMargin);
+        setWarpPos(s.applied.warpPos);
+        setLinePos(s.applied.linePos);
+        setBoxWarpPos(s.applied.boxWarpPos);
+      }
+      const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+      smoothedCacheRef.current = { pre: bundle.pre };
+      smoothedStore = { city: currentCity, pre: bundle.pre };
+      setGenerating(false);
+      setSmoothedReady(true);
+      setMode('smoothed');
+      setApplied((a) => ({ ...(s.applied ?? a) })); // new ref → svg memo redraws from cache
+      setSettingsOpen(false);
+      setMapMsg('Loaded ✓');
+    };
+    reader.onerror = () => setMapMsg('Could not read file');
+    reader.readAsText(file);
+  }, [modState]);
+
+  // Auto-clear the save/load status line.
+  useEffect(() => {
+    if (!mapMsg) return;
+    const t = setTimeout(() => setMapMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [mapMsg]);
 
   // Position the area-select overlay div from the content box + current view, so
   // the box stays glued to its map region through pan/zoom. Hidden when no box.
@@ -1066,7 +1142,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.12 · label-area-cull</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.13 · save-load-maps</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1416,6 +1492,36 @@ export function SchematicPanel() {
               >
                 ↓ Download {exportFormat.toUpperCase()}
               </button>
+              {/* Map file: save the generated layout + settings, reload instantly. */}
+              <div style={{ borderTop: '1px solid rgba(136,136,136,0.25)', marginTop: 4, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>Map file</span>
+                <span style={{ fontSize: 11, opacity: 0.55 }}>Save a generated map and load it back to skip the rebuild on reload.</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={exportMap}
+                    disabled={mode !== 'smoothed' || !svg || generating}
+                    title="Save the generated map (layout + settings) to a file"
+                    style={{ flex: 1, fontSize: 12, fontWeight: 600, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(136,136,136,0.4)', background: 'transparent', color: 'inherit', cursor: mode !== 'smoothed' || !svg || generating ? 'default' : 'pointer', opacity: mode !== 'smoothed' || !svg || generating ? 0.5 : 1 }}
+                  >
+                    ⭳ Save map
+                  </button>
+                  <button
+                    onClick={() => mapFileRef.current?.click()}
+                    title="Load a saved map file"
+                    style={{ flex: 1, fontSize: 12, fontWeight: 600, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(136,136,136,0.4)', background: 'transparent', color: 'inherit', cursor: 'pointer' }}
+                  >
+                    ⭱ Load map
+                  </button>
+                </div>
+                {mapMsg && <span style={{ fontSize: 11, opacity: 0.7 }}>{mapMsg}</span>}
+                <input
+                  ref={mapFileRef}
+                  type="file"
+                  accept="application/json,.json"
+                  style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importMap(f); e.target.value = ''; }}
+                />
+              </div>
             </div>
           )}
         </div>
