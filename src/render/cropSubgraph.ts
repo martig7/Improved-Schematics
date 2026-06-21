@@ -120,14 +120,18 @@ export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>)
     ),
   );
 
-  // Crop the geography backdrop to the kept cluster's geographic extent (+ a
-  // margin so land/water frames the network naturally). Projected through the
-  // re-sim's warped projection, it deforms with and stays aligned to the cluster.
+  // Crop the geography backdrop to EXACTLY the selected region: the bbox of the
+  // CORE stations (the ones inside the user's box), with no margin. The one-hop
+  // ring stations sit outside this box, so the cropped geography ends at the
+  // selection edge and the lines heading out to those neighbours visibly leave
+  // it. Projected through the re-sim's warped projection, the backdrop deforms
+  // with and stays aligned to the spread-out cluster.
   let croppedGeo: GeographyData | undefined;
   const geo = input.geography;
   if (geo) {
     let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-    for (const s of fStations) {
+    for (const s of stations) {
+      if (!coreStationIds.has(s.id)) continue;
       const c = s.coords;
       if (!c) continue;
       if (c[0] < mnX) mnX = c[0];
@@ -135,11 +139,7 @@ export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>)
       if (c[1] < mnY) mnY = c[1];
       if (c[1] > mxY) mxY = c[1];
     }
-    if (mnX < mxX && mnY < mxY) {
-      const padX = (mxX - mnX) * 0.2;
-      const padY = (mxY - mnY) * 0.2;
-      croppedGeo = clipGeographyToBox(geo, [mnX - padX, mnY - padY, mxX + padX, mxY + padY]);
-    }
+    if (mnX < mxX && mnY < mxY) croppedGeo = clipGeographyToBox(geo, [mnX, mnY, mxX, mxY]);
   }
 
   return {

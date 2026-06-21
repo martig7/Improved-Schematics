@@ -233,7 +233,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p5 (inset re-sim + clipped geography) loaded ✦ — Draw a box → Detail inset re-simulates that cluster, spread out, over its water/parks',
+      '%c[improved-schematics] BUILD popout-box-p6 (inset re-sim + exact geography, lines leave edges) loaded ✦ — Draw a box → Detail inset re-simulates that cluster over the EXACT selected geography; lines to outside stations leave the edges',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -741,16 +741,43 @@ export function SchematicPanel() {
       requestAnimationFrame(() => {
         if (cancelled || !insetBodyRef.current) return;
         let out: string;
+        let coreFrame: [number, number, number, number] | null = null;
         try {
           const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core));
-          out = typeof subPre === 'string' ? subPre : drawSmoothedSchematic(subPre, { showLabels: false, showStations });
+          if (typeof subPre === 'string') {
+            out = subPre;
+          } else {
+            out = drawSmoothedSchematic(subPre, { showLabels: false, showStations });
+            // Frame the inset on the SELECTED region only: the bbox of the core
+            // stations' re-laid positions (≈ the clipped geography's extent). The
+            // ring neighbours land outside it, so their connecting lines leave the
+            // inset edges (clipped by the svg viewBox) rather than being drawn whole.
+            let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+            for (const id of core) {
+              const p = subPre.stationPx.get(id);
+              if (!p) continue;
+              if (p[0] < mnX) mnX = p[0];
+              if (p[0] > mxX) mxX = p[0];
+              if (p[1] < mnY) mnY = p[1];
+              if (p[1] > mxY) mxY = p[1];
+            }
+            if (mnX < mxX && mnY < mxY) coreFrame = [mnX, mnY, mxX - mnX, mxY - mnY];
+          }
         } catch {
           cropFallback();
           return;
         }
         if (cancelled || !insetBodyRef.current) return;
         insetBodyRef.current.innerHTML = out;
-        fit(insetBodyRef.current.querySelector('svg'));
+        const isvg = insetBodyRef.current.querySelector('svg');
+        if (isvg && coreFrame) {
+          isvg.setAttribute('viewBox', `${coreFrame[0]} ${coreFrame[1]} ${coreFrame[2]} ${coreFrame[3]}`);
+          // Match the panel's aspect to the framed region so the geography fills
+          // edge-to-edge with no letterbox bars (keep width, adjust height).
+          const ir = insetRectRef.current;
+          if (ir) insetRectRef.current = { ...ir, h: ir.w * (coreFrame[3] / coreFrame[2]) };
+        }
+        fit(isvg);
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
@@ -951,7 +978,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.1 · inset-resim+geo</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.2 · inset-resim+geo-exact</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
