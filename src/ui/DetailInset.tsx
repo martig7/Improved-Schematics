@@ -45,6 +45,17 @@ interface DetailInsetProps {
   baseSvg: string;
   showStations: boolean;
   onClose: (id: string) => void;
+  /** Register/unregister an export descriptor getter so the parent can bake this
+   *  panel (current dragged rect + rendered sub-SVG + frame) into the export. */
+  registerExport: (id: string, fn: (() => ExportDescriptor | null) | null) => void;
+}
+
+export interface Rect { x: number; y: number; w: number; h: number }
+/** What the parent needs to draw this panel into the exported image. */
+export interface ExportDescriptor {
+  rect: Rect; // panel rect in CONTENT coords (post-drag)
+  subSvg: string; // the rendered sub-map (or base map, for the crop fallback)
+  gf: Rect; // viewBox into subSvg (the framed selected region)
 }
 
 export function DetailInset({
@@ -56,10 +67,13 @@ export function DetailInset({
   baseSvg,
   showStations,
   onClose,
+  registerExport,
 }: DetailInsetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // Last rendered sub-map + its viewBox frame, for baking into the export.
+  const exportRef = useRef<{ subSvg: string; gf: Rect } | null>(null);
   // Panel rect in CONTENT (map) coords; mutated on drag. Initialised to a ~2.5x
   // callout to the right of the source box (height re-fit to the re-sim aspect).
   const bw = sel.box.x1 - sel.box.x0;
@@ -97,6 +111,15 @@ export function DetailInset({
     return () => registerReposition(sel.id, null);
   }, [sel.id, position, registerReposition]);
 
+  // Expose an export descriptor (read fresh at export time, so it reflects the
+  // current dragged rect + the latest rendered sub-map).
+  useEffect(() => {
+    registerExport(sel.id, () =>
+      exportRef.current ? { rect: { ...rectRef.current }, subSvg: exportRef.current.subSvg, gf: exportRef.current.gf } : null,
+    );
+    return () => registerExport(sel.id, null);
+  }, [sel.id, registerExport]);
+
   // Re-simulate the cropped region into the panel body (deferred behind a spinner
   // so it doesn't jank). Mirrors the single-inset path: pick core stations in the
   // box, unproject the box to geographic bounds, crop + re-precompute, frame on
@@ -114,6 +137,8 @@ export function DetailInset({
       const isvg = body.querySelector('svg');
       if (isvg) isvg.setAttribute('viewBox', `${box.x0} ${box.y0} ${box.x1 - box.x0} ${box.y1 - box.y0}`);
       fit(isvg);
+      // Export the base map cropped to the box (same as the live fallback).
+      exportRef.current = { subSvg: baseSvg, gf: { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 } };
       setLoaded(true);
     };
     const pre = getMainPre();
@@ -169,6 +194,13 @@ export function DetailInset({
           const ir = rectRef.current;
           rectRef.current = { ...ir, h: ir.w * (selFrame[3] / selFrame[2]) };
         }
+        // The exported panel nests `out` framed on the re-laid selection (selFrame).
+        exportRef.current = {
+          subSvg: out,
+          gf: selFrame
+            ? { x: selFrame[0], y: selFrame[1], w: selFrame[2], h: selFrame[3] }
+            : { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 },
+        };
         fit(isvg);
         setLoaded(true);
       }),

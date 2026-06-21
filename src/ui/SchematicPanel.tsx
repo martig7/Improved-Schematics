@@ -17,7 +17,7 @@ import {
   drawSmoothedSchematic,
   type SmoothedPrecomputed,
 } from '../render/schematic';
-import { DetailInset, SEL_COLORS, type Selection } from './DetailInset';
+import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -229,12 +229,14 @@ export function SchematicPanel() {
   // Each mounted DetailInset registers a reposition fn here so applyToDom can keep
   // every inset + its outline glued to the map through pan/zoom.
   const repositionFns = useRef(new Map<string, () => void>());
+  // ...and an export-descriptor getter, so the download can bake the panels in.
+  const exportFns = useRef(new Map<string, () => ExportDescriptor | null>());
   // Build marker — fires once when the panel mounts so the game's dev console
   // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p10 (detail-area manager) loaded ✦ — Draw MULTIPLE boxes → manage them in the “≣ Areas” menu: rename (replaces DETAIL), recolor (cyan/magenta/orange/green), and delete each',
+      '%c[improved-schematics] BUILD popout-box-p11 (detail areas export) loaded ✦ — Detail areas (cut-outs, outlines, named/colored callout panels) now bake into the SVG/PNG/JPEG download',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -453,19 +455,78 @@ export function SchematicPanel() {
     if (!svg) return null;
     const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
     const vb = root.getAttribute('viewBox')?.split(/\s+/).map(Number);
-    let width = (vb && vb.length === 4 ? vb[2] : parseFloat(root.getAttribute('width') || '')) || GEO_SIZE;
-    let height = (vb && vb.length === 4 ? vb[3] : parseFloat(root.getAttribute('height') || '')) || GEO_SIZE;
+    const canvasW = (vb && vb.length === 4 ? vb[2] : parseFloat(root.getAttribute('width') || '')) || GEO_SIZE;
+    const canvasH = (vb && vb.length === 4 ? vb[3] : parseFloat(root.getAttribute('height') || '')) || GEO_SIZE;
     const fr = root.getAttribute('data-frame')?.split(/\s+/).map(Number);
-    if (fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0) {
-      root.setAttribute('viewBox', `${fr[0]} ${fr[1]} ${fr[2]} ${fr[3]}`);
-      root.setAttribute('width', String(fr[2]));
-      root.setAttribute('height', String(fr[3]));
+    const frame =
+      fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0
+        ? { x: fr[0], y: fr[1], w: fr[2], h: fr[3] }
+        : { x: 0, y: 0, w: canvasW, h: canvasH };
+
+    // Gather the live detail areas (panel rect + rendered sub-map + frame) paired
+    // with each box/color/name.
+    const areas = selections
+      .map((s) => { const d = exportFns.current.get(s.id)?.(); return d ? { s, ...d } : null; })
+      .filter((a): a is { s: Selection } & ExportDescriptor => a !== null);
+
+    // No areas → original behaviour: crop to the geography frame.
+    if (areas.length === 0) {
+      root.setAttribute('viewBox', `${frame.x} ${frame.y} ${frame.w} ${frame.h}`);
+      root.setAttribute('width', String(frame.w));
+      root.setAttribute('height', String(frame.h));
       root.removeAttribute('data-frame');
-      width = fr[2];
-      height = fr[3];
+      return { markup: new XMLSerializer().serializeToString(root), width: frame.w, height: frame.h };
     }
-    return { markup: new XMLSerializer().serializeToString(root), width, height };
-  }, [svg]);
+
+    // --- compose: main map (areas cut out) + outlines + leaders + callout panels,
+    //     exactly as the on-screen overlay (and dev/_ingame.ts) draws them ---
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const dark = api.ui.getResolvedTheme() === 'dark';
+    const bg = dark ? '#18181b' : '#ffffff';
+
+    // Union cutout on the main map's route/stop/label groups (geography untouched).
+    const BIG = Math.max(canvasW, canvasH) * 100;
+    let dPath = `M${-BIG} ${-BIG}H${BIG}V${BIG}H${-BIG}Z`;
+    for (const a of areas) dPath += `M${a.s.box.x0} ${a.s.box.y0}H${a.s.box.x1}V${a.s.box.y1}H${a.s.box.x0}Z`;
+    const cutDefs = `<defs><clipPath id="imp-export-cut" clipPathUnits="userSpaceOnUse"><path d="${dPath}" clip-rule="evenodd"/></clipPath></defs>`;
+    let main = svg.replace(/ data-frame="[^"]*"/, '').replace(/(<svg[^>]*>)/, `$1${cutDefs}`);
+    for (const cls of ['edges', 'stops', 'stations']) main = main.replace(`<g class="${cls}">`, `<g class="${cls}" clip-path="url(#imp-export-cut)">`);
+    const mainInner = main.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+
+    // Composite extent = geography frame ∪ panel rects (+ margin).
+    let x0 = frame.x, y0 = frame.y, x1 = frame.x + frame.w, y1 = frame.y + frame.h;
+    for (const a of areas) { x0 = Math.min(x0, a.rect.x); y0 = Math.min(y0, a.rect.y); x1 = Math.max(x1, a.rect.x + a.rect.w); y1 = Math.max(y1, a.rect.y + a.rect.h); }
+    const m = Math.max(canvasW, canvasH) * 0.02;
+    x0 -= m; y0 -= m; x1 += m; y1 += m;
+    const EW = x1 - x0, EH = y1 - y0;
+    const stroke = EW * 0.0016, dash = EW * 0.006;
+
+    const parts: string[] = [`<rect x="${x0}" y="${y0}" width="${EW}" height="${EH}" fill="${bg}"/>`, mainInner];
+    for (const a of areas) {
+      const cx = (a.s.box.x0 + a.s.box.x1) / 2, cy = (a.s.box.y0 + a.s.box.y1) / 2;
+      const px = a.rect.x < cx ? a.rect.x + a.rect.w : a.rect.x;
+      parts.push(`<line x1="${cx}" y1="${cy}" x2="${px}" y2="${a.rect.y + a.rect.h / 2}" stroke="${a.s.color}" stroke-width="${stroke * 0.7}" stroke-dasharray="${dash * 0.5} ${dash * 0.5}" opacity="0.5"/>`);
+    }
+    for (const a of areas) {
+      const b = a.s.box;
+      parts.push(`<rect x="${b.x0}" y="${b.y0}" width="${b.x1 - b.x0}" height="${b.y1 - b.y0}" rx="3" fill="none" stroke="${a.s.color}" stroke-width="${stroke}" stroke-dasharray="${dash} ${dash}"/>`);
+    }
+    for (const a of areas) {
+      const r = a.rect, gf = a.gf;
+      const headerH = r.w * 0.06, fontPx = headerH * 0.58;
+      const label = a.s.name.trim() ? a.s.name.trim() : 'DETAIL';
+      const nested = a.subSvg.replace(/<svg[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" x="${r.x}" y="${r.y + headerH}" width="${r.w}" height="${r.h - headerH}" viewBox="${gf.x} ${gf.y} ${gf.w} ${gf.h}" preserveAspectRatio="xMidYMid meet">`);
+      parts.push(
+        `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="${bg}" stroke="${a.s.color}" stroke-width="${r.w * 0.006}"/>`,
+        nested,
+        `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${headerH}" fill="${a.s.color}" opacity="0.32"/>`,
+        `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="${dark ? '#e5e5e5' : '#1a1a1a'}">◳ ${esc(label)}</text>`,
+      );
+    }
+
+    const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0} ${y0} ${EW} ${EH}" width="${EW}" height="${EH}">${parts.join('')}</svg>`;
+    return { markup, width: EW, height: EH };
+  }, [svg, selections]);
 
   // Trigger a browser download for a generated blob.
   const triggerDownload = useCallback((blob: Blob, ext: string) => {
@@ -543,8 +604,13 @@ export function SchematicPanel() {
     if (fn) repositionFns.current.set(id, fn);
     else repositionFns.current.delete(id);
   }, []);
+  const registerExport = useCallback((id: string, fn: (() => ExportDescriptor | null) | null) => {
+    if (fn) exportFns.current.set(id, fn);
+    else exportFns.current.delete(id);
+  }, []);
   const closeSelection = useCallback((id: string) => {
     repositionFns.current.delete(id);
+    exportFns.current.delete(id);
     setSelections((xs) => xs.filter((s) => s.id !== id));
   }, []);
   // Edit a selection's color/name in place. Spreads `s` so `box` keeps its identity
@@ -554,6 +620,7 @@ export function SchematicPanel() {
   }, []);
   const clearSelections = useCallback(() => {
     repositionFns.current.clear();
+    exportFns.current.clear();
     setSelections([]);
   }, []);
 
@@ -945,7 +1012,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.6 · detail-area-manager</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.7 · detail-areas-export</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1344,6 +1411,7 @@ export function SchematicPanel() {
             baseSvg={svg}
             showStations={showStations}
             onClose={closeSelection}
+            registerExport={registerExport}
           />
         ))}
         {mode === 'smoothed' && !smoothedReady && !generating && (
