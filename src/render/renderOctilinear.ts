@@ -846,6 +846,18 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           : NaN;
       return Number.isFinite(env) && env >= 0 ? env : 1.5;
     })();
+    // Cross-station §6 mask strictness (OCTI_XMASK): a candidate dot is vetoed
+    // within 2·r·factor of an already-placed dot. Default = MARKER_SCALE so the
+    // veto matches the DRAWN ring touching distance 2·r·MARKER_SCALE (~3.18px) —
+    // distinct stations seat once their drawn rings just clear. The legacy 2r
+    // (~4.9px, factor 1) was stale since markers shrank to MARKER_SCALE (commit
+    // 8f1a5e5): it boxed near-coincident DISTINCT stations in dense clusters (SF,
+    // 28→18 drawn boxes recovered) whose rings actually fit, with NO overlap.
+    // OCTI_XMASK=1 restores the legacy strict 2r; higher widens the gap.
+    const xMaskFactor = (() => {
+      const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XMASK) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : MARKER_SCALE;
+    })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
@@ -1026,7 +1038,7 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
           // never dropped in this model (a masked station boxes instead)
           blocked: (p: Pixel) => {
             for (const q of placedDots) {
-              if (hyp(p[0] - q[0], p[1] - q[1]) < 2 * r - 0.05) return true;
+              if (hyp(p[0] - q[0], p[1] - q[1]) < 2 * r * xMaskFactor - 0.05) return true;
             }
             return false;
           },
