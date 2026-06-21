@@ -236,7 +236,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p12 (detail areas follow toggles) loaded ✦ — Stations/labels toggles now apply to the detail areas too (cached sub-layout → instant redraw, no re-sim)',
+      '%c[improved-schematics] BUILD popout-box-p13 (areas UI fixes) loaded ✦ — panels clipped to the map (no toolbar overlap → ≣ Areas manager works), leader lines now drawn in the live viewer too',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -944,7 +944,9 @@ export function SchematicPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* position+zIndex so the toolbar (and its popovers) always stack above the
+          map layer's detail-area panels. */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
         {/* Spinner keyframes — defined once here so both the small rerender
             spinner and the generating overlay can use it regardless of mode. */}
         <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
@@ -1012,7 +1014,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.8 · areas-follow-toggles</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.9 · areas-ui-fixes</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1366,7 +1368,7 @@ export function SchematicPanel() {
           )}
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
         <div
           ref={viewportRef}
           onPointerDown={onPointerDown}

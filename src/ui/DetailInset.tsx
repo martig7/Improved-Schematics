@@ -74,6 +74,7 @@ export function DetailInset({
   const panelRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const leaderRef = useRef<SVGLineElement>(null);
   // Last rendered sub-map + its viewBox frame, for baking into the export.
   const exportRef = useRef<{ subSvg: string; gf: Rect } | null>(null);
   // Cached sub-layout (heavy octi precompute), keyed by box. Areas clear on any
@@ -106,6 +107,16 @@ export function DetailInset({
       el.style.top = `${(ir.y - view.vy) * view.scale}px`;
       el.style.width = `${ir.w * view.scale}px`;
       el.style.height = `${ir.h * view.scale}px`;
+    }
+    // Leader from the box centre to the panel's nearest vertical edge.
+    const line = leaderRef.current;
+    if (line) {
+      const bcx = (sel.box.x0 + sel.box.x1) / 2;
+      const anchorX = ir.x < bcx ? ir.x + ir.w : ir.x;
+      line.setAttribute('x1', `${(bcx - view.vx) * view.scale}`);
+      line.setAttribute('y1', `${((sel.box.y0 + sel.box.y1) / 2 - view.vy) * view.scale}`);
+      line.setAttribute('x2', `${(anchorX - view.vx) * view.scale}`);
+      line.setAttribute('y2', `${(ir.y + ir.h / 2 - view.vy) * view.scale}`);
     }
   }, [getView, sel.box]);
 
@@ -244,6 +255,11 @@ export function DetailInset({
 
   return (
     <>
+      {/* Leader from the source box to the callout panel (positioned imperatively).
+          Covers the map layer; pointer-events none so it never blocks the map. */}
+      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}>
+        <line ref={leaderRef} stroke={sel.color} strokeWidth={1.5} strokeDasharray="5 4" opacity={0.5} />
+      </svg>
       <div
         ref={overlayRef}
         style={{
