@@ -233,7 +233,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p6 (inset re-sim + exact geography, lines leave edges) loaded ✦ — Draw a box → Detail inset re-simulates that cluster over the EXACT selected geography; lines to outside stations leave the edges',
+      '%c[improved-schematics] BUILD popout-box-p7 (inset re-sim + unprojected geo bounds) loaded ✦ — Draw a box → unprojected from the warped map to its true geographic bounds → Detail inset re-simulates that region; lines to outside stations leave the edges',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -733,6 +733,13 @@ export function SchematicPanel() {
       if (px[0] >= selBox.x0 && px[0] <= selBox.x1 && px[1] >= selBox.y0 && px[1] <= selBox.y1) core.add(sid);
     }
     if (core.size < 2) { cropFallback(); return; }
+    // The drawn box is a rectangle in WARPED pixel space; unproject its corners
+    // back through the main projection to the geographic region it actually covers
+    // — the correct bounds to crop the sub-graph's geography on (not the bbox of
+    // whichever stations happen to fall inside). y is flipped: y1 (bottom) = south.
+    const bl = pre.unproject([selBox.x0, selBox.y1]);
+    const tr = pre.unproject([selBox.x1, selBox.y0]);
+    const clipBbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
     body.innerHTML =
       '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#999;font:11px system-ui">re-simulating…</div>';
     positionInset();
@@ -741,27 +748,32 @@ export function SchematicPanel() {
       requestAnimationFrame(() => {
         if (cancelled || !insetBodyRef.current) return;
         let out: string;
-        let coreFrame: [number, number, number, number] | null = null;
+        let selFrame: [number, number, number, number] | null = null;
         try {
-          const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core));
+          const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core, clipBbox));
           if (typeof subPre === 'string') {
             out = subPre;
           } else {
             out = drawSmoothedSchematic(subPre, { showLabels: false, showStations });
-            // Frame the inset on the SELECTED region only: the bbox of the core
-            // stations' re-laid positions (≈ the clipped geography's extent). The
-            // ring neighbours land outside it, so their connecting lines leave the
-            // inset edges (clipped by the svg viewBox) rather than being drawn whole.
-            let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-            for (const id of core) {
-              const p = subPre.stationPx.get(id);
-              if (!p) continue;
-              if (p[0] < mnX) mnX = p[0];
-              if (p[0] > mxX) mxX = p[0];
-              if (p[1] < mnY) mnY = p[1];
-              if (p[1] > mxY) mxY = p[1];
+            // Frame on exactly the selected geography: where the cropped bbox lands
+            // in the re-sim (geoBboxFrame). The ring neighbours fall outside it, so
+            // their connecting lines leave the inset edges (clipped by the viewBox).
+            // Fall back to the core stations' re-laid bbox if there's no geography.
+            const gf = subPre.geoBboxFrame;
+            if (gf && gf.w > 1 && gf.h > 1) {
+              selFrame = [gf.x, gf.y, gf.w, gf.h];
+            } else {
+              let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+              for (const id of core) {
+                const p = subPre.stationPx.get(id);
+                if (!p) continue;
+                if (p[0] < mnX) mnX = p[0];
+                if (p[0] > mxX) mxX = p[0];
+                if (p[1] < mnY) mnY = p[1];
+                if (p[1] > mxY) mxY = p[1];
+              }
+              if (mnX < mxX && mnY < mxY) selFrame = [mnX, mnY, mxX - mnX, mxY - mnY];
             }
-            if (mnX < mxX && mnY < mxY) coreFrame = [mnX, mnY, mxX - mnX, mxY - mnY];
           }
         } catch {
           cropFallback();
@@ -770,12 +782,12 @@ export function SchematicPanel() {
         if (cancelled || !insetBodyRef.current) return;
         insetBodyRef.current.innerHTML = out;
         const isvg = insetBodyRef.current.querySelector('svg');
-        if (isvg && coreFrame) {
-          isvg.setAttribute('viewBox', `${coreFrame[0]} ${coreFrame[1]} ${coreFrame[2]} ${coreFrame[3]}`);
+        if (isvg && selFrame) {
+          isvg.setAttribute('viewBox', `${selFrame[0]} ${selFrame[1]} ${selFrame[2]} ${selFrame[3]}`);
           // Match the panel's aspect to the framed region so the geography fills
           // edge-to-edge with no letterbox bars (keep width, adjust height).
           const ir = insetRectRef.current;
-          if (ir) insetRectRef.current = { ...ir, h: ir.w * (coreFrame[3] / coreFrame[2]) };
+          if (ir) insetRectRef.current = { ...ir, h: ir.w * (selFrame[3] / selFrame[2]) };
         }
         fit(isvg);
       }),
@@ -978,7 +990,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.2 · inset-resim+geo-exact</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.3 · inset-resim+unproject</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}

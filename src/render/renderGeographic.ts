@@ -425,6 +425,14 @@ export interface SmoothedPrecomputed {
    *  Undefined when there's no geography — renderRibbons falls back to the
    *  rendered-content extent. */
   frame?: FrameRect;
+  /** Inverse of the (separable, strictly-monotone) warped projection: a render
+   *  pixel back to its geographic coord. Used by the magnifier inset to unproject
+   *  the user's drawn box into the geographic bounds to crop on. */
+  unproject: (p: Pixel) => Coordinate;
+  /** Pixel extent of the geography's bbox through the warped projection — i.e.
+   *  where the cropped region lands in this render. For the inset, this frames
+   *  the view on exactly the selected geography. Undefined with no geography. */
+  geoBboxFrame?: FrameRect;
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -686,6 +694,37 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     }
   }
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
+
+  // Inverse of the warped projection (render pixel -> geographic coord). The whole
+  // chain — equirect base -> separable density warp -> per-axis box-expand ->
+  // per-axis refit rescale — is separable and strictly increasing per axis, so
+  // invert each axis independently by bisection: render-x depends only on lng
+  // (increasing), render-y only on lat (decreasing, north at the top). The search
+  // brackets a ±100%-padded `bounds` so any on-canvas pixel is covered (the
+  // projection extrapolates monotonically past the bounds). The magnifier inset
+  // uses this to turn the user's drawn box into the geographic region to crop on.
+  const unproject = ((): ((p: Pixel) => Coordinate) => {
+    const [lo0, la0, lo1, la1] = bounds;
+    const dLo = lo1 - lo0 || 1e-6;
+    const dLa = la1 - la0 || 1e-6;
+    const loLng = lo0 - dLo, hiLng = lo1 + dLo;
+    const loLat = la0 - dLa, hiLat = la1 + dLa;
+    const midLat = (la0 + la1) / 2, midLng = (lo0 + lo1) / 2;
+    return ([px, py]: Pixel): Coordinate => {
+      let a = loLng, b = hiLng;
+      for (let i = 0; i < 44; i++) { const m = (a + b) / 2; if (proj.toSVG([m, midLat])[0] < px) a = m; else b = m; }
+      let c = loLat, d = hiLat;
+      for (let i = 0; i < 44; i++) { const m = (c + d) / 2; if (proj.toSVG([midLng, m])[1] > py) c = m; else d = m; }
+      return [(a + b) / 2, (c + d) / 2];
+    };
+  })();
+  // Where the geography bbox lands in this render — frames the inset on exactly
+  // the selected region. Separable warp => the four bbox corners give the extent.
+  const gbb = input.geography?.bbox;
+  const geoBboxFrame = gbb
+    ? projectedBounds(proj, [[gbb[0], gbb[1]], [gbb[2], gbb[1]], [gbb[2], gbb[3]], [gbb[0], gbb[3]]]) ?? undefined
+    : undefined;
+
   const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
   if (env?.OCTI_WARP_DEBUG || env?.OCTI_WARP_CAPTURE_ONLY) {
     const ids = [...graph.nodes.keys()];
@@ -934,7 +973,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame, unproject, geoBboxFrame };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to

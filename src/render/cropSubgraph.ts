@@ -84,7 +84,11 @@ function clipGeographyToBox(geo: GeographyData, bbox: BoundingBox): GeographyDat
   return { bbox, water: clipFeats(geo.water), green: clipFeats(geo.green) };
 }
 
-export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>): SchematicInput {
+export function cropSubgraph(
+  input: SchematicInput,
+  coreStationIds: Set<string>,
+  clipBbox?: BoundingBox,
+): SchematicInput {
   const routes = input.routes as unknown as RouteLike[];
   const tracks = input.tracks as unknown as { id: string }[];
   const stations = input.stations as unknown as StationLike[];
@@ -120,26 +124,32 @@ export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>)
     ),
   );
 
-  // Crop the geography backdrop to EXACTLY the selected region: the bbox of the
-  // CORE stations (the ones inside the user's box), with no margin. The one-hop
-  // ring stations sit outside this box, so the cropped geography ends at the
-  // selection edge and the lines heading out to those neighbours visibly leave
-  // it. Projected through the re-sim's warped projection, the backdrop deforms
-  // with and stays aligned to the spread-out cluster.
+  // Crop the geography backdrop to EXACTLY the selected region. The caller passes
+  // `clipBbox`: the user's drawn box UNPROJECTED back through the warped main
+  // projection into geographic space. That is the correct bounds — the box is a
+  // rectangle in WARPED pixel space, so its true geographic preimage (not the
+  // bbox of whichever stations happen to land inside) is what we clip to. The
+  // one-hop ring stations sit outside this box, so the cropped geography ends at
+  // the selection edge and the lines heading out to those neighbours leave it.
+  // (Fallback: core stations' coord bbox, for callers/harnesses with no proj.)
   let croppedGeo: GeographyData | undefined;
   const geo = input.geography;
   if (geo) {
-    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-    for (const s of stations) {
-      if (!coreStationIds.has(s.id)) continue;
-      const c = s.coords;
-      if (!c) continue;
-      if (c[0] < mnX) mnX = c[0];
-      if (c[0] > mxX) mxX = c[0];
-      if (c[1] < mnY) mnY = c[1];
-      if (c[1] > mxY) mxY = c[1];
+    let box = clipBbox;
+    if (!box) {
+      let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+      for (const s of stations) {
+        if (!coreStationIds.has(s.id)) continue;
+        const c = s.coords;
+        if (!c) continue;
+        if (c[0] < mnX) mnX = c[0];
+        if (c[0] > mxX) mxX = c[0];
+        if (c[1] < mnY) mnY = c[1];
+        if (c[1] > mxY) mxY = c[1];
+      }
+      if (mnX < mxX && mnY < mxY) box = [mnX, mnY, mxX, mxY];
     }
-    if (mnX < mxX && mnY < mxY) croppedGeo = clipGeographyToBox(geo, [mnX, mnY, mxX, mxY]);
+    if (box) croppedGeo = clipGeographyToBox(geo, box);
   }
 
   return {
