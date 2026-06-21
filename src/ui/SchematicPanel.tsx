@@ -236,7 +236,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p11 (detail areas export) loaded ✦ — Detail areas (cut-outs, outlines, named/colored callout panels) now bake into the SVG/PNG/JPEG download',
+      '%c[improved-schematics] BUILD popout-box-p12 (detail areas follow toggles) loaded ✦ — Stations/labels toggles now apply to the detail areas too (cached sub-layout → instant redraw, no re-sim)',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -1012,7 +1012,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.7 · detail-areas-export</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.8 · areas-follow-toggles</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1410,6 +1410,7 @@ export function SchematicPanel() {
             buildInput={buildInput}
             baseSvg={svg}
             showStations={showStations}
+            showLabels={showLabels}
             onClose={closeSelection}
             registerExport={registerExport}
           />

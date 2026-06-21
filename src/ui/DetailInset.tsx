@@ -44,6 +44,7 @@ interface DetailInsetProps {
   /** Base map SVG — magnified-crop fallback + a re-sim trigger when it changes. */
   baseSvg: string;
   showStations: boolean;
+  showLabels: boolean;
   onClose: (id: string) => void;
   /** Register/unregister an export descriptor getter so the parent can bake this
    *  panel (current dragged rect + rendered sub-SVG + frame) into the export. */
@@ -66,6 +67,7 @@ export function DetailInset({
   buildInput,
   baseSvg,
   showStations,
+  showLabels,
   onClose,
   registerExport,
 }: DetailInsetProps) {
@@ -74,6 +76,9 @@ export function DetailInset({
   const overlayRef = useRef<HTMLDivElement>(null);
   // Last rendered sub-map + its viewBox frame, for baking into the export.
   const exportRef = useRef<{ subSvg: string; gf: Rect } | null>(null);
+  // Cached sub-layout (heavy octi precompute), keyed by box. Areas clear on any
+  // layout change, so this is computed once per area; toggles just re-draw it.
+  const subCacheRef = useRef<{ box: Box; pre: SmoothedPrecomputed | null; selFrame: Rect | null } | null>(null);
   // Panel rect in CONTENT (map) coords; mutated on drag. Initialised to a ~2.5x
   // callout to the right of the source box (height re-fit to the re-sim aspect).
   const bw = sel.box.x1 - sel.box.x0;
@@ -120,34 +125,61 @@ export function DetailInset({
     return () => registerExport(sel.id, null);
   }, [sel.id, registerExport]);
 
-  // Re-simulate the cropped region into the panel body (deferred behind a spinner
-  // so it doesn't jank). Mirrors the single-inset path: pick core stations in the
-  // box, unproject the box to geographic bounds, crop + re-precompute, frame on
-  // the projected selection. Falls back to a magnified crop of the base map.
+  // Re-simulate the cropped region into the panel body. The heavy octi PRECOMPUTE
+  // is cached per box (areas clear on any layout change, so the layout is stable
+  // for an area's life) — toggling stations/labels only RE-DRAWS the cached sub,
+  // cheaply and with no spinner, exactly like the main map's two-phase render.
+  // First compute is deferred behind a spinner; falls back to a base-map crop.
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
     const box = sel.box;
+    const boxFrame: Rect = { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 };
     const fit = (isvg: SVGSVGElement | null) => {
       if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
       position();
     };
+    // Base-map crop fallback — reflects the toggles since baseSvg already does.
     const cropFallback = () => {
       body.innerHTML = baseSvg;
       const isvg = body.querySelector('svg');
       if (isvg) isvg.setAttribute('viewBox', `${box.x0} ${box.y0} ${box.x1 - box.x0} ${box.y1 - box.y0}`);
       fit(isvg);
-      // Export the base map cropped to the box (same as the live fallback).
-      exportRef.current = { subSvg: baseSvg, gf: { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 } };
+      exportRef.current = { subSvg: baseSvg, gf: boxFrame };
       setLoaded(true);
     };
+    // Cheap redraw of a cached sub-layout with the CURRENT toggles.
+    const drawResim = (subPre: SmoothedPrecomputed, selFrame: Rect | null) => {
+      const out = drawSmoothedSchematic(subPre, { showLabels, showStations });
+      if (!bodyRef.current) return;
+      bodyRef.current.innerHTML = out;
+      const isvg = bodyRef.current.querySelector('svg');
+      if (isvg && selFrame) {
+        isvg.setAttribute('viewBox', `${selFrame.x} ${selFrame.y} ${selFrame.w} ${selFrame.h}`);
+        rectRef.current = { ...rectRef.current, h: rectRef.current.w * (selFrame.h / selFrame.w) };
+      }
+      exportRef.current = { subSvg: out, gf: selFrame ?? boxFrame };
+      fit(isvg);
+      setLoaded(true);
+    };
+
+    // Cache hit (box unchanged → only a station/label toggle): re-draw instantly.
+    const cached = subCacheRef.current;
+    if (cached && cached.box === box) {
+      if (cached.pre) drawResim(cached.pre, cached.selFrame);
+      else cropFallback();
+      return;
+    }
+
+    // Cache miss: compute the sub-layout once, deferred behind a spinner.
+    const miss = (pre: SmoothedPrecomputed | null, selFrame: Rect | null) => { subCacheRef.current = { box, pre, selFrame }; };
     const pre = getMainPre();
-    if (!pre || typeof pre === 'string') { cropFallback(); return; }
+    if (!pre || typeof pre === 'string') { miss(null, null); cropFallback(); return; }
     const core = new Set<string>();
     for (const [sid, px] of pre.stationPx) {
       if (px[0] >= box.x0 && px[0] <= box.x1 && px[1] >= box.y0 && px[1] <= box.y1) core.add(sid);
     }
-    if (core.size < 2) { cropFallback(); return; }
+    if (core.size < 2) { miss(null, null); cropFallback(); return; }
     const bl = pre.unproject([box.x0, box.y1]);
     const tr = pre.unproject([box.x1, box.y0]);
     const clipBbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
@@ -158,55 +190,37 @@ export function DetailInset({
     const raf = requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         if (cancelled || !bodyRef.current) return;
-        let out: string;
-        let selFrame: [number, number, number, number] | null = null;
+        let subPre: SmoothedPrecomputed | string;
         try {
-          const subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core, clipBbox));
-          if (typeof subPre === 'string') {
-            out = subPre;
-          } else {
-            out = drawSmoothedSchematic(subPre, { showLabels: false, showStations });
-            const gf = subPre.geoBboxFrame;
-            if (gf && gf.w > 1 && gf.h > 1) {
-              selFrame = [gf.x, gf.y, gf.w, gf.h];
-            } else {
-              let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-              for (const id of core) {
-                const p = subPre.stationPx.get(id);
-                if (!p) continue;
-                if (p[0] < mnX) mnX = p[0];
-                if (p[0] > mxX) mxX = p[0];
-                if (p[1] < mnY) mnY = p[1];
-                if (p[1] > mxY) mxY = p[1];
-              }
-              if (mnX < mxX && mnY < mxY) selFrame = [mnX, mnY, mxX - mnX, mxY - mnY];
-            }
-          }
+          subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core, clipBbox));
         } catch {
-          cropFallback();
-          return;
+          miss(null, null); cropFallback(); return;
         }
         if (cancelled || !bodyRef.current) return;
-        bodyRef.current.innerHTML = out;
-        const isvg = bodyRef.current.querySelector('svg');
-        if (isvg && selFrame) {
-          isvg.setAttribute('viewBox', `${selFrame[0]} ${selFrame[1]} ${selFrame[2]} ${selFrame[3]}`);
-          const ir = rectRef.current;
-          rectRef.current = { ...ir, h: ir.w * (selFrame[3] / selFrame[2]) };
+        if (typeof subPre === 'string') { miss(null, null); cropFallback(); return; }
+        // Frame on the projected selection (geoBboxFrame), else the core bbox.
+        let selFrame: Rect | null = null;
+        const gf = subPre.geoBboxFrame;
+        if (gf && gf.w > 1 && gf.h > 1) {
+          selFrame = { x: gf.x, y: gf.y, w: gf.w, h: gf.h };
+        } else {
+          let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+          for (const id of core) {
+            const p = subPre.stationPx.get(id);
+            if (!p) continue;
+            if (p[0] < mnX) mnX = p[0];
+            if (p[0] > mxX) mxX = p[0];
+            if (p[1] < mnY) mnY = p[1];
+            if (p[1] > mxY) mxY = p[1];
+          }
+          if (mnX < mxX && mnY < mxY) selFrame = { x: mnX, y: mnY, w: mxX - mnX, h: mxY - mnY };
         }
-        // The exported panel nests `out` framed on the re-laid selection (selFrame).
-        exportRef.current = {
-          subSvg: out,
-          gf: selFrame
-            ? { x: selFrame[0], y: selFrame[1], w: selFrame[2], h: selFrame[3] }
-            : { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 },
-        };
-        fit(isvg);
-        setLoaded(true);
+        miss(subPre, selFrame);
+        drawResim(subPre, selFrame);
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, baseSvg, showStations, position, buildInput]);
+  }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput]);
 
   // Drag the panel (content-space rect); stopPropagation so the map doesn't pan.
   const onDown = (e: React.PointerEvent) => {
