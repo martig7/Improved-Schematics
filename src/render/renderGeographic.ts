@@ -542,9 +542,21 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const envNum = (k: string): number =>
     typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[k]) : NaN;
   const boxFrac = Number.isFinite(envNum('OCTI_BOX_FRAC')) && envNum('OCTI_BOX_FRAC') > 0 ? envNum('OCTI_BOX_FRAC') : 0.4;
-  const boxExpand = Number.isFinite(envNum('OCTI_BOX_EXPAND')) && envNum('OCTI_BOX_EXPAND') >= 1 ? envNum('OCTI_BOX_EXPAND') : 4;
+  // boxExpand / boxGrowth take the user's "Box warp" setting via opts (the env
+  // OCTI_BOX_* overrides still win for dev sweeps), mirroring warpAlpha above.
+  const boxExpand = (() => {
+    const e = envNum('OCTI_BOX_EXPAND');
+    if (Number.isFinite(e) && e >= 1) return e; // dev sweep override wins
+    if (typeof opts.boxExpand === 'number' && Number.isFinite(opts.boxExpand) && opts.boxExpand >= 1) return opts.boxExpand;
+    return 4;
+  })();
   const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
-  const boxGrowth = Number.isFinite(envNum('OCTI_BOX_GROWTH')) && envNum('OCTI_BOX_GROWTH') >= 1 ? envNum('OCTI_BOX_GROWTH') : 1.2;
+  const boxGrowth = (() => {
+    const g = envNum('OCTI_BOX_GROWTH');
+    if (Number.isFinite(g) && g >= 1) return g; // dev sweep override wins
+    if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
+    return 1.2;
+  })();
   const warpSigmaPx = (() => {
     const env =
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;

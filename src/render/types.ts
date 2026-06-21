@@ -80,6 +80,16 @@ export interface SchematicOptions {
    *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher = more
    *  realistic courses; 0 = freely octilinear. Default 0.05. */
   geographicAffinity?: number;
+  /** Smoothed mode only: box-warp strength — the LOCAL dense-core expansion
+   *  factor (densityBoxWarp `expand`, ≥1). Higher gives crowded interchanges more
+   *  rectilinear room (declutters dense hubs) at the cost of geographic
+   *  faithfulness near them. Default 4. Pairs with boxGrowth (below) so the
+   *  expanded cores grow the map rather than compress the surround. */
+  boxExpand?: number;
+  /** Smoothed mode only: how much the box warp may grow the overall map (≥1; the
+   *  densityBoxWarp `growthCap`). Raised alongside boxExpand so stronger core
+   *  expansion adds room instead of crushing the far field. Default 1.2. */
+  boxGrowth?: number;
   /** Render with a dark background/palette. */
   dark: boolean;
   theme: SchematicTheme;

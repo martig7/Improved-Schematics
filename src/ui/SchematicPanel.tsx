@@ -73,6 +73,12 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // Geographic-course affinity: realistic (left) = stronger course-keeping (up to
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
+// Box-warp strength: the LOCAL dense-core expansion (densityBoxWarp). 0 (center)
+// = the tuned default (expand 4 / growth 1.2). Right (stylized) magnifies crowded
+// hubs more AND lets the map grow to fit, so cores gain room instead of crushing
+// the surround; left (realistic) eases the box warp toward off. Pos in [-1, +1].
+const boxExpandFromPos = (p: number) => Math.max(1, 4 + 4 * p);
+const boxGrowthFromPos = (p: number) => Math.max(1, 1.2 + 0.8 * p);
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -144,19 +150,22 @@ export function SchematicPanel() {
   // in smoothed mode regenerates the layout.
   const [warpPos, setWarpPos] = useState(DEFAULT_REALISM_POS);
   const [linePos, setLinePos] = useState(DEFAULT_REALISM_POS);
+  const [boxWarpPos, setBoxWarpPos] = useState(DEFAULT_REALISM_POS);
   const [applied, setApplied] = useState({
     lineWidth: DEFAULT_LINE_WIDTH,
     stationRadius: DEFAULT_STATION_RADIUS,
     mapMargin: DEFAULT_MAP_MARGIN,
     warpPos: DEFAULT_REALISM_POS,
     linePos: DEFAULT_REALISM_POS,
+    boxWarpPos: DEFAULT_REALISM_POS,
   });
   const appearanceDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
     applied.mapMargin !== mapMargin ||
     applied.warpPos !== warpPos ||
-    applied.linePos !== linePos;
+    applied.linePos !== linePos ||
+    applied.boxWarpPos !== boxWarpPos;
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -165,11 +174,13 @@ export function SchematicPanel() {
     mapMargin === DEFAULT_MAP_MARGIN &&
     warpPos === DEFAULT_REALISM_POS &&
     linePos === DEFAULT_REALISM_POS &&
+    boxWarpPos === DEFAULT_REALISM_POS &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
     applied.warpPos === DEFAULT_REALISM_POS &&
-    applied.linePos === DEFAULT_REALISM_POS;
+    applied.linePos === DEFAULT_REALISM_POS &&
+    applied.boxWarpPos === DEFAULT_REALISM_POS;
   const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -284,6 +295,8 @@ export function SchematicPanel() {
           padding: applied.mapMargin,
           warpAlpha: warpAlphaFromPos(applied.warpPos),
           geographicAffinity: affinityFromPos(applied.linePos),
+          boxExpand: boxExpandFromPos(applied.boxWarpPos),
+          boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
           theme: {
             ...(dark ? DARK_THEME : DEFAULT_THEME),
             lineWidth: applied.lineWidth,
@@ -342,6 +355,8 @@ export function SchematicPanel() {
         padding: applied.mapMargin,
         warpAlpha: warpAlphaFromPos(applied.warpPos),
         geographicAffinity: affinityFromPos(applied.linePos),
+        boxExpand: boxExpandFromPos(applied.boxWarpPos),
+        boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
         theme: {
           ...(dark ? DARK_THEME : DEFAULT_THEME),
           lineWidth: applied.lineWidth,
@@ -842,6 +857,15 @@ export function SchematicPanel() {
                     display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'}
                     onChange={setLinePos}
                   />
+                  <Slider
+                    label="Box warp"
+                    value={boxWarpPos}
+                    min={-1}
+                    max={1}
+                    step={0.1}
+                    display={boxWarpPos === 0 ? 'Default' : boxWarpPos < 0 ? 'Realistic' : 'Stylized'}
+                    onChange={setBoxWarpPos}
+                  />
                 </>
               )}
 
@@ -855,12 +879,14 @@ export function SchematicPanel() {
                     setMapMargin(DEFAULT_MAP_MARGIN);
                     setWarpPos(DEFAULT_REALISM_POS);
                     setLinePos(DEFAULT_REALISM_POS);
+                    setBoxWarpPos(DEFAULT_REALISM_POS);
                     setApplied({
                       lineWidth: DEFAULT_LINE_WIDTH,
                       stationRadius: DEFAULT_STATION_RADIUS,
                       mapMargin: DEFAULT_MAP_MARGIN,
                       warpPos: DEFAULT_REALISM_POS,
                       linePos: DEFAULT_REALISM_POS,
+                      boxWarpPos: DEFAULT_REALISM_POS,
                     });
                     // Smoothed bakes these into the precompute → rebuild.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
@@ -883,7 +909,7 @@ export function SchematicPanel() {
                 </button>
                 <button
                   onClick={() => {
-                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos });
+                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos });
                     // Smoothed bakes these into the precompute → rebuild if shown.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
                   }}
