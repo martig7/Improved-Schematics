@@ -217,6 +217,15 @@ export function SchematicPanel() {
   const boxRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const boxOverlayRef = useRef<HTMLDivElement>(null);
+  // Build marker — fires once when the panel mounts so the game's dev console
+  // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
+  // area" button only shows in SMOOTHED mode after Generate Map.
+  useEffect(() => {
+    console.log(
+      '%c[improved-schematics] BUILD popout-box-p1 (area-select) loaded ✦ — "Draw area" appears in Smoothed mode after Generate Map',
+      'color:#38bdf8;font-weight:bold;font-size:13px',
+    );
+  }, []);
 
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
@@ -830,7 +839,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · area-select</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
