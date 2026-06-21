@@ -231,12 +231,14 @@ export function SchematicPanel() {
   const repositionFns = useRef(new Map<string, () => void>());
   // ...and an export-descriptor getter, so the download can bake the panels in.
   const exportFns = useRef(new Map<string, () => ExportDescriptor | null>());
+  // Live mirror of `selections`, read by the imperative dep-[] callbacks.
+  const selectionsRef = useRef<Selection[]>([]);
   // Build marker — fires once when the panel mounts so the game's dev console
   // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p15 loaded ✦ — detail panel header shows just the name (no ◳ glyph); blank name = empty header',
+      '%c[improved-schematics] BUILD popout-box-p16 loaded ✦ — main-map labels are hidden when their station is inside an area or their text would overlap one',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -624,6 +626,46 @@ export function SchematicPanel() {
     setSelections([]);
   }, []);
 
+  // Mirror of `selections` for the imperative (dep-[]) paths below.
+  selectionsRef.current = selections;
+  // Hide main-map labels that fall in/over a detail area: a station inside a box
+  // is shown in its panel, not the main map, and a label spilling into a box
+  // would clash with the cut-out region. Labels are counter-scaled (constant
+  // screen size), so overlap is judged in SCREEN space and re-checked on zoom.
+  const updateLabelOverlap = useCallback(() => {
+    const labels = labelGroups.current; // inner .imp-lbl-s groups
+    for (const el of labels) (el as HTMLElement).style.removeProperty('display'); // reset
+    const sels = selectionsRef.current;
+    const view = viewRef.current;
+    const vp = viewportRef.current;
+    if (sels.length === 0 || !view || !vp || labels.length === 0) return;
+    const vpRect = vp.getBoundingClientRect();
+    // Box rects in screen px (for the rendered-text test, since labels are
+    // counter-scaled). The dot test uses box content coords directly.
+    const boxesScreen = sels.map((s) => ({
+      x0: (s.box.x0 - view.vx) * view.scale,
+      y0: (s.box.y0 - view.vy) * view.scale,
+      x1: (s.box.x1 - view.vx) * view.scale,
+      y1: (s.box.y1 - view.vy) * view.scale,
+    }));
+    for (const el of labels) {
+      let hide = false;
+      // (1) station IN an area: the dot (outer .imp-lbl translate) is inside a box.
+      const m = /translate\(\s*([-\d.]+)[ ,]\s*([-\d.]+)/.exec(el.parentElement?.getAttribute('transform') ?? '');
+      if (m) {
+        const ax = +m[1], ay = +m[2];
+        hide = sels.some((s) => ax >= s.box.x0 && ax <= s.box.x1 && ay >= s.box.y0 && ay <= s.box.y1);
+      }
+      // (2) label text OVERLAPS a box (would spill into the cut-out region).
+      if (!hide) {
+        const r = (el as Element).getBoundingClientRect();
+        const lx0 = r.left - vpRect.left, ly0 = r.top - vpRect.top, lx1 = r.right - vpRect.left, ly1 = r.bottom - vpRect.top;
+        hide = boxesScreen.some((b) => lx0 < b.x1 && lx1 > b.x0 && ly0 < b.y1 && ly1 > b.y0);
+      }
+      if (hide) (el as HTMLElement).style.display = 'none';
+    }
+  }, []);
+
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
   // (only needed when the zoom changes, not on pure pans).
   const applyToDom = useCallback((updateSizes: boolean) => {
@@ -642,8 +684,10 @@ export function SchematicPanel() {
       // Labels are pinned to their dot; counter-scale keeps text + offset constant size.
       const lblTransform = `scale(${inv})`;
       for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
+      // Counter-scaling changes which labels overlap the (fixed-size) boxes.
+      updateLabelOverlap();
     }
-  }, []);
+  }, [updateLabelOverlap]);
 
   const fit = useCallback(() => {
     const vp = viewportRef.current;
@@ -747,7 +791,9 @@ export function SchematicPanel() {
     const svgEl = svgRef.current;
     if (!svgEl) return;
     const NS = 'http://www.w3.org/2000/svg';
-    const groups = ['.edges', '.stops', '.stations']
+    // Labels (.stations) are NOT clipped here — they're hidden whole by
+    // updateLabelOverlap when they fall in/over a box, so no half-cut text.
+    const groups = ['.edges', '.stops']
       .map((s) => svgEl.querySelector<SVGGElement>(s))
       .filter((g): g is SVGGElement => !!g);
     const clear = () => {
@@ -779,6 +825,12 @@ export function SchematicPanel() {
     // selections read inside is fine: cutoutKey changes whenever any box changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutoutKey, svg]);
+
+  // Re-evaluate which labels overlap the areas whenever the boxes change, the map
+  // redraws (new label elements), or labels toggle. Zoom is handled in applyToDom.
+  useEffect(() => {
+    updateLabelOverlap();
+  }, [cutoutKey, svg, showLabels, updateLabelOverlap]);
 
   // Re-fit on mode switch (different layout shape). When a generated map is stored
   // for this city, re-enter the generating flow rather than opening the gate
@@ -1014,7 +1066,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.11 · no-glyph</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.12 · label-area-cull</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
