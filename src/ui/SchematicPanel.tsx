@@ -233,7 +233,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p7 (inset re-sim + unprojected geo bounds) loaded ✦ — Draw a box → unprojected from the warped map to its true geographic bounds → Detail inset re-simulates that region; lines to outside stations leave the edges',
+      '%c[improved-schematics] BUILD popout-box-p8 (inset re-sim + cut-out selection) loaded ✦ — Draw a box → the selected area is cleared of lines/stations on the main map (geography kept) while the Detail inset re-simulates that region',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -653,6 +653,48 @@ export function SchematicPanel() {
     if (svg) setGenerating(false);
   }, [svg, mode, fit, applyToDom]);
 
+  // While a selection is active, "cut out" the selected area from the MAIN map:
+  // clip the route, stop and label layers to everything EXCEPT the drawn box, so
+  // the lines and stations inside it disappear (the Detail inset shows that region
+  // instead) while the geography backdrop — a separate, unclipped layer — stays
+  // visible under the box. Runs after the inject effect (shares the `svg` dep), so
+  // a content redraw re-applies it; cleared when the selection goes away.
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const NS = 'http://www.w3.org/2000/svg';
+    const groups = ['.edges', '.stops', '.stations']
+      .map((s) => svgEl.querySelector<SVGGElement>(s))
+      .filter((g): g is SVGGElement => !!g);
+    const clear = () => {
+      svgEl.querySelector('defs.imp-cutout')?.remove();
+      for (const g of groups) g.removeAttribute('clip-path');
+    };
+    clear();
+    if (!insetOn || !selBox) return;
+    // Even-odd clip: a big outer rect (covers all content at any pan/zoom) minus
+    // the selection box → keep everything OUTSIDE the box. clipPathUnits is user
+    // space, so the box (content coords) stays glued to its map region on pan/zoom.
+    const box = svgBoxRef.current ?? { w: GEO_SIZE, h: GEO_SIZE };
+    const BIG = Math.max(box.w, box.h) * 100;
+    const d =
+      `M${-BIG} ${-BIG}H${BIG}V${BIG}H${-BIG}Z` +
+      `M${selBox.x0} ${selBox.y0}H${selBox.x1}V${selBox.y1}H${selBox.x0}Z`;
+    const defs = document.createElementNS(NS, 'defs');
+    defs.setAttribute('class', 'imp-cutout');
+    const clip = document.createElementNS(NS, 'clipPath');
+    clip.setAttribute('id', 'imp-cutout-clip');
+    clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('clip-rule', 'evenodd');
+    clip.appendChild(path);
+    defs.appendChild(clip);
+    svgEl.insertBefore(defs, svgEl.firstChild);
+    for (const g of groups) g.setAttribute('clip-path', 'url(#imp-cutout-clip)');
+    return clear;
+  }, [insetOn, selBox, svg]);
+
   // Re-fit on mode switch (different layout shape). When a generated map is stored
   // for this city, re-enter the generating flow rather than opening the gate
   // outright: redrawing the cached layout back in still runs the (synchronous)
@@ -990,7 +1032,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.3 · inset-resim+unproject</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.4 · inset-resim+cutout</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
