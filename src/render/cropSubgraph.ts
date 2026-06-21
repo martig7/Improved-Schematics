@@ -5,21 +5,84 @@
 //
 // Filtering is at the stNode/stCombo level — the real route↔station linkage:
 // a route's path is a sequence of stCombos (startStNodeId -> endStNodeId), and a
-// station owns stNodeIds. (route.stations is empty in game dumps.) Geography is
-// dropped so the render frames on the network extent, not the whole city.
+// station owns stNodeIds. (route.stations is empty in game dumps.)
+//
+// Geography is kept but CLIPPED to the cluster's geographic extent (not dropped,
+// not the whole city): re-simulating projects the backdrop through the same
+// density-warped projection as the network, so the cropped water/parks deform
+// with — and stay aligned to — the spread-out cluster. Clipping keeps the layout
+// bounds + warp re-fit tight on the region instead of the whole city.
 
 import type { SchematicInput } from './schematic';
+import type { Coordinate, BoundingBox } from '../types/core';
+import type { GeographyData, GeoPolyFeature } from '../geography/types';
 
 type StationLike = {
   id: string;
   stNodeIds?: string[];
   trackIds?: string[];
+  coords?: Coordinate;
 };
 type RouteLike = {
   stNodes?: { id: string }[];
   stCombos?: { startStNodeId: string; endStNodeId: string }[];
 };
 type GroupLike = { stationIds?: string[]; stations?: unknown[] };
+
+/** Sutherland-Hodgman clip of one polygon ring against an axis-aligned rect
+ *  (in geographic lng/lat space). Returns the clipped vertex list (open, no
+ *  repeated closing point); empty when the ring lies wholly outside. */
+function clipRingToRect(ring: Coordinate[], minX: number, minY: number, maxX: number, maxY: number): Coordinate[] {
+  const edges: { inside: (p: Coordinate) => boolean; isect: (a: Coordinate, b: Coordinate) => Coordinate }[] = [
+    { inside: (p) => p[0] >= minX, isect: (a, b) => { const t = (minX - a[0]) / (b[0] - a[0]); return [minX, a[1] + t * (b[1] - a[1])]; } },
+    { inside: (p) => p[0] <= maxX, isect: (a, b) => { const t = (maxX - a[0]) / (b[0] - a[0]); return [maxX, a[1] + t * (b[1] - a[1])]; } },
+    { inside: (p) => p[1] >= minY, isect: (a, b) => { const t = (minY - a[1]) / (b[1] - a[1]); return [a[0] + t * (b[0] - a[0]), minY]; } },
+    { inside: (p) => p[1] <= maxY, isect: (a, b) => { const t = (maxY - a[1]) / (b[1] - a[1]); return [a[0] + t * (b[0] - a[0]), maxY]; } },
+  ];
+  let out = ring;
+  for (const e of edges) {
+    if (out.length === 0) break;
+    const src = out;
+    out = [];
+    for (let i = 0; i < src.length; i++) {
+      const cur = src[i];
+      const prev = src[(i + src.length - 1) % src.length];
+      const curIn = e.inside(cur);
+      const prevIn = e.inside(prev);
+      if (curIn) {
+        if (!prevIn) out.push(e.isect(prev, cur));
+        out.push(cur);
+      } else if (prevIn) {
+        out.push(e.isect(prev, cur));
+      }
+    }
+  }
+  return out;
+}
+
+/** Clip every water/green polygon to `bbox` and stamp the cropped bbox, so the
+ *  backdrop — and the layout's framing — cover only the cluster's region. */
+function clipGeographyToBox(geo: GeographyData, bbox: BoundingBox): GeographyData {
+  const [minX, minY, maxX, maxY] = bbox;
+  const clipFeats = (feats: GeoPolyFeature[]): GeoPolyFeature[] => {
+    const out: GeoPolyFeature[] = [];
+    for (const f of feats) {
+      if (f.geometry.type !== 'Polygon') continue;
+      const src = f.geometry.coordinates;
+      if (src.length === 0) continue;
+      const ext = clipRingToRect(src[0], minX, minY, maxX, maxY);
+      if (ext.length < 3) continue; // exterior ring gone → polygon is outside the box
+      const rings: Coordinate[][] = [ext];
+      for (let i = 1; i < src.length; i++) {
+        const hole = clipRingToRect(src[i], minX, minY, maxX, maxY);
+        if (hole.length >= 3) rings.push(hole);
+      }
+      out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: rings } });
+    }
+    return out;
+  };
+  return { bbox, water: clipFeats(geo.water), green: clipFeats(geo.green) };
+}
 
 export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>): SchematicInput {
   const routes = input.routes as unknown as RouteLike[];
@@ -57,12 +120,34 @@ export function cropSubgraph(input: SchematicInput, coreStationIds: Set<string>)
     ),
   );
 
+  // Crop the geography backdrop to the kept cluster's geographic extent (+ a
+  // margin so land/water frames the network naturally). Projected through the
+  // re-sim's warped projection, it deforms with and stays aligned to the cluster.
+  let croppedGeo: GeographyData | undefined;
+  const geo = input.geography;
+  if (geo) {
+    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+    for (const s of fStations) {
+      const c = s.coords;
+      if (!c) continue;
+      if (c[0] < mnX) mnX = c[0];
+      if (c[0] > mxX) mxX = c[0];
+      if (c[1] < mnY) mnY = c[1];
+      if (c[1] > mxY) mxY = c[1];
+    }
+    if (mnX < mxX && mnY < mxY) {
+      const padX = (mxX - mnX) * 0.2;
+      const padY = (mxY - mnY) * 0.2;
+      croppedGeo = clipGeographyToBox(geo, [mnX - padX, mnY - padY, mxX + padX, mxY + padY]);
+    }
+  }
+
   return {
     ...input,
     routes: fRoutes as never,
     tracks: fTracks as never,
     stations: fStations as never,
     stationGroups: fGroups as never,
-    geography: undefined, // frame on the cluster, not the whole city
+    geography: croppedGeo, // cluster-region backdrop (undefined if no geography)
   };
 }

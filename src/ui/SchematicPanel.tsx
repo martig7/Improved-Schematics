@@ -233,7 +233,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p4 (inset re-sim: cropped sub-graph) loaded ✦ — Draw a box → Detail inset re-simulates that cluster, spread out',
+      '%c[improved-schematics] BUILD popout-box-p5 (inset re-sim + clipped geography) loaded ✦ — Draw a box → Detail inset re-simulates that cluster, spread out, over its water/parks',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -951,7 +951,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.0 · inset-resim</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.1 · inset-resim+geo</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
