@@ -29,14 +29,15 @@ type Frame = { x: number; y: number; w: number; h: number };
 // coords) — as if the user dragged the callout to a clear spot; omit it for the
 // in-game default (a 2.5x callout just to the right of the box). A thin leader
 // ties each panel to its outline; colors match (cyan, magenta, orange, green).
-const rawBoxes: { box: Box; at?: { x: number; y: number } }[] = [
-  { box: { x0: 1130, y0: 970, x1: 1360, y1: 1210 }, at: { x: 1780, y: 200 } },
-  { box: { x0: 1080, y0: 1320, x1: 1300, y1: 1540 }, at: { x: 1780, y: 1560 } },
+// `name` replaces the "DETAIL" header label (blank = "DETAIL").
+const rawBoxes: { box: Box; at?: { x: number; y: number }; name?: string }[] = [
+  { box: { x0: 1130, y0: 970, x1: 1360, y1: 1210 }, at: { x: 1780, y: 200 }, name: 'Downtown' },
+  { box: { x0: 1080, y0: 1320, x1: 1300, y1: 1540 }, at: { x: 1780, y: 1560 }, name: 'Mission' },
 ];
 
-interface Sel { box: Box; color: string; sub: string; gf: Frame; rect: Frame }
+interface Sel { box: Box; color: string; name: string; sub: string; gf: Frame; rect: Frame }
 const sels: Sel[] = [];
-rawBoxes.forEach(({ box, at }, i) => {
+rawBoxes.forEach(({ box, at, name }, i) => {
   const color = SEL_COLORS[i % SEL_COLORS.length];
   const core = new Set<string>();
   for (const [sid, px] of preO.stationPx) if (px[0] >= box.x0 && px[0] <= box.x1 && px[1] >= box.y0 && px[1] <= box.y1) core.add(sid);
@@ -54,7 +55,7 @@ rawBoxes.forEach(({ box, at }, i) => {
   const bodyH = rectW * (gf.h / gf.w);
   const pos = at ?? { x: box.x1 + bw * 0.4, y: box.y0 }; // default: in-game to-the-right callout
   const rect: Frame = { x: pos.x, y: pos.y, w: rectW, h: bodyH + headerH };
-  sels.push({ box, color, sub: subSvg, gf, rect });
+  sels.push({ box, color, name: name ?? '', sub: subSvg, gf, rect });
   console.log(`box ${i} (${color}): core ${core.size}, panel ${Math.round(rect.w)}x${Math.round(rect.h)} @ ${Math.round(rect.x)},${Math.round(rect.y)}`);
 });
 
@@ -94,7 +95,7 @@ const panel = (s: Sel): string => {
     `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="#18181b" stroke="${s.color}" stroke-width="${r.w * 0.006}"/>`,
     nested,
     `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${headerH}" fill="${s.color}" opacity="0.32"/>`,
-    `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="#e5e5e5">◳ DETAIL</text>`,
+    `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="#e5e5e5">◳ ${s.name.trim() ? s.name : 'DETAIL'}</text>`,
     `<text x="${r.x + r.w - headerH * 0.45}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" fill="#e5e5e5" text-anchor="end">✕</text>`,
   ].join('\n');
 };

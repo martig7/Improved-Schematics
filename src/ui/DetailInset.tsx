@@ -17,6 +17,8 @@ export interface Selection {
   id: string;
   box: Box;
   color: string;
+  /** User label shown in the panel header; falls back to "DETAIL" when empty. */
+  name: string;
 }
 export interface SelView {
   scale: number;
@@ -242,7 +244,9 @@ export function DetailInset({
             zIndex: 1,
           }}
         >
-          <span>◳ DETAIL</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            ◳ {sel.name.trim() ? sel.name : 'DETAIL'}
+          </span>
           <span
             onPointerDown={(e) => { e.stopPropagation(); onClose(sel.id); }}
             style={{ cursor: 'pointer', padding: '0 2px' }}

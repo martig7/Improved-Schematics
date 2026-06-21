@@ -147,6 +147,9 @@ export function SchematicPanel() {
   // model that bypasses React; each inset positions itself via a registered fn.
   const [selections, setSelections] = useState<Selection[]>([]);
   const selCountRef = useRef(0); // monotonic, for id + color cycling
+  // The detail-areas manager popover: rename / recolor / delete each selection.
+  const [areasOpen, setAreasOpen] = useState(false);
+  const areasRef = useRef<HTMLDivElement>(null);
   // Export controls live in a small settings popover opened via the gear icon in
   // the top-right of the panel. The chosen format drives the Download button.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -231,7 +234,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p9 (multi-select detail areas) loaded ✦ — Draw MULTIPLE boxes → each becomes a persistent, color-coded (cyan/magenta/orange/green) Detail inset; each area is cut out of the main map; close them individually',
+      '%c[improved-schematics] BUILD popout-box-p10 (detail-area manager) loaded ✦ — Draw MULTIPLE boxes → manage them in the “≣ Areas” menu: rename (replaces DETAIL), recolor (cyan/magenta/orange/green), and delete each',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -544,6 +547,11 @@ export function SchematicPanel() {
     repositionFns.current.delete(id);
     setSelections((xs) => xs.filter((s) => s.id !== id));
   }, []);
+  // Edit a selection's color/name in place. Spreads `s` so `box` keeps its identity
+  // — the DetailInset re-sim effect keys on `box`, so this never re-simulates.
+  const updateSelection = useCallback((id: string, patch: Partial<Selection>) => {
+    setSelections((xs) => xs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
   const clearSelections = useCallback(() => {
     repositionFns.current.clear();
     setSelections([]);
@@ -658,6 +666,10 @@ export function SchematicPanel() {
     if (svg) setGenerating(false);
   }, [svg, mode, fit, applyToDom, clearSelections]);
 
+  // The cutout depends only on the box GEOMETRY, so key the effect on that — not
+  // the whole `selections` array — so editing a color/name doesn't rebuild (and
+  // briefly flash) the clip on every keystroke.
+  const cutoutKey = selections.map((s) => `${s.box.x0},${s.box.y0},${s.box.x1},${s.box.y1}`).join('|');
   // While any selections are active, "cut out" their areas from the MAIN map:
   // clip the route, stop and label layers to everything EXCEPT the drawn boxes, so
   // the lines and stations inside them disappear (each Detail inset shows that
@@ -697,7 +709,9 @@ export function SchematicPanel() {
     svgEl.insertBefore(defs, svgEl.firstChild);
     for (const g of groups) g.setAttribute('clip-path', 'url(#imp-cutout-clip)');
     return clear;
-  }, [selections, svg]);
+    // selections read inside is fine: cutoutKey changes whenever any box changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cutoutKey, svg]);
 
   // Re-fit on mode switch (different layout shape). When a generated map is stored
   // for this city, re-enter the generating flow rather than opening the gate
@@ -799,7 +813,7 @@ export function SchematicPanel() {
       // spawns a new color-cycled DetailInset that persists until closed.
       if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
         const n = selCountRef.current++;
-        setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length] }]);
+        setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length], name: '' }]);
       }
       return;
     }
@@ -836,6 +850,22 @@ export function SchematicPanel() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [settingsOpen]);
+
+  // Same for the detail-areas manager popover.
+  useEffect(() => {
+    if (!areasOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!areasRef.current?.contains(e.target as Node)) setAreasOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [areasOpen]);
+
+  // Drop the manager open-state once there's nothing to manage (its button
+  // unmounts), so it doesn't auto-reopen when the next area is drawn.
+  useEffect(() => {
+    if (selections.length === 0) setAreasOpen(false);
+  }, [selections.length]);
 
   const toggleStyle = (active: boolean) => ({
     fontSize: 12,
@@ -915,7 +945,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.5 · multi-detail-areas</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.6 · detail-area-manager</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -926,13 +956,99 @@ export function SchematicPanel() {
           </button>
         )}
         {selections.length > 0 && (
-          <button
-            onClick={clearSelections}
-            style={toggleStyle(false)}
-            title="Clear all detail areas"
-          >
-            ✕ Clear{selections.length > 1 ? ` (${selections.length})` : ''}
-          </button>
+          <div ref={areasRef} style={{ position: 'relative' }}>
+            <button
+              onClick={() => setAreasOpen((v) => !v)}
+              style={toggleStyle(areasOpen)}
+              title="Manage detail areas — rename, recolor, delete"
+              aria-expanded={areasOpen}
+            >
+              ≣ Areas ({selections.length})
+            </button>
+            {areasOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  marginTop: 6,
+                  zIndex: 10,
+                  width: 290,
+                  maxHeight: 360,
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  padding: 12,
+                  borderRadius: 8,
+                  background: api.ui.getResolvedTheme() === 'dark' ? '#27272a' : '#ffffff',
+                  color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
+                  border: '1px solid rgba(136,136,136,0.35)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
+                  Detail areas
+                </span>
+                {selections.map((s, i) => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+                      {SEL_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelection(s.id, { color: c })}
+                          title={`Color ${c}`}
+                          aria-label={`Set color ${c}`}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: 4,
+                            padding: 0,
+                            background: c,
+                            cursor: 'pointer',
+                            border: s.color === c ? '2px solid #fff' : '1px solid rgba(0,0,0,0.35)',
+                            boxShadow: s.color === c ? '0 0 0 1px rgba(0,0,0,0.4)' : 'none',
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <input
+                      value={s.name}
+                      placeholder="DETAIL"
+                      onChange={(e) => updateSelection(s.id, { name: e.target.value })}
+                      title={`Name for area ${i + 1} (blank shows “DETAIL”)`}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 12,
+                        padding: '3px 6px',
+                        borderRadius: 4,
+                        border: '1px solid rgba(136,136,136,0.4)',
+                        background: 'transparent',
+                        color: 'inherit',
+                      }}
+                    />
+                    <button
+                      onClick={() => closeSelection(s.id)}
+                      title="Delete this area"
+                      aria-label="Delete this area"
+                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: 0.65, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                    >
+                      🗑
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => { clearSelections(); setAreasOpen(false); }}
+                  style={{ ...toggleStyle(false), alignSelf: 'flex-start', marginTop: 2 }}
+                  title="Delete all detail areas"
+                >
+                  ✕ Clear all
+                </button>
+              </div>
+            )}
+          </div>
         )}
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
