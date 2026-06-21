@@ -236,7 +236,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p13 (areas UI fixes) loaded ✦ — panels clipped to the map (no toolbar overlap → ≣ Areas manager works), leader lines now drawn in the live viewer too',
+      '%c[improved-schematics] BUILD popout-box-p14 (JSX-shim fix) loaded ✦ — fixed the react/jsx-runtime shim (keyed elements were rendering their key as a child) → the ≣ Areas manager controls work; blank name = no label',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -514,13 +514,13 @@ export function SchematicPanel() {
     for (const a of areas) {
       const r = a.rect, gf = a.gf;
       const headerH = r.w * 0.06, fontPx = headerH * 0.58;
-      const label = a.s.name.trim() ? a.s.name.trim() : 'DETAIL';
+      const label = a.s.name.trim();
       const nested = a.subSvg.replace(/<svg[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" x="${r.x}" y="${r.y + headerH}" width="${r.w}" height="${r.h - headerH}" viewBox="${gf.x} ${gf.y} ${gf.w} ${gf.h}" preserveAspectRatio="xMidYMid meet">`);
       parts.push(
         `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="${bg}" stroke="${a.s.color}" stroke-width="${r.w * 0.006}"/>`,
         nested,
         `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${headerH}" fill="${a.s.color}" opacity="0.32"/>`,
-        `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="${dark ? '#e5e5e5' : '#1a1a1a'}">◳ ${esc(label)}</text>`,
+        `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="${dark ? '#e5e5e5' : '#1a1a1a'}">◳${label ? ' ' + esc(label) : ''}</text>`,
       );
     }
 
@@ -1014,7 +1014,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.9 · areas-ui-fixes</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.10 · jsx-shim-fix</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1084,9 +1084,9 @@ export function SchematicPanel() {
                     </div>
                     <input
                       value={s.name}
-                      placeholder="DETAIL"
+                      placeholder="Name…"
                       onChange={(e) => updateSelection(s.id, { name: e.target.value })}
-                      title={`Name for area ${i + 1} (blank shows “DETAIL”)`}
+                      title={`Name for area ${i + 1} (blank = no label)`}
                       style={{
                         flex: 1,
                         minWidth: 0,
