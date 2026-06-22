@@ -156,6 +156,7 @@ export function DetailInset({
     const fit = (isvg: SVGSVGElement | null) => {
       if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); isvg.style.transform = ''; }
       zoomRef.current = { s: 1, tx: 0, ty: 0 }; // a re-sim resets the in-panel zoom
+      if (bodyRef.current) bodyRef.current.style.cursor = '';
       position();
     };
     // Base-map crop fallback — reflects the toggles since baseSvg already does.
@@ -269,6 +270,7 @@ export function DetailInset({
       zoomRef.current = { s: ns, tx, ty };
       isvg.style.transformOrigin = '0 0';
       isvg.style.transform = ns === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${ns})`;
+      body.style.cursor = ns > 1 ? 'grab' : ''; // zoomed → draggable
     };
     body.addEventListener('wheel', onWheel, { passive: false });
     return () => body.removeEventListener('wheel', onWheel);
@@ -293,6 +295,37 @@ export function DetailInset({
   const onUp = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     dragRef.current = null;
+  };
+
+  // Drag inside the BODY pans the magnified image (only when zoomed in). Mirrors the
+  // wheel's pan clamp so the content always covers the panel.
+  const panDragRef = useRef<{ sx: number; sy: number; tx0: number; ty0: number } | null>(null);
+  const onBodyDown = (e: React.PointerEvent) => {
+    if (zoomRef.current.s <= 1) return; // nothing to pan at home zoom
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    panDragRef.current = { sx: e.clientX, sy: e.clientY, tx0: zoomRef.current.tx, ty0: zoomRef.current.ty };
+    if (bodyRef.current) bodyRef.current.style.cursor = 'grabbing';
+  };
+  const onBodyMove = (e: React.PointerEvent) => {
+    const d = panDragRef.current;
+    if (!d) return;
+    e.stopPropagation();
+    const body = bodyRef.current;
+    const isvg = body?.querySelector('svg') as SVGSVGElement | null;
+    if (!body || !isvg) return;
+    const rect = body.getBoundingClientRect();
+    const s = zoomRef.current.s;
+    const tx = Math.min(0, Math.max(rect.width * (1 - s), d.tx0 + (e.clientX - d.sx)));
+    const ty = Math.min(0, Math.max(rect.height * (1 - s), d.ty0 + (e.clientY - d.sy)));
+    zoomRef.current = { s, tx, ty };
+    isvg.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
+  };
+  const onBodyUp = (e: React.PointerEvent) => {
+    if (!panDragRef.current) return;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    panDragRef.current = null;
+    if (bodyRef.current) bodyRef.current.style.cursor = zoomRef.current.s > 1 ? 'grab' : '';
   };
 
   return (
@@ -366,7 +399,14 @@ export function DetailInset({
             </span>
           )}
         </div>
-        <div ref={bodyRef} style={{ position: 'absolute', inset: '16px 0 0 0' }} />
+        <div
+          ref={bodyRef}
+          onPointerDown={onBodyDown}
+          onPointerMove={onBodyMove}
+          onPointerUp={onBodyUp}
+          onPointerLeave={onBodyUp}
+          style={{ position: 'absolute', inset: '16px 0 0 0', touchAction: 'none' }}
+        />
       </div>
     </>
   );
