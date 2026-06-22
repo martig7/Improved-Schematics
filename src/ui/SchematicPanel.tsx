@@ -23,6 +23,7 @@ import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
+import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -490,6 +491,11 @@ export function SchematicPanel() {
   // The cached rendered SVG, returned verbatim by the memo on the first smoothed
   // render so we skip the (slow) draw on open; consumed once, then normal draws.
   const restoredSvgRef = useRef<string | null>(restored?.svgStr ?? null);
+  // The Scene IR emitted directly by the smoothed draw (Phase 3), paired with the
+  // svg string it came from. The canvas inject path uses this display list as-is
+  // INSTEAD OF re-parsing the svg, when the strings match. Restore-from-cache and
+  // geographic/schematic modes (where no scene was emitted) fall back to parsing.
+  const emittedSceneRef = useRef<{ svg: string; scene: SceneOut['scene'] } | null>(null);
 
   // View-preservation: the inject effect re-fits only when the layout identity
   // changes (mode switch, (re)generation, or water reframe), and keeps the
@@ -569,7 +575,13 @@ export function SchematicPanel() {
         restoredSvgRef.current = null;
         return cached;
       }
-      return typeof pre === 'string' ? pre : drawSmoothedSchematic(pre, { showLabels, showStations });
+      if (typeof pre === 'string') return pre;
+      // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
+      // inject path can paint this display list instead of re-parsing the svg.
+      const out: SceneOut = { scene: null };
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations }, out);
+      emittedSceneRef.current = { svg: drawn, scene: out.scene };
+      return drawn;
     }
 
     // Geographic/schematic: cheap enough to fully render on every change. Its
@@ -1085,7 +1097,11 @@ export function SchematicPanel() {
       labelGroups.current = [];
       labelBoxes.current = [];
       if (svg) {
-        const scene = sceneFromSvg(svg);
+        // Prefer the Scene IR the smoothed draw emitted directly for THIS svg
+        // (Phase 3) — skip the SVG capture-parse entirely. Restore-from-cache and
+        // geographic/schematic modes (no emitted scene, or a stale one) parse.
+        const emitted = emittedSceneRef.current;
+        const scene = emitted && emitted.svg === svg && emitted.scene ? emitted.scene : sceneFromSvg(svg);
         sceneRef.current = prepareScene(scene);
         const w = scene.width || GEO_SIZE;
         const h = scene.height || GEO_SIZE;

@@ -16,7 +16,7 @@ import type { Prim, Scene, Layer } from './sceneIR';
 import type { GeographyData } from '../geography/types';
 
 // Set true once transfers + stops + labels are all direct-emitted (final part).
-const EXPECT_FULL_COVERAGE = false;
+const EXPECT_FULL_COVERAGE = true;
 
 const STATIONS = [
   { id: 's1', name: 'Alpha', coords: [-122.0, 47.0], trackIds: ['t1'], trackGroupId: 'g1', buildType: 'constructed', stNodeIds: ['n1'], routeIds: ['r1'], createdAt: 0, nearbyStations: [] },
