@@ -129,6 +129,27 @@ test('Phase 3: fixture exercises the dynamic layers parts will add', () => {
   assert.ok(parsed.prims.some((p) => p.layer === 'stations' && p.kind === 'text'), 'fixture has labels');
 });
 
+test('Phase 3: transfers fragment maps to a transfers-layer prim (worldScale false, opacity kept)', () => {
+  // The oracle fixture does not coax a rendered transfer (the resolver suppresses
+  // it), so pin the transfers PART directly: it feeds the exact fragment
+  // renderTransferConnectors emits (transfers.ts) through sceneFromSvg. This locks
+  // the layer mapping, worldScale, and that opacity survives.
+  const frag =
+    '<g class="transfers"><path d="M10.0,10.0L20.0,20.0" fill="none" stroke="#374151" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/></g>';
+  const t = sceneFromSvg(frag).prims.filter((p) => p.layer === 'transfers');
+  assert.equal(t.length, 1);
+  const p = t[0];
+  assert.equal(p.kind, 'path');
+  assert.equal(p.worldScale, false);
+  assert.equal(p.opacity, 0.85);
+  if (p.kind === 'path') {
+    assert.equal(p.d, 'M10.0,10.0L20.0,20.0');
+    assert.equal(p.stroke, '#374151');
+    assert.equal(p.fill, 'none');
+    assert.ok(Math.abs(p.strokeWidth - 1.4) < 1e-9);
+  }
+});
+
 test('Phase 3: direct scene covers every drawn layer (final part flips this on)', () => {
   if (!EXPECT_FULL_COVERAGE) return; // enabled by the integration part once complete
   const { svg, scene } = render();
