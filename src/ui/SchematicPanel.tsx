@@ -131,14 +131,73 @@ function Slider(props: {
 // switching to geographic or reopening the panel doesn't discard it. Keyed by
 // city; replaced only by an explicit (Re)generate.
 let smoothedStore: { city: string; pre: SmoothedPrecomputed | string } | null = null;
-// Prefix for the game's persistent mod storage (api.storage), which DOES survive a
-// panel close / mod reload (unlike the in-memory store above). Keyed `:pre|:meta:<city>`.
+// Persistent map storage in localStorage (synchronous + reliable in the game's
+// renderer; survives panel close / mod reload / restart, unlike the in-memory
+// store above and unlike fire-and-forget async api.storage). Keyed `:pre|:meta:<city>`.
 const MAP_STORE_KEY = 'improvedschematics:map';
 
+function lsGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function lsSet(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    // Quota: drop our OTHER stored maps (keep only this one) and retry once.
+    try {
+      for (let i = window.localStorage.length - 1; i >= 0; i--) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith(MAP_STORE_KEY) && k !== key) window.localStorage.removeItem(k);
+      }
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+type RestoredSettings = {
+  showStations?: boolean;
+  showLabels?: boolean;
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number };
+  rasterScale?: number;
+  jpegQuality?: number;
+  exportFormat?: ExportFormat;
+};
+
 export function SchematicPanel() {
-  const [mode, setMode] = useState<RenderMode>('geographic');
-  const [showStations, setShowStations] = useState(true);
-  const [showLabels, setShowLabels] = useState(false);
+  // Synchronously hydrate the last auto-saved map for this city ONCE, so reopening
+  // the panel lands straight in it — no rebuild, and no async restore that would
+  // race the mount transients. Seeds the in-memory store so the svg memo draws from
+  // cache on the first render; the state below initialises from it.
+  const [restored] = useState(() => {
+    try {
+      const city = api.utils.getCityCode?.() ?? '';
+      const preStr = lsGet(`${MAP_STORE_KEY}:pre:${city}`);
+      const metaStr = lsGet(`${MAP_STORE_KEY}:meta:${city}`);
+      if (!preStr || !metaStr) return null;
+      const meta = JSON.parse(metaStr) as { settings?: RestoredSettings; selections?: unknown };
+      const pre = deserializePre(preStr);
+      smoothedStore = { city, pre };
+      const sels = Array.isArray(meta.selections) ? (meta.selections as Selection[]) : [];
+      console.log(`[improved-schematics] restoring map for "${city}" · ${(preStr.length / 1024 / 1024).toFixed(2)} MB · ${sels.length} area(s)`);
+      return { pre, preStr, sels, settings: meta.settings ?? ({} as RestoredSettings) };
+    } catch (e) {
+      console.warn('[improved-schematics] map restore failed', e);
+      return null;
+    }
+  });
+  const rset: RestoredSettings = restored?.settings ?? {};
+  const rapp = rset.applied;
+  const [mode, setMode] = useState<RenderMode>(restored ? 'smoothed' : 'geographic');
+  const [showStations, setShowStations] = useState(rset.showStations ?? true);
+  const [showLabels, setShowLabels] = useState(rset.showLabels ?? false);
   const [dragging, setDragging] = useState(false);
   // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
   // MAP/content space (so it tracks pan + zoom) instead of panning. The live drag
@@ -149,15 +208,21 @@ export function SchematicPanel() {
   // outline on the map + a draggable re-sim panel). They live until closed. The
   // live drag is still imperative (boxRef + the draw overlay) to match the pan/zoom
   // model that bypasses React; each inset positions itself via a registered fn.
-  const [selections, setSelections] = useState<Selection[]>([]);
-  const selCountRef = useRef(0); // monotonic, for id + color cycling
+  const [selections, setSelections] = useState<Selection[]>(restored?.sels ?? []);
+  // monotonic, for id + color cycling — start past any restored ids
+  const selCountRef = useRef(
+    (restored?.sels ?? []).reduce((mx, s) => {
+      const n = Number(/sel-(\d+)/.exec(s.id)?.[1]);
+      return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
+    }, 0),
+  );
   // The detail-areas manager popover: rename / recolor / delete each selection.
   const [areasOpen, setAreasOpen] = useState(false);
   const areasRef = useRef<HTMLDivElement>(null);
   // Export controls live in a small settings popover opened via the gear icon in
   // the top-right of the panel. The chosen format drives the Download button.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [exportFormat, setExportFormat] = useState<ExportFormat>('svg');
+  const [exportFormat, setExportFormat] = useState<ExportFormat>(rset.exportFormat ?? 'svg');
   const settingsRef = useRef<HTMLDivElement>(null);
   // Save/Load a generated map to a file (skips the precompute on reload).
   const mapFileRef = useRef<HTMLInputElement>(null);
@@ -166,23 +231,25 @@ export function SchematicPanel() {
   // JPEG quality apply at export time). The appearance sliders edit DRAFT values
   // freely; only Save commits them to `applied`, which is what the renderer reads
   // — so dragging a slider doesn't trigger an (expensive) re-render mid-drag.
-  const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
-  const [stationRadius, setStationRadius] = useState(DEFAULT_STATION_RADIUS);
-  const [mapMargin, setMapMargin] = useState(DEFAULT_MAP_MARGIN);
+  const [lineWidth, setLineWidth] = useState(rapp?.lineWidth ?? DEFAULT_LINE_WIDTH);
+  const [stationRadius, setStationRadius] = useState(rapp?.stationRadius ?? DEFAULT_STATION_RADIUS);
+  const [mapMargin, setMapMargin] = useState(rapp?.mapMargin ?? DEFAULT_MAP_MARGIN);
   // Smoothed-mode realism positions in [-1, +1] (0 = default). These bake into
   // the expensive precompute, so they ride the same draft→Save flow and a Save
   // in smoothed mode regenerates the layout.
-  const [warpPos, setWarpPos] = useState(DEFAULT_REALISM_POS);
-  const [linePos, setLinePos] = useState(DEFAULT_REALISM_POS);
-  const [boxWarpPos, setBoxWarpPos] = useState(DEFAULT_REALISM_POS);
-  const [applied, setApplied] = useState({
-    lineWidth: DEFAULT_LINE_WIDTH,
-    stationRadius: DEFAULT_STATION_RADIUS,
-    mapMargin: DEFAULT_MAP_MARGIN,
-    warpPos: DEFAULT_REALISM_POS,
-    linePos: DEFAULT_REALISM_POS,
-    boxWarpPos: DEFAULT_REALISM_POS,
-  });
+  const [warpPos, setWarpPos] = useState(rapp?.warpPos ?? DEFAULT_REALISM_POS);
+  const [linePos, setLinePos] = useState(rapp?.linePos ?? DEFAULT_REALISM_POS);
+  const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
+  const [applied, setApplied] = useState(
+    rapp ?? {
+      lineWidth: DEFAULT_LINE_WIDTH,
+      stationRadius: DEFAULT_STATION_RADIUS,
+      mapMargin: DEFAULT_MAP_MARGIN,
+      warpPos: DEFAULT_REALISM_POS,
+      linePos: DEFAULT_REALISM_POS,
+      boxWarpPos: DEFAULT_REALISM_POS,
+    },
+  );
   const appearanceDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
@@ -205,13 +272,13 @@ export function SchematicPanel() {
     applied.warpPos === DEFAULT_REALISM_POS &&
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS;
-  const [rasterScale, setRasterScale] = useState(DEFAULT_RASTER_SCALE);
-  const [jpegQuality, setJpegQuality] = useState(DEFAULT_JPEG_QUALITY);
+  const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
+  const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
   // build took, surfaced as "Finished in X.XXs".
-  const [smoothedReady, setSmoothedReady] = useState(false);
+  const [smoothedReady, setSmoothedReady] = useState(!!restored);
   const [generating, setGenerating] = useState(false);
   // Brief spinner shown while a labels/stations toggle forces an SVG re-render.
   const [rerendering, setRerendering] = useState(false);
@@ -246,7 +313,8 @@ export function SchematicPanel() {
   // When a load switches mode, skip the mode effect's smoothedReady blank for one
   // run, so the restored map shows in a single settle (no transient that would
   // race the area restore). Live mirror of `mode` for the (dep-[]) import handler.
-  const skipModeBlankRef = useRef(false);
+  // Restored at mount → mode starts 'smoothed'; skip the mount mode effect's blank.
+  const skipModeBlankRef = useRef(!!restored);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // Build marker — fires once when the panel mounts so the game's dev console
@@ -254,7 +322,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p19 (auto-persist) loaded ✦ — the generated map (+ settings + areas) auto-saves to mod storage and restores on panel open; no rebuild on reopen',
+      '%c[improved-schematics] BUILD popout-box-p20 (auto-persist via localStorage) loaded ✦ — the map (+ settings + areas) auto-saves to localStorage and is restored synchronously at panel open (no rebuild, no transient). Check console for save/restore lines.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -680,47 +748,30 @@ export function SchematicPanel() {
   // closes / reloads. The heavy precompute is keyed separately and re-serialized
   // only when it actually changes (a new layout), so editing areas/toggles only
   // writes the small settings+areas blob. Debounced. No-op in browser storage.
-  const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(null);
+  // Seed the pre-serialization cache from the restored map, so the first save after
+  // a restore doesn't needlessly re-serialize the ~MB layout.
+  const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(
+    restored ? { pre: restored.pre, str: restored.preStr } : null,
+  );
   useEffect(() => {
     if (mode !== 'smoothed' || !smoothedReady) return;
     const pre = smoothedCacheRef.current?.pre;
     if (!pre || typeof pre === 'string') return;
-    const t = setTimeout(() => {
-      try {
-        const city = api.utils.getCityCode?.() ?? '';
-        if (preSerRef.current?.pre !== pre) {
-          preSerRef.current = { pre, str: serializePre(pre) };
-          void api.storage.set(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str).catch(() => {});
-        }
-        const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
-        void api.storage.set(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections })).catch(() => {});
-      } catch {
-        /* storage unavailable — ignore */
-      }
-    }, 800);
-    return () => clearTimeout(t);
+    const city = api.utils.getCityCode?.() ?? '';
+    // Re-serialize the heavy layout only when it actually changed (a new generate);
+    // the tiny settings+areas blob is written every change. Synchronous (no debounce
+    // that a panel close would cancel) — the effect already runs after each change.
+    if (preSerRef.current?.pre !== pre) {
+      preSerRef.current = { pre, str: serializePre(pre) };
+      const ok = lsSet(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str);
+      console.log(`[improved-schematics] save layout for "${city}": ${ok ? 'ok' : 'FAILED (quota?)'} · ${(preSerRef.current.str.length / 1024 / 1024).toFixed(2)} MB`);
+    }
+    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
+    lsSet(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections }));
   }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat]);
 
-  // On panel open, restore the last auto-saved map for this city (if any). Runs
-  // once — applyBundle is stable, so this doesn't re-fire and clobber edits.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const city = api.utils.getCityCode?.() ?? '';
-        const preStr = await api.storage.get<string>(`${MAP_STORE_KEY}:pre:${city}`, '');
-        const metaStr = await api.storage.get<string>(`${MAP_STORE_KEY}:meta:${city}`, '');
-        if (cancelled || !preStr || !metaStr) return;
-        const meta = JSON.parse(metaStr) as { settings?: unknown; selections?: unknown };
-        const pre = deserializePre(preStr);
-        preSerRef.current = { pre, str: preStr }; // seed cache: don't re-serialize on the post-restore save
-        applyBundle({ settings: meta.settings, selections: meta.selections, pre });
-      } catch {
-        /* no stored map / storage unavailable */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [applyBundle]);
+  // (Auto-restore is done synchronously at mount via the `restored` initializer
+  // above — no effect needed, so it can't race the render transients.)
 
   // Auto-clear the save/load status line.
   useEffect(() => {
@@ -1227,7 +1278,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.15 · auto-persist</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.16 · auto-persist-ls</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
