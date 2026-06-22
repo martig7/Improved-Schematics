@@ -11,7 +11,15 @@ Build Plan B **only if** re-paying octi on reload becomes painful enough (London
 passes. It re-adds reload-survival while staying correct, by caching exactly one
 artifact (the octi `pre`) under an input fingerprint.
 
-## 0. Prerequisite — confirm id stability across a reload (do this FIRST)
+## 0. Prerequisite — confirm id stability across a reload (do this FIRST) ✅ PASSED (2026-06-23)
+
+Tested in-game: two separate game loads, same network, produced an **identical**
+fingerprint (`v1-756a0096`; all six sub-parts matched, incl. `geo`). So
+ids/coords ARE stable across a reload → a fingerprinted localStorage cache will
+hit. Green light to build Plan B. (`fingerprintInputs` lives in
+`src/render/cacheFingerprint.ts`; the temporary `[fp]` Generate log has been
+removed.) Original procedure, for reference:
+
 
 The whole design hinges on the game emitting **identical** route/station/track ids
 (and coords) for an unchanged network across a save→reload. If ids regenerate on

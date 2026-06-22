@@ -23,7 +23,6 @@ import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
-import { fingerprintInputs } from '../render/cacheFingerprint'; // TEMP: Plan B id-stability diagnostic
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -504,18 +503,7 @@ export function SchematicPanel() {
       // cheap redraw below, reusing the per-mount cached layout.
       if (!cache) {
         const t0 = performance.now();
-        const input = buildInput();
-        // TEMP DIAGNOSTIC (Plan B §0 id-stability test): log the layout
-        // fingerprint on every fresh Generate. Note it, reload the game, Generate
-        // the SAME network again, and compare — identical fp ⇒ ids/coords are
-        // stable across reload ⇒ a fingerprinted cache can hit. The per-part
-        // hashes show which input moved if it differs. Remove once the test is done.
-        try {
-          console.log('[fp]', JSON.stringify(fingerprintInputs(input as never)));
-        } catch (e) {
-          console.warn('[fp] failed', e);
-        }
-        cache = { pre: precomputeSmoothedSchematic(input) };
+        cache = { pre: precomputeSmoothedSchematic(buildInput()) };
         smoothedCacheRef.current = cache;
         genMsRef.current = performance.now() - t0;
       }
