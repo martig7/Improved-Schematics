@@ -329,42 +329,64 @@ export function SchematicPanel() {
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
   const [geoLoading, setGeoLoading] = useState(false);
   useEffect(() => {
-    const city = modState.cityCode ?? api.utils.getCityCode?.();
-    if (!city) return;
+    // On a fresh game load the city code, demand data and the basemap tiles are
+    // not all ready the instant the panel mounts — a one-shot harvest here would
+    // bail (or harvest nothing) and never recover until the panel was reopened
+    // (the reported "geography only shows after I reload the panel" race). So
+    // RETRY (bounded): re-read the inputs and re-attempt the harvest until it
+    // succeeds. generateGeography only caches SUCCESS, so an early null doesn't
+    // poison the city — each attempt gets a fresh shot once the basemap is ready.
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 40; // ~40 × 750ms ≈ 30s of retrying, then give up
+    const DELAY = 750;
     // Harvest extent = bbox of the demand points (the populated city), so we grab
     // tiles where people actually are. Fall back to the station centroid extent.
-    let harvestBbox: BoundingBox | null = null;
-    const demand = api.gameState.getDemandData?.();
-    if (demand && demand.points.size > 0) {
-      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-      for (const p of demand.points.values()) {
-        const [lng, lat] = p.location;
-        if (lng < minLng) minLng = lng;
-        if (lat < minLat) minLat = lat;
-        if (lng > maxLng) maxLng = lng;
-        if (lat > maxLat) maxLat = lat;
+    const computeBbox = (): BoundingBox | null => {
+      const demand = api.gameState.getDemandData?.();
+      if (demand && demand.points.size > 0) {
+        let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+        for (const p of demand.points.values()) {
+          const [lng, lat] = p.location;
+          if (lng < minLng) minLng = lng;
+          if (lat < minLat) minLat = lat;
+          if (lng > maxLng) maxLng = lng;
+          if (lat > maxLat) maxLat = lat;
+        }
+        return padBounds([minLng, minLat, maxLng, maxLat], 0.1);
       }
-      harvestBbox = padBounds([minLng, minLat, maxLng, maxLat], 0.1);
-    }
-    if (!harvestBbox) {
       const b = computeBounds(api.gameState.getStations().map((s) => ({ points: [s.coords] })));
-      if (!b) return; // no demand data and no stations yet → nothing to harvest
-      harvestBbox = padBounds(b, 0.15);
-    }
-    let alive = true;
+      return b ? padBounds(b, 0.15) : null;
+    };
+    const retry = () => {
+      if (!alive) return;
+      if (attempts++ < MAX_ATTEMPTS) timer = setTimeout(attempt, DELAY);
+      else setGeoLoading(false); // gave up — drop the spinner
+    };
+    const attempt = () => {
+      if (!alive) return;
+      const city = modState.cityCode ?? api.utils.getCityCode?.();
+      const harvestBbox = computeBbox();
+      if (!city || !harvestBbox) { retry(); return; } // game data not ready yet
+      generateGeography(city, harvestBbox).then(
+        (g) => {
+          if (!alive) return;
+          if (g) {
+            setGeography(g);
+            setGeoLoading(false);
+          } else {
+            retry(); // map/tiles not ready → not cached → try again
+          }
+        },
+        () => retry(),
+      );
+    };
     setGeoLoading(true);
-    generateGeography(city, harvestBbox).then(
-      (g) => {
-        if (!alive) return;
-        if (g) setGeography(g);
-        setGeoLoading(false);
-      },
-      () => {
-        if (alive) setGeoLoading(false);
-      },
-    );
+    attempt();
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
   }, []);
 

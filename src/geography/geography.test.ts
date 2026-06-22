@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGeography } from './geography';
+import { buildGeography, generateGeography } from './geography';
 import type { GeographyDeps } from './geography';
 import type { TaggedFeature } from './types';
 import type { ProbeResult } from './schemaProbe';
@@ -42,4 +42,26 @@ test('buildGeography: buckets harvested features and frames on their extent', as
 test('buildGeography: returns null when nothing was harvested', async () => {
   const deps: GeographyDeps = { getMap: () => ({ getStyle: () => ({}) }) as never, probe: () => PROBE, harvest: async () => [] };
   assert.equal(await buildGeography(HARVEST, deps), null);
+});
+
+test('generateGeography: a null (not-ready) harvest is NOT cached, a success IS', async () => {
+  // The first-game-load race: the basemap isn't ready, so the harvest returns
+  // null. That null must NOT be cached, or it would poison the city for the whole
+  // session and the panel's retry could never recover.
+  let mapReady = false;
+  let harvestCalls = 0;
+  const deps: GeographyDeps = {
+    getMap: () => (mapReady ? ({ getStyle: () => ({}) }) as never : null),
+    probe: () => PROBE,
+    harvest: async () => { harvestCalls++; return RAW; },
+  };
+  const city = 'race-test-city';
+  assert.equal(await generateGeography(city, HARVEST, deps), null, 'early attempt: map not ready → null');
+  mapReady = true;
+  const geo = await generateGeography(city, HARVEST, deps);
+  assert.ok(geo, 'retry succeeds — the earlier null was not cached');
+  const callsAfterSuccess = harvestCalls;
+  const geo2 = await generateGeography(city, HARVEST, deps);
+  assert.equal(geo2, geo, 'success is cached (same object back)');
+  assert.equal(harvestCalls, callsAfterSuccess, 'no re-harvest on a cache hit');
 });

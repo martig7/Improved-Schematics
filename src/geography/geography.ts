@@ -83,14 +83,18 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
   }
 }
 
-/** Cached per city: the geography is harvested once per session. */
+/** Cached per city: a SUCCESSFUL harvest is reused for the rest of the session.
+ *  A null result (map/tiles not ready yet, or a transient failure) is deliberately
+ *  NOT cached, so an early call before the basemap is ready doesn't poison the
+ *  city for the session — the caller (panel) retries until it succeeds. */
 export async function generateGeography(
   cityCode: string,
   harvestBbox: BoundingBox,
   deps: GeographyDeps = defaultDeps,
 ): Promise<GeographyData | null> {
-  if (cache.has(cityCode)) return cache.get(cityCode) ?? null;
+  const cached = cache.get(cityCode);
+  if (cached) return cached;
   const result = await buildGeography(harvestBbox, deps);
-  cache.set(cityCode, result);
+  if (result) cache.set(cityCode, result);
   return result;
 }
