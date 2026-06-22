@@ -71,7 +71,9 @@ const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
 // image, scaling WITH zoom (like text printed on the map), not pinned to a fixed
 // screen size. This multiplies that world size. Applied at DISPLAY time (canvas
 // world font + SVG label transform + export), so changing it is instant.
-const DEFAULT_LABEL_SCALE = 1.5;
+const DEFAULT_LABEL_SCALE = 0.7;
+const LABEL_SCALE_MIN = 0.2;
+const LABEL_SCALE_MAX = 1.5;
 const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
 const DEFAULT_JPEG_QUALITY = 0.92;
 
@@ -1748,8 +1750,8 @@ export function SchematicPanel() {
               <Slider
                 label="Label size"
                 value={labelScale}
-                min={0.7}
-                max={3.5}
+                min={LABEL_SCALE_MIN}
+                max={LABEL_SCALE_MAX}
                 step={0.1}
                 display={`${labelScale.toFixed(1)}×`}
                 onChange={setLabelScale}
