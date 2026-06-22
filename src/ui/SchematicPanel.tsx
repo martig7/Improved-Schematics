@@ -18,7 +18,7 @@ import {
   type SmoothedPrecomputed,
 } from '../render/schematic';
 import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
-import { serializeMap, deserializeMap } from '../render/persist';
+import { serializeMap, deserializeMap, serializePre, deserializePre } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
@@ -131,6 +131,9 @@ function Slider(props: {
 // switching to geographic or reopening the panel doesn't discard it. Keyed by
 // city; replaced only by an explicit (Re)generate.
 let smoothedStore: { city: string; pre: SmoothedPrecomputed | string } | null = null;
+// Prefix for the game's persistent mod storage (api.storage), which DOES survive a
+// panel close / mod reload (unlike the in-memory store above). Keyed `:pre|:meta:<city>`.
+const MAP_STORE_KEY = 'improvedschematics:map';
 
 export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
@@ -251,7 +254,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p18 (save/load maps + areas) loaded ✦ — Settings ⚙ → Map file → Save/Load; the file now also carries the detail areas, restored on load',
+      '%c[improved-schematics] BUILD popout-box-p19 (auto-persist) loaded ✦ — the generated map (+ settings + areas) auto-saves to mod storage and restores on panel open; no rebuild on reopen',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -612,65 +615,119 @@ export function SchematicPanel() {
     }
   }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, selections, triggerDownload, modState]);
 
-  // Load a saved map: restore the precompute + settings and draw it without
-  // recomputing. The fresh `applied` object forces the svg memo to redraw from the
-  // installed cache; storing under the CURRENT city keeps the generate/ready flow
-  // (and a later remount's hydration) happy.
+  // Install a loaded/restored map: settings + precompute + detail areas, drawing
+  // from cache without recomputing. The fresh `applied` object forces the svg memo
+  // to redraw; storing under the CURRENT city keeps the generate/ready flow (and a
+  // later remount's hydration) happy. Used by file-load AND auto-restore.
+  const applyBundle = useCallback((bundle: { settings?: unknown; selections?: unknown; pre: SmoothedPrecomputed | string }) => {
+    const s = (bundle.settings ?? {}) as {
+      showStations?: boolean;
+      showLabels?: boolean;
+      applied?: typeof applied;
+      rasterScale?: number;
+      jpegQuality?: number;
+      exportFormat?: ExportFormat;
+    };
+    if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
+    if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
+    if (s.rasterScale != null) setRasterScale(s.rasterScale);
+    if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
+    if (s.exportFormat) setExportFormat(s.exportFormat);
+    if (s.applied) {
+      setLineWidth(s.applied.lineWidth);
+      setStationRadius(s.applied.stationRadius);
+      setMapMargin(s.applied.mapMargin);
+      setWarpPos(s.applied.warpPos);
+      setLinePos(s.applied.linePos);
+      setBoxWarpPos(s.applied.boxWarpPos);
+    }
+    // Queue the saved detail areas; the inject effect restores them after the new
+    // layout settles (instead of clearing). Bump the id counter past the restored
+    // ids so freshly drawn areas don't collide / reuse colors.
+    const restored = Array.isArray(bundle.selections) ? (bundle.selections as Selection[]) : [];
+    restoreSelectionsRef.current = restored;
+    selCountRef.current = restored.reduce((mx, sel) => {
+      const n = Number(/sel-(\d+)/.exec(sel.id)?.[1]);
+      return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
+    }, selCountRef.current);
+    const currentCity = api.utils.getCityCode?.() ?? '';
+    smoothedCacheRef.current = { pre: bundle.pre };
+    smoothedStore = { city: currentCity, pre: bundle.pre };
+    if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
+    setSelections([]); // drop any current areas; the inject effect installs the saved ones
+    setGenerating(false);
+    setSmoothedReady(true);
+    setMode('smoothed');
+    setApplied((a) => ({ ...(s.applied ?? a) })); // new ref → svg memo redraws from cache
+  }, []);
+
   const importMap = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      let bundle: ReturnType<typeof deserializeMap>;
       try {
-        bundle = deserializeMap(String(reader.result));
+        applyBundle(deserializeMap(String(reader.result)));
+        setSettingsOpen(false);
+        setMapMsg('Loaded ✓');
       } catch {
         setMapMsg('Not a valid map file');
-        return;
       }
-      const s = (bundle.settings ?? {}) as {
-        showStations?: boolean;
-        showLabels?: boolean;
-        applied?: typeof applied;
-        rasterScale?: number;
-        jpegQuality?: number;
-        exportFormat?: ExportFormat;
-      };
-      if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
-      if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
-      if (s.rasterScale != null) setRasterScale(s.rasterScale);
-      if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
-      if (s.exportFormat) setExportFormat(s.exportFormat);
-      if (s.applied) {
-        setLineWidth(s.applied.lineWidth);
-        setStationRadius(s.applied.stationRadius);
-        setMapMargin(s.applied.mapMargin);
-        setWarpPos(s.applied.warpPos);
-        setLinePos(s.applied.linePos);
-        setBoxWarpPos(s.applied.boxWarpPos);
-      }
-      // Queue the saved detail areas; the inject effect restores them after the
-      // new layout settles (instead of clearing). Bump the id counter past the
-      // restored ids so freshly drawn areas don't collide / reuse colors.
-      const restored = Array.isArray(bundle.selections) ? (bundle.selections as Selection[]) : [];
-      restoreSelectionsRef.current = restored;
-      selCountRef.current = restored.reduce((mx, sel) => {
-        const n = Number(/sel-(\d+)/.exec(sel.id)?.[1]);
-        return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
-      }, selCountRef.current);
-      const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-      smoothedCacheRef.current = { pre: bundle.pre };
-      smoothedStore = { city: currentCity, pre: bundle.pre };
-      if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
-      setSelections([]); // drop any current areas; the inject effect installs the saved ones
-      setGenerating(false);
-      setSmoothedReady(true);
-      setMode('smoothed');
-      setApplied((a) => ({ ...(s.applied ?? a) })); // new ref → svg memo redraws from cache
-      setSettingsOpen(false);
-      setMapMsg('Loaded ✓');
     };
     reader.onerror = () => setMapMsg('Could not read file');
     reader.readAsText(file);
-  }, [modState]);
+  }, [applyBundle]);
+
+  // Auto-persist the generated map to the game's mod storage so it survives panel
+  // closes / reloads. The heavy precompute is keyed separately and re-serialized
+  // only when it actually changes (a new layout), so editing areas/toggles only
+  // writes the small settings+areas blob. Debounced. No-op in browser storage.
+  const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(null);
+  useEffect(() => {
+    if (mode !== 'smoothed' || !smoothedReady) return;
+    const pre = smoothedCacheRef.current?.pre;
+    if (!pre || typeof pre === 'string') return;
+    const t = setTimeout(() => {
+      try {
+        const city = api.utils.getCityCode?.() ?? '';
+        if (preSerRef.current?.pre !== pre) {
+          preSerRef.current = { pre, str: serializePre(pre) };
+          void api.storage.set(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str).catch(() => {});
+        }
+        const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
+        void api.storage.set(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections })).catch(() => {});
+      } catch {
+        /* storage unavailable — ignore */
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat]);
+
+  // On panel open, restore the last auto-saved map for this city (if any). Runs
+  // once — applyBundle is stable, so this doesn't re-fire and clobber edits.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const city = api.utils.getCityCode?.() ?? '';
+        const preStr = await api.storage.get<string>(`${MAP_STORE_KEY}:pre:${city}`, '');
+        const metaStr = await api.storage.get<string>(`${MAP_STORE_KEY}:meta:${city}`, '');
+        if (cancelled || !preStr || !metaStr) return;
+        const meta = JSON.parse(metaStr) as { settings?: unknown; selections?: unknown };
+        const pre = deserializePre(preStr);
+        preSerRef.current = { pre, str: preStr }; // seed cache: don't re-serialize on the post-restore save
+        applyBundle({ settings: meta.settings, selections: meta.selections, pre });
+      } catch {
+        /* no stored map / storage unavailable */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [applyBundle]);
+
+  // Auto-clear the save/load status line.
+  useEffect(() => {
+    if (!mapMsg) return;
+    const t = setTimeout(() => setMapMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [mapMsg]);
 
   // Auto-clear the save/load status line.
   useEffect(() => {
@@ -1170,7 +1227,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.14 · save-load+areas</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.15 · auto-persist</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
