@@ -1,4 +1,15 @@
-# Plan B — fingerprinted precompute cache (deferred follow-up)
+# Plan B — fingerprinted precompute cache
+
+> **STATUS: implemented (lean v1, commit 47430d7).** `src/render/mapCache.ts` +
+> `cacheFingerprint.ts` + `persist.ts` (serializePre/deserializePre re-added) +
+> the panel's svg memo (read cache → hit reuses pre, miss runs octi + deferred
+> write; Regenerate forces fresh). v1 caches the LAYOUT only — NO settings/area
+> auto-restore — so it hits on the common default-appearance path and respects
+> "always open geographic / explicit Generate" (Generate is just instant on a
+> hit). Deferred to a possible v2: restoring appearance settings + detail areas
+> from the cache (would let customized-appearance users hit too, and survive
+> areas across reload). The notes below are the original design rationale.
+
 
 The automatic cache was torn out (commit `tear out the automatic map cache`). The
 smoothed layout now lives only in the per-mount `smoothedCacheRef`; nothing is
