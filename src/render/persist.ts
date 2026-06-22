@@ -54,6 +54,23 @@ function rebuildUnproject(ux: number[], uy: number[], w: number, h: number): Smo
   return ([px, py]) => [at((px / w) * N, ux), at((py / h) * N, uy)];
 }
 
+// Just the precompute (Maps + sampled unproject), for the fingerprinted layout
+// cache (mapCache.ts) where only `pre` is stored per city. `unproject` is a
+// function; it's kept as two 256-sample tables and rebuilt on load (the magnifier
+// reads it off the restored pre — drawSmoothedSchematic never does).
+export function serializePre(pre: SmoothedPrecomputed | string): string {
+  const unproj = typeof pre === 'string' ? null : sampleUnproject(pre);
+  return JSON.stringify({ pre, unproj }, replacer);
+}
+export function deserializePre(str: string): SmoothedPrecomputed | string {
+  const o = JSON.parse(str, reviver) as { pre: SmoothedPrecomputed | string; unproj?: { ux: number[]; uy: number[] } | null };
+  if (o.unproj && typeof o.pre !== 'string') {
+    const pre = o.pre as SmoothedPrecomputed;
+    pre.unproject = rebuildUnproject(o.unproj.ux, o.unproj.uy, pre.width, pre.height);
+  }
+  return o.pre;
+}
+
 export function serializeMap(bundle: MapBundle): string {
   const unproj = typeof bundle.pre === 'string' ? null : sampleUnproject(bundle.pre);
   return JSON.stringify({ ...bundle, unproj }, replacer);

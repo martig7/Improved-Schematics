@@ -23,6 +23,8 @@ import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
+import { fingerprintInputs } from '../render/cacheFingerprint';
+import { readCachedPre, writeCachedPre } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -465,6 +467,13 @@ export function SchematicPanel() {
   // toggles so those are a cheap redraw; cleared by (Re)generate to force a fresh
   // octi run. Lost on panel close — nothing is persisted automatically anymore.
   const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string } | null>(null);
+  // A freshly-computed precompute queued for the fingerprinted layout cache. Set
+  // by the svg memo on an octi MISS; flushed (serialized + written) by an effect
+  // AFTER render so the ~MB serialize never blocks the draw. Null on a cache hit.
+  const cacheWriteRef = useRef<{ city: string; fp: string; pre: SmoothedPrecomputed | string } | null>(null);
+  // Set by Regenerate so the next build SKIPS the layout cache and recomputes
+  // fresh (then overwrites the cache). A first Generate leaves it false → cache hit.
+  const forceRegenRef = useRef(false);
   // The Scene IR emitted directly by the smoothed draw (Phase 3), paired with the
   // svg string it came from. The canvas inject path uses this display list as-is
   // INSTEAD OF re-parsing the svg, when the strings match. Restore-from-cache and
@@ -520,14 +529,31 @@ export function SchematicPanel() {
         return '';
       }
       let cache = smoothedCacheRef.current;
-      // Run the heavy octi pipeline only when there's no cache (a fresh
-      // (Re)generate cleared it). Label/station toggles fall through to the
-      // cheap redraw below, reusing the per-mount cached layout.
+      // No per-mount cache (a fresh mount / (Re)generate): try the fingerprinted
+      // localStorage layout cache first — a hit deserializes the precompute (~0.1s)
+      // and skips the 3.7s-158s octi run. The key IS the digest of the live inputs
+      // (geography incl.), so a stale layout can never match. A miss runs octi and
+      // queues a write (deferred below, off the render). Label/station toggles fall
+      // through to the cheap redraw, reusing the per-mount cache.
       if (!cache) {
-        const t0 = performance.now();
-        cache = { pre: precomputeSmoothedSchematic(buildInput()) };
+        const input = buildInput();
+        const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+        const fp = fingerprintInputs(input as never).fp;
+        const force = forceRegenRef.current; // Regenerate → recompute fresh, ignore cache
+        forceRegenRef.current = false;
+        const hit = !force && city ? readCachedPre(city, fp) : null;
+        if (hit != null) {
+          cache = { pre: hit };
+          genMsRef.current = 0; // restored from cache (≈instant)
+          cacheWriteRef.current = null;
+        } else {
+          const t0 = performance.now();
+          cache = { pre: precomputeSmoothedSchematic(input) };
+          genMsRef.current = performance.now() - t0;
+          // Queue the (heavy) serialize+write for after render, not in the memo.
+          cacheWriteRef.current = city ? { city, fp, pre: cache.pre } : null;
+        }
         smoothedCacheRef.current = cache;
-        genMsRef.current = performance.now() - t0;
       }
       // The cache object is stable across label/station toggles — exactly the
       // identity the inject effect needs.
@@ -551,6 +577,17 @@ export function SchematicPanel() {
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
   }, [mode, showStations, showLabels, geography, smoothedReady, applied, buildInput]);
+
+  // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
+  // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
+  // is a one-time cost that only follows a (much slower) octi run — a cache HIT
+  // sets nothing here, so the fast path does no serialize.
+  useEffect(() => {
+    const pending = cacheWriteRef.current;
+    if (!pending) return;
+    cacheWriteRef.current = null;
+    writeCachedPre(pending.city, pending.fp, pending.pre);
+  }, [svg]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -960,8 +997,10 @@ export function SchematicPanel() {
   }, [applyToDom]);
 
   // Rebuild the smoothed map from current game state, discarding the cached one.
+  // Forces a fresh octi run (bypasses the layout cache) and overwrites it.
   const regenerate = useCallback(() => {
     smoothedCacheRef.current = null;
+    forceRegenRef.current = true;
     setSmoothedReady(false);
     setGenerating(true);
   }, []);
