@@ -20,6 +20,8 @@ import {
 import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
 import { serializeMap, deserializeMap, serializePre, deserializePre } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
+import { estimateTextWidth } from '../render/labels';
+import { LABEL_FONT_SIZE } from '../render/constants';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { generateGeography } from '../geography/geography';
@@ -295,6 +297,18 @@ export function SchematicPanel() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const strokeNodes = useRef<Scaled[]>([]);
   const labelGroups = useRef<Element[]>([]);
+  // Analytic label boxes (anchor in content coords + the text box offset in
+  // constant-screen px), cached from the DOM attributes at inject time so the
+  // detail-area label-overlap test runs as pure math instead of a
+  // getBoundingClientRect-per-label forced reflow on every zoom tick.
+  const labelBoxes = useRef<
+    Array<{ el: HTMLElement; ax: number; ay: number; bx0: number; by0: number; bx1: number; by1: number }>
+  >([]);
+  // Single rAF that coalesces pan/zoom DOM application: pointermove + wheel can
+  // fire several times per frame, so accumulate the target view synchronously
+  // and apply it (viewBox + counter-scale) at most once per frame.
+  const drawRafRef = useRef(0);
+  const drawSizesRef = useRef(false);
   const viewRef = useRef<View | null>(null);
   const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
   // The rect that Fit/export crop to: the renderer's `data-frame` (the geography
@@ -907,36 +921,33 @@ export function SchematicPanel() {
   // would clash with the cut-out region. Labels are counter-scaled (constant
   // screen size), so overlap is judged in SCREEN space and re-checked on zoom.
   const updateLabelOverlap = useCallback(() => {
-    const labels = labelGroups.current; // inner .imp-lbl-s groups
-    for (const el of labels) (el as HTMLElement).style.removeProperty('display'); // reset
+    const boxes = labelBoxes.current;
+    for (const b of boxes) b.el.style.removeProperty('display'); // reset
     const sels = selectionsRef.current;
     const view = viewRef.current;
-    const vp = viewportRef.current;
-    if (sels.length === 0 || !view || !vp || labels.length === 0) return;
-    const vpRect = vp.getBoundingClientRect();
-    // Box rects in screen px (for the rendered-text test, since labels are
-    // counter-scaled). The dot test uses box content coords directly.
+    if (sels.length === 0 || !view || boxes.length === 0) return;
+    // Box rects in screen px (labels are counter-scaled to a constant screen
+    // size, so the text-overlap test is in screen space). The dot test uses box
+    // content coords directly.
     const boxesScreen = sels.map((s) => ({
       x0: (s.box.x0 - view.vx) * view.scale,
       y0: (s.box.y0 - view.vy) * view.scale,
       x1: (s.box.x1 - view.vx) * view.scale,
       y1: (s.box.y1 - view.vy) * view.scale,
     }));
-    for (const el of labels) {
-      let hide = false;
-      // (1) station IN an area: the dot (outer .imp-lbl translate) is inside a box.
-      const m = /translate\(\s*([-\d.]+)[ ,]\s*([-\d.]+)/.exec(el.parentElement?.getAttribute('transform') ?? '');
-      if (m) {
-        const ax = +m[1], ay = +m[2];
-        hide = sels.some((s) => ax >= s.box.x0 && ax <= s.box.x1 && ay >= s.box.y0 && ay <= s.box.y1);
-      }
-      // (2) label text OVERLAPS a box (would spill into the cut-out region).
+    for (const b of boxes) {
+      // (1) station IN an area: the dot's content-space anchor is inside a box.
+      let hide = sels.some((s) => b.ax >= s.box.x0 && b.ax <= s.box.x1 && b.ay >= s.box.y0 && b.ay <= s.box.y1);
+      // (2) label text OVERLAPS a box (would spill into the cut-out region). The
+      // text box = anchor's screen position + its constant-size offset box, so
+      // the test is pure math — no getBoundingClientRect (no forced reflow).
       if (!hide) {
-        const r = (el as Element).getBoundingClientRect();
-        const lx0 = r.left - vpRect.left, ly0 = r.top - vpRect.top, lx1 = r.right - vpRect.left, ly1 = r.bottom - vpRect.top;
-        hide = boxesScreen.some((b) => lx0 < b.x1 && lx1 > b.x0 && ly0 < b.y1 && ly1 > b.y0);
+        const sax = (b.ax - view.vx) * view.scale;
+        const say = (b.ay - view.vy) * view.scale;
+        const lx0 = sax + b.bx0, ly0 = say + b.by0, lx1 = sax + b.bx1, ly1 = say + b.by1;
+        hide = boxesScreen.some((bb) => lx0 < bb.x1 && lx1 > bb.x0 && ly0 < bb.y1 && ly1 > bb.y0);
       }
-      if (hide) (el as HTMLElement).style.display = 'none';
+      if (hide) b.el.style.display = 'none';
     }
   }, []);
 
@@ -962,6 +973,23 @@ export function SchematicPanel() {
       updateLabelOverlap();
     }
   }, [updateLabelOverlap]);
+
+  // Coalesce gesture-driven redraws to one applyToDom per animation frame.
+  // pointermove/wheel mutate viewRef synchronously (cheap math) and call this;
+  // the actual DOM write is batched. A frame that saw any zoom does the full
+  // updateSizes pass (counter-scale); a pure-pan frame skips it.
+  const scheduleDraw = useCallback((updateSizes: boolean) => {
+    if (updateSizes) drawSizesRef.current = true;
+    if (drawRafRef.current) return;
+    drawRafRef.current = requestAnimationFrame(() => {
+      drawRafRef.current = 0;
+      const sizes = drawSizesRef.current;
+      drawSizesRef.current = false;
+      applyToDom(sizes);
+    });
+  }, [applyToDom]);
+  // Cancel a pending coalesced draw on unmount.
+  useEffect(() => () => { if (drawRafRef.current) cancelAnimationFrame(drawRafRef.current); }, []);
 
   const fit = useCallback(() => {
     const vp = viewportRef.current;
@@ -1032,6 +1060,25 @@ export function SchematicPanel() {
           base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
         }));
       labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
+      // Cache each label's analytic box once (getAttribute reads, no reflow): the
+      // content-space anchor (outer .imp-lbl translate) + the text box as a
+      // constant-screen-px offset from it. updateLabelOverlap then tests overlap
+      // with pure math (see there) instead of measuring each label on zoom.
+      labelBoxes.current = labelGroups.current.map((inner) => {
+        const m = /translate\(\s*([-\d.]+)[ ,]\s*([-\d.]+)/.exec(inner.parentElement?.getAttribute('transform') ?? '');
+        const ax = m ? +m[1] : 0;
+        const ay = m ? +m[2] : 0;
+        const text = inner.querySelector('text');
+        const dx = parseFloat(text?.getAttribute('x') || '0') || 0;
+        const dy = parseFloat(text?.getAttribute('y') || '0') || 0;
+        const anchor = text?.getAttribute('text-anchor') || 'start';
+        const w = estimateTextWidth(text?.textContent ?? '');
+        let bx0 = dx, bx1 = dx + w;
+        if (anchor === 'middle') { bx0 = dx - w / 2; bx1 = dx + w / 2; }
+        else if (anchor === 'end') { bx0 = dx - w; bx1 = dx; }
+        // text y is the glyph baseline; the box rises ~0.8em above, ~0.2em below.
+        return { el: inner as HTMLElement, ax, ay, bx0, by0: dy - LABEL_FONT_SIZE * 0.8, bx1, by1: dy + LABEL_FONT_SIZE * 0.2 };
+      });
     }
     // Preserve the current pan/zoom when only the SVG CONTENT changed (a
     // label/station toggle redraws the SAME layout). Re-fit only when the
@@ -1164,11 +1211,11 @@ export function SchematicPanel() {
       const contentY = view.vy + cy / view.scale;
       const scale = clamp(view.scale * Math.exp(-e.deltaY * 0.0015), MIN_SCALE, MAX_SCALE);
       viewRef.current = { scale, vx: contentX - cx / scale, vy: contentY - cy / scale };
-      applyToDom(true);
+      scheduleDraw(true);
     };
     vp.addEventListener('wheel', onWheel, { passive: false });
     return () => vp.removeEventListener('wheel', onWheel);
-  }, [applyToDom]);
+  }, [scheduleDraw]);
 
   // (Each DetailInset runs its own re-simulation — see DetailInset.tsx.)
 
@@ -1204,7 +1251,7 @@ export function SchematicPanel() {
     const view = viewRef.current;
     if (!dragging || !view) return;
     viewRef.current = { ...view, vx: view.vx - e.movementX / view.scale, vy: view.vy - e.movementY / view.scale };
-    applyToDom(false);
+    scheduleDraw(false);
   };
   const endDrag = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
