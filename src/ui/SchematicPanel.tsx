@@ -322,7 +322,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p20 (auto-persist via localStorage) loaded ✦ — the map (+ settings + areas) auto-saves to localStorage and is restored synchronously at panel open (no rebuild, no transient). Check console for save/restore lines.',
+      '%c[improved-schematics] BUILD popout-box-p21 (in-panel zoom) loaded ✦ — scroll-wheel over a Detail popup zooms its content toward the cursor (independent of the main map). Auto-persist via localStorage — check console for save/restore lines.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -1278,7 +1278,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.16 · auto-persist-ls</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.17 · panel-zoom</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
