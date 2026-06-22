@@ -18,7 +18,7 @@ import {
   type SmoothedPrecomputed,
 } from '../render/schematic';
 import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
-import { serializeMap, deserializeMap, serializePre, deserializePre } from '../render/persist';
+import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
@@ -139,48 +139,14 @@ function Slider(props: {
   );
 }
 
-// Persists the generated smoothed map across mode switches AND panel close, so
-// switching to geographic or reopening the panel doesn't discard it. Keyed by
-// city; replaced only by an explicit (Re)generate.
-let smoothedStore: { city: string; pre: SmoothedPrecomputed | string } | null = null;
-// Persistent map storage in localStorage (synchronous + reliable in the game's
-// renderer; survives panel close / mod reload / restart, unlike the in-memory
-// store above and unlike fire-and-forget async api.storage). Keyed `:pre|:meta:<city>`.
-const MAP_STORE_KEY = 'improvedschematics:map';
-// TEMP (diagnostic): the automatic localStorage map cache is DISABLED while we
-// confirm the canvas backdrop. With it off, the panel never RESTORES a possibly
-// stale render (e.g. one captured before the async geography harvest finished —
-// which would show no water/parks) and never re-caches; mount also PURGES any
-// existing entries. Flip back to true once the live backdrop is confirmed.
-const MAP_CACHE_ENABLED = false;
+// The automatic map cache (localStorage :pre:/:svg:/:meta:, the in-memory
+// smoothedStore, and the instant-restore) was TORN OUT — it was the source of the
+// stale-render bugs. The generated layout now lives only in the per-mount
+// smoothedCacheRef (so in-session toggles stay cheap); nothing is persisted
+// automatically. The explicit Save/Load map FILE feature below is the only way to
+// persist a generated map across reloads.
 
-function lsGet(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function lsSet(key: string, value: string, city: string): boolean {
-  try {
-    window.localStorage.setItem(key, value);
-    return true;
-  } catch {
-    // Quota: drop OTHER cities' stored maps (keep this city's pre/svg/meta) and retry.
-    try {
-      const keep = `:${city}`;
-      for (let i = window.localStorage.length - 1; i >= 0; i--) {
-        const k = window.localStorage.key(i);
-        if (k && k.startsWith(MAP_STORE_KEY) && !k.endsWith(keep)) window.localStorage.removeItem(k);
-      }
-      window.localStorage.setItem(key, value);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
+// Shape of the settings carried by a saved map FILE (read back in applyBundle).
 type RestoredSettings = {
   showStations?: boolean;
   showLabels?: boolean;
@@ -192,39 +158,9 @@ type RestoredSettings = {
 };
 
 export function SchematicPanel() {
-  // Detect the last auto-saved map for this city ONCE (cheap: read the strings,
-  // parse the tiny meta — NOT the heavy deserialize/draw). If found, the panel
-  // opens immediately into a "loading" spinner in smoothed mode, and a deferred
-  // effect does the heavy work (deserialize + draw/inject) off the first render,
-  // so the open never blocks. Settings init from this; the rest is deferred.
-  const [restored] = useState(() => {
-    try {
-      if (!MAP_CACHE_ENABLED) {
-        // Purge every cached map so a stale render can never be restored.
-        try {
-          for (let i = window.localStorage.length - 1; i >= 0; i--) {
-            const k = window.localStorage.key(i);
-            if (k && k.startsWith(MAP_STORE_KEY)) window.localStorage.removeItem(k);
-          }
-          console.log('[improved-schematics] map cache DISABLED — purged stored maps; opening fresh');
-        } catch { /* ignore */ }
-        return null;
-      }
-      const city = api.utils.getCityCode?.() ?? '';
-      const preStr = lsGet(`${MAP_STORE_KEY}:pre:${city}`);
-      const metaStr = lsGet(`${MAP_STORE_KEY}:meta:${city}`);
-      if (!preStr || !metaStr) return null;
-      const meta = JSON.parse(metaStr) as { settings?: RestoredSettings; selections?: unknown };
-      const sels = Array.isArray(meta.selections) ? (meta.selections as Selection[]) : [];
-      const svgStr = lsGet(`${MAP_STORE_KEY}:svg:${city}`);
-      console.log(`[improved-schematics] saved map found for "${city}" · ${sels.length} area(s)${svgStr ? ' · cached image' : ' · will redraw'} — loading…`);
-      return { preStr, svgStr, sels, settings: meta.settings ?? ({} as RestoredSettings) };
-    } catch (e) {
-      console.warn('[improved-schematics] map restore failed', e);
-      return null;
-    }
-  });
-  const rset: RestoredSettings = restored?.settings ?? {};
+  // No auto-restore: settings always start at defaults. A saved map FILE seeds
+  // them via applyBundle (the explicit Load-map flow), not on mount.
+  const rset: RestoredSettings = {};
   const rapp = rset.applied;
   // Always open in geographic mode; smoothed is the expensive mode and must be
   // entered explicitly (its Generate button), never auto-shown on open.
@@ -246,11 +182,10 @@ export function SchematicPanel() {
   // outline on the map + a draggable re-sim panel). They live until closed. The
   // live drag is still imperative (boxRef + the draw overlay) to match the pan/zoom
   // model that bypasses React; each inset positions itself via a registered fn.
-  // Starts empty even when restoring — the saved areas are reinstated by the
-  // deferred restore effect (below), once the heavy precompute is in the cache,
-  // so they never render against a missing layout.
+  // Starts empty; a FILE load reinstates its saved areas via restoreSelectionsRef
+  // (the inject effect installs them once the loaded layout is in the cache).
   const [selections, setSelections] = useState<Selection[]>([]);
-  // monotonic, for id + color cycling — start past any restored ids
+  // monotonic, for id + color cycling.
   const selCountRef = useRef(0);
   // The detail-areas manager popover: rename / recolor / delete each selection.
   const [areasOpen, setAreasOpen] = useState(false);
@@ -319,16 +254,10 @@ export function SchematicPanel() {
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
-  // build took, surfaced as "Finished in X.XXs".
-  // Starts false even when restoring: the gate opens only after the deferred
-  // restore effect has the precompute in the cache, so the memo never falls
-  // through to a fresh (seconds-long) precompute on the first render.
+  // build took, surfaced as "Finished in X.XXs". Starts false: smoothed always
+  // opens on the Generate Map button (nothing is auto-restored).
   const [smoothedReady, setSmoothedReady] = useState(false);
   const [generating, setGenerating] = useState(false);
-  // Shown (with a spinner) from mount until a saved map's deferred restore has
-  // deserialized + injected — so reopening the panel lands instantly in a
-  // "Loading saved map…" state instead of blocking the open on the heavy work.
-  const [restoring, setRestoring] = useState(!!restored);
   // Brief spinner shown while a labels/stations toggle forces an SVG re-render.
   const [rerendering, setRerendering] = useState(false);
   const [genMs, setGenMs] = useState<number | null>(null);
@@ -377,11 +306,10 @@ export function SchematicPanel() {
   // Detail areas pending restore from a loaded map file. The inject effect's
   // layout-change branch (which normally CLEARS areas) installs these instead.
   const restoreSelectionsRef = useRef<Selection[] | null>(null);
-  // When a load switches mode, skip the mode effect's smoothedReady blank for one
-  // run, so the restored map shows in a single settle (no transient that would
-  // race the area restore). Live mirror of `mode` for the (dep-[]) import handler.
-  // Restored at mount → mode starts 'smoothed'; skip the mount mode effect's blank.
-  const skipModeBlankRef = useRef(!!restored);
+  // When a FILE load switches mode to smoothed, skip the mode effect's
+  // smoothedReady blank for one run so the loaded map shows in a single settle
+  // (no transient that would race the area restore). Starts false (no mount restore).
+  const skipModeBlankRef = useRef(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // Build marker — fires once when the panel mounts so the game's dev console
@@ -511,19 +439,10 @@ export function SchematicPanel() {
     }
   }, [geography, mode, showStations, showLabels, applied, exportFormat, rasterScale, jpegQuality]);
 
-  // Per-mount cache of the expensive smoothed layout, hydrated from smoothedStore
-  // (which persists across mounts). Reused for label/station toggles so those are
-  // a cheap redraw; cleared by (Re)generate to force a fresh octi run.
+  // Per-mount cache of the expensive smoothed layout. Reused for label/station
+  // toggles so those are a cheap redraw; cleared by (Re)generate to force a fresh
+  // octi run. Lost on panel close — nothing is persisted automatically anymore.
   const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string } | null>(null);
-  // The saved strings still awaiting the (deferred) heavy restore. Held out of
-  // the first render so the panel opens immediately into the loading spinner;
-  // the deferred effect below deserializes them and installs the cache.
-  const restorePendingRef = useRef(
-    restored ? { preStr: restored.preStr, sels: restored.sels } : null,
-  );
-  // The cached rendered SVG, returned verbatim by the memo on the first smoothed
-  // render so we skip the (slow) draw on open; consumed once, then normal draws.
-  const restoredSvgRef = useRef<string | null>(restored?.svgStr ?? null);
   // The Scene IR emitted directly by the smoothed draw (Phase 3), paired with the
   // svg string it came from. The canvas inject path uses this display list as-is
   // INSTEAD OF re-parsing the svg, when the strings match. Restore-from-cache and
@@ -578,36 +497,20 @@ export function SchematicPanel() {
         layoutIdRef.current = 'smoothed-blank';
         return '';
       }
-      const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
       let cache = smoothedCacheRef.current;
-      // Hydrate from the persistent store on a fresh mount / after a mode switch,
-      // so a previously generated map shows instantly without rebuilding.
-      if (!cache && MAP_CACHE_ENABLED && smoothedStore && smoothedStore.city === currentCity) {
-        cache = { pre: smoothedStore.pre };
-        smoothedCacheRef.current = cache;
-        genMsRef.current = null;
-      }
       // Run the heavy octi pipeline only when there's no cache (a fresh
       // (Re)generate cleared it). Label/station toggles fall through to the
-      // cheap redraw below, reusing the cached layout.
+      // cheap redraw below, reusing the per-mount cached layout.
       if (!cache) {
         const t0 = performance.now();
         cache = { pre: precomputeSmoothedSchematic(buildInput()) };
         smoothedCacheRef.current = cache;
-        smoothedStore = { city: currentCity, pre: cache.pre };
         genMsRef.current = performance.now() - t0;
       }
       // The cache object is stable across label/station toggles — exactly the
       // identity the inject effect needs.
       layoutIdRef.current = cache;
       const pre = cache.pre;
-      // First render after a restore: use the cached rendered SVG verbatim (skip the
-      // slow draw). Consumed once; toggles/regenerates draw normally below.
-      if (restoredSvgRef.current != null) {
-        const cached = restoredSvgRef.current;
-        restoredSvgRef.current = null;
-        return cached;
-      }
       if (typeof pre === 'string') return pre;
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
@@ -825,9 +728,7 @@ export function SchematicPanel() {
       const n = Number(/sel-(\d+)/.exec(sel.id)?.[1]);
       return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
     }, selCountRef.current);
-    const currentCity = api.utils.getCityCode?.() ?? '';
     smoothedCacheRef.current = { pre: bundle.pre };
-    smoothedStore = { city: currentCity, pre: bundle.pre };
     if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
     setSelections([]); // drop any current areas; the inject effect installs the saved ones
     setGenerating(false);
@@ -851,83 +752,8 @@ export function SchematicPanel() {
     reader.readAsText(file);
   }, [applyBundle]);
 
-  // Auto-persist the generated map to the game's mod storage so it survives panel
-  // closes / reloads. The heavy precompute is keyed separately and re-serialized
-  // only when it actually changes (a new layout), so editing areas/toggles only
-  // writes the small settings+areas blob. Debounced. No-op in browser storage.
-  // Seeded by the deferred restore effect (it has the deserialized `pre` + its
-  // string), so the first save after a restore doesn't needlessly re-serialize
-  // the ~MB layout or re-cache the unchanged image.
-  const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(null);
-  const savedSvgRef = useRef<string | null>(restored?.svgStr ?? null);
-  useEffect(() => {
-    if (!MAP_CACHE_ENABLED) return; // diagnostic: don't auto-persist while verifying the backdrop
-    if (mode !== 'smoothed' || !smoothedReady) return;
-    const pre = smoothedCacheRef.current?.pre;
-    if (!pre || typeof pre === 'string') return;
-    const city = api.utils.getCityCode?.() ?? '';
-    // Re-serialize the heavy layout only when it actually changed (a new generate);
-    // the rendered SVG only when it changes (toggle/generate); the tiny settings+
-    // areas blob on every change. Synchronous (no debounce a panel close would cancel).
-    if (preSerRef.current?.pre !== pre) {
-      preSerRef.current = { pre, str: serializePre(pre) };
-      const ok = lsSet(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str, city);
-      console.log(`[improved-schematics] save layout for "${city}": ${ok ? 'ok' : 'FAILED (quota?)'} · ${(preSerRef.current.str.length / 1024 / 1024).toFixed(2)} MB`);
-    }
-    if (svg && savedSvgRef.current !== svg) {
-      savedSvgRef.current = svg;
-      // cached rendered image for instant restore; best-effort (falls back to redraw)
-      if (!lsSet(`${MAP_STORE_KEY}:svg:${city}`, svg, city)) {
-        console.warn('[improved-schematics] cache image FAILED (quota?) — restore will redraw');
-      }
-    }
-    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
-    lsSet(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections }), city);
-  }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat, labelScale]);
-
-  // Deferred restore: the panel opens immediately into the loading spinner, and
-  // ONLY after that spinner has painted (rAF×2) do we run the heavy work off the
-  // first render — deserialize the saved layout, install it into the cache +
-  // module store, seed the save caches, and queue the saved areas — then open the
-  // smoothed gate. The svg memo then returns the cached image and the inject
-  // effect reinstates the areas and clears `restoring`. So the open never blocks
-  // on the deserialize/draw, even when the image cache missed (quota) and the
-  // layout must be redrawn.
-  useEffect(() => {
-    const pending = restorePendingRef.current;
-    if (!pending) return;
-    restorePendingRef.current = null;
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        try {
-          const city = api.utils.getCityCode?.() ?? '';
-          const pre = deserializePre(pending.preStr);
-          smoothedCacheRef.current = { pre };
-          smoothedStore = { city, pre };
-          preSerRef.current = { pre, str: pending.preStr };
-          // Reinstate the saved areas via the inject effect's restore path, so
-          // they land against the freshly-installed layout (not a missing one).
-          if (pending.sels.length) {
-            restoreSelectionsRef.current = pending.sels;
-            selCountRef.current = pending.sels.reduce((mx, s) => {
-              const n = Number(/sel-(\d+)/.exec(s.id)?.[1]);
-              return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
-            }, 0);
-          }
-          setSmoothedReady(true); // opens the gate → memo returns the cached image
-        } catch (e) {
-          console.warn('[improved-schematics] deferred restore failed — use Generate Map', e);
-          setRestoring(false); // fall back to the Generate Map button
-        }
-      });
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // (Auto-persist + deferred-restore removed with the auto-cache. A generated map
+  // lives only in smoothedCacheRef for the session; use Save map to keep it.)
 
   // Auto-clear the save/load status line.
   useEffect(() => {
@@ -1111,10 +937,9 @@ export function SchematicPanel() {
     applyToDom(true);
   }, [applyToDom]);
 
-  // Rebuild the smoothed map from current game state, discarding the stored one.
+  // Rebuild the smoothed map from current game state, discarding the cached one.
   const regenerate = useCallback(() => {
     smoothedCacheRef.current = null;
-    smoothedStore = null;
     setSmoothedReady(false);
     setGenerating(true);
   }, []);
@@ -1234,11 +1059,8 @@ export function SchematicPanel() {
     lastLayoutIdRef.current = layoutIdRef.current;
     // Surface the smoothed build time (geographic renders are cheap + auto).
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
-    // The map is in the DOM now — drop the generating / restore spinners.
-    if (svg) {
-      setGenerating(false);
-      setRestoring(false);
-    }
+    // The map is in the DOM now — drop the generating spinner.
+    if (svg) setGenerating(false);
   }, [svg, mode, fit, applyToDom, clearSelections, useCanvas]);
 
   // The cutout depends only on the box GEOMETRY, so key the effect on that — not
@@ -1321,20 +1143,14 @@ export function SchematicPanel() {
     return () => ro.disconnect();
   }, [useCanvas, drawCanvas]);
 
-  // Re-fit on mode switch (different layout shape). When a generated map is stored
-  // for this city, re-enter the generating flow rather than opening the gate
-  // outright: redrawing the cached layout back in still runs the (synchronous)
-  // ribbon render, so the big loading overlay should cover it. Keeping the gate
-  // closed + generating=true lets the generating→double-rAF→smoothedReady effect
-  // paint the spinner first, then flip the gate to trigger the draw. With no
-  // stored map it just shows the Generate Map button.
+  // Re-fit on mode switch (different layout shape). Smoothed always lands on the
+  // Generate Map button (nothing is auto-restored), so just blank the gate and
+  // re-fit; a FILE load sets skipModeBlankRef to avoid blanking the loaded map.
   useEffect(() => {
     // A map load already installed a ready cache + mode='smoothed'; don't blank it.
     if (skipModeBlankRef.current) { skipModeBlankRef.current = false; return; }
-    const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    const hasStored = MAP_CACHE_ENABLED && mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity;
     setSmoothedReady(false);
-    setGenerating(hasStored);
+    setGenerating(false);
     const id = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(id);
   }, [mode, fit]);
@@ -2025,7 +1841,7 @@ export function SchematicPanel() {
             registerExport={registerExport}
           />
         ))}
-        {mode === 'smoothed' && !smoothedReady && !generating && !restoring && (
+        {mode === 'smoothed' && !smoothedReady && !generating && (
           <div
             style={{
               position: 'absolute',
@@ -2037,9 +1853,8 @@ export function SchematicPanel() {
           >
             <button
               onClick={() => {
-                // Fresh build: drop any cached/stored layout from a prior generation.
+                // Fresh build: drop any cached layout from a prior generation.
                 smoothedCacheRef.current = null;
-                smoothedStore = null;
                 setGenerating(true);
               }}
               style={{
@@ -2082,33 +1897,6 @@ export function SchematicPanel() {
               }}
             />
             <span style={{ color: '#888', fontSize: 12 }}>This may take a while</span>
-            <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
-          </div>
-        )}
-        {mode === 'smoothed' && restoring && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 12,
-            }}
-          >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                border: '3px solid rgba(136, 136, 136, 0.3)',
-                borderTopColor: '#888',
-                animation: 'imp-spin 0.8s linear infinite',
-                willChange: 'transform',
-              }}
-            />
-            <span style={{ color: '#888', fontSize: 12 }}>Loading saved map…</span>
             <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
           </div>
         )}
