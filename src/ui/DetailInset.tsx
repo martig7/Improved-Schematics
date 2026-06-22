@@ -78,9 +78,10 @@ export function DetailInset({
   const bodyRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const leaderRef = useRef<SVGLineElement>(null);
-  // The sub-map's home framing (the selection extent), for the in-panel wheel-zoom
-  // to clamp against. Reset on each re-sim.
-  const subFrameRef = useRef<Rect | null>(null);
+  // In-panel zoom as a CSS transform on the RENDERED sub-map — magnifying it like a
+  // fixed image (panel size unchanged; you zoom into the home framing, never past
+  // it). Reset to identity on each re-sim. { s: scale ≥ 1, tx/ty: px translate }.
+  const zoomRef = useRef({ s: 1, tx: 0, ty: 0 });
   // Last rendered sub-map + its viewBox frame, for baking into the export.
   const exportRef = useRef<{ subSvg: string; gf: Rect } | null>(null);
   // Cached sub-layout (heavy octi precompute), keyed by box. Areas clear on any
@@ -153,7 +154,8 @@ export function DetailInset({
     const box = sel.box;
     const boxFrame: Rect = { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 };
     const fit = (isvg: SVGSVGElement | null) => {
-      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
+      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); isvg.style.transform = ''; }
+      zoomRef.current = { s: 1, tx: 0, ty: 0 }; // a re-sim resets the in-panel zoom
       position();
     };
     // Base-map crop fallback — reflects the toggles since baseSvg already does.
@@ -161,7 +163,6 @@ export function DetailInset({
       body.innerHTML = baseSvg;
       const isvg = body.querySelector('svg');
       if (isvg) isvg.setAttribute('viewBox', `${box.x0} ${box.y0} ${box.x1 - box.x0} ${box.y1 - box.y0}`);
-      subFrameRef.current = boxFrame;
       fit(isvg);
       exportRef.current = { subSvg: baseSvg, gf: boxFrame };
       setLoaded(true);
@@ -176,7 +177,6 @@ export function DetailInset({
         isvg.setAttribute('viewBox', `${selFrame.x} ${selFrame.y} ${selFrame.w} ${selFrame.h}`);
         rectRef.current = { ...rectRef.current, h: rectRef.current.w * (selFrame.h / selFrame.w) };
       }
-      subFrameRef.current = selFrame ?? boxFrame;
       exportRef.current = { subSvg: out, gf: selFrame ?? boxFrame };
       fit(isvg);
       setLoaded(true);
@@ -241,34 +241,34 @@ export function DetailInset({
     return () => { cancelled = true; cancelAnimationFrame(raf); };
   }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput]);
 
-  // Wheel over the panel zooms its sub-map toward the cursor — independent of the
-  // main map's zoom (the panel isn't inside the viewport, so the map's wheel handler
-  // never sees this). Non-passive so it can preventDefault the page scroll; the
-  // sub-svg is re-queried each event (re-sim replaces it); zoom clamps to the home
-  // framing (subFrameRef) between 0.08x and 1.5x.
+  // Wheel over the panel magnifies its rendered sub-map toward the cursor, as a CSS
+  // transform — like zooming a single image: the panel's size (vs the map) doesn't
+  // change, and you can only zoom INTO the home framing (scale clamped to 1x..12x),
+  // never reframe past it. Independent of the main map (the panel isn't inside the
+  // viewport, so the map's wheel handler never sees this). Non-passive so it can
+  // preventDefault the page/map scroll; pan is clamped so content always covers the
+  // panel. Reset on each re-sim via fit().
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
     const onWheel = (e: WheelEvent) => {
-      const isvg = body.querySelector('svg');
-      const vb = isvg?.getAttribute('viewBox')?.split(/\s+/).map(Number);
-      if (!isvg || !vb || vb.length !== 4 || vb.some((n) => !Number.isFinite(n))) return;
+      const isvg = body.querySelector('svg') as SVGSVGElement | null;
+      if (!isvg) return;
       e.preventDefault();
       const rect = body.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
-      const fx = (e.clientX - rect.left) / rect.width;
-      const fy = (e.clientY - rect.top) / rect.height;
-      const [x, y, w, h] = vb;
-      const cx = x + fx * w, cy = y + fy * h;
-      let z = Math.exp(e.deltaY * 0.0015); // scroll up (deltaY<0) → z<1 → zoom in
-      const f = subFrameRef.current;
-      if (f) {
-        const tw = w * z;
-        if (tw < f.w * 0.08) z = (f.w * 0.08) / w;
-        else if (tw > f.w * 1.5) z = (f.w * 1.5) / w;
-      }
-      const nw = w * z, nh = h * z;
-      isvg.setAttribute('viewBox', `${cx - fx * nw} ${cy - fy * nh} ${nw} ${nh}`);
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const z = zoomRef.current;
+      const ns = Math.max(1, Math.min(12, z.s * Math.exp(-e.deltaY * 0.0015))); // scroll up → zoom in
+      // keep the point under the cursor fixed, then clamp so content covers the panel
+      let tx = px - (px - z.tx) * (ns / z.s);
+      let ty = py - (py - z.ty) * (ns / z.s);
+      tx = Math.min(0, Math.max(rect.width * (1 - ns), tx));
+      ty = Math.min(0, Math.max(rect.height * (1 - ns), ty));
+      zoomRef.current = { s: ns, tx, ty };
+      isvg.style.transformOrigin = '0 0';
+      isvg.style.transform = ns === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${ns})`;
     };
     body.addEventListener('wheel', onWheel, { passive: false });
     return () => body.removeEventListener('wheel', onWheel);

@@ -322,7 +322,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p22 (lock areas) loaded ✦ — ≣ Areas → 🔓 locks an area: pinned (no dragging) + pointer-transparent so pan/zoom passes through to the map. Wheel over an unlocked popup still zooms it.',
+      '%c[improved-schematics] BUILD popout-box-p23 (image-zoom popups) loaded ✦ — wheel over a popup now magnifies its detail like a fixed image (panel size unchanged, zoom into the home framing 1x–12x). Lock via ≣ Areas to pan/zoom through.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -1278,7 +1278,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.18 · lock-areas</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.19 · image-zoom</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
