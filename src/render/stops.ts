@@ -10,6 +10,7 @@ import type { Pixel, StopMark } from './layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { escapeXml } from './escape';
 import { rdpSimplify } from './layout/chainPlace';
+import type { Prim } from './sceneIR';
 
 export function renderStops(
   stopsByNode: Map<string, StopMark[]>,
@@ -17,6 +18,7 @@ export function renderStops(
   membersByNode?: Map<string, number>,
   degByNode?: Map<string, number>,
   showNames?: boolean,
+  prims?: Prim[],
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
@@ -41,25 +43,54 @@ export function renderStops(
 
   // One dot per stopping line: hollow disc on the line's own lane, ring in
   // the line's color, route bullet centered inside (always upright/north-up).
+  // Scene prims (when a sink is passed) accumulate into `dotPrims` so the caller
+  // can flush them at the EXACT concatenation point of the dots string — the
+  // dots come AFTER the capsule/ring border in the markup, and the mega branch
+  // emits no dots at all, so pushing eagerly would mis-order or over-emit.
+  const dotPrims: Prim[] = [];
   const dotOf = (mk: StopMark, dr: number): string => {
     const dStroke = 1.5 * (dr / r); // ring stroke scales with the dot
     let s =
       '<circle cx="' + mk.pos[0].toFixed(1) + '" cy="' + mk.pos[1].toFixed(1) +
       '" r="' + dr.toFixed(1) + '" fill="' + fill + '" stroke="' + escapeXml(mk.color) +
       '" stroke-width="' + dStroke.toFixed(2) + '" data-line="' + escapeXml(mk.lineId) + '"/>';
+    // Scene prim alongside the dot circle (same numbers as the string). Coords
+    // are rounded to .1 to match what the parser reads back from the markup.
+    if (prims) dotPrims.push({
+      kind: 'circle',
+      cx: +mk.pos[0].toFixed(1), cy: +mk.pos[1].toFixed(1), r: +dr.toFixed(1),
+      fill, stroke: mk.color, strokeWidth: +dStroke.toFixed(2),
+      layer: 'stops', worldScale: true,
+    });
     if (showNames && mk.name) {
       const fs = mk.name.length <= 1 ? dr * 1.7 : Math.min(dr * 1.7, (2 * dr * 0.92) / (0.6 * mk.name.length));
+      const ty = +(mk.pos[1] + fs * 0.36).toFixed(1);
       s +=
         '<text x="' + mk.pos[0].toFixed(1) + '" y="' + (mk.pos[1] + fs * 0.36).toFixed(1) +
         '" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif"' +
         ' font-size="' + fs.toFixed(2) + '" font-weight="bold" fill="' + nameFill + '">' +
         escapeXml(mk.name) + '</text>';
+      // Bullet text prim: route-bullet name, worldScale TRUE (inside .imp-stop).
+      // x/y are the world position (ax=ay=0 since the wrap uses data-ax/-ay, not
+      // a transform=translate the parser would accumulate).
+      if (prims) dotPrims.push({
+        kind: 'text',
+        text: mk.name,
+        x: +mk.pos[0].toFixed(1), y: ty, ax: 0, ay: 0,
+        fontSize: +fs.toFixed(2), fontWeight: 'bold', align: 'center',
+        fill: nameFill, layer: 'stops', worldScale: true,
+      });
     }
     return s;
+  };
+  // Move the dots' accumulated prims into the output sink, in build order.
+  const flushDots = (): void => {
+    if (prims) for (const p of dotPrims) prims.push(p);
   };
 
   for (const [nodeId, marks] of stopsByNode) {
     if (marks.length === 0) continue;
+    dotPrims.length = 0; // dots accumulate per node; reset before this marker
     const members = membersByNode?.get(nodeId);
     const capsule = marks.length > 1 || (members !== undefined && members > 1);
 
@@ -87,6 +118,7 @@ export function renderStops(
       out.push(wrap(a[0], a[1],
         '<g' + attrs + '>' + dots + '</g>',
       ));
+      flushDots(); // the dot is the whole marker
       continue;
     }
 
@@ -141,6 +173,14 @@ export function renderStops(
         '" rx="' + (r + 1.5).toFixed(1) + '" fill="' + fill +
         '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>',
       ));
+      // Mega draws NO dots — emit only the rect prim; dotPrims are discarded.
+      prims?.push({
+        kind: 'rect',
+        x: +x0.toFixed(1), y: +y0.toFixed(1),
+        w: +(x1 - x0).toFixed(1), h: +(y1 - y0).toFixed(1), rx: +(r + 1.5).toFixed(1),
+        fill, stroke, strokeWidth: 3,
+        layer: 'stops', worldScale: true,
+      });
       continue;
     }
 
@@ -151,6 +191,14 @@ export function renderStops(
         '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.5"' + attrs + '/>' +
         dots,
       ));
+      // markup order: ring border circle, THEN the stacked dots.
+      prims?.push({
+        kind: 'circle',
+        cx: +a[0].toFixed(1), cy: +a[1].toFixed(1), r: +(r + 3).toFixed(1),
+        fill, stroke, strokeWidth: 1.5,
+        layer: 'stops', worldScale: true,
+      });
+      flushDots();
       continue;
     }
 
@@ -169,17 +217,27 @@ export function renderStops(
     }
     const spine = rdpSimplify(vertices, 0.75);
     const dAttr = 'M ' + spine.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L ');
-    const pathSvg = (color: string, w: number, withAttrs: boolean): string =>
-      '<path d="' + dAttr + '" fill="none" stroke="' + color +
-      '" stroke-width="' + w.toFixed(1) +
-      '" stroke-linecap="round" stroke-linejoin="round"' +
-      (withAttrs ? attrs : '') + '/>';
+    const pathSvg = (color: string, w: number, withAttrs: boolean): string => {
+      // Capsule border/fill path prim alongside the string (border then fill,
+      // matching call order); d is the EXACT same string the markup writes.
+      prims?.push({
+        kind: 'path',
+        d: dAttr, fill: 'none', stroke: color, strokeWidth: +w.toFixed(1),
+        lineCap: 'round', lineJoin: 'round',
+        layer: 'stops', worldScale: true,
+      });
+      return '<path d="' + dAttr + '" fill="none" stroke="' + color +
+        '" stroke-width="' + w.toFixed(1) +
+        '" stroke-linecap="round" stroke-linejoin="round"' +
+        (withAttrs ? attrs : '') + '/>';
+    };
     // scale the capsule padding too, so the platform hugs the shrunk dots with
     // the same proportional gap/outline as a full-size capsule (not a loose one)
     const inner = pathSvg(stroke, 2 * rCap + 6 * MARKER_SCALE, false) + pathSvg(fill, 2 * rCap + 3 * MARKER_SCALE, true);
     const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
     const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
     out.push(wrap(cx, cy, inner + dots));
+    flushDots(); // markup order: border path, fill path, THEN dots
   }
   return out;
 }

@@ -1992,7 +1992,8 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
     degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + n);
     degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
   }
-  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false);
+  const stopsPrims: Prim[] = [];
+  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   for (const n of layout.nodes.values()) {
@@ -2083,7 +2084,9 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
     // paths. Reuse the proven parser (consistent with the static water/grid above)
     // — worldScale is correctly FALSE since transfers sits outside .edges/.imp-stop.
     if (transferPart) for (const p of sceneFromSvg(transferPart).prims) prims.push(p);
-    // WORKFLOW Phase 3: stops prims here (layer 'stops', worldScale true)
+    // stops: station markers (dots/capsules/rings/mega rects + bullet text),
+    // built alongside the markup by renderStops in source/concatenation order.
+    for (const p of stopsPrims) prims.push(p);
     // WORKFLOW Phase 3: labels prims here (layer 'stations', worldScale false)
     sceneOut.scene = { width, height, frame: { x: fr.x, y: fr.y, w: fr.w, h: fr.h }, background: bg, prims };
   }
