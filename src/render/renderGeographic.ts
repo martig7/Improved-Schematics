@@ -25,7 +25,7 @@ import {
   DEFAULT_TRANSFER_METERS,
   type TransferPair,
 } from './transfers';
-import { renderRibbons } from './renderOctilinear';
+import { renderRibbons, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
 import { geographyBackdrop } from './geographyBackdrop';
@@ -981,6 +981,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
   opts: { showLabels: boolean; showStations: boolean },
+  sceneOut?: SceneOut,
 ): string {
   return renderRibbons({
     layout: pre.layout,
@@ -995,7 +996,7 @@ export function drawSmoothed(
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,
-  });
+  }, sceneOut);
 }
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {

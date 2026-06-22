@@ -13,6 +13,7 @@ import type { WaterCollection, SchematicOptions } from './types';
 import type { GeographyData } from '../geography/types';
 import { DEFAULT_OPTIONS } from './types';
 import { renderGeographic, precomputeSmoothed, drawSmoothed, type SmoothedPrecomputed } from './renderGeographic';
+import type { SceneOut } from './renderOctilinear';
 import { renderOctilinear } from './renderOctilinear';
 import { getOrBuildStationGroups, buildTransitGraph } from './layout/graph';
 import { octilinearLayout } from './layout/octilinear';
@@ -101,7 +102,8 @@ export function precomputeSmoothedSchematic(input: SchematicInput): SmoothedPrec
 export function drawSmoothedSchematic(
   pre: SmoothedPrecomputed,
   options?: Partial<SchematicOptions>,
+  sceneOut?: SceneOut,
 ): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...options };
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations }, sceneOut);
 }

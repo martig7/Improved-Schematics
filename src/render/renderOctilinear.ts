@@ -18,6 +18,8 @@ import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
 import { detectPaintedLoops } from './layout/loopMetrics';
 import type { FrameRect } from './projection';
+import type { Scene, Prim } from './sceneIR';
+import { sceneFromSvg } from './sceneFromSvg';
 
 // sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not), so the rendered
 // marker/ribbon geometry is bit-identical on any engine. SIN1DEG = sin(1°).
@@ -174,7 +176,15 @@ function contentFrame(
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
-export function renderRibbons(args: RenderRibbonsArgs): string {
+// Optional Scene-IR sink: when provided, renderRibbons fills `.scene` with a
+// display list built from the SAME geometry it serializes, so the panel can paint
+// a canvas without re-parsing the SVG string (Phase 3). Purely additive — the SVG
+// string output is unchanged whether or not this is passed.
+export interface SceneOut {
+  scene: Scene | null;
+}
+
+export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
@@ -2041,6 +2051,40 @@ export function renderRibbons(args: RenderRibbonsArgs): string {
   const fr = args.frame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
   const frameAttr =
     ' data-frame="' + fr.x.toFixed(1) + ' ' + fr.y.toFixed(1) + ' ' + fr.w.toFixed(1) + ' ' + fr.h.toFixed(1) + '"';
+
+  // --- Scene IR emission (Phase 3) -------------------------------------------
+  // Build the canvas display list from the SAME geometry the string above uses,
+  // so the panel can paint a canvas without re-parsing the SVG. ADDITIVE: emit
+  // nothing unless a sink is passed, and never touch the string-building above.
+  // Layers are emitted in the same source order as the markup. The big DYNAMIC
+  // layers (edges here; stops/labels/transfers below) are emitted directly; the
+  // tiny STATIC backdrop/grid fragment reuses the proven parser (negligible).
+  if (sceneOut) {
+    const prims: Prim[] = [];
+    // land background
+    prims.push({ kind: 'rect', x: 0, y: 0, w: width, h: height, rx: 0, fill: bg, stroke: 'none', strokeWidth: 0, layer: 'background', worldScale: false });
+    // static water/green backdrop + optional grid overlay (small + static)
+    const staticFrag = (waterPart || '') + (args.gridOverlay || '');
+    if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
+    // edges: the markup emits ALL casings first, THEN all strokes
+    // (edgeParts = [...casingParts, ...strokeParts]) — match that order exactly.
+    const casingPrims: Prim[] = [];
+    const strokePrims: Prim[] = [];
+    for (const [lineId, line] of lineById) {
+      const d = dByLine.get(lineId);
+      if (!d || d.length < 2) continue;
+      const dStr = d.join(' ');
+      casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: casingWidth, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+      strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: LINE_WIDTH, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+    }
+    for (const p of casingPrims) prims.push(p);
+    for (const p of strokePrims) prims.push(p);
+    // WORKFLOW Phase 3: transfers prims here (layer 'transfers', worldScale false)
+    // WORKFLOW Phase 3: stops prims here (layer 'stops', worldScale true)
+    // WORKFLOW Phase 3: labels prims here (layer 'stations', worldScale false)
+    sceneOut.scene = { width, height, frame: { x: fr.x, y: fr.y, w: fr.w, h: fr.h }, background: bg, prims };
+  }
+
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '"' + frameAttr + '>\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
