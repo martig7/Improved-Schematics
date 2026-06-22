@@ -95,7 +95,7 @@ const panel = (s: Sel): string => {
     `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="#18181b" stroke="${s.color}" stroke-width="${r.w * 0.006}"/>`,
     nested,
     `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${headerH}" fill="${s.color}" opacity="0.32"/>`,
-    `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="#e5e5e5">◳ ${s.name.trim() ? s.name : 'DETAIL'}</text>`,
+    `<text x="${r.x + headerH * 0.4}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" font-weight="600" fill="#e5e5e5">${s.name.trim() ? s.name : ''}</text>`,
     `<text x="${r.x + r.w - headerH * 0.45}" y="${r.y + headerH * 0.7}" font-family="sans-serif" font-size="${fontPx}" fill="#e5e5e5" text-anchor="end">✕</text>`,
   ].join('\n');
 };
