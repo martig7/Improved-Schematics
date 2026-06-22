@@ -2079,7 +2079,10 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
     }
     for (const p of casingPrims) prims.push(p);
     for (const p of strokePrims) prims.push(p);
-    // WORKFLOW Phase 3: transfers prims here (layer 'transfers', worldScale false)
+    // transfers: a tiny `<g class="transfers">…</g>` fragment with FEW staple
+    // paths. Reuse the proven parser (consistent with the static water/grid above)
+    // — worldScale is correctly FALSE since transfers sits outside .edges/.imp-stop.
+    if (transferPart) for (const p of sceneFromSvg(transferPart).prims) prims.push(p);
     // WORKFLOW Phase 3: stops prims here (layer 'stops', worldScale true)
     // WORKFLOW Phase 3: labels prims here (layer 'stations', worldScale false)
     sceneOut.scene = { width, height, frame: { x: fr.x, y: fr.y, w: fr.w, h: fr.h }, background: bg, prims };
