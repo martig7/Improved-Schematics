@@ -1996,6 +1996,7 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
   const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
+  const labelPrims: Prim[] = [];
   for (const n of layout.nodes.values()) {
     if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
@@ -2005,7 +2006,7 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
     // label hangs off a real capsule marker (and zoom pivots there) rather than
     // the node centre the dots may have slid away from.
     const anchor = labelAnchor(center, stopsByNode.get(n.id));
-    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark));
+    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined));
   }
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
@@ -2087,7 +2088,10 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
     // stops: station markers (dots/capsules/rings/mega rects + bullet text),
     // built alongside the markup by renderStops in source/concatenation order.
     for (const p of stopsPrims) prims.push(p);
-    // WORKFLOW Phase 3: labels prims here (layer 'stations', worldScale false)
+    // labels (.stations layer): one TextPrim per label, world-anchored to the dot
+    // (ax,ay) with a screen-space offset (x,y) — worldScale FALSE, mirroring the
+    // <text> renderLabel emits, in the same node-iteration order.
+    for (const p of labelPrims) prims.push(p);
     sceneOut.scene = { width, height, frame: { x: fr.x, y: fr.y, w: fr.w, h: fr.h }, background: bg, prims };
   }
 

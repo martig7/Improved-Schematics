@@ -5,6 +5,7 @@
 import type { GraphNode, StopMark, Pixel } from './layout/types';
 import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET } from './constants';
 import { escapeXml } from './escape';
+import type { Prim } from './sceneIR';
 
 export interface Box {
   x: number;
@@ -239,10 +240,27 @@ export function renderLabel(
   anchor: Pixel,
   hasStops: boolean,
   dark: boolean,
+  prims?: Prim[],
 ): string {
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
   const dx = placement.x - anchor[0];
   const dy = placement.y - anchor[1];
+  if (prims) {
+    prims.push({
+      kind: 'text',
+      text: node.label,
+      ax: anchor[0],
+      ay: anchor[1],
+      x: dx,
+      y: dy,
+      fontSize: LABEL_FONT_SIZE,
+      fontWeight: 'medium',
+      align: placement.anchor === 'middle' ? 'center' : placement.anchor === 'end' ? 'right' : 'left',
+      fill,
+      layer: 'stations',
+      worldScale: false,
+    });
+  }
   return (
     '<g class="imp-lbl" data-station-id="' + escapeXml(node.id) +
     '" transform="translate(' + anchor[0].toFixed(1) + ',' + anchor[1].toFixed(1) + ')">' +
