@@ -143,16 +143,17 @@ function lsGet(key: string): string | null {
     return null;
   }
 }
-function lsSet(key: string, value: string): boolean {
+function lsSet(key: string, value: string, city: string): boolean {
   try {
     window.localStorage.setItem(key, value);
     return true;
   } catch {
-    // Quota: drop our OTHER stored maps (keep only this one) and retry once.
+    // Quota: drop OTHER cities' stored maps (keep this city's pre/svg/meta) and retry.
     try {
+      const keep = `:${city}`;
       for (let i = window.localStorage.length - 1; i >= 0; i--) {
         const k = window.localStorage.key(i);
-        if (k && k.startsWith(MAP_STORE_KEY) && k !== key) window.localStorage.removeItem(k);
+        if (k && k.startsWith(MAP_STORE_KEY) && !k.endsWith(keep)) window.localStorage.removeItem(k);
       }
       window.localStorage.setItem(key, value);
       return true;
@@ -186,8 +187,11 @@ export function SchematicPanel() {
       const pre = deserializePre(preStr);
       smoothedStore = { city, pre };
       const sels = Array.isArray(meta.selections) ? (meta.selections as Selection[]) : [];
-      console.log(`[improved-schematics] restoring map for "${city}" · ${(preStr.length / 1024 / 1024).toFixed(2)} MB · ${sels.length} area(s)`);
-      return { pre, preStr, sels, settings: meta.settings ?? ({} as RestoredSettings) };
+      // The cached rendered SVG: shown verbatim on first render so we skip the (slow)
+      // draw entirely; the deserialized `pre` backs toggles + detail-area re-sims.
+      const svgStr = lsGet(`${MAP_STORE_KEY}:svg:${city}`);
+      console.log(`[improved-schematics] restoring map for "${city}" · ${(preStr.length / 1024 / 1024).toFixed(2)} MB · ${sels.length} area(s)${svgStr ? ' · cached image' : ''}`);
+      return { pre, preStr, svgStr, sels, settings: meta.settings ?? ({} as RestoredSettings) };
     } catch (e) {
       console.warn('[improved-schematics] map restore failed', e);
       return null;
@@ -322,7 +326,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p26 (fast restore) loaded ✦ — wheel over a popup scales the WHOLE panel (frame + content) toward the cursor, like a map object; drag anywhere on it to move it. Lock via ≣ Areas to pan/zoom the map through it.',
+      '%c[improved-schematics] BUILD popout-box-p27 (instant restore via cached image) loaded ✦ — wheel over a popup scales the WHOLE panel (frame + content) toward the cursor, like a map object; drag anywhere on it to move it. Lock via ≣ Areas to pan/zoom the map through it.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -456,6 +460,9 @@ export function SchematicPanel() {
     didHydrateRef.current = true;
     smoothedCacheRef.current = { pre: restored.pre };
   }
+  // The cached rendered SVG, returned verbatim by the memo on the first smoothed
+  // render so we skip the (slow) draw on open; consumed once, then normal draws.
+  const restoredSvgRef = useRef<string | null>(restored?.svgStr ?? null);
 
   // View-preservation: the inject effect re-fits only when the layout identity
   // changes (mode switch, (re)generation, or water reframe), and keeps the
@@ -528,6 +535,13 @@ export function SchematicPanel() {
       // identity the inject effect needs.
       layoutIdRef.current = cache;
       const pre = cache.pre;
+      // First render after a restore: use the cached rendered SVG verbatim (skip the
+      // slow draw). Consumed once; toggles/regenerates draw normally below.
+      if (restoredSvgRef.current != null) {
+        const cached = restoredSvgRef.current;
+        restoredSvgRef.current = null;
+        return cached;
+      }
       return typeof pre === 'string' ? pre : drawSmoothedSchematic(pre, { showLabels, showStations });
     }
 
@@ -761,21 +775,29 @@ export function SchematicPanel() {
   const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(
     restored ? { pre: restored.pre, str: restored.preStr } : null,
   );
+  const savedSvgRef = useRef<string | null>(restored?.svgStr ?? null);
   useEffect(() => {
     if (mode !== 'smoothed' || !smoothedReady) return;
     const pre = smoothedCacheRef.current?.pre;
     if (!pre || typeof pre === 'string') return;
     const city = api.utils.getCityCode?.() ?? '';
     // Re-serialize the heavy layout only when it actually changed (a new generate);
-    // the tiny settings+areas blob is written every change. Synchronous (no debounce
-    // that a panel close would cancel) — the effect already runs after each change.
+    // the rendered SVG only when it changes (toggle/generate); the tiny settings+
+    // areas blob on every change. Synchronous (no debounce a panel close would cancel).
     if (preSerRef.current?.pre !== pre) {
       preSerRef.current = { pre, str: serializePre(pre) };
-      const ok = lsSet(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str);
+      const ok = lsSet(`${MAP_STORE_KEY}:pre:${city}`, preSerRef.current.str, city);
       console.log(`[improved-schematics] save layout for "${city}": ${ok ? 'ok' : 'FAILED (quota?)'} · ${(preSerRef.current.str.length / 1024 / 1024).toFixed(2)} MB`);
     }
+    if (svg && savedSvgRef.current !== svg) {
+      savedSvgRef.current = svg;
+      // cached rendered image for instant restore; best-effort (falls back to redraw)
+      if (!lsSet(`${MAP_STORE_KEY}:svg:${city}`, svg, city)) {
+        console.warn('[improved-schematics] cache image FAILED (quota?) — restore will redraw');
+      }
+    }
     const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
-    lsSet(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections }));
+    lsSet(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections }), city);
   }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat]);
 
   // (Auto-restore is done synchronously at mount via the `restored` initializer
@@ -1286,7 +1308,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.22 · fast-restore</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.23 · instant-restore</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
