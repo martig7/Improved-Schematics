@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sceneFromSvg } from './sceneFromSvg';
-import { prepareScene, labelScreenBox, isLabelHidden } from './sceneCanvas';
+import { prepareScene, labelWorldBox, isLabelHidden } from './sceneCanvas';
 import type { TextPrim } from './sceneIR';
 import { generateSchematicSVG } from './schematic';
 import type { RenderMode } from './types';
@@ -167,7 +167,7 @@ for (const mode of ['geographic', 'smoothed'] as RenderMode[]) {
   });
 }
 
-test('labelScreenBox + isLabelHidden: analytic overlap with the view', () => {
+test('labelWorldBox + isLabelHidden: world-space overlap (labels scale with the image)', () => {
   const label: TextPrim = {
     kind: 'text',
     text: 'Foo',
@@ -182,16 +182,18 @@ test('labelScreenBox + isLabelHidden: analytic overlap with the view', () => {
     layer: 'stations',
     worldScale: false,
   };
-  const view = { scale: 2, vx: 0, vy: 0 };
-  const box = labelScreenBox(label, view);
-  // anchor screen pos = (100-0)*2 = 200; + offset (6,3) → text starts at (206,203)
-  assert.equal(box.x0, 206);
+  // World box: origin = anchor + offset = (106, 103), left-aligned.
+  const box = labelWorldBox(label);
+  assert.equal(box.x0, 106);
   assert.ok(box.x1 > box.x0);
+  // labelScale enlarges the world box.
+  const big = labelWorldBox(label, 2);
+  assert.ok(big.x1 - big.x0 > box.x1 - box.x0);
 
   // A cutout box covering the anchor hides the label (rule 1).
-  assert.equal(isLabelHidden(label, view, [{ x0: 90, y0: 90, x1: 110, y1: 110 }]), true);
+  assert.equal(isLabelHidden(label, [{ x0: 90, y0: 90, x1: 110, y1: 110 }]), true);
   // A far-away box leaves it visible.
-  assert.equal(isLabelHidden(label, view, [{ x0: -50, y0: -50, x1: -10, y1: -10 }]), false);
+  assert.equal(isLabelHidden(label, [{ x0: -50, y0: -50, x1: -10, y1: -10 }]), false);
   // No boxes → never hidden.
-  assert.equal(isLabelHidden(label, view, []), false);
+  assert.equal(isLabelHidden(label, []), false);
 });

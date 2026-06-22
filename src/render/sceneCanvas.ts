@@ -68,45 +68,41 @@ export function prepareScene(scene: Scene): PreparedScene {
   return { scene, base, edges, transfers, stops, labels };
 }
 
-/** Screen-space box of a label's text, given the current view. `labelScale`
- *  multiplies the constant on-screen size (the user's "label size" setting). Pure. */
-export function labelScreenBox(
+/** WORLD-space box of a label's text. Labels are drawn in world space (constant
+ *  relative to the image — they scale with zoom), so the box is world coords too.
+ *  `labelScale` multiplies the world size (the user's "label size" setting). Pure. */
+export function labelWorldBox(
   label: TextPrim,
-  view: SceneView,
   labelScale = 1,
 ): { x0: number; y0: number; x1: number; y1: number } {
-  const sax = (label.ax - view.vx) * view.scale + label.x * labelScale;
-  const say = (label.ay - view.vy) * view.scale + label.y * labelScale;
+  const ox = label.ax + label.x * labelScale; // text origin (pre-align), world
+  const oy = label.ay + label.y * labelScale; // glyph baseline, world
   const w = estimateTextWidth(label.text) * labelScale;
-  let x0 = sax;
-  let x1 = sax + w;
+  let x0 = ox;
+  let x1 = ox + w;
   if (label.align === 'center') {
-    x0 = sax - w / 2;
-    x1 = sax + w / 2;
+    x0 = ox - w / 2;
+    x1 = ox + w / 2;
   } else if (label.align === 'right') {
-    x0 = sax - w;
-    x1 = sax;
+    x0 = ox - w;
+    x1 = ox;
   }
-  // y is the glyph baseline; the box rises ~0.8em above, ~0.2em below.
+  // baseline → the box rises ~0.8em above, ~0.2em below.
   const fh = label.fontSize * labelScale;
-  return { x0, y0: say - fh * 0.8, x1, y1: say + fh * 0.2 };
+  return { x0, y0: oy - fh * 0.8, x1, y1: oy + fh * 0.2 };
 }
 
-/** Whether a label should be hidden because it sits in/over a cutout box.
- *  Mirrors the panel's updateLabelOverlap: (1) the world anchor inside a box, or
- *  (2) the rendered text box overlapping a box's screen rect. Pure (testable). */
-export function isLabelHidden(label: TextPrim, view: SceneView, boxes: ClipBox[], labelScale = 1): boolean {
+/** Whether a label should be hidden because it sits in/over a cutout box. All
+ *  world-space now: (1) the dot anchor inside a box, or (2) the label's world
+ *  text box overlapping a box. Pure (testable). */
+export function isLabelHidden(label: TextPrim, boxes: ClipBox[], labelScale = 1): boolean {
   if (boxes.length === 0) return false;
   for (const b of boxes) {
     if (label.ax >= b.x0 && label.ax <= b.x1 && label.ay >= b.y0 && label.ay <= b.y1) return true;
   }
-  const lb = labelScreenBox(label, view, labelScale);
+  const lb = labelWorldBox(label, labelScale);
   for (const b of boxes) {
-    const bx0 = (b.x0 - view.vx) * view.scale;
-    const by0 = (b.y0 - view.vy) * view.scale;
-    const bx1 = (b.x1 - view.vx) * view.scale;
-    const by1 = (b.y1 - view.vy) * view.scale;
-    if (lb.x0 < bx1 && lb.x1 > bx0 && lb.y0 < by1 && lb.y1 > by0) return true;
+    if (lb.x0 < b.x1 && lb.x1 > b.x0 && lb.y0 < b.y1 && lb.y1 > b.y0) return true;
   }
   return false;
 }
@@ -236,20 +232,18 @@ export function drawScene(
   drawList(prepared.transfers);
   withClip(() => drawList(prepared.stops));
 
-  // Labels: constant screen size (× the user's labelScale), identity transform.
-  // Size and offset both scale so the label grows around its dot. Hidden when
-  // over a box.
+  // Labels: WORLD space — constant relative to the image, so they scale with the
+  // map as you zoom (× the user's labelScale). Drawn in the camera pass; font
+  // size and offset are in world units. Hidden when over a cutout box.
   const ls = opts.labelScale ?? 1;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  camera();
   ctx.textBaseline = 'alphabetic';
   for (const label of prepared.labels) {
-    if (boxes && isLabelHidden(label, view, boxes, ls)) continue;
+    if (boxes && isLabelHidden(label, boxes, ls)) continue;
     ctx.font = `${label.fontWeight} ${label.fontSize * ls}px ${LABEL_FONT}`;
     ctx.textAlign = label.align;
     ctx.fillStyle = label.fill;
-    const sx = (label.ax - vx) * scale + label.x * ls;
-    const sy = (label.ay - vy) * scale + label.y * ls;
-    ctx.fillText(label.text, sx, sy);
+    ctx.fillText(label.text, label.ax + label.x * ls, label.ay + label.y * ls);
   }
 }
 

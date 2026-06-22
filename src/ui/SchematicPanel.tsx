@@ -67,12 +67,11 @@ type ExportFormat = 'svg' | 'png' | 'jpeg';
 const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
 const DEFAULT_STATION_RADIUS = 2.5; // matches DEFAULT_THEME.stationRadius
 const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
-// Labels render at a CONSTANT on-screen size (they don't shrink/grow with zoom);
-// this multiplies that size. 1 = the renderer's base (LABEL_FONT_SIZE = 11px),
-// which reads small, so default a bit larger. Applied at DISPLAY time (canvas
-// font + SVG counter-scale transform + export), so changing it is instant.
+// Labels render at a constant WORLD size — i.e. constant relative to the map
+// image, scaling WITH zoom (like text printed on the map), not pinned to a fixed
+// screen size. This multiplies that world size. Applied at DISPLAY time (canvas
+// world font + SVG label transform + export), so changing it is instant.
 const DEFAULT_LABEL_SCALE = 1.5;
-const LABEL_BASE_PX = 11; // mirrors LABEL_FONT_SIZE — for the slider's px readout
 const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
 const DEFAULT_JPEG_QUALITY = 0.92;
 
@@ -995,28 +994,17 @@ export function SchematicPanel() {
     const boxes = labelBoxes.current;
     for (const b of boxes) b.el.style.removeProperty('display'); // reset
     const sels = selectionsRef.current;
-    const view = viewRef.current;
-    if (sels.length === 0 || !view || boxes.length === 0) return;
-    // Box rects in screen px (labels are counter-scaled to a constant screen
-    // size, so the text-overlap test is in screen space). The dot test uses box
-    // content coords directly.
-    const boxesScreen = sels.map((s) => ({
-      x0: (s.box.x0 - view.vx) * view.scale,
-      y0: (s.box.y0 - view.vy) * view.scale,
-      x1: (s.box.x1 - view.vx) * view.scale,
-      y1: (s.box.y1 - view.vy) * view.scale,
-    }));
+    if (sels.length === 0 || boxes.length === 0) return;
+    // Labels are WORLD-space now, so the whole test is in content/world coords
+    // (no view needed): the box offsets scale by the label-size setting.
+    const ls = labelScaleRef.current;
     for (const b of boxes) {
       // (1) station IN an area: the dot's content-space anchor is inside a box.
       let hide = sels.some((s) => b.ax >= s.box.x0 && b.ax <= s.box.x1 && b.ay >= s.box.y0 && b.ay <= s.box.y1);
-      // (2) label text OVERLAPS a box (would spill into the cut-out region). The
-      // text box = anchor's screen position + its constant-size offset box, so
-      // the test is pure math — no getBoundingClientRect (no forced reflow).
+      // (2) the label's world text box overlaps a box (would spill into the cut-out).
       if (!hide) {
-        const sax = (b.ax - view.vx) * view.scale;
-        const say = (b.ay - view.vy) * view.scale;
-        const lx0 = sax + b.bx0, ly0 = say + b.by0, lx1 = sax + b.bx1, ly1 = say + b.by1;
-        hide = boxesScreen.some((bb) => lx0 < bb.x1 && lx1 > bb.x0 && ly0 < bb.y1 && ly1 > bb.y0);
+        const lx0 = b.ax + b.bx0 * ls, ly0 = b.ay + b.by0 * ls, lx1 = b.ax + b.bx1 * ls, ly1 = b.ay + b.by1 * ls;
+        hide = sels.some((s) => lx0 < s.box.x1 && lx1 > s.box.x0 && ly0 < s.box.y1 && ly1 > s.box.y0);
       }
       if (hide) b.el.style.display = 'none';
     }
@@ -1077,9 +1065,9 @@ export function SchematicPanel() {
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
-      // Labels are pinned to their dot; counter-scale keeps text + offset a
-      // constant on-screen size, then × the user's label-size setting.
-      const lblTransform = `scale(${inv * labelScaleRef.current})`;
+      // Labels are WORLD-space (constant relative to the image — they scale with
+      // the map via the viewBox, NOT counter-scaled), sized by the label setting.
+      const lblTransform = `scale(${labelScaleRef.current})`;
       for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
       // Counter-scaling changes which labels overlap the (fixed-size) boxes.
       updateLabelOverlap();
@@ -1755,15 +1743,15 @@ export function SchematicPanel() {
                 display={`${Math.round(mapMargin * 100)}%`}
                 onChange={setMapMargin}
               />
-              {/* Label size is display-time (constant on-screen size × this), so it
-                  applies LIVE — no Save/redraw needed, unlike the sliders above. */}
+              {/* Label size is display-time (world size × this; labels scale with
+                  the map), so it applies LIVE — no Save/redraw, unlike the above. */}
               <Slider
                 label="Label size"
                 value={labelScale}
                 min={0.7}
                 max={3.5}
                 step={0.1}
-                display={`${Math.round(LABEL_BASE_PX * labelScale)} px`}
+                display={`${labelScale.toFixed(1)}×`}
                 onChange={setLabelScale}
               />
 
