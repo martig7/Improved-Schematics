@@ -68,14 +68,16 @@ export function prepareScene(scene: Scene): PreparedScene {
   return { scene, base, edges, transfers, stops, labels };
 }
 
-/** Screen-space box of a label's text, given the current view. Pure. */
+/** Screen-space box of a label's text, given the current view. `labelScale`
+ *  multiplies the constant on-screen size (the user's "label size" setting). Pure. */
 export function labelScreenBox(
   label: TextPrim,
   view: SceneView,
+  labelScale = 1,
 ): { x0: number; y0: number; x1: number; y1: number } {
-  const sax = (label.ax - view.vx) * view.scale + label.x;
-  const say = (label.ay - view.vy) * view.scale + label.y;
-  const w = estimateTextWidth(label.text);
+  const sax = (label.ax - view.vx) * view.scale + label.x * labelScale;
+  const say = (label.ay - view.vy) * view.scale + label.y * labelScale;
+  const w = estimateTextWidth(label.text) * labelScale;
   let x0 = sax;
   let x1 = sax + w;
   if (label.align === 'center') {
@@ -86,18 +88,19 @@ export function labelScreenBox(
     x1 = sax;
   }
   // y is the glyph baseline; the box rises ~0.8em above, ~0.2em below.
-  return { x0, y0: say - label.fontSize * 0.8, x1, y1: say + label.fontSize * 0.2 };
+  const fh = label.fontSize * labelScale;
+  return { x0, y0: say - fh * 0.8, x1, y1: say + fh * 0.2 };
 }
 
 /** Whether a label should be hidden because it sits in/over a cutout box.
  *  Mirrors the panel's updateLabelOverlap: (1) the world anchor inside a box, or
  *  (2) the rendered text box overlapping a box's screen rect. Pure (testable). */
-export function isLabelHidden(label: TextPrim, view: SceneView, boxes: ClipBox[]): boolean {
+export function isLabelHidden(label: TextPrim, view: SceneView, boxes: ClipBox[], labelScale = 1): boolean {
   if (boxes.length === 0) return false;
   for (const b of boxes) {
     if (label.ax >= b.x0 && label.ax <= b.x1 && label.ay >= b.y0 && label.ay <= b.y1) return true;
   }
-  const lb = labelScreenBox(label, view);
+  const lb = labelScreenBox(label, view, labelScale);
   for (const b of boxes) {
     const bx0 = (b.x0 - view.vx) * view.scale;
     const by0 = (b.y0 - view.vy) * view.scale;
@@ -117,6 +120,8 @@ export interface DrawSceneOpts {
   cssHeight: number;
   /** detail-area cutout boxes in world coords (edges/stops clipped to outside). */
   clipBoxes?: ClipBox[];
+  /** multiplier on the constant on-screen label size (user "label size" setting). */
+  labelScale?: number;
 }
 
 export function drawScene(
@@ -231,16 +236,19 @@ export function drawScene(
   drawList(prepared.transfers);
   withClip(() => drawList(prepared.stops));
 
-  // Labels: constant screen size, identity transform. Hidden when over a box.
+  // Labels: constant screen size (× the user's labelScale), identity transform.
+  // Size and offset both scale so the label grows around its dot. Hidden when
+  // over a box.
+  const ls = opts.labelScale ?? 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.textBaseline = 'alphabetic';
   for (const label of prepared.labels) {
-    if (boxes && isLabelHidden(label, view, boxes)) continue;
-    ctx.font = `${label.fontWeight} ${label.fontSize}px ${LABEL_FONT}`;
+    if (boxes && isLabelHidden(label, view, boxes, ls)) continue;
+    ctx.font = `${label.fontWeight} ${label.fontSize * ls}px ${LABEL_FONT}`;
     ctx.textAlign = label.align;
     ctx.fillStyle = label.fill;
-    const sx = (label.ax - vx) * scale + label.x;
-    const sy = (label.ay - vy) * scale + label.y;
+    const sx = (label.ax - vx) * scale + label.x * ls;
+    const sy = (label.ay - vy) * scale + label.y * ls;
     ctx.fillText(label.text, sx, sy);
   }
 }

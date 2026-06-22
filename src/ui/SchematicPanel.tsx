@@ -67,6 +67,12 @@ type ExportFormat = 'svg' | 'png' | 'jpeg';
 const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
 const DEFAULT_STATION_RADIUS = 2.5; // matches DEFAULT_THEME.stationRadius
 const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
+// Labels render at a CONSTANT on-screen size (they don't shrink/grow with zoom);
+// this multiplies that size. 1 = the renderer's base (LABEL_FONT_SIZE = 11px),
+// which reads small, so default a bit larger. Applied at DISPLAY time (canvas
+// font + SVG counter-scale transform + export), so changing it is instant.
+const DEFAULT_LABEL_SCALE = 1.5;
+const LABEL_BASE_PX = 11; // mirrors LABEL_FONT_SIZE — for the slider's px readout
 const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
 const DEFAULT_JPEG_QUALITY = 0.92;
 
@@ -181,6 +187,7 @@ type RestoredSettings = {
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
+  labelScale?: number;
 };
 
 export function SchematicPanel() {
@@ -302,6 +309,12 @@ export function SchematicPanel() {
     applied.boxWarpPos === DEFAULT_REALISM_POS;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
+  // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
+  // into a ref so the dep-[] draw callbacks read the current value without being
+  // rebuilt on every slider tick.
+  const [labelScale, setLabelScale] = useState(rset.labelScale ?? DEFAULT_LABEL_SCALE);
+  const labelScaleRef = useRef(labelScale);
+  labelScaleRef.current = labelScale;
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
   // demand: entering the mode shows a Generate Map button instead of building
   // immediately. `smoothedReady` opens the gate; `genMs` is how long the last
@@ -635,12 +648,22 @@ export function SchematicPanel() {
       .map((s) => { const d = exportFns.current.get(s.id)?.(); return d ? { s, ...d } : null; })
       .filter((a): a is { s: Selection } & ExportDescriptor => a !== null);
 
+    // Match the on-screen label size: the panel scales the .imp-lbl-s groups by
+    // labelScale at display time, so bake the same scale into the export markup.
+    const scaleExportLabels = (rootEl: Element) => {
+      if (labelScale === 1) return;
+      for (const g of Array.from(rootEl.querySelectorAll('.imp-lbl-s'))) {
+        g.setAttribute('transform', `scale(${labelScale})`);
+      }
+    };
+
     // No areas → original behaviour: crop to the geography frame.
     if (areas.length === 0) {
       root.setAttribute('viewBox', `${frame.x} ${frame.y} ${frame.w} ${frame.h}`);
       root.setAttribute('width', String(frame.w));
       root.setAttribute('height', String(frame.h));
       root.removeAttribute('data-frame');
+      scaleExportLabels(root);
       return { markup: new XMLSerializer().serializeToString(root), width: frame.w, height: frame.h };
     }
 
@@ -656,6 +679,7 @@ export function SchematicPanel() {
     for (const a of areas) dPath += `M${a.s.box.x0} ${a.s.box.y0}H${a.s.box.x1}V${a.s.box.y1}H${a.s.box.x0}Z`;
     const cutDefs = `<defs><clipPath id="imp-export-cut" clipPathUnits="userSpaceOnUse"><path d="${dPath}" clip-rule="evenodd"/></clipPath></defs>`;
     let main = svg.replace(/ data-frame="[^"]*"/, '').replace(/(<svg[^>]*>)/, `$1${cutDefs}`);
+    if (labelScale !== 1) main = main.replace(/<g class="imp-lbl-s">/g, `<g class="imp-lbl-s" transform="scale(${labelScale})">`);
     for (const cls of ['edges', 'stops', 'stations']) main = main.replace(`<g class="${cls}">`, `<g class="${cls}" clip-path="url(#imp-export-cut)">`);
     const mainInner = main.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 
@@ -692,7 +716,7 @@ export function SchematicPanel() {
 
     const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0} ${y0} ${EW} ${EH}" width="${EW}" height="${EH}">${parts.join('')}</svg>`;
     return { markup, width: EW, height: EH };
-  }, [svg, selections]);
+  }, [svg, selections, labelScale]);
 
   // Trigger a browser download for a generated blob.
   const triggerDownload = useCallback((blob: Blob, ext: string, name?: string) => {
@@ -753,7 +777,7 @@ export function SchematicPanel() {
     const pre = smoothedCacheRef.current?.pre;
     if (mode !== 'smoothed' || !pre) { setMapMsg('Generate a smoothed map first'); return; }
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? 'map';
-    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
+    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
     try {
       const json = serializeMap({ version: 1, city, settings, selections, pre });
       triggerDownload(new Blob([json], { type: 'application/json' }), 'json', `improvedschematics-map-${city}`);
@@ -761,7 +785,7 @@ export function SchematicPanel() {
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, selections, triggerDownload, modState]);
+  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
@@ -775,12 +799,14 @@ export function SchematicPanel() {
       rasterScale?: number;
       jpegQuality?: number;
       exportFormat?: ExportFormat;
+      labelScale?: number;
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
     if (s.rasterScale != null) setRasterScale(s.rasterScale);
     if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
     if (s.exportFormat) setExportFormat(s.exportFormat);
+    if (s.labelScale != null) setLabelScale(s.labelScale);
     if (s.applied) {
       setLineWidth(s.applied.lineWidth);
       setStationRadius(s.applied.stationRadius);
@@ -854,9 +880,9 @@ export function SchematicPanel() {
         console.warn('[improved-schematics] cache image FAILED (quota?) — restore will redraw');
       }
     }
-    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat };
+    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
     lsSet(`${MAP_STORE_KEY}:meta:${city}`, JSON.stringify({ version: 1, city, settings, selections }), city);
-  }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat]);
+  }, [svg, selections, applied, showStations, showLabels, mode, smoothedReady, rasterScale, jpegQuality, exportFormat, labelScale]);
 
   // Deferred restore: the panel opens immediately into the loading spinner, and
   // ONLY after that spinner has painted (rAF×2) do we run the heavy work off the
@@ -1025,6 +1051,7 @@ export function SchematicPanel() {
       cssWidth: cssW,
       cssHeight: cssH,
       clipBoxes: selectionsRef.current.map((s) => s.box),
+      labelScale: labelScaleRef.current,
     });
   }, []);
 
@@ -1050,8 +1077,9 @@ export function SchematicPanel() {
     if (updateSizes) {
       const inv = 1 / view.scale;
       for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
-      // Labels are pinned to their dot; counter-scale keeps text + offset constant size.
-      const lblTransform = `scale(${inv})`;
+      // Labels are pinned to their dot; counter-scale keeps text + offset a
+      // constant on-screen size, then × the user's label-size setting.
+      const lblTransform = `scale(${inv * labelScaleRef.current})`;
       for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
       // Counter-scaling changes which labels overlap the (fixed-size) boxes.
       updateLabelOverlap();
@@ -1285,6 +1313,12 @@ export function SchematicPanel() {
   useEffect(() => {
     if (useCanvas) drawCanvas();
   }, [cutoutKey, useCanvas, drawCanvas]);
+
+  // Label-size setting is display-time: re-apply label sizes instantly (canvas
+  // redraw, or the SVG counter-scale transform) without rebuilding the scene.
+  useEffect(() => {
+    applyToDom(true);
+  }, [labelScale, applyToDom]);
 
   // Canvas mode: resize the backing store + repaint when the viewport resizes
   // (the SVG path got this free via width/height=100% + viewBox).
@@ -1720,6 +1754,17 @@ export function SchematicPanel() {
                 step={0.01}
                 display={`${Math.round(mapMargin * 100)}%`}
                 onChange={setMapMargin}
+              />
+              {/* Label size is display-time (constant on-screen size × this), so it
+                  applies LIVE — no Save/redraw needed, unlike the sliders above. */}
+              <Slider
+                label="Label size"
+                value={labelScale}
+                min={0.7}
+                max={3.5}
+                step={0.1}
+                display={`${Math.round(LABEL_BASE_PX * labelScale)} px`}
+                onChange={setLabelScale}
               />
 
               {/* Smoothed-mode realism. Centered sliders: left = more
