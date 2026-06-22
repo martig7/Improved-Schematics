@@ -218,7 +218,9 @@ export function SchematicPanel() {
   });
   const rset: RestoredSettings = restored?.settings ?? {};
   const rapp = rset.applied;
-  const [mode, setMode] = useState<RenderMode>(restored ? 'smoothed' : 'geographic');
+  // Always open in geographic mode; smoothed is the expensive mode and must be
+  // entered explicitly (its Generate button), never auto-shown on open.
+  const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(rset.showStations ?? true);
   const [showLabels, setShowLabels] = useState(rset.showLabels ?? false);
   // Interactive renderer: 'canvas' (default — paints the parsed Scene to a
@@ -566,7 +568,7 @@ export function SchematicPanel() {
       let cache = smoothedCacheRef.current;
       // Hydrate from the persistent store on a fresh mount / after a mode switch,
       // so a previously generated map shows instantly without rebuilding.
-      if (!cache && smoothedStore && smoothedStore.city === currentCity) {
+      if (!cache && MAP_CACHE_ENABLED && smoothedStore && smoothedStore.city === currentCity) {
         cache = { pre: smoothedStore.pre };
         smoothedCacheRef.current = cache;
         genMsRef.current = null;
@@ -1306,7 +1308,7 @@ export function SchematicPanel() {
     // A map load already installed a ready cache + mode='smoothed'; don't blank it.
     if (skipModeBlankRef.current) { skipModeBlankRef.current = false; return; }
     const currentCity = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    const hasStored = mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity;
+    const hasStored = MAP_CACHE_ENABLED && mode === 'smoothed' && !!smoothedStore && smoothedStore.city === currentCity;
     setSmoothedReady(false);
     setGenerating(hasStored);
     const id = requestAnimationFrame(fit);
