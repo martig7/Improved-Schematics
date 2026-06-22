@@ -22,6 +22,8 @@ import { serializeMap, deserializeMap, serializePre, deserializePre } from '../r
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
+import { sceneFromSvg } from '../render/sceneFromSvg';
+import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { generateGeography } from '../geography/geography';
@@ -201,6 +203,11 @@ export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>(restored ? 'smoothed' : 'geographic');
   const [showStations, setShowStations] = useState(rset.showStations ?? true);
   const [showLabels, setShowLabels] = useState(rset.showLabels ?? false);
+  // Interactive renderer: 'canvas' (default — paints the parsed Scene to a
+  // <canvas>, so pan/zoom is a camera redraw with no live DOM) or the legacy
+  // SVG-in-DOM path (kept as a live fallback for A/B + safety). Export, persist
+  // and the detail insets always use the SVG string regardless.
+  const [useCanvas, setUseCanvas] = useState(true);
   const [dragging, setDragging] = useState(false);
   // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
   // MAP/content space (so it tracks pan + zoom) instead of panning. The live drag
@@ -294,6 +301,12 @@ export function SchematicPanel() {
   const genMsRef = useRef<number | null>(null);
 
   const viewportRef = useRef<HTMLDivElement>(null);
+  // Canvas-mode render surface + the parsed display list it paints. The SVG path
+  // injects into a separate host div (svgHostRef) so the two never fight over the
+  // viewport's children (innerHTML vs React-managed canvas).
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const svgHostRef = useRef<HTMLDivElement>(null);
+  const sceneRef = useRef<PreparedScene | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const strokeNodes = useRef<Scaled[]>([]);
   const labelGroups = useRef<Element[]>([]);
@@ -951,9 +964,48 @@ export function SchematicPanel() {
     }
   }, []);
 
+  // Repaint the canvas at the current view. Pan/zoom in canvas mode is exactly
+  // this: a camera transform + one redraw — no viewBox, no per-node counter-scale
+  // writes, no whole-SVG repaint. Sizes the backing store to the viewport × DPR.
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const vp = viewportRef.current;
+    const view = viewRef.current;
+    if (!canvas || !vp || !view) return;
+    const cssW = vp.clientWidth;
+    const cssH = vp.clientHeight;
+    if (cssW === 0 || cssH === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    const bw = Math.max(1, Math.round(cssW * dpr));
+    const bh = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== bw) canvas.width = bw;
+    if (canvas.height !== bh) canvas.height = bh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const prepared = sceneRef.current;
+    if (!prepared) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, bw, bh);
+      return;
+    }
+    drawScene(ctx, prepared, view, {
+      dpr,
+      cssWidth: cssW,
+      cssHeight: cssH,
+      clipBoxes: selectionsRef.current.map((s) => s.box),
+    });
+  }, []);
+
   // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
-  // (only needed when the zoom changes, not on pure pans).
+  // (only needed when the zoom changes, not on pure pans). In canvas mode the
+  // whole job is a single drawCanvas (+ keep the overlays glued).
   const applyToDom = useCallback((updateSizes: boolean) => {
+    if (useCanvas) {
+      drawCanvas();
+      positionBox();
+      for (const fn of repositionFns.current.values()) fn();
+      return;
+    }
     const svgEl = svgRef.current;
     const vp = viewportRef.current;
     const view = viewRef.current;
@@ -972,7 +1024,7 @@ export function SchematicPanel() {
       // Counter-scaling changes which labels overlap the (fixed-size) boxes.
       updateLabelOverlap();
     }
-  }, [updateLabelOverlap]);
+  }, [updateLabelOverlap, useCanvas, drawCanvas, positionBox]);
 
   // Coalesce gesture-driven redraws to one applyToDom per animation frame.
   // pointermove/wheel mutate viewRef synchronously (cheap math) and call this;
@@ -1017,12 +1069,39 @@ export function SchematicPanel() {
     setGenerating(true);
   }, []);
 
-  // Inject SVG, take over its sizing, cache the elements we counter-scale.
+  // Install the render. Canvas mode parses the SVG string into a Scene and paints
+  // it (no live DOM); SVG mode injects the markup into the host div and caches the
+  // nodes it counter-scales. The shared tail below fits/preserves the view either
+  // way, so all the existing callers (toggles, mode switch, restore) are unchanged.
   useEffect(() => {
     const vp = viewportRef.current;
     if (!vp) return;
-    vp.innerHTML = svg;
-    const svgEl = vp.querySelector('svg');
+
+    if (useCanvas) {
+      const host = svgHostRef.current;
+      if (host && host.firstChild) host.innerHTML = ''; // SVG host is idle in canvas mode
+      svgRef.current = null;
+      strokeNodes.current = [];
+      labelGroups.current = [];
+      labelBoxes.current = [];
+      if (svg) {
+        const scene = sceneFromSvg(svg);
+        sceneRef.current = prepareScene(scene);
+        const w = scene.width || GEO_SIZE;
+        const h = scene.height || GEO_SIZE;
+        svgBoxRef.current = { w, h };
+        // Same frame rule as the SVG path: prefer the renderer's data-frame.
+        fitBoxRef.current =
+          scene.frame && scene.frame.w > 0 && scene.frame.h > 0
+            ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
+            : { x: 0, y: 0, w, h };
+      } else {
+        sceneRef.current = null;
+      }
+    } else {
+    const host = svgHostRef.current ?? vp;
+    host.innerHTML = svg;
+    const svgEl = host.querySelector('svg');
     svgRef.current = svgEl;
     if (svgEl) {
       // Capture intrinsic SVG bounds BEFORE we overwrite viewBox.
@@ -1080,6 +1159,7 @@ export function SchematicPanel() {
         return { el: inner as HTMLElement, ax, ay, bx0, by0: dy - LABEL_FONT_SIZE * 0.8, bx1, by1: dy + LABEL_FONT_SIZE * 0.2 };
       });
     }
+    }
     // Preserve the current pan/zoom when only the SVG CONTENT changed (a
     // label/station toggle redraws the SAME layout). Re-fit only when the
     // layout identity changes — mode switch, (re)generation, or water reframe.
@@ -1105,7 +1185,7 @@ export function SchematicPanel() {
       setGenerating(false);
       setRestoring(false);
     }
-  }, [svg, mode, fit, applyToDom, clearSelections]);
+  }, [svg, mode, fit, applyToDom, clearSelections, useCanvas]);
 
   // The cutout depends only on the box GEOMETRY, so key the effect on that — not
   // the whole `selections` array — so editing a color/name doesn't rebuild (and
@@ -1158,9 +1238,28 @@ export function SchematicPanel() {
 
   // Re-evaluate which labels overlap the areas whenever the boxes change, the map
   // redraws (new label elements), or labels toggle. Zoom is handled in applyToDom.
+  // (SVG mode; in canvas mode label hiding is computed inside drawScene.)
   useEffect(() => {
     updateLabelOverlap();
   }, [cutoutKey, svg, showLabels, updateLabelOverlap]);
+
+  // Canvas mode: the SVG cutout/label-overlap effects no-op (no svgRef), so
+  // repaint the canvas when the detail-area boxes change — the cutout clip and
+  // label hiding both live inside drawScene now.
+  useEffect(() => {
+    if (useCanvas) drawCanvas();
+  }, [cutoutKey, useCanvas, drawCanvas]);
+
+  // Canvas mode: resize the backing store + repaint when the viewport resizes
+  // (the SVG path got this free via width/height=100% + viewBox).
+  useEffect(() => {
+    if (!useCanvas) return;
+    const vp = viewportRef.current;
+    if (!vp || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => drawCanvas());
+    ro.observe(vp);
+    return () => ro.disconnect();
+  }, [useCanvas, drawCanvas]);
 
   // Re-fit on mode switch (different layout shape). When a generated map is stored
   // for this city, re-enter the generating flow rather than opening the gate
@@ -1511,6 +1610,13 @@ export function SchematicPanel() {
             )}
           </div>
         )}
+        <button
+          onClick={() => setUseCanvas((v) => !v)}
+          style={toggleStyle(useCanvas)}
+          title={useCanvas ? 'Renderer: Canvas (fast). Click for legacy SVG.' : 'Renderer: SVG (legacy). Click for Canvas.'}
+        >
+          {useCanvas ? '◧ Canvas' : '▦ SVG'}
+        </button>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
@@ -1806,7 +1912,16 @@ export function SchematicPanel() {
             cursor: drawMode ? 'crosshair' : dragging ? 'grabbing' : 'grab',
             touchAction: 'none',
           }}
-        />
+        >
+          {/* SVG-mode host (innerHTML injected here, kept off React's children) and
+              the canvas-mode surface. Both always mounted; toggled by display so
+              switching renderer never fights over the viewport's children. */}
+          <div ref={svgHostRef} style={{ position: 'absolute', inset: 0, display: useCanvas ? 'none' : 'block' }} />
+          <canvas
+            ref={canvasRef}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: useCanvas ? 'block' : 'none' }}
+          />
+        </div>
         {/* Live draw box (in progress): positioned imperatively (positionBox) in
             content space so it tracks pan/zoom. Neutral white; on commit it becomes
             a color-cycled DetailInset. pointerEvents none so drags pass through. */}

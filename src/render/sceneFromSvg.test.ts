@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { sceneFromSvg } from './sceneFromSvg';
 import { prepareScene, labelScreenBox, isLabelHidden } from './sceneCanvas';
 import type { TextPrim } from './sceneIR';
+import { generateSchematicSVG } from './schematic';
+import type { RenderMode } from './types';
+import type { GeographyData } from '../geography/types';
 
 // A representative slice of renderRibbons' output: svg header + data-frame, land
 // rect, an unclassed geography backdrop group, an .edges bundle (casing+stroke),
@@ -106,6 +109,63 @@ test('prepareScene buckets into draw-order layers', () => {
   // stops bucket has the dot + the bullet text.
   assert.equal(p.stops.length, 2);
 });
+
+// --- round-trip against REAL renderer output (catches parser gaps a hand-
+//     written sample would miss: every path/circle/rect/line/text must survive) ---
+const RT_STATIONS = [
+  { id: 's1', name: 'Alpha', coords: [-122.0, 47.0], trackIds: ['t1'], trackGroupId: 'g1', buildType: 'constructed', stNodeIds: ['n1'], routeIds: ['r1'], createdAt: 0, nearbyStations: [] },
+  { id: 's2', name: 'Beta & Co', coords: [-122.05, 47.02], trackIds: ['t2'], trackGroupId: 'g2', buildType: 'constructed', stNodeIds: ['n2'], routeIds: ['r1', 'r2'], createdAt: 0, nearbyStations: [] },
+  { id: 's3', name: 'Gamma', coords: [-122.1, 47.0], trackIds: ['t3'], trackGroupId: 'g3', buildType: 'constructed', stNodeIds: ['n3'], routeIds: ['r1'], createdAt: 0, nearbyStations: [] },
+  { id: 's4', name: 'Delta', coords: [-122.05, 46.97], trackIds: ['t4'], trackGroupId: 'g4', buildType: 'constructed', stNodeIds: ['n4'], routeIds: ['r2'], createdAt: 0, nearbyStations: [] },
+];
+const RT_TRACKS = [
+  { id: 't1', coords: [[-122.0, 47.0], [-122.05, 47.02]] },
+  { id: 't2', coords: [[-122.05, 47.02], [-122.1, 47.0]] },
+  { id: 't3', coords: [[-122.05, 47.02], [-122.05, 46.97]] },
+];
+const RT_ROUTES = [
+  { id: 'r1', bullet: '1', color: '#cc0000', stComboTimings: [], stCombos: [
+    { startStNodeId: 'n1', endStNodeId: 'n2', path: [{ trackId: 't1', reversed: false }], distance: 1 },
+    { startStNodeId: 'n2', endStNodeId: 'n3', path: [{ trackId: 't2', reversed: false }], distance: 1 } ] },
+  { id: 'r2', bullet: '2', color: '#0000cc', stComboTimings: [], stCombos: [
+    { startStNodeId: 'n2', endStNodeId: 'n4', path: [{ trackId: 't3', reversed: false }], distance: 1 } ] },
+];
+const RT_GEO: GeographyData = {
+  bbox: [-122.12, 46.95, -121.98, 47.05],
+  water: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-122.1, 47.0], [-122.05, 47.0], [-122.05, 47.03], [-122.1, 47.03], [-122.1, 47.0]]] } }],
+  green: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-122.02, 46.98], [-122.0, 46.98], [-122.0, 47.0], [-122.02, 47.0], [-122.02, 46.98]]] } }],
+};
+
+const count = (s: string, sub: string): number => s.split(sub).length - 1;
+
+for (const mode of ['geographic', 'smoothed'] as RenderMode[]) {
+  test(`round-trip: parser captures every shape of real ${mode} output`, () => {
+    const svg = generateSchematicSVG({
+      routes: RT_ROUTES as never,
+      tracks: RT_TRACKS as never,
+      stations: RT_STATIONS as never,
+      geography: RT_GEO,
+      options: { mode, showLabels: true, showStations: true, width: 600, height: 600 },
+    });
+    const scene = sceneFromSvg(svg);
+    const byKind = (k: string) => scene.prims.filter((p) => p.kind === k).length;
+    // Every leaf element in the markup must become exactly one prim.
+    assert.equal(byKind('path'), count(svg, '<path'), `${mode}: path count`);
+    assert.equal(byKind('circle'), count(svg, '<circle'), `${mode}: circle count`);
+    assert.equal(byKind('rect'), count(svg, '<rect'), `${mode}: rect count`);
+    assert.equal(byKind('line'), count(svg, '<line'), `${mode}: line count`);
+    assert.equal(byKind('text'), count(svg, '<text'), `${mode}: text count`);
+    // Canvas + frame + background survive the round trip.
+    const vb = svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+    assert.equal(scene.width, Number(vb![1]));
+    assert.equal(scene.height, Number(vb![2]));
+    assert.ok(scene.background, `${mode}: background captured`);
+    assert.ok(scene.frame, `${mode}: data-frame captured`);
+    // Labels decoded (the "Beta & Co" station carries an &amp;).
+    const labels = scene.prims.filter((p) => p.kind === 'text') as TextPrim[];
+    assert.ok(labels.some((l) => l.text.includes('Beta & Co')), `${mode}: entity-decoded label`);
+  });
+}
 
 test('labelScreenBox + isLabelHidden: analytic overlap with the view', () => {
   const label: TextPrim = {
