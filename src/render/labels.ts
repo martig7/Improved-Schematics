@@ -243,16 +243,19 @@ export function renderLabel(
   prims?: Prim[],
 ): string {
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
-  const dx = placement.x - anchor[0];
-  const dy = placement.y - anchor[1];
+  // Translate the group to the TEXT position (placement) with the text at the
+  // origin, so size scaling (panel/export/canvas) pivots around the text's own
+  // anchor — the gap from the dot stays CONSTANT as label size changes; only the
+  // glyphs grow. (Translating to the dot + offsetting the text would make a
+  // larger label drift away from its station.)
   if (prims) {
     prims.push({
       kind: 'text',
       text: node.label,
-      ax: anchor[0],
-      ay: anchor[1],
-      x: dx,
-      y: dy,
+      ax: placement.x,
+      ay: placement.y,
+      x: 0,
+      y: 0,
       fontSize: LABEL_FONT_SIZE,
       fontWeight: 'medium',
       align: placement.anchor === 'middle' ? 'center' : placement.anchor === 'end' ? 'right' : 'left',
@@ -263,10 +266,9 @@ export function renderLabel(
   }
   return (
     '<g class="imp-lbl" data-station-id="' + escapeXml(node.id) +
-    '" transform="translate(' + anchor[0].toFixed(1) + ',' + anchor[1].toFixed(1) + ')">' +
+    '" transform="translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')">' +
     '<g class="imp-lbl-s">' +
-    '<text x="' + dx.toFixed(1) + '" y="' + dy.toFixed(1) +
-    '" text-anchor="' + placement.anchor +
+    '<text x="0" y="0" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +
     LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="medium">' +
     escapeXml(node.label) + '</text></g></g>'
