@@ -322,7 +322,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p25 (popup scales as a unit) loaded ✦ — wheel over a popup scales the WHOLE panel (frame + content) toward the cursor, like a map object; drag anywhere on it to move it. Lock via ≣ Areas to pan/zoom the map through it.',
+      '%c[improved-schematics] BUILD popout-box-p26 (fast restore) loaded ✦ — wheel over a popup scales the WHOLE panel (frame + content) toward the cursor, like a map object; drag anywhere on it to move it. Lock via ≣ Areas to pan/zoom the map through it.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -448,6 +448,14 @@ export function SchematicPanel() {
   // (which persists across mounts). Reused for label/station toggles so those are
   // a cheap redraw; cleared by (Re)generate to force a fresh octi run.
   const smoothedCacheRef = useRef<{ pre: SmoothedPrecomputed | string } | null>(null);
+  // Install the restored precompute DIRECTLY into the cache on first render, so the
+  // svg memo draws from it and never falls through to the (seconds-long) precompute
+  // — the module-store hydration alone can miss on a city-key mismatch and rebuild.
+  const didHydrateRef = useRef(false);
+  if (restored && !didHydrateRef.current) {
+    didHydrateRef.current = true;
+    smoothedCacheRef.current = { pre: restored.pre };
+  }
 
   // View-preservation: the inject effect re-fits only when the layout identity
   // changes (mode switch, (re)generation, or water reframe), and keeps the
@@ -1278,7 +1286,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.21 · panel-as-unit</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.22 · fast-restore</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
