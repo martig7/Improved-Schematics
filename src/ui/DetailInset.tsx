@@ -19,6 +19,9 @@ export interface Selection {
   color: string;
   /** User label shown in the panel header; falls back to "DETAIL" when empty. */
   name: string;
+  /** Locked: the panel is pinned (can't be dragged) and pointer-transparent, so
+   *  pan/zoom passes through to the map underneath. */
+  locked?: boolean;
 }
 export interface SelView {
   scale: number;
@@ -273,6 +276,7 @@ export function DetailInset({
 
   // Drag the panel (content-space rect); stopPropagation so the map doesn't pan.
   const onDown = (e: React.PointerEvent) => {
+    if (sel.locked) return; // pinned — don't move (also pointer-transparent via CSS)
     e.stopPropagation();
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const ir = rectRef.current;
@@ -318,6 +322,9 @@ export function DetailInset({
           boxShadow: '0 6px 22px rgba(0,0,0,0.55)',
           overflow: 'hidden',
           background: '#18181b',
+          // Locked → pointer-transparent: pan/zoom/clicks fall through to the map,
+          // and the panel can't be dragged.
+          pointerEvents: sel.locked ? 'none' : 'auto',
         }}
       >
         <div
@@ -347,13 +354,17 @@ export function DetailInset({
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {sel.name}
           </span>
-          <span
-            onPointerDown={(e) => { e.stopPropagation(); onClose(sel.id); }}
-            style={{ cursor: 'pointer', padding: '0 2px' }}
-            title="Remove detail area"
-          >
-            ✕
-          </span>
+          {sel.locked ? (
+            <span style={{ padding: '0 2px' }} title="Locked (unlock in the Areas menu)">🔒</span>
+          ) : (
+            <span
+              onPointerDown={(e) => { e.stopPropagation(); onClose(sel.id); }}
+              style={{ cursor: 'pointer', padding: '0 2px' }}
+              title="Remove detail area"
+            >
+              ✕
+            </span>
+          )}
         </div>
         <div ref={bodyRef} style={{ position: 'absolute', inset: '16px 0 0 0' }} />
       </div>

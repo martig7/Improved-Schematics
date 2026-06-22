@@ -322,7 +322,7 @@ export function SchematicPanel() {
   // area" button only shows in SMOOTHED mode after Generate Map.
   useEffect(() => {
     console.log(
-      '%c[improved-schematics] BUILD popout-box-p21 (in-panel zoom) loaded ✦ — scroll-wheel over a Detail popup zooms its content toward the cursor (independent of the main map). Auto-persist via localStorage — check console for save/restore lines.',
+      '%c[improved-schematics] BUILD popout-box-p22 (lock areas) loaded ✦ — ≣ Areas → 🔓 locks an area: pinned (no dragging) + pointer-transparent so pan/zoom passes through to the map. Wheel over an unlocked popup still zooms it.',
       'color:#38bdf8;font-weight:bold;font-size:13px',
     );
   }, []);
@@ -1144,7 +1144,7 @@ export function SchematicPanel() {
       // spawns a new color-cycled DetailInset that persists until closed.
       if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
         const n = selCountRef.current++;
-        setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length], name: '' }]);
+        setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length], name: '', locked: false }]);
       }
       return;
     }
@@ -1278,7 +1278,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.17 · panel-zoom</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.18 · lock-areas</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1362,6 +1362,14 @@ export function SchematicPanel() {
                         color: 'inherit',
                       }}
                     />
+                    <button
+                      onClick={() => updateSelection(s.id, { locked: !s.locked })}
+                      title={s.locked ? 'Unlock (allow moving this area)' : 'Lock (pin it; pan/zoom passes through)'}
+                      aria-label={s.locked ? 'Unlock area' : 'Lock area'}
+                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: s.locked ? 1 : 0.55, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                    >
+                      {s.locked ? '🔒' : '🔓'}
+                    </button>
                     <button
                       onClick={() => closeSelection(s.id)}
                       title="Delete this area"
