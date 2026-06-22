@@ -78,10 +78,6 @@ export function DetailInset({
   const bodyRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const leaderRef = useRef<SVGLineElement>(null);
-  // In-panel zoom as a CSS transform on the RENDERED sub-map — magnifying it like a
-  // fixed image (panel size unchanged; you zoom into the home framing, never past
-  // it). Reset to identity on each re-sim. { s: scale ≥ 1, tx/ty: px translate }.
-  const zoomRef = useRef({ s: 1, tx: 0, ty: 0 });
   // Last rendered sub-map + its viewBox frame, for baking into the export.
   const exportRef = useRef<{ subSvg: string; gf: Rect } | null>(null);
   // Cached sub-layout (heavy octi precompute), keyed by box. Areas clear on any
@@ -154,9 +150,7 @@ export function DetailInset({
     const box = sel.box;
     const boxFrame: Rect = { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 };
     const fit = (isvg: SVGSVGElement | null) => {
-      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); isvg.style.transform = ''; }
-      zoomRef.current = { s: 1, tx: 0, ty: 0 }; // a re-sim resets the in-panel zoom
-      if (bodyRef.current) bodyRef.current.style.cursor = '';
+      if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
       position();
     };
     // Base-map crop fallback — reflects the toggles since baseSvg already does.
@@ -242,39 +236,31 @@ export function DetailInset({
     return () => { cancelled = true; cancelAnimationFrame(raf); };
   }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput]);
 
-  // Wheel over the panel magnifies its rendered sub-map toward the cursor, as a CSS
-  // transform — like zooming a single image: the panel's size (vs the map) doesn't
-  // change, and you can only zoom INTO the home framing (scale clamped to 1x..12x),
-  // never reframe past it. Independent of the main map (the panel isn't inside the
-  // viewport, so the map's wheel handler never sees this). Non-passive so it can
-  // preventDefault the page/map scroll; pan is clamped so content always covers the
-  // panel. Reset on each re-sim via fit().
+  // Wheel over the panel zooms the WHOLE panel — frame and content together — like a
+  // map object (the panel scales and moves so the point under the cursor stays put).
+  // It rescales the panel's content-space rect, so panel + sub-map magnify as a unit;
+  // position() redraws it. Independent of the main map (the panel isn't inside the
+  // viewport, so the map's wheel handler never sees this); non-passive so it can
+  // preventDefault the page/map scroll. Panel width clamped to 150..2500 content px.
   useEffect(() => {
-    const body = bodyRef.current;
-    if (!body) return;
+    const panel = panelRef.current;
+    if (!panel) return;
     const onWheel = (e: WheelEvent) => {
-      const isvg = body.querySelector('svg') as SVGSVGElement | null;
-      if (!isvg) return;
       e.preventDefault();
-      const rect = body.getBoundingClientRect();
+      const rect = panel.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      const z = zoomRef.current;
-      const ns = Math.max(1, Math.min(12, z.s * Math.exp(-e.deltaY * 0.0015))); // scroll up → zoom in
-      // keep the point under the cursor fixed, then clamp so content covers the panel
-      let tx = px - (px - z.tx) * (ns / z.s);
-      let ty = py - (py - z.ty) * (ns / z.s);
-      tx = Math.min(0, Math.max(rect.width * (1 - ns), tx));
-      ty = Math.min(0, Math.max(rect.height * (1 - ns), ty));
-      zoomRef.current = { s: ns, tx, ty };
-      isvg.style.transformOrigin = '0 0';
-      isvg.style.transform = ns === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${ns})`;
-      body.style.cursor = ns > 1 ? 'grab' : ''; // zoomed → draggable
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      const ir = rectRef.current;
+      let z = Math.exp(-e.deltaY * 0.0015); // scroll up → z>1 → bigger
+      z = Math.max(150, Math.min(2500, ir.w * z)) / ir.w; // clamp panel width, keep aspect
+      // anchor the point under the cursor (content coords): x' + fx·w' = x + fx·w
+      rectRef.current = { x: ir.x + fx * ir.w * (1 - z), y: ir.y + fy * ir.h * (1 - z), w: ir.w * z, h: ir.h * z };
+      position();
     };
-    body.addEventListener('wheel', onWheel, { passive: false });
-    return () => body.removeEventListener('wheel', onWheel);
-  }, []);
+    panel.addEventListener('wheel', onWheel, { passive: false });
+    return () => panel.removeEventListener('wheel', onWheel);
+  }, [position]);
 
   // Drag the panel (content-space rect); stopPropagation so the map doesn't pan.
   const onDown = (e: React.PointerEvent) => {
@@ -295,37 +281,6 @@ export function DetailInset({
   const onUp = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     dragRef.current = null;
-  };
-
-  // Drag inside the BODY pans the magnified image (only when zoomed in). Mirrors the
-  // wheel's pan clamp so the content always covers the panel.
-  const panDragRef = useRef<{ sx: number; sy: number; tx0: number; ty0: number } | null>(null);
-  const onBodyDown = (e: React.PointerEvent) => {
-    if (zoomRef.current.s <= 1) return; // nothing to pan at home zoom
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    panDragRef.current = { sx: e.clientX, sy: e.clientY, tx0: zoomRef.current.tx, ty0: zoomRef.current.ty };
-    if (bodyRef.current) bodyRef.current.style.cursor = 'grabbing';
-  };
-  const onBodyMove = (e: React.PointerEvent) => {
-    const d = panDragRef.current;
-    if (!d) return;
-    e.stopPropagation();
-    const body = bodyRef.current;
-    const isvg = body?.querySelector('svg') as SVGSVGElement | null;
-    if (!body || !isvg) return;
-    const rect = body.getBoundingClientRect();
-    const s = zoomRef.current.s;
-    const tx = Math.min(0, Math.max(rect.width * (1 - s), d.tx0 + (e.clientX - d.sx)));
-    const ty = Math.min(0, Math.max(rect.height * (1 - s), d.ty0 + (e.clientY - d.sy)));
-    zoomRef.current = { s, tx, ty };
-    isvg.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
-  };
-  const onBodyUp = (e: React.PointerEvent) => {
-    if (!panDragRef.current) return;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    panDragRef.current = null;
-    if (bodyRef.current) bodyRef.current.style.cursor = zoomRef.current.s > 1 ? 'grab' : '';
   };
 
   return (
@@ -401,11 +356,11 @@ export function DetailInset({
         </div>
         <div
           ref={bodyRef}
-          onPointerDown={onBodyDown}
-          onPointerMove={onBodyMove}
-          onPointerUp={onBodyUp}
-          onPointerLeave={onBodyUp}
-          style={{ position: 'absolute', inset: '16px 0 0 0', touchAction: 'none' }}
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerLeave={onUp}
+          style={{ position: 'absolute', inset: '16px 0 0 0', touchAction: 'none', cursor: sel.locked ? 'default' : 'grab' }}
         />
       </div>
     </>
