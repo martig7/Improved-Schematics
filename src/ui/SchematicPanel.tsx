@@ -140,6 +140,12 @@ let smoothedStore: { city: string; pre: SmoothedPrecomputed | string } | null = 
 // renderer; survives panel close / mod reload / restart, unlike the in-memory
 // store above and unlike fire-and-forget async api.storage). Keyed `:pre|:meta:<city>`.
 const MAP_STORE_KEY = 'improvedschematics:map';
+// TEMP (diagnostic): the automatic localStorage map cache is DISABLED while we
+// confirm the canvas backdrop. With it off, the panel never RESTORES a possibly
+// stale render (e.g. one captured before the async geography harvest finished —
+// which would show no water/parks) and never re-caches; mount also PURGES any
+// existing entries. Flip back to true once the live backdrop is confirmed.
+const MAP_CACHE_ENABLED = false;
 
 function lsGet(key: string): string | null {
   try {
@@ -185,6 +191,17 @@ export function SchematicPanel() {
   // so the open never blocks. Settings init from this; the rest is deferred.
   const [restored] = useState(() => {
     try {
+      if (!MAP_CACHE_ENABLED) {
+        // Purge every cached map so a stale render can never be restored.
+        try {
+          for (let i = window.localStorage.length - 1; i >= 0; i--) {
+            const k = window.localStorage.key(i);
+            if (k && k.startsWith(MAP_STORE_KEY)) window.localStorage.removeItem(k);
+          }
+          console.log('[improved-schematics] map cache DISABLED — purged stored maps; opening fresh');
+        } catch { /* ignore */ }
+        return null;
+      }
       const city = api.utils.getCityCode?.() ?? '';
       const preStr = lsGet(`${MAP_STORE_KEY}:pre:${city}`);
       const metaStr = lsGet(`${MAP_STORE_KEY}:meta:${city}`);
@@ -815,6 +832,7 @@ export function SchematicPanel() {
   const preSerRef = useRef<{ pre: SmoothedPrecomputed | string; str: string } | null>(null);
   const savedSvgRef = useRef<string | null>(restored?.svgStr ?? null);
   useEffect(() => {
+    if (!MAP_CACHE_ENABLED) return; // diagnostic: don't auto-persist while verifying the backdrop
     if (mode !== 'smoothed' || !smoothedReady) return;
     const pre = smoothedCacheRef.current?.pre;
     if (!pre || typeof pre === 'string') return;
