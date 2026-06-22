@@ -257,7 +257,12 @@ export function renderLabel(
       x: 0,
       y: 0,
       fontSize: LABEL_FONT_SIZE,
-      fontWeight: 'medium',
+      // 500, not "medium": "medium" is NOT a valid CSS/canvas font-weight, so a
+      // canvas ctx.font = "medium ..." is rejected (Chromium ignores the whole
+      // assignment, leaving the prior tiny font) — which made canvas labels far
+      // smaller than the SVG export. 500 is the numeric medium weight, valid in
+      // canvas, CSS and SVG, so both backends render identically.
+      fontWeight: '500',
       align: placement.anchor === 'middle' ? 'center' : placement.anchor === 'end' ? 'right' : 'left',
       fill,
       layer: 'stations',
@@ -270,7 +275,7 @@ export function renderLabel(
     '<g class="imp-lbl-s">' +
     '<text x="0" y="0" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +
-    LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="medium">' +
+    LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="500">' +
     escapeXml(node.label) + '</text></g></g>'
   );
 }
