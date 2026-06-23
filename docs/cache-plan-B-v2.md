@@ -5,14 +5,22 @@ reuses it on Generate. v2 adds a tiny `:meta:` companion so a reload can restore
 the user's **appearance settings** and **detail areas** — WITHOUT re-introducing
 the stale-render bugs that killed the old cache.
 
-> **STATUS:** detail-area auto-restore is BUILT (commit 641a022) — but as a focused
-> `:sel:<city>` entry (`{stamp, selections}`) rather than the combined `:meta:` blob
-> below. Areas persist on a `[selections]` effect and restore on a fingerprint hit via
-> `readSelections(city, fp)` → `restoreSelectionsRef` (the file-load path). The
-> **settings** half (restoring `applied`/toggles so a *customized-appearance* user's fp
-> matches and hits) is still NOT built — default-appearance users already hit in v1, so
-> areas restore for them today. The `:meta:` design below is the original combined plan;
-> the shipped `:sel:` is its area-only subset.
+> **STATUS: BUILT (both halves).** Shipped as two focused entries rather than the
+> combined `:meta:` blob below:
+> - **Areas** (`641a022`): `:sel:<city>` = `{stamp: v<VERSION>:<fp>, selections}`. Persist
+>   on a `[selections]` effect under the active fp; restore on a fingerprint hit via
+>   `readSelections(city, fp)` → `restoreSelectionsRef` (the file-load path). fp-gated, so
+>   boxes only return against the identical layout.
+> - **Settings** (`95bcc70`): `:set:<city>` = `{settings}` (applied sliders + toggles +
+>   export prefs; unversioned + read defensively so a format bump never wipes UI prefs).
+>   Read SYNCHRONOUSLY at mount (`readSettings`) to seed the existing `rset`/`rapp`
+>   useState initializers, so `buildInput` reproduces a customized layout's fingerprint →
+>   Generate HITS → and its areas restore too. Unconditional (settings are benign; the
+>   `pre` stays fp-gated). Write rides a `[settings]` effect gated to the mount city.
+>
+> Mode still opens geographic; nothing auto-renders (Generate stays explicit). Quota
+> eviction + `clearCachedPre` handle `:sel:`/`:set:` alongside `:fp:`/`:pre:`. The
+> combined `:meta:` design below is the original plan; the shipped pair is its split.
 
 ## Why v2 (the two v1 gaps)
 
