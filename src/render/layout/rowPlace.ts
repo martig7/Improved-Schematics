@@ -445,20 +445,85 @@ export function solveRows(
     return { cost: prev[end], seq, orients, states, corners };
   };
 
+  // Orientation-FOLDED DP: rather than a separate fixed-orientation DP for each of
+  // the 2^g masks, fold orientation into the DP STATE (state index × orient bit), so
+  // ONE DP per permutation jointly minimizes over all orientation assignments. This
+  // removes the 2^(g-2) cross-mask redundancy by RESTRUCTURING — not by caching
+  // (pairEval is ~50ns, too cheap to memoize; see docs/fresh-gen-plan.md). Returns
+  // {fallback:true} when the cheapest chain over all orientations violates a station
+  // floor: stationFloorsOk is all-pairs (not chain-decomposable), so we then run the
+  // exhaustive per-mask search for that permutation, recovering the EXACT feasibility
+  // outcome (so the mega-box set is unchanged). NOT byte-identical: equal-cost
+  // orientation ties may resolve differently than the mask-order first-found rule.
+  const runDPFolded = (seq: number[]): { r: DPResult | null; fallback: boolean } => {
+    const s0 = bundleStates[seq[0]];
+    let prev = new Array<number>(s0.length * 2);
+    for (let si = 0; si < s0.length; si++) { prev[si * 2] = s0[si].cost; prev[si * 2 + 1] = s0[si].cost; }
+    const back: Int32Array[] = [];
+    const cornerAt: Pixel[][] = [];
+    for (let k = 1; k < seq.length; k++) {
+      const cur = bundleStates[seq[k]];
+      const pst = bundleStates[seq[k - 1]];
+      const cost = new Array<number>(cur.length * 2).fill(Infinity);
+      const bk = new Int32Array(cur.length * 2).fill(-1);
+      const cn: Pixel[] = new Array(cur.length * 2);
+      for (let qi = 0; qi < cur.length; qi++) {
+        for (let oq = 0; oq < 2; oq++) {
+          const qIdx = qi * 2 + oq;
+          let bestC = Infinity;
+          let arg = -1;
+          let bc: Pixel | null = null;
+          for (let pi = 0; pi < pst.length; pi++) {
+            for (let op = 0; op < 2; op++) {
+              const pIdx = pi * 2 + op;
+              if (prev[pIdx] >= bestC) continue; // pair cost ≥ 0: sound pruning
+              const pr = pairEval(pst[pi], op, cur[qi], oq);
+              if (!pr) continue;
+              const c = prev[pIdx] + pr.cost;
+              if (c < bestC) { bestC = c; arg = pIdx; bc = pr.corner; }
+            }
+          }
+          if (arg >= 0) { cost[qIdx] = bestC + cur[qi].cost; bk[qIdx] = arg; cn[qIdx] = bc!; }
+        }
+      }
+      back.push(bk);
+      cornerAt.push(cn);
+      prev = cost;
+    }
+    let end = -1;
+    for (let qIdx = 0; qIdx < prev.length; qIdx++) {
+      if (isFinite(prev[qIdx]) && (end < 0 || prev[qIdx] < prev[end])) end = qIdx;
+    }
+    if (end < 0) return { r: null, fallback: false }; // no finite chain — no mask can do better
+    const chosen = new Array<number>(seq.length);
+    chosen[seq.length - 1] = end;
+    for (let k = seq.length - 1; k >= 1; k--) chosen[k - 1] = back[k - 1][chosen[k]];
+    const orients = chosen.map((ci) => ci & 1);
+    const states = seq.map((bi, k) => bundleStates[bi][chosen[k] >> 1]);
+    const corners = seq.slice(1).map((_, k) => cornerAt[k][chosen[k + 1]]);
+    if (!stationFloorsOk(states, corners)) return { r: null, fallback: true };
+    return { r: { cost: prev[end], seq, orients, states, corners }, fallback: false };
+  };
+
   let best: DPResult | null = null;
-  const tryPairing = (seq: number[], mask: number) => {
-    const r = runDP(seq, mask);
+  const tryKeep = (r: DPResult | null) => {
     if (r && (!best || r.cost < best.cost)) best = r; // strict <: first found
   };
+  const fullMaskEnum = (seq: number[]) => {
+    for (let mask = 0; mask < (1 << seq.length); mask++) tryKeep(runDP(seq, mask));
+  };
+  const tryFolded = (seq: number[]) => {
+    const f = runDPFolded(seq);
+    if (f.r) tryKeep(f.r);
+    else if (f.fallback) fullMaskEnum(seq); // cheapest chain failed a floor — search all orientations
+  };
   if (g <= 5) {
-    // exhaustive g! · 2^g, in fixed lexicographic order (deterministic)
+    // all g! permutations (deterministic lexicographic order); orientation is folded
+    // into the DP, with an exhaustive 2^g fallback per permutation when needed.
     const perm: number[] = [];
     const used = new Array(g).fill(false);
     const rec = () => {
-      if (perm.length === g) {
-        for (let mask = 0; mask < (1 << g); mask++) tryPairing([...perm], mask);
-        return;
-      }
+      if (perm.length === g) { tryFolded([...perm]); return; }
       for (let i = 0; i < g; i++) {
         if (used[i]) continue;
         used[i] = true;
@@ -490,7 +555,7 @@ export function solveRows(
       used[pick] = true;
       seq.push(pick);
     }
-    tryPairing(seq, 0);
+    tryKeep(runDP(seq, 0));
   }
   if (!best) {
     if (dbg) {
