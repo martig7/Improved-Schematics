@@ -24,7 +24,7 @@ import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -477,6 +477,11 @@ export function SchematicPanel() {
   // Set by Regenerate so the next build SKIPS the layout cache and recomputes
   // fresh (then overwrites the cache). A first Generate leaves it false → cache hit.
   const forceRegenRef = useRef(false);
+  // City + fingerprint of the currently-shown smoothed layout — set by the svg memo
+  // on each (re)generate. The detail-area persistence effect writes the drawn areas
+  // under this fp, so a later reload restores them only against the identical layout.
+  const currentCityRef = useRef('');
+  const currentFpRef = useRef<string | null>(null);
   // The Scene IR emitted directly by the smoothed draw (Phase 3), paired with the
   // svg string it came from. The canvas inject path uses this display list as-is
   // INSTEAD OF re-parsing the svg, when the strings match. Restore-from-cache and
@@ -545,6 +550,8 @@ export function SchematicPanel() {
         const force = forceRegenRef.current; // Regenerate → recompute fresh, ignore cache
         forceRegenRef.current = false;
         const hit = !force && city ? readCachedPre(city, fp) : null;
+        currentCityRef.current = city;
+        currentFpRef.current = fp;
         if (hit != null) {
           cache = { pre: hit };
           genMsRef.current = 0; // restored from cache (≈instant)
@@ -555,6 +562,20 @@ export function SchematicPanel() {
           genMsRef.current = performance.now() - t0;
           // Queue the (heavy) serialize+write for after render, not in the memo.
           cacheWriteRef.current = city ? { city, fp, pre: cache.pre } : null;
+        }
+        // Restore the detail areas drawn on THIS layout. readSelections is gated on the
+        // fp, so areas reinstate only when the layout is provably the one they were drawn
+        // on — a cache hit, or a deterministic regenerate / pre-eviction with unchanged
+        // inputs. A real input change ⇒ different fp ⇒ null ⇒ no restore, and the inject
+        // effect clears the now-stale boxes instead. Queued for the inject effect to
+        // install after the layout settles (reuses the file-load restore path).
+        const savedSel = city ? (readSelections(city, fp) as Selection[] | null) : null;
+        if (savedSel && savedSel.length) {
+          restoreSelectionsRef.current = savedSel;
+          selCountRef.current = savedSel.reduce((mx, sel) => {
+            const n = Number(/sel-(\d+)/.exec(sel.id)?.[1]);
+            return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
+          }, selCountRef.current);
         }
         smoothedCacheRef.current = cache;
       }
@@ -591,6 +612,18 @@ export function SchematicPanel() {
     cacheWriteRef.current = null;
     writeCachedPre(pending.city, pending.fp, pending.pre);
   }, [svg]);
+
+  // Persist the user's detail areas so a reload can restore them. Keyed on the
+  // selections (so draws/edits/deletes are captured) and written under the active
+  // layout's fingerprint (set by the svg memo on generate); readSelections gates restore
+  // on that fp. Guarded to smoothed mode via modeRef so switching to geographic — which
+  // clears the areas — doesn't overwrite the saved set with an empty list.
+  useEffect(() => {
+    if (modeRef.current !== 'smoothed') return;
+    const city = currentCityRef.current;
+    const fp = currentFpRef.current;
+    if (city && fp) writeSelections(city, fp, selections);
+  }, [selections]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -791,6 +824,9 @@ export function SchematicPanel() {
       return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
     }, selCountRef.current);
     smoothedCacheRef.current = { pre: bundle.pre };
+    // A loaded file's layout has no computed fingerprint, so don't auto-persist areas
+    // under a stale fp; the next Generate recomputes it and re-enables area persistence.
+    currentFpRef.current = null;
     if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
     setSelections([]); // drop any current areas; the inject effect installs the saved ones
     setGenerating(false);

@@ -37,6 +37,7 @@ function defaultStore(): KVStore | null {
 
 const fpKey = (city: string) => `${KEY}:fp:${city}`;
 const preKey = (city: string) => `${KEY}:pre:${city}`;
+const selKey = (city: string) => `${KEY}:sel:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
 /** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
@@ -92,9 +93,10 @@ export function writeCachedPre(
     try {
       const keepFp = fpKey(city);
       const keepPre = preKey(city);
+      const keepSel = selKey(city);
       for (let i = store.length - 1; i >= 0; i--) {
         const k = store.key(i);
-        if (k && k.startsWith(KEY) && k !== keepFp && k !== keepPre) store.removeItem(k);
+        if (k && k.startsWith(KEY) && k !== keepFp && k !== keepPre && k !== keepSel) store.removeItem(k);
       }
       return write();
     } catch {
@@ -110,6 +112,46 @@ export function writeCachedPre(
   }
 }
 
+/** Persist the detail-area selections the user drew on the layout fingerprinted by
+ *  `fp`. Tiny + synchronous (unlike `:pre:`) — best-effort; a write failure just means
+ *  the areas won't auto-restore next time. Stamped with VERSION+fp so they can only be
+ *  restored against the exact layout they were drawn on (see readSelections). */
+export function writeSelections(
+  city: string,
+  fp: string,
+  selections: unknown[],
+  store: KVStore | null = defaultStore(),
+): void {
+  if (!store || !city) return;
+  try {
+    store.setItem(selKey(city), JSON.stringify({ stamp: stamp(fp), selections }));
+  } catch {
+    /* ignore — areas are non-critical UI state */
+  }
+}
+
+/** The detail-area selections saved for `city` IFF they were drawn on the SAME layout
+ *  (the stored fingerprint matches `fp`). Returns null on miss / absent / format change /
+ *  error. Gating on the fingerprint is what makes restore safe: the boxes are in render-
+ *  pixel coords, so they're only valid against the byte-identical layout they were drawn
+ *  on — a different network/geography/settings produces a different fp and no restore. */
+export function readSelections(
+  city: string,
+  fp: string,
+  store: KVStore | null = defaultStore(),
+): unknown[] | null {
+  if (!store || !city) return null;
+  try {
+    const raw = store.getItem(selKey(city));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { stamp?: string; selections?: unknown };
+    if (o.stamp !== stamp(fp)) return null; // areas belong to a different layout
+    return Array.isArray(o.selections) ? o.selections : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop one city's cache (or all of it when `city` is omitted). */
 export function clearCachedPre(city?: string, store: KVStore | null = defaultStore()): void {
   if (!store) return;
@@ -117,6 +159,7 @@ export function clearCachedPre(city?: string, store: KVStore | null = defaultSto
     if (city) {
       store.removeItem(fpKey(city));
       store.removeItem(preKey(city));
+      store.removeItem(selKey(city));
       return;
     }
     for (let i = store.length - 1; i >= 0; i--) {
