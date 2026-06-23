@@ -24,7 +24,7 @@ import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -160,9 +160,16 @@ type RestoredSettings = {
 };
 
 export function SchematicPanel() {
-  // No auto-restore: settings always start at defaults. A saved map FILE seeds
-  // them via applyBundle (the explicit Load-map flow), not on mount.
-  const rset: RestoredSettings = {};
+  // Seed the appearance settings from the per-city cache (synchronous, tiny) so a
+  // customized layout's fingerprint matches its cached `pre` → Generate hits, and its
+  // detail areas restore. Read once at mount; benign UI prefs, so unconditional (the
+  // `pre` stays fingerprint-gated). A saved map FILE still seeds via applyBundle.
+  const mountSeed = useMemo(() => {
+    const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+    return { city, rset: ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings };
+  }, []);
+  const mountCity = mountSeed.city; // the city these restored settings belong to
+  const rset = mountSeed.rset;
   const rapp = rset.applied;
   // Always open in geographic mode; smoothed is the expensive mode and must be
   // entered explicitly (its Generate button), never auto-shown on open.
@@ -624,6 +631,20 @@ export function SchematicPanel() {
     const fp = currentFpRef.current;
     if (city && fp) writeSelections(city, fp, selections);
   }, [selections]);
+
+  // Persist appearance settings per city so a reload restores the sliders/toggles — and
+  // thus reproduces the fingerprint a customized layout's cached `pre` was built under,
+  // so Generate hits (and its areas restore). City-scoped + unconditional (not layout-
+  // gated; the `pre` stays fp-gated). On mount this writes back the just-restored values
+  // (idempotent); `applied` only changes on Apply/Save, so draft slider drags don't churn.
+  useEffect(() => {
+    // Only persist while still on the city these settings were restored for — guards a
+    // live city switch (no remount) from writing the displayed sliders under another city.
+    const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+    if (city && city === mountCity) {
+      writeSettings(city, { showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale });
+    }
+  }, [showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.

@@ -38,6 +38,7 @@ function defaultStore(): KVStore | null {
 const fpKey = (city: string) => `${KEY}:fp:${city}`;
 const preKey = (city: string) => `${KEY}:pre:${city}`;
 const selKey = (city: string) => `${KEY}:sel:${city}`;
+const setKey = (city: string) => `${KEY}:set:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
 /** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
@@ -94,9 +95,10 @@ export function writeCachedPre(
       const keepFp = fpKey(city);
       const keepPre = preKey(city);
       const keepSel = selKey(city);
+      const keepSet = setKey(city);
       for (let i = store.length - 1; i >= 0; i--) {
         const k = store.key(i);
-        if (k && k.startsWith(KEY) && k !== keepFp && k !== keepPre && k !== keepSel) store.removeItem(k);
+        if (k && k.startsWith(KEY) && k !== keepFp && k !== keepPre && k !== keepSel && k !== keepSet) store.removeItem(k);
       }
       return write();
     } catch {
@@ -152,6 +154,35 @@ export function readSelections(
   }
 }
 
+/** Persist the user's appearance settings (the applied layout sliders + draw prefs)
+ *  for `city`. UNVERSIONED on purpose: a renderer/pre format bump (VERSION) shouldn't
+ *  wipe benign UI prefs, and the panel reads each field defensively (`?? default`), so a
+ *  shape change degrades gracefully rather than discarding the user's customizations. */
+export function writeSettings(city: string, settings: unknown, store: KVStore | null = defaultStore()): void {
+  if (!store || !city) return;
+  try {
+    store.setItem(setKey(city), JSON.stringify({ settings }));
+  } catch {
+    /* ignore — settings are non-critical UI state */
+  }
+}
+
+/** The saved appearance settings for `city` (or null). Read SYNCHRONOUSLY at mount to
+ *  seed the slider/toggle initializers BEFORE first render — so a customized layout's
+ *  fingerprint matches its cached `pre` and Generate hits (which in turn lets its detail
+ *  areas restore). Unconditional (no fp gate): settings are benign and the `pre` itself
+ *  stays fingerprint-gated, so a stale layout can still never be served. */
+export function readSettings(city: string, store: KVStore | null = defaultStore()): unknown | null {
+  if (!store || !city) return null;
+  try {
+    const raw = store.getItem(setKey(city));
+    if (!raw) return null;
+    return (JSON.parse(raw) as { settings?: unknown }).settings ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop one city's cache (or all of it when `city` is omitted). */
 export function clearCachedPre(city?: string, store: KVStore | null = defaultStore()): void {
   if (!store) return;
@@ -160,6 +191,7 @@ export function clearCachedPre(city?: string, store: KVStore | null = defaultSto
       store.removeItem(fpKey(city));
       store.removeItem(preKey(city));
       store.removeItem(selKey(city));
+      store.removeItem(setKey(city));
       return;
     }
     for (let i = store.length - 1; i >= 0; i--) {

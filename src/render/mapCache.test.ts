@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, type KVStore } from './mapCache';
+import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, type KVStore } from './mapCache';
 
 // A precompute serializes via serializePre; a string `pre` (the degenerate
 // no-layout case) round-trips trivially, which is enough to exercise the cache.
@@ -66,6 +66,38 @@ test('mapCache: clearing a city drops its selections too', () => {
   writeSelections('nyc', 'f', [{ id: 'sel-0' }], s);
   clearCachedPre('nyc', s);
   assert.equal(readSelections('nyc', 'f', s), null);
+});
+
+test('mapCache: settings round-trip per city, unconditional (no fingerprint)', () => {
+  const s = fakeStore();
+  const settings = { showStations: false, showLabels: true, applied: { lineWidth: 9, warpPos: 0.5 }, labelScale: 1.5 };
+  writeSettings('nyc', settings, s);
+  assert.deepEqual(readSettings('nyc', s), settings);
+  assert.equal(readSettings('chi', s), null, 'other city → null');
+  assert.equal(readSettings('sea', s), null, 'absent → null');
+});
+
+test('mapCache: clearing a city drops its settings; quota eviction keeps the written city\'s settings', () => {
+  const s = fakeStore();
+  writeSettings('nyc', { applied: { lineWidth: 9 } }, s);
+  clearCachedPre('nyc', s);
+  assert.equal(readSettings('nyc', s), null);
+
+  const m = new Map<string, string>();
+  const cap = 3;
+  const capped: KVStore = {
+    getItem: (k) => (m.has(k) ? m.get(k)! : null),
+    setItem: (k, v) => { if (!m.has(k) && m.size >= cap) throw new Error('quota'); m.set(k, v); },
+    removeItem: (k) => void m.delete(k),
+    key: (i) => [...m.keys()][i] ?? null,
+    get length() { return m.size; },
+  };
+  writeCachedPre('chi', 'f', 'C', capped); // chi fp+pre (2 keys)
+  writeSettings('nyc', { applied: { lineWidth: 9 } }, capped); // +nyc set = 3 (cap)
+  writeCachedPre('nyc', 'g', 'N', capped); // quota → evict chi, keep nyc set, retry
+  assert.equal(readCachedPre('nyc', 'g', capped), 'N');
+  assert.deepEqual(readSettings('nyc', capped), { applied: { lineWidth: 9 } }, 'own settings survive the eviction');
+  assert.equal(readCachedPre('chi', 'f', capped), null, 'other city evicted');
 });
 
 test('mapCache: a pre quota-eviction keeps the same city\'s selections', () => {
