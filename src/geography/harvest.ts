@@ -69,8 +69,13 @@ export async function harvestTaggedFeatures(
 
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   let map: MlMap | null = null;
+  let tileErrors = 0;
   try {
     map = new MapCtor({ container, style, interactive: false, attributionControl: false, fadeDuration: 0 });
+    // Count tile/source load failures (e.g. the game's `map://` protocol returning 404 /
+    // "Unusable" before its tile backend is ready). 0 features + tileErrors>0 ⇒ the basemap
+    // isn't serving yet (the caller should retry); 0 features + no errors ⇒ genuinely empty.
+    map.on('error', () => { tileErrors++; });
     await new Promise<void>((resolve) => map!.once('load', () => resolve()));
     map.fitBounds(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
@@ -92,8 +97,12 @@ export async function harvestTaggedFeatures(
         });
       }
     }
-    console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded})`);
-    if (!loaded) console.warn(`${TAG} tiles still loading after ${TILE_WAIT_MS}ms — harvest may be partial; caller will retry`);
+    console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded}, tileErrors=${tileErrors})`);
+    if (out.length === 0 && tileErrors > 0) {
+      console.warn(`${TAG} 0 features with ${tileErrors} tile error(s) — basemap not serving tiles yet; caller will retry`);
+    } else if (!loaded) {
+      console.warn(`${TAG} tiles still loading after ${TILE_WAIT_MS}ms — harvest may be partial; caller will retry`);
+    }
     return out;
   } catch (err) {
     console.warn(`${TAG} offscreen harvest failed:`, err);
