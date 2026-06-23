@@ -6,6 +6,34 @@ hard constraint: **the rendered map must stay byte-identical** (same svg string 
 same Scene IR) for every step here. Relaxing that is a separate, later decision (see
 §Ceiling).
 
+## OUTCOME — Step 1 (pairEval memoization) FAILED; reverted
+
+Implemented + measured + **reverted**. Clean back-to-back A/B (min-of-5, cached pre,
+cold draw; `dev/_ab-cold.ts`): the memo was **5–6× SLOWER**, not faster — chi
+1301→7876ms, nyc 4141→18904ms, sea 7135→35256ms. It was byte-identical (gate passed)
+but a severe perf regression.
+
+**Why the plan was wrong:** the research reasoned from `pairEval` *call count*
+(25–150M) and assumed collapsing the redundancy would help. But each `pairEval` is
+**~50ns** — for the common infeasible pair it returns at the *first* dot-floor
+violation (one `hyp`). A `Map` key-compute + `get` + `set` costs *more* than that, and
+the per-`solveRows` cache balloons to millions of entries (GC pressure). Memoization
+only wins when per-call cost ≫ cache-op cost; here it's the opposite. **This is a
+"many cheap calls" problem, not a "few expensive calls" problem.** The cost is the
+sheer call *count* (the `g!·2^g` enumeration), each call already near-minimal.
+
+**Implication for byte-identity:** the only effective lever is to cut the *call count*
+(fold orientation into the DP state → `g!` instead of `g!·2^g`; or Held-Karp subset
+DP; or pruning), and every one of those changes the enumeration/tie-break order → not
+byte-identical (see §Rejected, §Ceiling). The remaining byte-identical candidates
+(adjacency map, bbox pre-check) target <8% terms per the measurements and won't move
+the dominant DP. **Conclusion: there is no meaningful byte-identical speedup for the
+placement DP.** A real win requires relaxing byte-identity (validate by structural /
+visual equivalence instead of pixel-identity).
+
+The original plan below is kept for the record; Steps 1, 4-cheap-call analysis are
+superseded by this outcome.
+
 ## Root cause (measured, finer than before)
 
 Instrumented sub-phase profile of the placement (cold draw, chi/nyc/sea):
