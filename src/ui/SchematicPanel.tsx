@@ -24,7 +24,7 @@ import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -260,6 +260,9 @@ export function SchematicPanel() {
   // opens on the Generate Map button (nothing is auto-restored).
   const [smoothedReady, setSmoothedReady] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // Whether the pending generate will reuse the fingerprinted layout cache (vs run
+  // octi) — peeked cheaply when Generate is clicked, shown under the spinner.
+  const [cacheHit, setCacheHit] = useState(false);
   // Brief spinner shown while a labels/stations toggle forces an SVG re-render.
   const [rerendering, setRerendering] = useState(false);
   const [genMs, setGenMs] = useState<number | null>(null);
@@ -1001,6 +1004,7 @@ export function SchematicPanel() {
   const regenerate = useCallback(() => {
     smoothedCacheRef.current = null;
     forceRegenRef.current = true;
+    setCacheHit(false); // Regenerate always recomputes
     setSmoothedReady(false);
     setGenerating(true);
   }, []);
@@ -1409,7 +1413,7 @@ export function SchematicPanel() {
         <span style={{ flex: 1 }} />
         {mode === 'smoothed' && genMs != null && (
           <span style={{ color: '#888', fontSize: 11 }}>
-            Finished in {(genMs / 1000).toFixed(2)}s
+            {genMs === 0 ? 'Cache used' : `Finished in ${(genMs / 1000).toFixed(2)}s`}
           </span>
         )}
         {mode === 'smoothed' && (
@@ -1914,8 +1918,16 @@ export function SchematicPanel() {
           >
             <button
               onClick={() => {
-                // Fresh build: drop any cached layout from a prior generation.
+                // Fresh build: drop any per-mount layout from a prior generation.
                 smoothedCacheRef.current = null;
+                // Peek the fingerprinted cache (cheap, fp-only) so the spinner can
+                // say whether this Generate will reuse the cache or run octi.
+                try {
+                  const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+                  setCacheHit(!!city && peekCache(city, fingerprintInputs(buildInput() as never).fp));
+                } catch {
+                  setCacheHit(false);
+                }
                 setGenerating(true);
               }}
               style={{
@@ -1957,7 +1969,7 @@ export function SchematicPanel() {
                 willChange: 'transform',
               }}
             />
-            <span style={{ color: '#888', fontSize: 12 }}>This may take a while</span>
+            <span style={{ color: '#888', fontSize: 12 }}>{cacheHit ? 'Cache used' : 'This may take a while'}</span>
             <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
           </div>
         )}

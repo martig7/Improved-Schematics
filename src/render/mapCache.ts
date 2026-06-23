@@ -37,6 +37,18 @@ const fpKey = (city: string) => `${KEY}:fp:${city}`;
 const preKey = (city: string) => `${KEY}:pre:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
+/** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
+ *  `fp`? Reads only the tiny `:fp:` key — no deserialize. For UI that wants to
+ *  show "cache hit" before paying the full read. */
+export function peekCache(city: string, fp: string, store: KVStore | null = defaultStore()): boolean {
+  if (!store || !city) return false;
+  try {
+    return store.getItem(fpKey(city)) === stamp(fp);
+  } catch {
+    return false;
+  }
+}
+
 /** Deserialized precompute for `city` IFF a cached entry's fingerprint matches
  *  `fp` (the digest of the current live inputs). Null on miss / absent / error. */
 export function readCachedPre(
