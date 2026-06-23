@@ -32,6 +32,18 @@ if (!api) {
     modState.cityCode = cityCode;
   });
 
+  // Track the current save so the layout cache can scope per-save: two saves on the
+  // same seed/city otherwise share one cache slot (the map+areas are still safe — they're
+  // fingerprint-gated on the network — but appearance settings would bleed across them).
+  // Only callbacks expose the save name (no sync getter), so it may be unknown until a
+  // load/save fires; the cache falls back to city-only scoping until then.
+  api.hooks.onGameLoaded((saveName) => {
+    modState.saveName = saveName;
+  });
+  api.hooks.onGameSaved((saveName) => {
+    modState.saveName = saveName;
+  });
+
   // onMapReady can fire multiple times (city load/switch); guard init.
   let initialized = false;
 
