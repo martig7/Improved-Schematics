@@ -159,13 +159,6 @@ type RestoredSettings = {
   labelScale?: number;
 };
 
-// Layout-cache scope: the city, narrowed by the loaded save (modState.saveName) so two
-// saves on the same seed/city get separate cache slots — their appearance settings (and
-// the identical-network edge case for layout/areas) no longer bleed across each other.
-// Falls back to city-only when the save name is unknown (it arrives via a game callback,
-// so it can be null early); '::' separates the parts (city codes never contain it).
-const cacheScope = (city: string): string => (city && modState.saveName ? `${city}::${modState.saveName}` : city);
-
 export function SchematicPanel() {
   // Seed the appearance settings from the per-city cache (synchronous, tiny) so a
   // customized layout's fingerprint matches its cached `pre` → Generate hits, and its
@@ -173,10 +166,9 @@ export function SchematicPanel() {
   // `pre` stays fingerprint-gated). A saved map FILE still seeds via applyBundle.
   const mountSeed = useMemo(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    const scope = cacheScope(city);
-    return { city, scope, rset: ((scope ? (readSettings(scope) as RestoredSettings | null) : null) ?? {}) as RestoredSettings };
+    return { city, rset: ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings };
   }, []);
-  const mountCity = mountSeed.city; // raw city at mount (write guard — see settings effect)
+  const mountCity = mountSeed.city; // the city these restored settings belong to
   const rset = mountSeed.rset;
   const rapp = rset.applied;
   // Always open in geographic mode; smoothed is the expensive mode and must be
@@ -492,11 +484,10 @@ export function SchematicPanel() {
   // Set by Regenerate so the next build SKIPS the layout cache and recomputes
   // fresh (then overwrites the cache). A first Generate leaves it false → cache hit.
   const forceRegenRef = useRef(false);
-  // Cache scope (city, narrowed by save) + fingerprint of the currently-shown smoothed
-  // layout — set by the svg memo on each (re)generate. The detail-area persistence effect
-  // writes the drawn areas under this scope+fp, so a later reload restores them only
-  // against the identical layout of the same save.
-  const currentScopeRef = useRef('');
+  // City + fingerprint of the currently-shown smoothed layout — set by the svg memo
+  // on each (re)generate. The detail-area persistence effect writes the drawn areas
+  // under this fp, so a later reload restores them only against the identical layout.
+  const currentCityRef = useRef('');
   const currentFpRef = useRef<string | null>(null);
   // The Scene IR emitted directly by the smoothed draw (Phase 3), paired with the
   // svg string it came from. The canvas inject path uses this display list as-is
@@ -561,12 +552,12 @@ export function SchematicPanel() {
       // through to the cheap redraw, reusing the per-mount cache.
       if (!cache) {
         const input = buildInput();
-        const scope = cacheScope(modState.cityCode ?? api.utils.getCityCode?.() ?? '');
+        const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
         const fp = fingerprintInputs(input as never).fp;
         const force = forceRegenRef.current; // Regenerate → recompute fresh, ignore cache
         forceRegenRef.current = false;
-        const hit = !force && scope ? readCachedPre(scope, fp) : null;
-        currentScopeRef.current = scope;
+        const hit = !force && city ? readCachedPre(city, fp) : null;
+        currentCityRef.current = city;
         currentFpRef.current = fp;
         if (hit != null) {
           cache = { pre: hit };
@@ -577,7 +568,7 @@ export function SchematicPanel() {
           cache = { pre: precomputeSmoothedSchematic(input) };
           genMsRef.current = performance.now() - t0;
           // Queue the (heavy) serialize+write for after render, not in the memo.
-          cacheWriteRef.current = scope ? { city: scope, fp, pre: cache.pre } : null;
+          cacheWriteRef.current = city ? { city, fp, pre: cache.pre } : null;
         }
         // Restore the detail areas drawn on THIS layout. readSelections is gated on the
         // fp, so areas reinstate only when the layout is provably the one they were drawn
@@ -585,7 +576,7 @@ export function SchematicPanel() {
         // inputs. A real input change ⇒ different fp ⇒ null ⇒ no restore, and the inject
         // effect clears the now-stale boxes instead. Queued for the inject effect to
         // install after the layout settles (reuses the file-load restore path).
-        const savedSel = scope ? (readSelections(scope, fp) as Selection[] | null) : null;
+        const savedSel = city ? (readSelections(city, fp) as Selection[] | null) : null;
         if (savedSel && savedSel.length) {
           restoreSelectionsRef.current = savedSel;
           selCountRef.current = savedSel.reduce((mx, sel) => {
@@ -636,9 +627,9 @@ export function SchematicPanel() {
   // clears the areas — doesn't overwrite the saved set with an empty list.
   useEffect(() => {
     if (modeRef.current !== 'smoothed') return;
-    const scope = currentScopeRef.current;
+    const city = currentCityRef.current;
     const fp = currentFpRef.current;
-    if (scope && fp) writeSelections(scope, fp, selections);
+    if (city && fp) writeSelections(city, fp, selections);
   }, [selections]);
 
   // Persist appearance settings per city so a reload restores the sliders/toggles — and
@@ -647,13 +638,11 @@ export function SchematicPanel() {
   // gated; the `pre` stays fp-gated). On mount this writes back the just-restored values
   // (idempotent); `applied` only changes on Apply/Save, so draft slider drags don't churn.
   useEffect(() => {
-    // Persist under the live scope (city+save), but only while still on the city these
-    // settings were restored for — guards a live CITY switch (no remount) from writing the
-    // displayed sliders under another city. A same-city save change (Save As) still
-    // persists, under the new save's scope (the new save inherits the current appearance).
+    // Only persist while still on the city these settings were restored for — guards a
+    // live city switch (no remount) from writing the displayed sliders under another city.
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
     if (city && city === mountCity) {
-      writeSettings(cacheScope(city), { showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale });
+      writeSettings(city, { showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale });
     }
   }, [showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
@@ -1991,8 +1980,8 @@ export function SchematicPanel() {
                 // Peek the fingerprinted cache (cheap, fp-only) so the spinner can
                 // say whether this Generate will reuse the cache or run octi.
                 try {
-                  const scope = cacheScope(modState.cityCode ?? api.utils.getCityCode?.() ?? '');
-                  setCacheHit(!!scope && peekCache(scope, fingerprintInputs(buildInput() as never).fp));
+                  const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
+                  setCacheHit(!!city && peekCache(city, fingerprintInputs(buildInput() as never).fp));
                 } catch {
                   setCacheHit(false);
                 }
