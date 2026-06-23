@@ -132,12 +132,15 @@ in dense megaboxes) would speed fresh Generates AND any cache miss. Bigger, and
 bug-prone — separate effort.
 
 ## Suggested order
-1. Golden-master test over `{svg, scene}` for all 5 cities (safety net for the
-   refactor).
-2. Split `renderRibbons` → `computeRibbonGeometry` + `paintRibbons`; assert the
-   golden master is unchanged.
-3. Hoist `computeRibbonGeometry` into `precomputeSmoothed`; add `pre.geometry`;
-   serialize it (existing replacer/reviver); bump the schema version. Cache read
-   drops to ~tens of ms; toggles become free.
-4. Storage: drop redundant `pre` fields or move to `api.storage` if London bites.
-5. (Deeper) profile + bound `rowPlace`'s super-linear cost → faster fresh Generates.
+1. ✅ Golden-master safety net over `{svg, scene}` for all 5 cities
+   (`dev/_golden-draw.ts` + `dev/_golden/baseline.txt`).
+2. ✅ Split `renderRibbons` → `computeRibbonGeometry` + `paintRibbons`, byte-identical
+   (commit fc70543).
+3. ✅ Memoize geometry on `pre.geometry` (lazy, in `drawSmoothed`); serialized by the
+   existing replacer/reviver; `mapCache` VERSION 2→3 (commit 9e46120). Cache reads
+   and toggles skip the solver — **measured 14–148× (London 61s→415ms)**; storage
+   London 4.0MB, under cap. Guarded by `src/render/geometryCache.test.ts`.
+4. Storage: only needed if a future city exceeds ~5MB — drop redundant `pre` fields
+   or move to `api.storage`. Not required today (London fits).
+5. (Deeper, OPEN) profile + bound `rowPlace`'s super-linear cost → faster *fresh*
+   Generates (caching only fixes reloads/toggles; first generate still pays it once).
