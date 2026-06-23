@@ -22,17 +22,48 @@ only wins when per-call cost ≫ cache-op cost; here it's the opposite. **This i
 "many cheap calls" problem, not a "few expensive calls" problem.** The cost is the
 sheer call *count* (the `g!·2^g` enumeration), each call already near-minimal.
 
-**Implication for byte-identity:** the only effective lever is to cut the *call count*
-(fold orientation into the DP state → `g!` instead of `g!·2^g`; or Held-Karp subset
-DP; or pruning), and every one of those changes the enumeration/tie-break order → not
-byte-identical (see §Rejected, §Ceiling). The remaining byte-identical candidates
-(adjacency map, bbox pre-check) target <8% terms per the measurements and won't move
-the dominant DP. **Conclusion: there is no meaningful byte-identical speedup for the
-placement DP.** A real win requires relaxing byte-identity (validate by structural /
-visual equivalence instead of pixel-identity).
+**Implication:** the effective lever is to cut the *call count*. The cleanest is to
+**fold orientation into the DP state** — make each chain position choose state AND
+orientation jointly, so ONE DP per permutation replaces the `2^g`-mask loop. This
+removes the `2^(g-2)` cross-mask redundancy by *restructuring* (no cache → none of the
+per-call overhead that sank the memo).
 
-The original plan below is kept for the record; Steps 1, 4-cheap-call analysis are
-superseded by this outcome.
+## OUTCOME — orientation fold SHIPPED (commit b19db1a), 1.2–2.4× faster, byte-identical
+
+Implemented the fold with one subtlety: `stationFloorsOk` is an all-pairs check, not
+chain-decomposable, so it can't go inside the folded DP. When the cheapest chain over
+all orientations violates a floor, fall back to the exhaustive per-mask search **for
+that permutation only** — recovering the *exact* feasibility outcome. This makes the
+mega-box set provably unchanged (`best` is null ⇔ no permutation has a passing chain,
+which the fold reaches exactly when the mask-enum did).
+
+Measured (cold/fresh draw, min-of-N A/B; `dev/_ab-cold.ts`):
+
+| city | baseline | folded | speedup |
+|---|---:|---:|---:|
+| Chicago | 1275ms | 1061ms | 1.20× |
+| NYC | 4119ms | 3343ms | 1.23× |
+| Seattle | 7079ms | 4685ms | 1.51× |
+| SF | 49094ms | 20138ms | **2.44×** |
+| London | 66334ms | 30601ms | **2.17×** |
+
+Gains scale with multi-bundle (high-g) station density — the painful big cities win
+most (SF 49→20s, London 66→31s).
+
+**Byte-identity bonus:** despite relaxing the constraint, the output is **byte-identical
+on all 5 cities × toggle states** (golden svg + Scene IR), because float placement
+costs don't tie in practice, so the fold and the mask-enum converge on the same
+global-min chain. It is *not guaranteed* identical if an exact cost tie ever occurs
+(equal-cost orientations could then resolve differently) — but quality is still held by
+the box-count bar (chi 1 / nyc 0 / sea 0 / sf 18 / lon 1, unchanged). Verification gate:
+golden master + `dev/_quality.ts` box counts + 292 tests + tsc.
+
+### Still on the table (not done)
+- **Held-Karp subset DP** to cut the `g!` permutation factor (the fold attacked `2^g`,
+  not `g!`). Bigger for high-g; changes tie-breaks (would need the box-count bar, not
+  byte-identity). Measure first — after the fold the bottleneck mix has shifted.
+
+The original plan below is kept for the record (Step-1 memo superseded by the fold).
 
 ## Root cause (measured, finer than before)
 
