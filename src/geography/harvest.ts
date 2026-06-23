@@ -16,6 +16,11 @@ const CONTAINER_PX = 512;
 // until areTilesLoaded() actually reports them in, up to this budget.
 const TILE_WAIT_MS = 20_000;
 const POLL_MS = 250;
+// Cap the wait for the offscreen map's `load` event. If the source can't initialize (the
+// game's tile backend not serving yet → the map errors instead of firing `load`), this
+// await would otherwise hang FOREVER — which strands the caller's warm-up (its `warming`
+// guard never clears) and blocks every future attempt. Time out → throw → retry.
+const LOAD_TIMEOUT_MS = 15_000;
 
 /** Resolve once every tile for the current view is loaded, or the budget elapses.
  *  Combines the `idle` event (cheap settle signal) with an areTilesLoaded() check so a
@@ -76,7 +81,10 @@ export async function harvestTaggedFeatures(
     // "Unusable" before its tile backend is ready). 0 features + tileErrors>0 ⇒ the basemap
     // isn't serving yet (the caller should retry); 0 features + no errors ⇒ genuinely empty.
     map.on('error', () => { tileErrors++; });
-    await new Promise<void>((resolve) => map!.once('load', () => resolve()));
+    await Promise.race([
+      new Promise<void>((resolve) => { map!.once('load', () => resolve()); }),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`offscreen map 'load' timed out after ${LOAD_TIMEOUT_MS}ms`)), LOAD_TIMEOUT_MS)),
+    ]);
     map.fitBounds(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },

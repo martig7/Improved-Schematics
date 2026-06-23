@@ -50,12 +50,16 @@ export function warmGeography(cityCode: string | null | undefined): void {
   const stop = (): void => { warming.delete(cityCode); };
   const schedule = (): void => { if (attempts++ < MAX_ATTEMPTS) setTimeout(tick, DELAY); else stop(); };
   const tick = (): void => {
-    const bbox = computeHarvestBbox();
-    if (!bbox) { schedule(); return; } // demand/stations not ready yet
-    generateGeography(cityCode, bbox).then(
-      (g) => (g ? stop() : schedule()),
-      () => schedule(),
-    );
+    try {
+      const bbox = computeHarvestBbox();
+      if (!bbox) { schedule(); return; } // demand/stations not ready yet
+      generateGeography(cityCode, bbox).then(
+        (g) => (g ? stop() : schedule()),
+        () => schedule(),
+      );
+    } catch {
+      schedule(); // never let a throw strand the `warming` guard (would block all retries)
+    }
   };
   console.info(`${TAG} warming '${cityCode}' in the background`);
   tick();
