@@ -184,10 +184,29 @@ export interface SceneOut {
   scene: Scene | null;
 }
 
+// The toggle-independent geometry produced by computeRibbonGeometry and consumed
+// by paintRibbons. All plain Maps/arrays of primitives (no closures) — so it can
+// be serialized and hoisted into precompute later. See docs/cache-read-perf.md.
+interface RibbonGeometry {
+  stopsByNode: Map<string, StopMark[]>;
+  membersByNode: Map<string, number> | undefined;
+  dByLine: Map<string, string[]>;
+  segments: Segment[];
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  orderOf: Map<string, string[]>;
+}
+
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
-  const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
-  const bg = dark ? DARK_THEME.land : '#ffffff';
-  const casingWidth = LINE_WIDTH + 3;
+  return paintRibbons(args, computeRibbonGeometry(args), sceneOut);
+}
+
+// The expensive, toggle-INDEPENDENT half of the draw: per-edge lane bundle
+// geometry + the rigid-row marker-placement solver (~80-90% of draw time). A pure
+// function of the layout — it never reads showLabels/showStations/dark/stationRadius
+// (those only drive the paint tail), so its result can be cached/hoisted into
+// precompute. Verified by adversarial audit; see docs/cache-read-perf.md.
+function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
+  const { layout, nodePx, edgePolyline } = args;
 
   const stopsByNode = new Map<string, StopMark[]>();
   const stopSeen = new Set<string>();
@@ -1960,6 +1979,18 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
       `${mitered.size} mitered joins, ${connSeen.size} connector candidates, ${dByLine.size} lines`,
     );
   }
+
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf };
+}
+
+// The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
+// precomputed geometry. renderStops honors showStations, placeLabels honors
+// showLabels; bg/casing are theme (dark). ~tens of ms — see docs/cache-read-perf.md.
+function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
+  const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
+  const bg = dark ? DARK_THEME.land : '#ffffff';
+  const casingWidth = LINE_WIDTH + 3;
+  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
 
   const casingParts: string[] = [];
   const strokeParts: string[] = [];
