@@ -9,17 +9,28 @@ const TAG = '[ImprovedSchematics] geography:';
 // with the real map's tile worker during the one-time harvest), at a slightly
 // lower fitBounds zoom — fine, since we simplify the geometry afterwards anyway.
 const CONTAINER_PX = 512;
-const IDLE_TIMEOUT_MS = 6_000;
+// Total budget to wait for the offscreen source's tiles after fitBounds. On a fresh
+// game load the basemap is saturating the tile worker/network, so the harvest tiles
+// can take well over the old 6s — and waiting on a single `idle` event is unreliable
+// (it can fire before the fitBounds tiles arrive under contention). We instead wait
+// until areTilesLoaded() actually reports them in, up to this budget.
+const TILE_WAIT_MS = 20_000;
+const POLL_MS = 250;
 
-function nextIdleOrTimeout(map: MlMap): Promise<void> {
-  return new Promise((resolve) => {
-    const done = (): void => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(done, IDLE_TIMEOUT_MS);
-    map.once('idle', done);
-  });
+/** Resolve once every tile for the current view is loaded, or the budget elapses.
+ *  Combines the `idle` event (cheap settle signal) with an areTilesLoaded() check so a
+ *  premature idle (common under first-load contention) doesn't cut the harvest short. */
+async function waitForTiles(map: MlMap): Promise<void> {
+  const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const deadline = now() + TILE_WAIT_MS;
+  while (now() < deadline) {
+    if (map.areTilesLoaded()) return;
+    const remaining = deadline - now();
+    await Promise.race([
+      new Promise<void>((r) => { map.once('idle', () => r()); }),
+      new Promise<void>((r) => setTimeout(r, Math.min(POLL_MS, remaining))),
+    ]);
+  }
 }
 
 /**
@@ -65,10 +76,11 @@ export async function harvestTaggedFeatures(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },
     );
-    await nextIdleOrTimeout(map);
+    await waitForTiles(map);
 
     const out: TaggedFeature[] = [];
     const counts: Record<string, number> = {};
+    const loaded = map.areTilesLoaded();
     for (const sl of probe.sourceLayers) {
       const feats = map.querySourceFeatures(probe.sourceId, { sourceLayer: sl });
       counts[sl] = feats.length;
@@ -80,7 +92,8 @@ export async function harvestTaggedFeatures(
         });
       }
     }
-    console.info(`${TAG} harvested per source-layer:`, counts);
+    console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded})`);
+    if (!loaded) console.warn(`${TAG} tiles still loading after ${TILE_WAIT_MS}ms — harvest may be partial; caller will retry`);
     return out;
   } catch (err) {
     console.warn(`${TAG} offscreen harvest failed:`, err);
