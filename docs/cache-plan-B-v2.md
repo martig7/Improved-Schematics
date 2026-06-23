@@ -3,7 +3,16 @@
 v1 (`47430d7`) caches the octi `pre` per city, keyed by the input fingerprint, and
 reuses it on Generate. v2 adds a tiny `:meta:` companion so a reload can restore
 the user's **appearance settings** and **detail areas** — WITHOUT re-introducing
-the stale-render bugs that killed the old cache. Status: NOT built (plan only).
+the stale-render bugs that killed the old cache.
+
+> **STATUS:** detail-area auto-restore is BUILT (commit 641a022) — but as a focused
+> `:sel:<city>` entry (`{stamp, selections}`) rather than the combined `:meta:` blob
+> below. Areas persist on a `[selections]` effect and restore on a fingerprint hit via
+> `readSelections(city, fp)` → `restoreSelectionsRef` (the file-load path). The
+> **settings** half (restoring `applied`/toggles so a *customized-appearance* user's fp
+> matches and hits) is still NOT built — default-appearance users already hit in v1, so
+> areas restore for them today. The `:meta:` design below is the original combined plan;
+> the shipped `:sel:` is its area-only subset.
 
 ## Why v2 (the two v1 gaps)
 
