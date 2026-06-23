@@ -22,19 +22,22 @@ const POLL_MS = 250;
 // guard never clears) and blocks every future attempt. Time out → throw → retry.
 const LOAD_TIMEOUT_MS = 15_000;
 
-/** Resolve once every tile for the current view is loaded, or the budget elapses.
- *  Combines the `idle` event (cheap settle signal) with an areTilesLoaded() check so a
- *  premature idle (common under first-load contention) doesn't cut the harvest short. */
+/** Resolve once the tiles for the fitBounds view are loaded, or the budget elapses. */
 async function waitForTiles(map: MlMap): Promise<void> {
   const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const deadline = now() + TILE_WAIT_MS;
-  while (now() < deadline) {
-    if (map.areTilesLoaded()) return;
-    const remaining = deadline - now();
-    await Promise.race([
-      new Promise<void>((r) => { map.once('idle', () => r()); }),
-      new Promise<void>((r) => setTimeout(r, Math.min(POLL_MS, remaining))),
-    ]);
+  const idleOrDelay = (capMs: number): Promise<void> => Promise.race([
+    new Promise<void>((r) => { map.once('idle', () => r()); }),
+    new Promise<void>((r) => setTimeout(r, Math.max(0, capMs))),
+  ]);
+  // Wait for the post-fitBounds move + tile load to settle (the NEXT idle) BEFORE trusting
+  // areTilesLoaded(): right after fitBounds it still reports the prior (z0/world) view as
+  // "loaded", so an early check returns before the target tiles are even requested — we'd
+  // query 0 features off the empty world view (the observed ~47ms / z0-only-404 failure).
+  await idleOrDelay(deadline - now());
+  // If idle fired before every tile arrived (first-load contention), keep waiting.
+  while (!map.areTilesLoaded() && now() < deadline) {
+    await idleOrDelay(Math.min(POLL_MS, deadline - now()));
   }
 }
 
