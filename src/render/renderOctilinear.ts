@@ -187,7 +187,7 @@ export interface SceneOut {
 // The toggle-independent geometry produced by computeRibbonGeometry and consumed
 // by paintRibbons. All plain Maps/arrays of primitives (no closures) — so it can
 // be serialized and hoisted into precompute later. See docs/cache-read-perf.md.
-interface RibbonGeometry {
+export interface RibbonGeometry {
   stopsByNode: Map<string, StopMark[]>;
   membersByNode: Map<string, number> | undefined;
   dByLine: Map<string, string[]>;
@@ -205,7 +205,7 @@ export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): str
 // function of the layout — it never reads showLabels/showStations/dark/stationRadius
 // (those only drive the paint tail), so its result can be cached/hoisted into
 // precompute. Verified by adversarial audit; see docs/cache-read-perf.md.
-function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
+export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const { layout, nodePx, edgePolyline } = args;
 
   const stopsByNode = new Map<string, StopMark[]>();
@@ -1986,7 +1986,7 @@ function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
 // precomputed geometry. renderStops honors showStations, placeLabels honors
 // showLabels; bg/casing are theme (dark). ~tens of ms — see docs/cache-read-perf.md.
-function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
+export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;

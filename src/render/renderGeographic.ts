@@ -25,7 +25,7 @@ import {
   DEFAULT_TRANSFER_METERS,
   type TransferPair,
 } from './transfers';
-import { renderRibbons, type SceneOut } from './renderOctilinear';
+import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { untangleLineOrder } from './layout/untangle';
 import { geographyBackdrop } from './geographyBackdrop';
@@ -433,6 +433,11 @@ export interface SmoothedPrecomputed {
    *  where the cropped region lands in this render. For the inset, this frames
    *  the view on exactly the selected geography. Undefined with no geography. */
   geoBboxFrame?: FrameRect;
+  /** The toggle-independent ribbon geometry (lane bundles + the expensive marker
+   *  placement solver), memoized on first draw by drawSmoothed and serialized with
+   *  the precompute. When present, a draw (and every cache read) skips the 80-90%
+   *  placement cost and only paints. See docs/cache-read-perf.md. */
+  geometry?: RibbonGeometry;
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -983,10 +988,10 @@ export function drawSmoothed(
   opts: { showLabels: boolean; showStations: boolean },
   sceneOut?: SceneOut,
 ): string {
-  return renderRibbons({
+  const args = {
     layout: pre.layout,
     nodePx: pre.nodePx,
-    edgePolyline: (e) => e.path.map((c) => [c[0], c[1]]),
+    edgePolyline: (e: Layout['edges'][number]) => e.path.map((c) => [c[0], c[1]] as Pixel),
     width: pre.width,
     height: pre.height,
     dark: pre.dark,
@@ -996,7 +1001,12 @@ export function drawSmoothed(
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,
-  }, sceneOut);
+  };
+  // The expensive marker-placement geometry is toggle-independent: compute it once
+  // and memoize on `pre`, so label/station toggles — and cache reads that restore a
+  // pre with geometry already attached — skip it and only paint. See cache-read-perf.md.
+  const geom = pre.geometry ?? (pre.geometry = computeRibbonGeometry(args));
+  return paintRibbons(args, geom, sceneOut);
 }
 
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
