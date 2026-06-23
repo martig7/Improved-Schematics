@@ -58,10 +58,29 @@ global-min chain. It is *not guaranteed* identical if an exact cost tie ever occ
 the box-count bar (chi 1 / nyc 0 / sea 0 / sf 18 / lon 1, unchanged). Verification gate:
 golden master + `dev/_quality.ts` box counts + 292 tests + tsc.
 
+## OUTCOME 3 — Held-Karp subset DP for g=5 SHIPPED (commit 6df1e31), London ~3.4×
+
+After the fold, a per-g profile (`dev/_gperf.ts`) showed the remaining cost is NOT
+uniform: a single **g5** station was **~80% of London's** placement cost (~24s, because
+the folded enumeration is still `g!`=120 DPs), while SF/Seattle are g≤4. Held-Karp
+collapses the `g!` permutations into an `O(2^g·g²·states²)` subset DP (each ordered
+bundle-pair evaluated `2^(g-2)`=8× vs `(g-1)!`=24× → ~3× fewer `pairEval`).
+
+Used as a fast pre-pass; on a floor failure it falls back to the folded enumeration, so
+the mega-box set is preserved exactly. **Gated to g=5**: a first cut applied at all g≤5
+*regressed SF 1.4×* — SF-difficult has 18 boxes, so many g4 stations' cheapest chain
+fails the floor and pays both the subset DP *and* the fallback. g≤4 stays on the fold.
+
+Result: London cold draw **~30s → ~8–9s (~3.4×)**; chi/nyc/sea/sf unchanged. Box counts
+identical, **byte-identical on all 5 cities × toggle states** (the g5 station's HK chain
+matched the fold's). Verified HK cost == folded-enum cost on every station (zero
+mismatch, `CHECK_HK` self-check). tsc 31, 292/292.
+
 ### Still on the table (not done)
-- **Held-Karp subset DP** to cut the `g!` permutation factor (the fold attacked `2^g`,
-  not `g!`). Bigger for high-g; changes tie-breaks (would need the box-count bar, not
-  byte-identity). Measure first — after the fold the bottleneck mix has shifted.
+- The dominant *broad* cost is now the per-pair `states²` cross-product (g2/g3 stations,
+  unaffected by the fold/Held-Karp). A **slide-state window/prefilter** (only nearby
+  slides can pair feasibly) would cut `states²` for ALL g — likely the next-biggest
+  lever — but it touches tie-breaks (box-count bar, not byte-identity). Measure first.
 
 The original plan below is kept for the record (Step-1 memo superseded by the fold).
 
