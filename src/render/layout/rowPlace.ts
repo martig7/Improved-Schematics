@@ -505,6 +505,88 @@ export function solveRows(
     return { r: { cost: prev[end], seq, orients, states, corners }, fallback: false };
   };
 
+  // Held-Karp subset DP: the global min-cost Hamiltonian PATH over the g bundles,
+  // with orientation folded into the DP state (sub-state = stateIndex*2 + orientBit).
+  // dp[mask][i] is the min cost of a chain covering exactly the bundle set `mask`,
+  // ending at bundle i in each sub-state; the unique predecessor subset of (mask,i) is
+  // mask\{i}. This computes each ordered (bundle-pair, state, orient) transition once
+  // per containing subset — O(2^g·g²·states²) vs the folded permutation enumeration's
+  // O(g!·states²) — so each pairEval combo is evaluated 2^(g-2) times instead of (g-1)!
+  // (≈3× fewer at g5). Returns the unconstrained global min chain (floor checked by the
+  // caller); null if no finite chain exists.
+  const heldKarp = (): DPResult | null => {
+    const full = (1 << g) - 1;
+    const cell = (mask: number, i: number) => mask * g + i;
+    const dp: (Float64Array | undefined)[] = new Array((1 << g) * g);
+    const bkI: (Int32Array | undefined)[] = new Array((1 << g) * g); // predecessor bundle
+    const bkS: (Int32Array | undefined)[] = new Array((1 << g) * g); // predecessor sub-state
+    const bkC: ((Pixel | null)[] | undefined)[] = new Array((1 << g) * g); // corner to predecessor
+    for (let i = 0; i < g; i++) { // singletons: orient is free, state cost independent of it
+      const sz = bundleStates[i].length * 2;
+      const d = new Float64Array(sz);
+      for (let si = 0; si < sz; si++) d[si] = bundleStates[i][si >> 1].cost;
+      const c = cell(1 << i, i);
+      dp[c] = d; bkI[c] = new Int32Array(sz).fill(-1); bkS[c] = new Int32Array(sz).fill(-1);
+      bkC[c] = new Array(sz).fill(null);
+    }
+    for (let mask = 1; mask <= full; mask++) {
+      for (let i = 0; i < g; i++) {
+        if (!(mask & (1 << i))) continue;
+        const di = dp[cell(mask, i)];
+        if (!di) continue;
+        const iStates = bundleStates[i];
+        const szi = di.length;
+        for (let j = 0; j < g; j++) {
+          if (mask & (1 << j)) continue;
+          const nmask = mask | (1 << j);
+          const jStates = bundleStates[j];
+          const szj = jStates.length * 2;
+          const nc = cell(nmask, j);
+          let dj = dp[nc];
+          if (!dj) {
+            dj = new Float64Array(szj).fill(Infinity); dp[nc] = dj;
+            bkI[nc] = new Int32Array(szj).fill(-1); bkS[nc] = new Int32Array(szj).fill(-1);
+            bkC[nc] = new Array(szj).fill(null);
+          }
+          const nI = bkI[nc]!, nS = bkS[nc]!, nC = bkC[nc]!;
+          for (let sj = 0; sj < szj; sj++) {
+            const cj = jStates[sj >> 1].cost;
+            let bestExcl = dj[sj] - cj; // best-so-far over earlier predecessors i', minus cur cost
+            for (let si = 0; si < szi; si++) {
+              const base = di[si];
+              if (base >= bestExcl) continue; // pair cost ≥ 0: sound pruning
+              const pr = pairEval(iStates[si >> 1], si & 1, jStates[sj >> 1], sj & 1);
+              if (!pr) continue;
+              const c = base + pr.cost;
+              if (c < bestExcl) { bestExcl = c; nI[sj] = i; nS[sj] = si; nC[sj] = pr.corner; }
+            }
+            const tot = bestExcl + cj;
+            if (tot < dj[sj]) dj[sj] = tot;
+          }
+        }
+      }
+    }
+    let bestCost = Infinity, bi = -1, bsi = -1;
+    for (let i = 0; i < g; i++) {
+      const d = dp[cell(full, i)];
+      if (!d) continue;
+      for (let si = 0; si < d.length; si++) if (d[si] < bestCost) { bestCost = d[si]; bi = i; bsi = si; }
+    }
+    if (bi < 0) return null;
+    const revSeq: number[] = [], revStates: RowState[] = [], revOrient: number[] = [], revCorner: Pixel[] = [];
+    let mask = full, i = bi, si = bsi;
+    while (i >= 0) {
+      revSeq.push(i); revStates.push(bundleStates[i][si >> 1]); revOrient.push(si & 1);
+      const pi = bkI[cell(mask, i)]![si];
+      if (pi < 0) break;
+      revCorner.push(bkC[cell(mask, i)]![si]!); // corner between predecessor pi and i
+      const psi = bkS[cell(mask, i)]![si];
+      mask &= ~(1 << i); i = pi; si = psi;
+    }
+    revSeq.reverse(); revStates.reverse(); revOrient.reverse(); revCorner.reverse();
+    return { cost: bestCost, seq: revSeq, orients: revOrient, states: revStates, corners: revCorner };
+  };
+
   let best: DPResult | null = null;
   const tryKeep = (r: DPResult | null) => {
     if (r && (!best || r.cost < best.cost)) best = r; // strict <: first found
@@ -517,9 +599,10 @@ export function solveRows(
     if (f.r) tryKeep(f.r);
     else if (f.fallback) fullMaskEnum(seq); // cheapest chain failed a floor — search all orientations
   };
-  if (g <= 5) {
-    // all g! permutations (deterministic lexicographic order); orientation is folded
-    // into the DP, with an exhaustive 2^g fallback per permutation when needed.
+  // Exhaustive fallback: all g! permutations (deterministic lexicographic order), each
+  // a folded DP with a per-mask floor fallback. This is the proven feasible-chain search
+  // that fixes the mega-box set — Held-Karp defers to it when its optimum fails a floor.
+  const foldedEnum = () => {
     const perm: number[] = [];
     const used = new Array(g).fill(false);
     const rec = () => {
@@ -534,6 +617,24 @@ export function solveRows(
       }
     };
     rec();
+  };
+  if (g === 5) {
+    // g=5 is the pathological case: the folded enumeration is g!·2^g/2^g = 5! = 120
+    // permutations, each a 776²-wide DP — one such station dominated London (~24s, 80%
+    // of its placement cost). Held-Karp collapses the permutations (each ordered pair
+    // evaluated 2^(g-2)=8× instead of (g-1)!=24×, ~3× fewer pairEval). Fast PRE-PASS: if
+    // its global-min chain clears the all-pairs station floor, take it; else fall back to
+    // the exhaustive folded enumeration, preserving the mega-box set exactly.
+    //   Gated to g=5 deliberately: at g≤4 the fold is already fast and Held-Karp's gain
+    // is marginal, while its fall-back (when the cheapest chain fails a floor, common on
+    // dense/boxy layouts like SF) costs MORE than it saves — measured a 1.4× regression
+    // on SF when applied at g4. g=5 has the opposite profile: huge base cost, optimum
+    // usually feasible.
+    const hk = heldKarp();
+    if (hk && stationFloorsOk(hk.states, hk.corners)) best = hk;
+    else foldedEnum();
+  } else if (g <= 5) {
+    foldedEnum(); // g ≤ 4: the orientation-folded permutation enumeration (proven, fast)
   } else {
     // beyond 5 bundles (unobserved — spec notes g ≤ 4): greedy sequence by
     // nearest unused head anchor, forward orientations — the solveChain
