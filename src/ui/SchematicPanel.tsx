@@ -352,7 +352,8 @@ export function SchematicPanel() {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
-    const MAX_ATTEMPTS = 80; // ~80 × 750ms ≈ 60s of polling before dropping the spinner
+    const SPINNER_ATTEMPTS = 30; // ~22s of visible spinner, then poll on silently
+    const MAX_ATTEMPTS = 240; // ~3min — keep watching so an open panel adopts a late harvest
     const DELAY = 750;
     const poll = (): void => {
       if (!alive) return;
@@ -362,8 +363,9 @@ export function SchematicPanel() {
         if (g) { setGeography(g); setGeoLoading(false); return; }
         warmGeography(city); // ensure the background harvest is running (idempotent)
       }
-      if (attempts++ < MAX_ATTEMPTS) timer = setTimeout(poll, DELAY);
-      else setGeoLoading(false); // stop the spinner; warm-up may still finish for a reopen
+      attempts++;
+      if (attempts === SPINNER_ATTEMPTS) setGeoLoading(false); // drop the spinner, keep polling
+      if (attempts < MAX_ATTEMPTS) timer = setTimeout(poll, DELAY);
     };
     setGeoLoading(true);
     poll();

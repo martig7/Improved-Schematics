@@ -45,8 +45,8 @@ export function warmGeography(cityCode: string | null | undefined): void {
   if (peekGeography(cityCode)) return; // already harvested earlier this session
   warming.add(cityCode);
   let attempts = 0;
-  const MAX_ATTEMPTS = 180; // generous — covers slow first loads (harvest tile-wait is ~20s)
-  const DELAY = 1000;
+  const MAX_ATTEMPTS = 180; // generous — covers slow first loads / a late-servable tile backend
+  const DELAY = 2000; // gentle cadence: harvesting spins up a throwaway offscreen map each try
   const stop = (): void => { warming.delete(cityCode); };
   const schedule = (): void => { if (attempts++ < MAX_ATTEMPTS) setTimeout(tick, DELAY); else stop(); };
   const tick = (): void => {
