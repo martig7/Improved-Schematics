@@ -83,6 +83,13 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
   }
 }
 
+/** Synchronous read of the per-city cache (no harvest). Returns the geography if a
+ *  prior generateGeography for this city already succeeded, else null. Lets the panel
+ *  pick up a background warm-up's result instantly on open, without re-harvesting. */
+export function peekGeography(cityCode: string): GeographyData | null {
+  return cache.get(cityCode) ?? null;
+}
+
 /** Cached per city: a SUCCESSFUL harvest is reused for the rest of the session.
  *  A null result (map/tiles not ready yet, or a transient failure) is deliberately
  *  NOT cached, so an early call before the basemap is ready doesn't poison the

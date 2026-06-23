@@ -8,6 +8,7 @@
 
 import { SchematicPanel } from './ui/SchematicPanel';
 import { modState, PANEL_ID, PANEL_STORAGE_KEY } from './state';
+import { warmGeography } from './geography/warm';
 
 const MOD_VERSION = '0.1.0';
 const TAG = '[ImprovedSchematics]';
@@ -27,9 +28,13 @@ if (!api) {
     /* localStorage may be unavailable in some embeddings; ignore. */
   }
 
-  // Track the current city so the panel can load that city's water layer.
+  // Track the current city so the panel can load that city's water layer, and start
+  // harvesting its geography in the background right away — decoupled from the panel, so
+  // the per-city cache is warm by the time the user opens it (and the harvest's retry
+  // survives the panel being closed before its inputs were ready). See geography/warm.ts.
   api.hooks.onCityLoad((cityCode) => {
     modState.cityCode = cityCode;
+    warmGeography(cityCode);
   });
 
   // onMapReady can fire multiple times (city load/switch); guard init.

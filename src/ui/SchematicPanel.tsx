@@ -29,10 +29,9 @@ import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
-import { generateGeography } from '../geography/geography';
+import { peekGeography } from '../geography/geography';
+import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
-import type { BoundingBox } from '../types/core';
-import { computeBounds, padBounds } from '../render/projection';
 import { modState, PANEL_STORAGE_KEY } from '../state';
 
 const api = window.SubwayBuilderAPI;
@@ -341,61 +340,33 @@ export function SchematicPanel() {
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
   const [geoLoading, setGeoLoading] = useState(false);
   useEffect(() => {
-    // On a fresh game load the city code, demand data and the basemap tiles are
-    // not all ready the instant the panel mounts — a one-shot harvest here would
-    // bail (or harvest nothing) and never recover until the panel was reopened
-    // (the reported "geography only shows after I reload the panel" race). So
-    // RETRY (bounded): re-read the inputs and re-attempt the harvest until it
-    // succeeds. generateGeography only caches SUCCESS, so an early null doesn't
-    // poison the city — each attempt gets a fresh shot once the basemap is ready.
+    // Geography is harvested in the BACKGROUND (geography/warm.ts), kicked off at city
+    // load — so it's independent of this panel's lifecycle. Previously the panel drove
+    // the harvest retry itself, but that retry died when the panel closed, so a too-early
+    // first open (city/demand/tiles not yet ready) left no backdrop until a reopen. Here
+    // we just (a) ensure the warm-up is running for the current city and (b) poll its
+    // per-city cache, adopting the result the instant it's ready — including on a first
+    // open where the warm-up (started earlier) has already finished. Bounded so the
+    // spinner eventually clears even if the harvest never succeeds (the warm-up keeps
+    // its own, longer retry, so a later reopen will still pick it up).
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
-    const MAX_ATTEMPTS = 40; // ~40 × 750ms ≈ 30s of retrying, then give up
+    const MAX_ATTEMPTS = 80; // ~80 × 750ms ≈ 60s of polling before dropping the spinner
     const DELAY = 750;
-    // Harvest extent = bbox of the demand points (the populated city), so we grab
-    // tiles where people actually are. Fall back to the station centroid extent.
-    const computeBbox = (): BoundingBox | null => {
-      const demand = api.gameState.getDemandData?.();
-      if (demand && demand.points.size > 0) {
-        let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-        for (const p of demand.points.values()) {
-          const [lng, lat] = p.location;
-          if (lng < minLng) minLng = lng;
-          if (lat < minLat) minLat = lat;
-          if (lng > maxLng) maxLng = lng;
-          if (lat > maxLat) maxLat = lat;
-        }
-        return padBounds([minLng, minLat, maxLng, maxLat], 0.1);
-      }
-      const b = computeBounds(api.gameState.getStations().map((s) => ({ points: [s.coords] })));
-      return b ? padBounds(b, 0.15) : null;
-    };
-    const retry = () => {
-      if (!alive) return;
-      if (attempts++ < MAX_ATTEMPTS) timer = setTimeout(attempt, DELAY);
-      else setGeoLoading(false); // gave up — drop the spinner
-    };
-    const attempt = () => {
+    const poll = (): void => {
       if (!alive) return;
       const city = modState.cityCode ?? api.utils.getCityCode?.();
-      const harvestBbox = computeBbox();
-      if (!city || !harvestBbox) { retry(); return; } // game data not ready yet
-      generateGeography(city, harvestBbox).then(
-        (g) => {
-          if (!alive) return;
-          if (g) {
-            setGeography(g);
-            setGeoLoading(false);
-          } else {
-            retry(); // map/tiles not ready → not cached → try again
-          }
-        },
-        () => retry(),
-      );
+      if (city) {
+        const g = peekGeography(city);
+        if (g) { setGeography(g); setGeoLoading(false); return; }
+        warmGeography(city); // ensure the background harvest is running (idempotent)
+      }
+      if (attempts++ < MAX_ATTEMPTS) timer = setTimeout(poll, DELAY);
+      else setGeoLoading(false); // stop the spinner; warm-up may still finish for a reopen
     };
     setGeoLoading(true);
-    attempt();
+    poll();
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
