@@ -1564,12 +1564,12 @@ export function SchematicPanel() {
         <div ref={settingsRef} style={{ position: 'relative' }}>
           <button
             onClick={() => setSettingsOpen((v) => !v)}
-            style={{ ...toggleStyle(settingsOpen), fontSize: 16, lineHeight: 1 }}
+            style={{ ...toggleStyle(settingsOpen), display: 'inline-flex', alignItems: 'center', padding: '4px 8px' }}
             title="Settings"
             aria-label="Settings"
             aria-expanded={settingsOpen}
           >
-            ⚙
+            <Icon name="settings" />
           </button>
           {settingsOpen && (
             <div
