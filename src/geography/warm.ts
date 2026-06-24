@@ -19,6 +19,7 @@ const warming = new Set<string>(); // cities with an in-flight warm-up loop (ded
  *  neither demand nor stations are ready yet. */
 function computeHarvestBbox(): BoundingBox | null {
   const api = window.SubwayBuilderAPI;
+  let raw: BoundingBox | null = null;
   const demand = api?.gameState?.getDemandData?.();
   if (demand && demand.points.size > 0) {
     let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
@@ -29,11 +30,22 @@ function computeHarvestBbox(): BoundingBox | null {
       if (lng > maxLng) maxLng = lng;
       if (lat > maxLat) maxLat = lat;
     }
-    return padBounds([minLng, minLat, maxLng, maxLat], 0.1);
+    raw = padBounds([minLng, minLat, maxLng, maxLat], 0.1);
+  } else {
+    const stations = api?.gameState?.getStations?.() ?? [];
+    const b = computeBounds(stations.map((s) => ({ points: [s.coords] })));
+    raw = b ? padBounds(b, 0.15) : null;
   }
-  const stations = api?.gameState?.getStations?.() ?? [];
-  const b = computeBounds(stations.map((s) => ({ points: [s.coords] })));
-  return b ? padBounds(b, 0.15) : null;
+  if (!raw) return null;
+  // Reject an implausibly-large extent: early in a load, demand/station coords can be
+  // uninitialized (e.g. a point at [0,0]) which drags the bbox across the globe → fitBounds
+  // lands at zoom 0 → the offscreen map only ever requests the world tile (404) and harvests
+  // nothing. No real city spans this; treat as "not ready" and retry once the data settles.
+  if (raw[2] - raw[0] > 12 || raw[3] - raw[1] > 12) {
+    console.warn(`${TAG} harvest bbox too large [${raw.map((n) => n.toFixed(2)).join(', ')}] — coords not settled; retrying`);
+    return null;
+  }
+  return raw;
 }
 
 /** Kick off (or no-op if already running) a background harvest+cache for `cityCode`,

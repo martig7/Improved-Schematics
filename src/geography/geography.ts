@@ -39,6 +39,14 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
   try {
     const map = deps.getMap();
     if (!map) return null;
+    // Don't probe before the basemap style exists — early in the game `getStyle()` is empty
+    // (0 sources) or undefined, which crashed the probe (reading 'sources' of undefined).
+    // Defer; the caller retries once the style is in. (Guarded for the injectable test map.)
+    const m = map as unknown as { isStyleLoaded?: () => boolean };
+    if (typeof m.isStyleLoaded === 'function' && !m.isStyleLoaded()) {
+      console.warn(`${TAG} basemap style not loaded yet — deferring harvest`);
+      return null;
+    }
     const probe = deps.probe(map.getStyle() as unknown as StyleLike);
     if (!probe) {
       console.warn(`${TAG} no usable vector source in the basemap`);

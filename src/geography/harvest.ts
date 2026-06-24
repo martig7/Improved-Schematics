@@ -92,6 +92,7 @@ export async function harvestTaggedFeatures(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },
     );
+    console.info(`${TAG} fit to [${bbox.map((n) => n.toFixed(3)).join(', ')}] → offscreen zoom ${map.getZoom().toFixed(1)}`);
     await waitForTiles(map);
 
     const out: TaggedFeature[] = [];
