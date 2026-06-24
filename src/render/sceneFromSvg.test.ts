@@ -197,3 +197,20 @@ test('labelWorldBox + isLabelHidden: world-space overlap (labels scale with the 
   // No boxes → never hidden.
   assert.equal(isLabelHidden(label, []), false);
 });
+
+test('sceneFromSvg: geographic backdrop (water/green groups) classifies to the water layer', () => {
+  // The geographic backdrop groups carry class="green"/"water" so the canvas backend
+  // buckets them into the dedicated backdrop layer (z BELOW the routes) by design — not
+  // into 'other' alongside routes, where the order held only by emit-order accident.
+  const svg =
+    '<svg viewBox="0 0 100 100" width="100" height="100">' +
+    '<g class="green" fill="#0f0" fill-rule="nonzero" stroke="none"><path d="M0 0 L1 0 L1 1 Z"/></g>' +
+    '<g class="water" fill="#00f" fill-rule="nonzero" stroke="none"><path d="M0 0 L2 0 L2 2 Z"/></g>' +
+    '<g><path d="M0 0 L9 9" fill="none" stroke="#f00" stroke-width="2"/></g>' + // unclassed routes → 'other'
+    '</svg>';
+  const s = sceneFromSvg(svg);
+  const backdrop = s.prims.filter((p) => p.kind === 'path' && p.layer === 'water');
+  assert.equal(backdrop.length, 2, 'both green and water backdrop groups land in the water layer');
+  const routes = s.prims.filter((p) => p.kind === 'path' && p.layer === 'other');
+  assert.equal(routes.length, 1, 'unclassed routes stay in the other layer (above the backdrop, below stations)');
+});

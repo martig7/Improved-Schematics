@@ -54,6 +54,8 @@ const layerForClass = (c: string): Layer | null => {
       return 'edges';
     case 'water':
       return 'water';
+    case 'green':
+      return 'water'; // parks share the backdrop layer (z below routes); source order keeps green under water
     case 'octi-grid':
       return 'grid';
     case 'transfers':

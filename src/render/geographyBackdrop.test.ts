@@ -28,6 +28,9 @@ test('geographyBackdrop: emits a green group then a water group (water on top)',
   assert.ok(svg.includes('M0 0 L10 0 L10 10'), 'projects water ring');
   assert.ok(svg.includes(`fill="${DEFAULT_THEME.green}" fill-rule="nonzero"`), 'parks fill solid (nonzero)');
   assert.ok(svg.includes(`fill="${DEFAULT_THEME.water}" fill-rule="nonzero"`), 'water fills solid (nonzero, no XOR gaps)');
+  // Classed so the canvas backend buckets them into the backdrop layer (below routes).
+  assert.ok(svg.includes(`<g class="green" fill="${DEFAULT_THEME.green}"`), 'green group carries class="green"');
+  assert.ok(svg.includes(`<g class="water" fill="${DEFAULT_THEME.water}"`), 'water group carries class="water"');
 });
 
 test('geographyBackdrop: omits an empty category', () => {

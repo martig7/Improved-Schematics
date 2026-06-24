@@ -17,14 +17,14 @@ import {
   drawSmoothedSchematic,
   type SmoothedPrecomputed,
 } from '../render/schematic';
-import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
+import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescriptor } from './DetailInset';
+import { decideAreaAction } from './areaLifecycle';
+import { Icon } from './icons';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
-import { estimateTextWidth } from '../render/labels';
-import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -33,6 +33,7 @@ import { peekGeography } from '../geography/geography';
 import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
+import { MOD_VERSION } from '../version';
 
 const api = window.SubwayBuilderAPI;
 
@@ -50,14 +51,6 @@ interface View {
   scale: number; // screen px per content unit
   vx: number; // content x at viewport left
   vy: number; // content y at viewport top
-}
-interface Scaled {
-  el: Element;
-  base: number;
-}
-interface SvgBox {
-  w: number;
-  h: number;
 }
 
 type ExportFormat = 'svg' | 'png' | 'jpeg';
@@ -219,27 +212,30 @@ export function SchematicPanel() {
   // `pre` stays fingerprint-gated). A saved map FILE still seeds via applyBundle.
   const mountSeed = useMemo(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    return { city, rset: ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings };
+    // Shared (export prefs) + the per-MODE visual settings for the open mode (geographic).
+    // The visual read falls back to the old shared blob so a pre-split cache migrates in.
+    const shared = ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings;
+    const geoVis = ((city ? (readModeSettings(city, 'geographic') as RestoredSettings | null) : null) ?? shared) as RestoredSettings;
+    return { city, shared, geoVis };
   }, []);
   const mountCity = mountSeed.city; // the city these restored settings belong to
-  const rset = mountSeed.rset;
-  const rapp = rset.applied;
+  const rset = mountSeed.shared; // shared export prefs (rasterScale, jpegQuality, exportFormat)
+  const rvis = mountSeed.geoVis; // per-mode visual settings for the open (geographic) mode
+  const rapp = rvis.applied;
   // Always open in geographic mode; smoothed is the expensive mode and must be
   // entered explicitly (its Generate button), never auto-shown on open.
   const [mode, setMode] = useState<RenderMode>('geographic');
-  const [showStations, setShowStations] = useState(rset.showStations ?? true);
-  const [showLabels, setShowLabels] = useState(rset.showLabels ?? false);
-  // Interactive renderer: 'canvas' (default — paints the parsed Scene to a
-  // <canvas>, so pan/zoom is a camera redraw with no live DOM) or the legacy
-  // SVG-in-DOM path (kept as a live fallback for A/B + safety). Export, persist
-  // and the detail insets always use the SVG string regardless.
-  const [useCanvas, setUseCanvas] = useState(true);
+  const [showStations, setShowStations] = useState(rvis.showStations ?? true);
+  const [showLabels, setShowLabels] = useState(rvis.showLabels ?? false);
   const [dragging, setDragging] = useState(false);
   // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
   // MAP/content space (so it tracks pan + zoom) instead of panning. The live drag
   // is imperative (boxRef + the overlay div) to match the pan/zoom model that
   // bypasses React; on release it commits to a `selections` entry.
   const [drawMode, setDrawMode] = useState(false);
+  // Which area (if any) is in bounds-edit mode: its DetailInset shows corner handles and
+  // the menu row swaps the ✎ edit button for ✓/✗. Only one area edits at a time.
+  const [editingId, setEditingId] = useState<string | null>(null);
   // Each committed selection spawns a persistent, color-coded DetailInset (its own
   // outline on the map + a draggable re-sim panel). They live until closed. The
   // live drag is still imperative (boxRef + the draw overlay) to match the pan/zoom
@@ -310,7 +306,7 @@ export function SchematicPanel() {
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
   // into a ref so the dep-[] draw callbacks read the current value without being
   // rebuilt on every slider tick.
-  const [labelScale, setLabelScale] = useState(rset.labelScale ?? DEFAULT_LABEL_SCALE);
+  const [labelScale, setLabelScale] = useState(rvis.labelScale ?? DEFAULT_LABEL_SCALE);
   const labelScaleRef = useRef(labelScale);
   labelScaleRef.current = labelScale;
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -331,32 +327,16 @@ export function SchematicPanel() {
   // The panel root — the bounds the top bar's popovers are clamped within.
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
-  // Canvas-mode render surface + the parsed display list it paints. The SVG path
-  // injects into a separate host div (svgHostRef) so the two never fight over the
-  // viewport's children (innerHTML vs React-managed canvas).
+  // Canvas render surface + the parsed display list it paints.
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const svgHostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<PreparedScene | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const strokeNodes = useRef<Scaled[]>([]);
-  const labelGroups = useRef<Element[]>([]);
-  // Analytic label boxes (anchor in content coords + the text box offset in
-  // constant-screen px), cached from the DOM attributes at inject time so the
-  // detail-area label-overlap test runs as pure math instead of a
-  // getBoundingClientRect-per-label forced reflow on every zoom tick.
-  const labelBoxes = useRef<
-    Array<{ el: HTMLElement; ax: number; ay: number; bx0: number; by0: number; bx1: number; by1: number }>
-  >([]);
-  // Single rAF that coalesces pan/zoom DOM application: pointermove + wheel can
-  // fire several times per frame, so accumulate the target view synchronously
-  // and apply it (viewBox + counter-scale) at most once per frame.
+  // Single rAF that coalesces pan/zoom redraws: pointermove + wheel can fire several
+  // times per frame, so accumulate the target view synchronously and repaint at most once.
   const drawRafRef = useRef(0);
   const drawSizesRef = useRef(false);
   const viewRef = useRef<View | null>(null);
-  const svgBoxRef = useRef<SvgBox>({ w: GEO_SIZE, h: GEO_SIZE });
   // The rect that Fit/export crop to: the renderer's `data-frame` (the geography
-  // water/green extent in pixel space) when present, else the full intrinsic
-  // canvas. Decoupled from svgBoxRef, which stays the full canvas for pan/zoom.
+  // water/green extent in pixel space) when present, else the full intrinsic canvas.
   const fitBoxRef = useRef<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE });
   // Area-select: source-of-truth box in content coords (read by the imperative
   // overlay positioner so it survives pan/zoom), the drag origin, and the overlay.
@@ -373,12 +353,64 @@ export function SchematicPanel() {
   // Detail areas pending restore from a loaded map file. The inject effect's
   // layout-change branch (which normally CLEARS areas) installs these instead.
   const restoreSelectionsRef = useRef<Selection[] | null>(null);
+  // In-memory snapshot of the last SMOOTHED-mode selections (updated in the persist
+  // effect, smoothed-only). Reinstated when returning to smoothed from a non-smoothed
+  // mode: the smoothed layout is still cached so the memo's restore-queue path is skipped,
+  // and a file-loaded layout has no durable :sel: backing (its fp is null) — so this
+  // in-memory copy, not the store, is what survives a geographic round-trip.
+  const lastSmoothedSelRef = useRef<Selection[]>([]);
   // When a FILE load switches mode to smoothed, skip the mode effect's
   // smoothedReady blank for one run so the loaded map shows in a single settle
   // (no transient that would race the area restore). Starts false (no mount restore).
   const skipModeBlankRef = useRef(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  // Switch render mode AND load that mode's saved visual settings (toggles + appearance +
+  // label size). Each mode keeps its own look; the persist effect saves the mode you leave,
+  // so this just installs the target's. Unsaved appearance drafts are discarded (the draft
+  // sliders are re-seeded from the loaded `applied`). Migration: a mode with no saved entry
+  // yet falls back to the old shared settings, so prior customizations (and the smoothed
+  // fingerprint) carry over on first switch. Only the mode BUTTONS route through here — a
+  // file load (applyBundle) sets its own settings + mode directly.
+  const switchMode = useCallback((target: RenderMode) => {
+    if (target === modeRef.current) return;
+    const shared = readSettings(mountCity) as RestoredSettings | null;
+    const v = ((readModeSettings(mountCity, target) as RestoredSettings | null) ?? shared ?? {}) as RestoredSettings;
+    const ap = v.applied ?? {
+      lineWidth: DEFAULT_LINE_WIDTH,
+      stationRadius: DEFAULT_STATION_RADIUS,
+      mapMargin: DEFAULT_MAP_MARGIN,
+      warpPos: DEFAULT_REALISM_POS,
+      linePos: DEFAULT_REALISM_POS,
+      boxWarpPos: DEFAULT_REALISM_POS,
+    };
+    setShowStations(v.showStations ?? true);
+    setShowLabels(v.showLabels ?? false);
+    setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
+    setApplied(ap);
+    setLineWidth(ap.lineWidth);
+    setStationRadius(ap.stationRadius);
+    setMapMargin(ap.mapMargin);
+    setWarpPos(ap.warpPos);
+    setLinePos(ap.linePos);
+    setBoxWarpPos(ap.boxWarpPos);
+    setMode(target);
+  }, [mountCity]);
+  // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
+  // Copy its visual fields into each mode's per-mode entry (when that entry is still absent)
+  // BEFORE the persist effect below trims :set: to export-only — so a prior session's
+  // customizations (and the smoothed fingerprint they feed → the :pre: hit) carry into both
+  // modes instead of resetting to defaults. Runs first (declared before persist); idempotent
+  // (the per-mode-entry-absent guard skips once entries exist).
+  useEffect(() => {
+    if (!mountCity) return;
+    const shared = readSettings(mountCity) as RestoredSettings | null;
+    if (!shared) return;
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, applied: shared.applied, labelScale: shared.labelScale };
+    for (const m of ['geographic', 'smoothed'] as const) {
+      if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
+    }
+  }, [mountCity]);
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
   const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
@@ -519,6 +551,12 @@ export function SchematicPanel() {
   // current pan/zoom when only labels/stations toggle (same layout redrawn).
   const layoutIdRef = useRef<unknown>(null);
   const lastLayoutIdRef = useRef<unknown>(undefined);
+  // Detail-area lifecycle key, kept SEPARATE from layoutIdRef. The view re-fit keys on
+  // the cache OBJECT (which is new on every (re)generate even when the layout is identical)
+  // — fine for pan/zoom, fatal for areas: clearing on it wiped freshly-drawn areas and
+  // persisted the wipe as an empty :sel: write under the same fp. Areas key on the layout
+  // FINGERPRINT instead, so a same-fp regenerate / spurious re-render keeps them.
+  const lastAreaKeyRef = useRef<string | undefined>(undefined);
   const geoIdRef = useRef<{ mode: RenderMode; geography: GeographyData | undefined } | null>(null);
 
   // The game exposes its real station groups (spatial-proximity-merged platforms,
@@ -646,9 +684,21 @@ export function SchematicPanel() {
   // clears the areas — doesn't overwrite the saved set with an empty list.
   useEffect(() => {
     if (modeRef.current !== 'smoothed') return;
+    // Snapshot the live smoothed areas (BEFORE the fp guard, so a file-loaded layout with
+    // a null fp is still captured) — the inject restores this on a geographic round-trip.
+    // Runs only on a real selections change, so the transient [] during a return-to-smoothed
+    // render (selections unchanged → effect skipped) can't clobber it; and it's mode-guarded
+    // so the →geographic clear (modeRef already geographic) doesn't either.
+    lastSmoothedSelRef.current = selections;
     const city = currentCityRef.current;
     const fp = currentFpRef.current;
-    if (city && fp) writeSelections(city, fp, selections);
+    if (city && fp) {
+      writeSelections(city, fp, selections);
+      // Keep the per-area sub-layout cache aligned with the live areas: drop entries for
+      // boxes that were deleted or bounds-edited away (the surviving boxes keep their
+      // cached re-sim, so they still restore instantly).
+      pruneSubPres(city, fp, selections.map((s) => `${s.box.x0},${s.box.y0},${s.box.x1},${s.box.y1}`));
+    }
   }, [selections]);
 
   // Persist appearance settings per city so a reload restores the sliders/toggles — and
@@ -661,7 +711,12 @@ export function SchematicPanel() {
     // live city switch (no remount) from writing the displayed sliders under another city.
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
     if (city && city === mountCity) {
-      writeSettings(city, { showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale });
+      // Per-mode visual settings (toggles + appearance + label size) under the CURRENT mode,
+      // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
+      // doesn't write — switchMode changes the visual state, which re-triggers this under the
+      // new mode.
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, applied, labelScale });
+      writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
   }, [showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
@@ -928,6 +983,13 @@ export function SchematicPanel() {
   // its reposition fn, so pan/zoom keeps every inset + outline glued to the map.
   const getView = useCallback(() => viewRef.current, []);
   const getMainPre = useCallback(() => smoothedCacheRef.current?.pre ?? null, []);
+  // The active layout's sub-layout cache key (city + fingerprint), read fresh so each
+  // DetailInset can persist/restore its cropped re-sim. Null when there's no stable fp
+  // (a file-loaded layout sets currentFpRef=null), so those areas just re-simulate.
+  const getSubCacheKey = useCallback(
+    () => (currentCityRef.current && currentFpRef.current ? { city: currentCityRef.current, fp: currentFpRef.current } : null),
+    [],
+  );
   const registerReposition = useCallback((id: string, fn: (() => void) | null) => {
     if (fn) repositionFns.current.set(id, fn);
     else repositionFns.current.delete(id);
@@ -946,37 +1008,49 @@ export function SchematicPanel() {
   const updateSelection = useCallback((id: string, patch: Partial<Selection>) => {
     setSelections((xs) => xs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
+  // Bounds-edit: the DetailInset reports its in-progress (working) box here on each corner
+  // drag; ✓ applies it (a new `box` → one re-sim), ✗ discards. Kept in a ref so per-drag
+  // updates don't re-render. The draft is cleared when entering edit, so a no-drag ✓ is a
+  // no-op (id won't match / no draft).
+  const boundsDraftRef = useRef<{ id: string; box: Box } | null>(null);
+  const onBoundsChange = useCallback((id: string, box: Box) => {
+    boundsDraftRef.current = { id, box };
+  }, []);
+  // Persist a popout panel's position/zoom onto its area (rides the :sel: cache + restore).
+  // box identity is untouched, so this never re-simulates; called on drag-end / debounced
+  // wheel, so it's at most one write per interaction.
+  const onRectChange = useCallback((id: string, rect: { x: number; y: number; w: number; h: number }) => {
+    updateSelection(id, { rect });
+  }, [updateSelection]);
+  const commitEdit = useCallback(() => {
+    setEditingId((cur) => {
+      const d = boundsDraftRef.current;
+      if (cur && d && d.id === cur) updateSelection(cur, { box: { ...d.box } });
+      boundsDraftRef.current = null;
+      return null;
+    });
+  }, [updateSelection]);
+  const cancelEdit = useCallback(() => {
+    boundsDraftRef.current = null;
+    setEditingId(null);
+  }, []);
   const clearSelections = useCallback(() => {
     repositionFns.current.clear();
     exportFns.current.clear();
     setSelections([]);
   }, []);
 
+  // Drop bounds-edit mode if the edited area is gone (deleted, cleared, or a layout
+  // change restored/cleared the set) — otherwise the ✓/✗ row would point at nothing.
+  useEffect(() => {
+    if (editingId && !selections.some((s) => s.id === editingId)) setEditingId(null);
+  }, [selections, editingId]);
+
   // Mirror of `selections` for the imperative (dep-[]) paths below.
   selectionsRef.current = selections;
-  // Hide main-map labels that fall in/over a detail area: a station inside a box
-  // is shown in its panel, not the main map, and a label spilling into a box
-  // would clash with the cut-out region. Labels are counter-scaled (constant
-  // screen size), so overlap is judged in SCREEN space and re-checked on zoom.
-  const updateLabelOverlap = useCallback(() => {
-    const boxes = labelBoxes.current;
-    for (const b of boxes) b.el.style.removeProperty('display'); // reset
-    const sels = selectionsRef.current;
-    if (sels.length === 0 || boxes.length === 0) return;
-    // Labels are WORLD-space now, so the whole test is in content/world coords
-    // (no view needed): the box offsets scale by the label-size setting.
-    const ls = labelScaleRef.current;
-    for (const b of boxes) {
-      // (1) station IN an area: the dot's content-space anchor is inside a box.
-      let hide = sels.some((s) => b.ax >= s.box.x0 && b.ax <= s.box.x1 && b.ay >= s.box.y0 && b.ay <= s.box.y1);
-      // (2) the label's world text box overlaps a box (would spill into the cut-out).
-      if (!hide) {
-        const lx0 = b.ax + b.bx0 * ls, ly0 = b.ay + b.by0 * ls, lx1 = b.ax + b.bx1 * ls, ly1 = b.ay + b.by1 * ls;
-        hide = sels.some((s) => lx0 < s.box.x1 && lx1 > s.box.x0 && ly0 < s.box.y1 && ly1 > s.box.y0);
-      }
-      if (hide) b.el.style.display = 'none';
-    }
-  }, []);
+  // (Label-overlap hiding — labels in/over a detail area — is done by the canvas
+  // renderer in drawScene/isLabelHidden, covering both the station-inside-box and
+  // text-spill-over-box cases; no separate DOM pass needed.)
 
   // Repaint the canvas at the current view. Pan/zoom in canvas mode is exactly
   // this: a camera transform + one redraw — no viewBox, no per-node counter-scale
@@ -1011,36 +1085,15 @@ export function SchematicPanel() {
     });
   }, []);
 
-  // Push the current view to the DOM. `updateSizes` counter-scales stroke/font
-  // (only needed when the zoom changes, not on pure pans). In canvas mode the
-  // whole job is a single drawCanvas (+ keep the overlays glued).
-  const applyToDom = useCallback((updateSizes: boolean) => {
-    if (useCanvas) {
-      drawCanvas();
-      positionBox();
-      for (const fn of repositionFns.current.values()) fn();
-      return;
-    }
-    const svgEl = svgRef.current;
-    const vp = viewportRef.current;
-    const view = viewRef.current;
-    if (!svgEl || !vp || !view) return;
-    const w = vp.clientWidth / view.scale;
-    const h = vp.clientHeight / view.scale;
-    svgEl.setAttribute('viewBox', `${view.vx} ${view.vy} ${w} ${h}`);
+  // Repaint at the current view: a single drawCanvas + keep the overlays glued.
+  // (`_updateSizes` is vestigial from the old SVG path's counter-scale pass — canvas
+  // redraws everything each frame, so it's ignored; kept so the rAF callers' signature
+  // is unchanged.)
+  const applyToDom = useCallback((_updateSizes: boolean) => {
+    drawCanvas();
     positionBox();
     for (const fn of repositionFns.current.values()) fn();
-    if (updateSizes) {
-      const inv = 1 / view.scale;
-      for (const n of strokeNodes.current) n.el.setAttribute('stroke-width', String(n.base * inv));
-      // Labels are WORLD-space (constant relative to the image — they scale with
-      // the map via the viewBox, NOT counter-scaled), sized by the label setting.
-      const lblTransform = `scale(${labelScaleRef.current})`;
-      for (const g of labelGroups.current) g.setAttribute('transform', lblTransform);
-      // Counter-scaling changes which labels overlap the (fixed-size) boxes.
-      updateLabelOverlap();
-    }
-  }, [updateLabelOverlap, useCanvas, drawCanvas, positionBox]);
+  }, [drawCanvas, positionBox]);
 
   // Coalesce gesture-driven redraws to one applyToDom per animation frame.
   // pointermove/wheel mutate viewRef synchronously (cheap math) and call this;
@@ -1087,204 +1140,91 @@ export function SchematicPanel() {
     setGenerating(true);
   }, []);
 
-  // Install the render. Canvas mode parses the SVG string into a Scene and paints
-  // it (no live DOM); SVG mode injects the markup into the host div and caches the
-  // nodes it counter-scales. The shared tail below fits/preserves the view either
-  // way, so all the existing callers (toggles, mode switch, restore) are unchanged.
+  // Install the render: parse the SVG string into a Scene IR and paint it to the canvas
+  // (no live DOM). The shared tail below fits/preserves the view and runs the area
+  // lifecycle, so all the callers (toggles, mode switch, restore) are unchanged.
   useEffect(() => {
     const vp = viewportRef.current;
     if (!vp) return;
 
-    if (useCanvas) {
-      const host = svgHostRef.current;
-      if (host && host.firstChild) host.innerHTML = ''; // SVG host is idle in canvas mode
-      svgRef.current = null;
-      strokeNodes.current = [];
-      labelGroups.current = [];
-      labelBoxes.current = [];
-      if (svg) {
-        // Prefer the Scene IR the smoothed draw emitted directly for THIS svg
-        // (Phase 3) — skip the SVG capture-parse entirely. Restore-from-cache and
-        // geographic/schematic modes (no emitted scene, or a stale one) parse.
-        const emitted = emittedSceneRef.current;
-        const scene = emitted && emitted.svg === svg && emitted.scene ? emitted.scene : sceneFromSvg(svg);
-        sceneRef.current = prepareScene(scene);
-        const w = scene.width || GEO_SIZE;
-        const h = scene.height || GEO_SIZE;
-        svgBoxRef.current = { w, h };
-        // Same frame rule as the SVG path: prefer the renderer's data-frame.
-        fitBoxRef.current =
-          scene.frame && scene.frame.w > 0 && scene.frame.h > 0
-            ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
-            : { x: 0, y: 0, w, h };
-      } else {
-        sceneRef.current = null;
-      }
-    } else {
-    const host = svgHostRef.current ?? vp;
-    host.innerHTML = svg;
-    const svgEl = host.querySelector('svg');
-    svgRef.current = svgEl;
-    if (svgEl) {
-      // Capture intrinsic SVG bounds BEFORE we overwrite viewBox.
-      const vb = svgEl.getAttribute('viewBox')?.split(/\s+/).map(Number);
-      const w = vb && vb.length === 4 ? vb[2] : parseFloat(svgEl.getAttribute('width') || '') || GEO_SIZE;
-      const h = vb && vb.length === 4 ? vb[3] : parseFloat(svgEl.getAttribute('height') || '') || GEO_SIZE;
-      svgBoxRef.current = { w, h };
-      // Fit/export frame: the geography water/green extent in pixel space
-      // (data-frame="x y w h"), emitted by the renderer. Absent → full canvas.
-      const fr = svgEl.getAttribute('data-frame')?.split(/\s+/).map(Number);
+    if (svg) {
+      // Prefer the Scene IR the smoothed draw emitted directly for THIS svg (Phase 3) —
+      // skip the capture-parse. Geographic/schematic and restore-from-cache (no emitted
+      // scene, or a stale one) parse the string.
+      const emitted = emittedSceneRef.current;
+      const scene = emitted && emitted.svg === svg && emitted.scene ? emitted.scene : sceneFromSvg(svg);
+      sceneRef.current = prepareScene(scene);
+      const w = scene.width || GEO_SIZE;
+      const h = scene.height || GEO_SIZE;
+      // Fit/export frame: prefer the renderer's data-frame (geography extent), else full canvas.
       fitBoxRef.current =
-        fr && fr.length === 4 && fr[2] > 0 && fr[3] > 0
-          ? { x: fr[0], y: fr[1], w: fr[2], h: fr[3] }
+        scene.frame && scene.frame.w > 0 && scene.frame.h > 0
+          ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
           : { x: 0, y: 0, w, h };
-      svgEl.setAttribute('width', '100%');
-      svgEl.setAttribute('height', '100%');
-      svgEl.style.display = 'block';
-      // Counter-scale strokes that should stay a constant SCREEN size with
-      // zoom (station rings, transfer brackets, grid overlay). Exclude route
-      // strokes (paths under <g class="edges">) — those need to scale with the
-      // viewport so adjacent lanes stay edge-to-edge flush at every zoom level.
-      // If we counter-scaled them too, lane spacing (baked into geometry, in
-      // world units) would stay put while stroke width shrank → visible gaps
-      // between bundled lines as the user zooms in.
-      // Station markers (.imp-stop) are pure map objects: geometry AND stroke
-      // stay in world units so capsules/dots scale exactly with the route
-      // lines at every zoom. (Counter-scaling their strokes made capsules
-      // look skinny next to fattening lines when zoomed in; counter-scaling
-      // the whole marker made them gigantic relative to the map when zoomed
-      // out.) Only rings/brackets/grid outside both groups counter-scale.
-      strokeNodes.current = [...svgEl.querySelectorAll('[stroke-width]')]
-        .filter((el) => !el.closest('.edges') && !el.closest('.imp-stop'))
-        .map((el) => ({
-          el,
-          base: parseFloat(el.getAttribute('stroke-width') || '1') || 1,
-        }));
-      labelGroups.current = [...svgEl.querySelectorAll('.imp-lbl-s')];
-      // Cache each label's analytic box once (getAttribute reads, no reflow): the
-      // content-space anchor (outer .imp-lbl translate) + the text box as a
-      // constant-screen-px offset from it. updateLabelOverlap then tests overlap
-      // with pure math (see there) instead of measuring each label on zoom.
-      labelBoxes.current = labelGroups.current.map((inner) => {
-        const m = /translate\(\s*([-\d.]+)[ ,]\s*([-\d.]+)/.exec(inner.parentElement?.getAttribute('transform') ?? '');
-        const ax = m ? +m[1] : 0;
-        const ay = m ? +m[2] : 0;
-        const text = inner.querySelector('text');
-        const dx = parseFloat(text?.getAttribute('x') || '0') || 0;
-        const dy = parseFloat(text?.getAttribute('y') || '0') || 0;
-        const anchor = text?.getAttribute('text-anchor') || 'start';
-        const w = estimateTextWidth(text?.textContent ?? '');
-        let bx0 = dx, bx1 = dx + w;
-        if (anchor === 'middle') { bx0 = dx - w / 2; bx1 = dx + w / 2; }
-        else if (anchor === 'end') { bx0 = dx - w; bx1 = dx; }
-        // text y is the glyph baseline; the box rises ~0.8em above, ~0.2em below.
-        return { el: inner as HTMLElement, ax, ay, bx0, by0: dy - LABEL_FONT_SIZE * 0.8, bx1, by1: dy + LABEL_FONT_SIZE * 0.2 };
-      });
-    }
+    } else {
+      sceneRef.current = null;
     }
     // Preserve the current pan/zoom when only the SVG CONTENT changed (a
     // label/station toggle redraws the SAME layout). Re-fit only when the
     // layout identity changes — mode switch, (re)generation, or water reframe.
     if (viewRef.current && layoutIdRef.current === lastLayoutIdRef.current) {
-      applyToDom(true); // re-apply existing viewBox + counter-scale the new nodes
+      applyToDom(true); // keep the current view, repaint the new content
     } else {
       fit();
-      // A different layout (mode switch, regen, city/water reframe) invalidates the
-      // detail areas — their boxes are in the old layout's coords. Drop them — UNLESS
-      // this layout came from a loaded map file, in which case restore its areas.
-      if (lastLayoutIdRef.current) {
-        const restore = restoreSelectionsRef.current;
-        restoreSelectionsRef.current = null;
-        if (restore) setSelections(restore);
-        else clearSelections();
-      }
     }
     lastLayoutIdRef.current = layoutIdRef.current;
+    // Detail-area lifecycle — DECOUPLED from the view branch above (areas live in render-
+    // pixel coords; the cache OBJECT churns on every (re)generate and viewRef is briefly
+    // null on first paint, so keying the area reset on those wiped freshly-drawn areas and
+    // clobbered the durable store). The decision is a pure, unit-tested function keyed on
+    // the layout FINGERPRINT plus a queued restore and the in-memory smoothed snapshot —
+    // see areaLifecycle.ts for the full case analysis (round-trip, file-load, delete-all,
+    // genuine fp change, spurious re-render).
+    const areaKey = mode === 'smoothed' ? `s:${currentFpRef.current ?? ''}` : `m:${mode}`;
+    const restore = restoreSelectionsRef.current;
+    restoreSelectionsRef.current = null; // consumed below, or discarded (same layout)
+    const action = decideAreaAction<Selection>({
+      queuedRestore: restore,
+      prevKey: lastAreaKeyRef.current,
+      nextKey: areaKey,
+      isSmoothed: mode === 'smoothed',
+      snapshot: lastSmoothedSelRef.current,
+    });
+    if (action.kind === 'restore') setSelections(action.selections);
+    else if (action.kind === 'clear') clearSelections();
+    // 'keep' → leave the on-screen areas untouched.
+    lastAreaKeyRef.current = areaKey;
     // Surface the smoothed build time (geographic renders are cheap + auto).
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
     // The map is in the DOM now — drop the generating spinner.
     if (svg) setGenerating(false);
-  }, [svg, mode, fit, applyToDom, clearSelections, useCanvas]);
+  }, [svg, mode, fit, applyToDom, clearSelections]);
 
   // The cutout depends only on the box GEOMETRY, so key the effect on that — not
   // the whole `selections` array — so editing a color/name doesn't rebuild (and
   // briefly flash) the clip on every keystroke.
   const cutoutKey = selections.map((s) => `${s.box.x0},${s.box.y0},${s.box.x1},${s.box.y1}`).join('|');
-  // While any selections are active, "cut out" their areas from the MAIN map:
-  // clip the route, stop and label layers to everything EXCEPT the drawn boxes, so
-  // the lines and stations inside them disappear (each Detail inset shows that
-  // region instead) while the geography backdrop — a separate, unclipped layer —
-  // stays visible under the boxes. Runs after the inject effect (shares the `svg`
-  // dep), so a content redraw re-applies it; cleared when the selections go away.
+  // Repaint when the detail-area boxes change: the cut-out (edges/stops clipped to
+  // outside the boxes, backdrop left visible) and the label hiding (labels in/over a
+  // box) both live inside drawScene now, so this is just a canvas redraw.
   useEffect(() => {
-    const svgEl = svgRef.current;
-    if (!svgEl) return;
-    const NS = 'http://www.w3.org/2000/svg';
-    // Labels (.stations) are NOT clipped here — they're hidden whole by
-    // updateLabelOverlap when they fall in/over a box, so no half-cut text.
-    const groups = ['.edges', '.stops']
-      .map((s) => svgEl.querySelector<SVGGElement>(s))
-      .filter((g): g is SVGGElement => !!g);
-    const clear = () => {
-      svgEl.querySelector('defs.imp-cutout')?.remove();
-      for (const g of groups) g.removeAttribute('clip-path');
-    };
-    clear();
-    if (selections.length === 0) return;
-    // Even-odd clip: a big outer rect (covers all content at any pan/zoom) minus
-    // every selection box → keep everything OUTSIDE the boxes. clipPathUnits is
-    // user space, so the boxes (content coords) stay glued to their map regions.
-    const box = svgBoxRef.current ?? { w: GEO_SIZE, h: GEO_SIZE };
-    const BIG = Math.max(box.w, box.h) * 100;
-    let d = `M${-BIG} ${-BIG}H${BIG}V${BIG}H${-BIG}Z`;
-    for (const s of selections) d += `M${s.box.x0} ${s.box.y0}H${s.box.x1}V${s.box.y1}H${s.box.x0}Z`;
-    const defs = document.createElementNS(NS, 'defs');
-    defs.setAttribute('class', 'imp-cutout');
-    const clip = document.createElementNS(NS, 'clipPath');
-    clip.setAttribute('id', 'imp-cutout-clip');
-    clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
-    const path = document.createElementNS(NS, 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('clip-rule', 'evenodd');
-    clip.appendChild(path);
-    defs.appendChild(clip);
-    svgEl.insertBefore(defs, svgEl.firstChild);
-    for (const g of groups) g.setAttribute('clip-path', 'url(#imp-cutout-clip)');
-    return clear;
-    // selections read inside is fine: cutoutKey changes whenever any box changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cutoutKey, svg]);
+    drawCanvas();
+  }, [cutoutKey, drawCanvas]);
 
-  // Re-evaluate which labels overlap the areas whenever the boxes change, the map
-  // redraws (new label elements), or labels toggle. Zoom is handled in applyToDom.
-  // (SVG mode; in canvas mode label hiding is computed inside drawScene.)
-  useEffect(() => {
-    updateLabelOverlap();
-  }, [cutoutKey, svg, showLabels, updateLabelOverlap]);
-
-  // Canvas mode: the SVG cutout/label-overlap effects no-op (no svgRef), so
-  // repaint the canvas when the detail-area boxes change — the cutout clip and
-  // label hiding both live inside drawScene now.
-  useEffect(() => {
-    if (useCanvas) drawCanvas();
-  }, [cutoutKey, useCanvas, drawCanvas]);
-
-  // Label-size setting is display-time: re-apply label sizes instantly (canvas
-  // redraw, or the SVG counter-scale transform) without rebuilding the scene.
+  // Label-size setting is display-time: repaint instantly (canvas redraw) without
+  // rebuilding the scene.
   useEffect(() => {
     applyToDom(true);
   }, [labelScale, applyToDom]);
 
-  // Canvas mode: resize the backing store + repaint when the viewport resizes
-  // (the SVG path got this free via width/height=100% + viewBox).
+  // Resize the backing store + repaint when the viewport resizes.
   useEffect(() => {
-    if (!useCanvas) return;
     const vp = viewportRef.current;
     if (!vp || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => drawCanvas());
     ro.observe(vp);
     return () => ro.disconnect();
-  }, [useCanvas, drawCanvas]);
+  }, [drawCanvas]);
 
   // Re-fit on mode switch (different layout shape). Smoothed always lands on the
   // Generate Map button (nothing is auto-restored), so just blank the gate and
@@ -1443,6 +1383,20 @@ export function SchematicPanel() {
     fontWeight: active ? 600 : 400,
     opacity: active ? 1 : 0.7,
   });
+  // Shared style for the area-row icon buttons (SVG <Icon> children). `as const` keeps the
+  // union-typed fields (display/alignItems) as literals so the object stays assignable to
+  // the style prop; per-button overrides (opacity/color) spread on top.
+  const iconBtn = {
+    cursor: 'pointer',
+    border: 'none',
+    background: 'transparent',
+    color: 'inherit',
+    opacity: 0.65,
+    padding: 2,
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+  } as const;
 
   // Clamp each top-bar popover within the panel so a narrow/wrapped top bar
   // can't push it off the left edge (or below the bottom). Re-measures when the
@@ -1460,7 +1414,7 @@ export function SchematicPanel() {
         <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
         <div style={{ display: 'flex', gap: 4 }}>
           {MODES.map((m) => (
-            <button key={m.id} onClick={() => setMode(m.id)} style={toggleStyle(mode === m.id)}>
+            <button key={m.id} onClick={() => switchMode(m.id)} style={toggleStyle(mode === m.id)}>
               {m.label}
             </button>
           ))}
@@ -1522,7 +1476,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.25 · popover-clamp</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v{MOD_VERSION}</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1611,17 +1565,46 @@ export function SchematicPanel() {
                       onClick={() => updateSelection(s.id, { locked: !s.locked })}
                       title={s.locked ? 'Unlock (allow moving this area)' : 'Lock (pin it; pan/zoom passes through)'}
                       aria-label={s.locked ? 'Unlock area' : 'Lock area'}
-                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: s.locked ? 1 : 0.55, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                      style={{ ...iconBtn, opacity: s.locked ? 1 : 0.55 }}
                     >
-                      {s.locked ? '🔒' : '🔓'}
+                      <Icon name={s.locked ? 'lock' : 'unlock'} />
                     </button>
+                    {editingId === s.id ? (
+                      <>
+                        <button
+                          onClick={commitEdit}
+                          title="Apply the new bounds"
+                          aria-label="Apply bounds"
+                          style={{ ...iconBtn, color: '#4ade80', opacity: 1 }}
+                        >
+                          <Icon name="check" />
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          title="Cancel — keep the original bounds"
+                          aria-label="Cancel edit"
+                          style={{ ...iconBtn, color: '#f87171', opacity: 1 }}
+                        >
+                          <Icon name="x" />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => { boundsDraftRef.current = null; setEditingId(s.id); }}
+                        title="Edit bounds — drag the corner handles on the map"
+                        aria-label="Edit area bounds"
+                        style={iconBtn}
+                      >
+                        <Icon name="edit" />
+                      </button>
+                    )}
                     <button
                       onClick={() => closeSelection(s.id)}
                       title="Delete this area"
                       aria-label="Delete this area"
-                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: 0.65, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                      style={iconBtn}
                     >
-                      🗑
+                      <Icon name="trash" />
                     </button>
                   </div>
                 ))}
@@ -1636,13 +1619,6 @@ export function SchematicPanel() {
             )}
           </div>
         )}
-        <button
-          onClick={() => setUseCanvas((v) => !v)}
-          style={toggleStyle(useCanvas)}
-          title={useCanvas ? 'Renderer: Canvas (fast). Click for legacy SVG.' : 'Renderer: SVG (legacy). Click for Canvas.'}
-        >
-          {useCanvas ? '◧ Canvas' : '▦ SVG'}
-        </button>
         <button onClick={fit} style={toggleStyle(false)} title="Fit to view">
           ⤢ Fit
         </button>
@@ -1651,12 +1627,12 @@ export function SchematicPanel() {
         <div ref={settingsRef} style={{ position: 'relative' }}>
           <button
             onClick={() => setSettingsOpen((v) => !v)}
-            style={{ ...toggleStyle(settingsOpen), fontSize: 16, lineHeight: 1 }}
+            style={{ ...toggleStyle(settingsOpen), display: 'inline-flex', alignItems: 'center', padding: '4px 8px' }}
             title="Settings"
             aria-label="Settings"
             aria-expanded={settingsOpen}
           >
-            ⚙
+            <Icon name="settings" />
           </button>
           {settingsOpen && (
             <div
@@ -1951,13 +1927,10 @@ export function SchematicPanel() {
             touchAction: 'none',
           }}
         >
-          {/* SVG-mode host (innerHTML injected here, kept off React's children) and
-              the canvas-mode surface. Both always mounted; toggled by display so
-              switching renderer never fights over the viewport's children. */}
-          <div ref={svgHostRef} style={{ position: 'absolute', inset: 0, display: useCanvas ? 'none' : 'block' }} />
+          {/* The canvas render surface (the only renderer). */}
           <canvas
             ref={canvasRef}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: useCanvas ? 'block' : 'none' }}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
           />
         </div>
         {/* Live draw box (in progress): positioned imperatively (positionBox) in
@@ -1976,19 +1949,28 @@ export function SchematicPanel() {
           }}
         />
         {/* One persistent, color-coded detail area per committed selection: a
-            colored outline over its map region + a draggable re-sim panel. */}
-        {selections.map((s) => (
+            colored outline over its map region + a draggable re-sim panel. Gated on a
+            SHOWN smoothed map: `selections` can be non-empty before the map is generated
+            (the restore repopulates it while a mode switch has blanked smoothedReady) and
+            briefly during a switch to geographic (before the clear lands). Rendering then
+            painted areas over the Generate button and re-simulated against a missing pre,
+            and flickered on geographic — so only mount the insets when the map is up. */}
+        {mode === 'smoothed' && smoothedReady && selections.map((s) => (
           <DetailInset
             key={s.id}
             sel={s}
             getView={getView}
             registerReposition={registerReposition}
             getMainPre={getMainPre}
+            getCacheKey={getSubCacheKey}
             buildInput={buildInput}
             baseSvg={svg}
             showStations={showStations}
             showLabels={showLabels}
             labelScale={labelScale}
+            editing={editingId === s.id}
+            onBoundsChange={onBoundsChange}
+            onRectChange={onRectChange}
             onClose={closeSelection}
             registerExport={registerExport}
           />
