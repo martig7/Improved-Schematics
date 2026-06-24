@@ -1237,7 +1237,11 @@ export function SchematicPanel() {
       for (const g of groups) g.removeAttribute('clip-path');
     };
     clear();
-    if (selections.length === 0) return;
+    // Smoothed-only: the cut-out belongs to the smoothed map. In geographic mode the
+    // areas are cleared (one frame late), so guard on the mode too — the geographic
+    // renderer happens to lack .edges/.stops today, but this keeps the clip off it
+    // unconditionally (no transient map clipping on a mode switch).
+    if (modeRef.current !== 'smoothed' || selections.length === 0) return;
     // Even-odd clip: a big outer rect (covers all content at any pan/zoom) minus
     // every selection box → keep everything OUTSIDE the boxes. clipPathUnits is
     // user space, so the boxes (content coords) stay glued to their map regions.
@@ -2018,8 +2022,13 @@ export function SchematicPanel() {
           }}
         />
         {/* One persistent, color-coded detail area per committed selection: a
-            colored outline over its map region + a draggable re-sim panel. */}
-        {selections.map((s) => (
+            colored outline over its map region + a draggable re-sim panel. Gated on a
+            SHOWN smoothed map: `selections` can be non-empty before the map is generated
+            (the restore repopulates it while a mode switch has blanked smoothedReady) and
+            briefly during a switch to geographic (before the clear lands). Rendering then
+            painted areas over the Generate button and re-simulated against a missing pre,
+            and flickered on geographic — so only mount the insets when the map is up. */}
+        {mode === 'smoothed' && smoothedReady && selections.map((s) => (
           <DetailInset
             key={s.id}
             sel={s}
