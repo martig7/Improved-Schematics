@@ -1000,13 +1000,6 @@ export function SchematicPanel() {
     return () => clearTimeout(t);
   }, [mapMsg]);
 
-  // Auto-clear the save/load status line.
-  useEffect(() => {
-    if (!mapMsg) return;
-    const t = setTimeout(() => setMapMsg(null), 4000);
-    return () => clearTimeout(t);
-  }, [mapMsg]);
-
   // Position the area-select overlay div from the content box + current view, so
   // the box stays glued to its map region through pan/zoom. Hidden when no box.
   const positionBox = useCallback(() => {
