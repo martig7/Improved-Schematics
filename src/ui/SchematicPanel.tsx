@@ -34,6 +34,7 @@ import { peekGeography } from '../geography/geography';
 import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
+import { MOD_VERSION } from '../version';
 
 const api = window.SubwayBuilderAPI;
 
@@ -1492,7 +1493,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.24 · deferred-restore</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v{MOD_VERSION}</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
