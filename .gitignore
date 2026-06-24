@@ -24,4 +24,14 @@ loom-master/
 # (*.png/*.svg) and dev data (*.json/*.geojson) stay ignored via the globals.
 dev/*
 !dev/*.ts
+# ...EXCEPT one-off scratch/debug scripts (underscore-prefixed: crop/probe/parity-
+# investigation/chk/dbg etc.) — local-only, not needed on another machine. Named tooling
+# (dev/<name>.ts, e.g. render-test) stays tracked. To keep a specific underscore script
+# (e.g. a golden-master harness), add a `!dev/_that-one.ts` line below this.
+dev/_*.ts
+# ...but KEEP the reusable harnesses trackable: the golden-master regression draw and the
+# canvas-vs-SVG / scene parity checks (the `_parity-*` files are one-off investigations).
+!dev/_golden-draw.ts
+!dev/_scene-parity.ts
+!dev/_svg-vs-canvas.ts
 examplesave_seattle/
