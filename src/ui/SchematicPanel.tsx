@@ -688,7 +688,9 @@ export function SchematicPanel() {
       const r = a.rect, gf = a.gf;
       const headerH = r.w * 0.06, fontPx = headerH * 0.58;
       const label = a.s.name.trim();
-      const nested = a.subSvg.replace(/<svg[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" x="${r.x}" y="${r.y + headerH}" width="${r.w}" height="${r.h - headerH}" viewBox="${gf.x} ${gf.y} ${gf.w} ${gf.h}" preserveAspectRatio="xMidYMid meet">`);
+      // Match the on-screen label size: bake the same labelScale into the panel's labels.
+      const sub = labelScale === 1 ? a.subSvg : a.subSvg.replace(/<g class="imp-lbl-s">/g, `<g class="imp-lbl-s" transform="scale(${labelScale})">`);
+      const nested = sub.replace(/<svg[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" x="${r.x}" y="${r.y + headerH}" width="${r.w}" height="${r.h - headerH}" viewBox="${gf.x} ${gf.y} ${gf.w} ${gf.h}" preserveAspectRatio="xMidYMid meet">`);
       parts.push(
         `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="${bg}" stroke="${a.s.color}" stroke-width="${r.w * 0.006}"/>`,
         nested,
@@ -1922,6 +1924,7 @@ export function SchematicPanel() {
             baseSvg={svg}
             showStations={showStations}
             showLabels={showLabels}
+            labelScale={labelScale}
             onClose={closeSelection}
             registerExport={registerExport}
           />

@@ -48,6 +48,8 @@ interface DetailInsetProps {
   baseSvg: string;
   showStations: boolean;
   showLabels: boolean;
+  /** Label-size multiplier (the main map's setting); scaled onto this sub-map's labels. */
+  labelScale: number;
   onClose: (id: string) => void;
   /** Register/unregister an export descriptor getter so the parent can bake this
    *  panel (current dragged rect + rendered sub-SVG + frame) into the export. */
@@ -71,6 +73,7 @@ export function DetailInset({
   baseSvg,
   showStations,
   showLabels,
+  labelScale,
   onClose,
   registerExport,
 }: DetailInsetProps) {
@@ -91,6 +94,17 @@ export function DetailInset({
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   // The translucent fill shows while selecting; it's dropped once the detail loads.
   const [loaded, setLoaded] = useState(false);
+  // Mirror the label-size setting so the (closure-bound) re-sim draw reads the current
+  // value without re-running. Labels are world-space `.imp-lbl-s` groups in the rendered
+  // sub-SVG; scaling them matches the main map (which transforms the same groups).
+  const labelScaleRef = useRef(labelScale);
+  labelScaleRef.current = labelScale;
+  const applyLabelScale = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const t = `scale(${labelScaleRef.current})`;
+    body.querySelectorAll('.imp-lbl-s').forEach((g) => g.setAttribute('transform', t));
+  }, []);
 
   // Position the source-box outline + the panel from the current view.
   const position = useCallback(() => {
@@ -158,6 +172,7 @@ export function DetailInset({
       body.innerHTML = baseSvg;
       const isvg = body.querySelector('svg');
       if (isvg) isvg.setAttribute('viewBox', `${box.x0} ${box.y0} ${box.x1 - box.x0} ${box.y1 - box.y0}`);
+      applyLabelScale();
       fit(isvg);
       exportRef.current = { subSvg: baseSvg, gf: boxFrame };
       setLoaded(true);
@@ -167,6 +182,7 @@ export function DetailInset({
       const out = drawSmoothedSchematic(subPre, { showLabels, showStations });
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
+      applyLabelScale();
       const isvg = bodyRef.current.querySelector('svg');
       if (isvg && selFrame) {
         isvg.setAttribute('viewBox', `${selFrame.x} ${selFrame.y} ${selFrame.w} ${selFrame.h}`);
@@ -234,7 +250,10 @@ export function DetailInset({
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput]);
+  }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput, applyLabelScale]);
+
+  // Re-apply the label scale when only the setting changes (no re-draw needed).
+  useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);
 
   // Wheel over the panel zooms the WHOLE panel — frame and content together — like a
   // map object (the panel scales and moves so the point under the cursor stays put).
