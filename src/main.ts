@@ -9,7 +9,7 @@
 import { SchematicPanel } from './ui/SchematicPanel';
 import { modState, PANEL_ID, PANEL_STORAGE_KEY } from './state';
 
-const MOD_VERSION = '1.2.0';
+const MOD_VERSION = '0.1.0';
 const TAG = '[ImprovedSchematics]';
 
 const api = window.SubwayBuilderAPI;
