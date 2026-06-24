@@ -26,7 +26,7 @@ import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, pruneSubPres } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -168,16 +168,21 @@ export function SchematicPanel() {
   // `pre` stays fingerprint-gated). A saved map FILE still seeds via applyBundle.
   const mountSeed = useMemo(() => {
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    return { city, rset: ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings };
+    // Shared (export prefs) + the per-MODE visual settings for the open mode (geographic).
+    // The visual read falls back to the old shared blob so a pre-split cache migrates in.
+    const shared = ((city ? (readSettings(city) as RestoredSettings | null) : null) ?? {}) as RestoredSettings;
+    const geoVis = ((city ? (readModeSettings(city, 'geographic') as RestoredSettings | null) : null) ?? shared) as RestoredSettings;
+    return { city, shared, geoVis };
   }, []);
   const mountCity = mountSeed.city; // the city these restored settings belong to
-  const rset = mountSeed.rset;
-  const rapp = rset.applied;
+  const rset = mountSeed.shared; // shared export prefs (rasterScale, jpegQuality, exportFormat)
+  const rvis = mountSeed.geoVis; // per-mode visual settings for the open (geographic) mode
+  const rapp = rvis.applied;
   // Always open in geographic mode; smoothed is the expensive mode and must be
   // entered explicitly (its Generate button), never auto-shown on open.
   const [mode, setMode] = useState<RenderMode>('geographic');
-  const [showStations, setShowStations] = useState(rset.showStations ?? true);
-  const [showLabels, setShowLabels] = useState(rset.showLabels ?? false);
+  const [showStations, setShowStations] = useState(rvis.showStations ?? true);
+  const [showLabels, setShowLabels] = useState(rvis.showLabels ?? false);
   // Interactive renderer: 'canvas' (default — paints the parsed Scene to a
   // <canvas>, so pan/zoom is a camera redraw with no live DOM) or the legacy
   // SVG-in-DOM path (kept as a live fallback for A/B + safety). Export, persist
@@ -262,7 +267,7 @@ export function SchematicPanel() {
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
   // into a ref so the dep-[] draw callbacks read the current value without being
   // rebuilt on every slider tick.
-  const [labelScale, setLabelScale] = useState(rset.labelScale ?? DEFAULT_LABEL_SCALE);
+  const [labelScale, setLabelScale] = useState(rvis.labelScale ?? DEFAULT_LABEL_SCALE);
   const labelScaleRef = useRef(labelScale);
   labelScaleRef.current = labelScale;
   // Smoothed mode runs the expensive LOOM octi pipeline, so it renders on
@@ -335,6 +340,52 @@ export function SchematicPanel() {
   const skipModeBlankRef = useRef(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  // Switch render mode AND load that mode's saved visual settings (toggles + appearance +
+  // label size). Each mode keeps its own look; the persist effect saves the mode you leave,
+  // so this just installs the target's. Unsaved appearance drafts are discarded (the draft
+  // sliders are re-seeded from the loaded `applied`). Migration: a mode with no saved entry
+  // yet falls back to the old shared settings, so prior customizations (and the smoothed
+  // fingerprint) carry over on first switch. Only the mode BUTTONS route through here — a
+  // file load (applyBundle) sets its own settings + mode directly.
+  const switchMode = useCallback((target: RenderMode) => {
+    if (target === modeRef.current) return;
+    const shared = readSettings(mountCity) as RestoredSettings | null;
+    const v = ((readModeSettings(mountCity, target) as RestoredSettings | null) ?? shared ?? {}) as RestoredSettings;
+    const ap = v.applied ?? {
+      lineWidth: DEFAULT_LINE_WIDTH,
+      stationRadius: DEFAULT_STATION_RADIUS,
+      mapMargin: DEFAULT_MAP_MARGIN,
+      warpPos: DEFAULT_REALISM_POS,
+      linePos: DEFAULT_REALISM_POS,
+      boxWarpPos: DEFAULT_REALISM_POS,
+    };
+    setShowStations(v.showStations ?? true);
+    setShowLabels(v.showLabels ?? false);
+    setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
+    setApplied(ap);
+    setLineWidth(ap.lineWidth);
+    setStationRadius(ap.stationRadius);
+    setMapMargin(ap.mapMargin);
+    setWarpPos(ap.warpPos);
+    setLinePos(ap.linePos);
+    setBoxWarpPos(ap.boxWarpPos);
+    setMode(target);
+  }, [mountCity]);
+  // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
+  // Copy its visual fields into each mode's per-mode entry (when that entry is still absent)
+  // BEFORE the persist effect below trims :set: to export-only — so a prior session's
+  // customizations (and the smoothed fingerprint they feed → the :pre: hit) carry into both
+  // modes instead of resetting to defaults. Runs first (declared before persist); idempotent
+  // (the per-mode-entry-absent guard skips once entries exist).
+  useEffect(() => {
+    if (!mountCity) return;
+    const shared = readSettings(mountCity) as RestoredSettings | null;
+    if (!shared) return;
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, applied: shared.applied, labelScale: shared.labelScale };
+    for (const m of ['geographic', 'smoothed'] as const) {
+      if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
+    }
+  }, [mountCity]);
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
   const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
@@ -635,7 +686,12 @@ export function SchematicPanel() {
     // live city switch (no remount) from writing the displayed sliders under another city.
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
     if (city && city === mountCity) {
-      writeSettings(city, { showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale });
+      // Per-mode visual settings (toggles + appearance + label size) under the CURRENT mode,
+      // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
+      // doesn't write — switchMode changes the visual state, which re-triggers this under the
+      // new mode.
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, applied, labelScale });
+      writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
   }, [showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
@@ -1497,7 +1553,7 @@ export function SchematicPanel() {
         <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
         <div style={{ display: 'flex', gap: 4 }}>
           {MODES.map((m) => (
-            <button key={m.id} onClick={() => setMode(m.id)} style={toggleStyle(mode === m.id)}>
+            <button key={m.id} onClick={() => switchMode(m.id)} style={toggleStyle(mode === m.id)}>
               {m.label}
             </button>
           ))}

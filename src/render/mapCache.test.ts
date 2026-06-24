@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from './mapCache';
+import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from './mapCache';
 
 // A precompute serializes via serializePre; a string `pre` (the degenerate
 // no-layout case) round-trips trivially, which is enough to exercise the cache.
@@ -130,6 +130,39 @@ test('mapCache: clearing a city drops its sub-pres too', () => {
   writeSubPre('nyc', 'f', 'A', 'PA', null, s);
   clearCachedPre('nyc', s);
   assert.equal(readSubPre('nyc', 'f', 'A', s), null);
+});
+
+test('mapCache: per-mode settings round-trip independently per (city, mode)', () => {
+  const s = fakeStore();
+  writeModeSettings('nyc', 'geographic', { showLabels: true }, s);
+  writeModeSettings('nyc', 'smoothed', { showLabels: false }, s);
+  assert.deepEqual(readModeSettings('nyc', 'geographic', s), { showLabels: true });
+  assert.deepEqual(readModeSettings('nyc', 'smoothed', s), { showLabels: false }, 'modes are independent');
+  assert.equal(readModeSettings('nyc', 'schematic', s), null, 'unset mode → null');
+  assert.equal(readModeSettings('chi', 'geographic', s), null, 'other city → null');
+});
+
+test('mapCache: per-mode settings are separate from the shared (export) settings', () => {
+  const s = fakeStore();
+  writeSettings('nyc', { exportFormat: 'png' }, s);
+  writeModeSettings('nyc', 'smoothed', { showLabels: true }, s);
+  assert.deepEqual(readSettings('nyc', s), { exportFormat: 'png' }, 'shared settings untouched');
+  assert.deepEqual(readModeSettings('nyc', 'smoothed', s), { showLabels: true });
+  // The panel falls back to the shared blob when a mode has no entry yet (migration).
+  assert.equal(readModeSettings('nyc', 'geographic', s), null);
+});
+
+test('mapCache: clearing a city drops its per-mode settings too', () => {
+  const s = fakeStore();
+  writeSettings('nyc', { exportFormat: 'png' }, s);
+  writeModeSettings('nyc', 'geographic', { showLabels: true }, s);
+  writeModeSettings('nyc', 'smoothed', { showLabels: false }, s);
+  writeModeSettings('chi', 'smoothed', { showLabels: true }, s); // a different city survives
+  clearCachedPre('nyc', s);
+  assert.equal(readSettings('nyc', s), null);
+  assert.equal(readModeSettings('nyc', 'geographic', s), null);
+  assert.equal(readModeSettings('nyc', 'smoothed', s), null);
+  assert.deepEqual(readModeSettings('chi', 'smoothed', s), { showLabels: true }, 'other city untouched');
 });
 
 test('mapCache: settings round-trip per city, unconditional (no fingerprint)', () => {

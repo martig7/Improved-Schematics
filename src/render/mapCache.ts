@@ -292,6 +292,35 @@ export function readSettings(city: string, store: KVStore | null = defaultStore(
   }
 }
 
+const setModeKey = (city: string, mode: string) => `${setKey(city)}:${mode}`;
+
+/** Persist the per-MODE visual settings (toggles + appearance + label size) for `city`.
+ *  Geographic and smoothed keep independent visual settings, so switching modes restores
+ *  each mode's own look. Export prefs stay shared in writeSettings (they're about the output
+ *  file, not the view). Same benign/unversioned contract as writeSettings. */
+export function writeModeSettings(city: string, mode: string, settings: unknown, store: KVStore | null = defaultStore()): void {
+  if (!store || !city) return;
+  try {
+    store.setItem(setModeKey(city, mode), JSON.stringify({ settings }));
+  } catch {
+    /* ignore — settings are non-critical UI state */
+  }
+}
+
+/** The saved per-mode visual settings for `city`/`mode` (or null). The panel falls back to
+ *  the shared readSettings on a miss, so a pre-split (single-settings) cache migrates into
+ *  each mode on first use. */
+export function readModeSettings(city: string, mode: string, store: KVStore | null = defaultStore()): unknown | null {
+  if (!store || !city) return null;
+  try {
+    const raw = store.getItem(setModeKey(city, mode));
+    if (!raw) return null;
+    return (JSON.parse(raw) as { settings?: unknown }).settings ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop one city's cache (or all of it when `city` is omitted). */
 export function clearCachedPre(city?: string, store: KVStore | null = defaultStore()): void {
   if (!store) return;
@@ -302,6 +331,12 @@ export function clearCachedPre(city?: string, store: KVStore | null = defaultSto
       store.removeItem(selKey(city));
       store.removeItem(setKey(city));
       store.removeItem(subKey(city));
+      // Per-mode visual settings live under `:set:<city>:<mode>`; remove them too.
+      const setPrefix = `${setKey(city)}:`;
+      for (let i = store.length - 1; i >= 0; i--) {
+        const k = store.key(i);
+        if (k && k.startsWith(setPrefix)) store.removeItem(k);
+      }
       return;
     }
     for (let i = store.length - 1; i >= 0; i--) {
