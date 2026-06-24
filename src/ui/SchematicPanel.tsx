@@ -1221,7 +1221,6 @@ export function SchematicPanel() {
       isSmoothed: mode === 'smoothed',
       snapshot: lastSmoothedSelRef.current,
     });
-    console.log(`[areas] INJECT ${lastAreaKeyRef.current} -> ${areaKey} -> ${action.kind}${action.kind === 'restore' ? ' n=' + action.selections.length : ''}`);
     if (action.kind === 'restore') setSelections(action.selections);
     else if (action.kind === 'clear') clearSelections();
     // 'keep' → leave the on-screen areas untouched.

@@ -126,7 +126,6 @@ export function writeSelections(
   store: KVStore | null = defaultStore(),
 ): void {
   if (!store || !city) return;
-  const dbg = (m: string) => { if (typeof window !== 'undefined') console.log(`[areas] WRITE ${city} ${m}`); };
   try {
     // An EMPTY write must not clobber another LAYOUT's saved areas. There is one `:sel:`
     // entry per city, so a write replaces whatever fp was stored. A generate under a
@@ -140,14 +139,13 @@ export function writeSelections(
       if (raw) {
         try {
           const prev = JSON.parse(raw) as { stamp?: string };
-          if (prev.stamp && prev.stamp !== stamp(fp)) { dbg(`n=0 SKIP-preserve (stored ${prev.stamp} != ${stamp(fp)})`); return; }
+          if (prev.stamp && prev.stamp !== stamp(fp)) return; // preserve another layout's areas
         } catch {
           /* corrupt entry — fall through and overwrite */
         }
       }
     }
     store.setItem(selKey(city), JSON.stringify({ stamp: stamp(fp), selections }));
-    dbg(`n=${selections.length} under ${stamp(fp)}`);
   } catch {
     /* ignore — areas are non-critical UI state */
   }
@@ -164,15 +162,12 @@ export function readSelections(
   store: KVStore | null = defaultStore(),
 ): unknown[] | null {
   if (!store || !city) return null;
-  const dbg = (m: string) => { if (typeof window !== 'undefined') console.log(`[areas] READ ${city} ${m}`); };
   try {
     const raw = store.getItem(selKey(city));
-    if (!raw) { dbg(`want ${stamp(fp)} -> ABSENT`); return null; }
+    if (!raw) return null;
     const o = JSON.parse(raw) as { stamp?: string; selections?: unknown };
-    if (o.stamp !== stamp(fp)) { dbg(`want ${stamp(fp)} have ${o.stamp} -> MISMATCH`); return null; } // areas belong to a different layout
-    const r = Array.isArray(o.selections) ? o.selections : null;
-    dbg(`want ${stamp(fp)} -> HIT n=${r ? r.length : 'null'}`);
-    return r;
+    if (o.stamp !== stamp(fp)) return null; // areas belong to a different layout
+    return Array.isArray(o.selections) ? o.selections : null;
   } catch {
     return null;
   }
