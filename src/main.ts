@@ -8,8 +8,8 @@
 
 import { SchematicPanel } from './ui/SchematicPanel';
 import { modState, PANEL_ID, PANEL_STORAGE_KEY } from './state';
+import { MOD_VERSION } from './version';
 
-const MOD_VERSION = '0.1.0';
 const TAG = '[ImprovedSchematics]';
 
 const api = window.SubwayBuilderAPI;
