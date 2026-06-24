@@ -14,6 +14,7 @@ export function polyGroup(
   proj: Projection,
   fill: string,
   fillRule: 'evenodd' | 'nonzero' = 'evenodd',
+  cls = '',
 ): string {
   // Accumulate every ring into ONE <path> so abutting per-tile polygons fill as a
   // single region. Separate <path>s leave a ~1px anti-aliasing seam where two
@@ -32,7 +33,11 @@ export function polyGroup(
   }
   d = d.trim();
   if (!d) return '';
-  return `<g fill="${fill}" fill-rule="${fillRule}" stroke="none"><path d="${d}"/></g>`;
+  // The class lets the canvas backend (sceneFromSvg → prepareScene) bucket the backdrop
+  // into its dedicated layer (z below the routes) BY DESIGN — without it the unclassed
+  // group fell into 'other' and sat under the routes only by emit-order accident.
+  const classAttr = cls ? `class="${cls}" ` : '';
+  return `<g ${classAttr}fill="${fill}" fill-rule="${fillRule}" stroke="none"><path d="${d}"/></g>`;
 }
 
 /**
@@ -53,5 +58,5 @@ export function geographyBackdrop(
   // Both nonzero: overlapping/self-overlapping tile polygons fill solid instead
   // of XOR-ing into gaps (the mid-ocean "spike"). Correctly-wound holes (islands)
   // still render as holes under nonzero.
-  return polyGroup(geo.green, proj, greenFill, 'nonzero') + polyGroup(geo.water, proj, waterFill, 'nonzero');
+  return polyGroup(geo.green, proj, greenFill, 'nonzero', 'green') + polyGroup(geo.water, proj, waterFill, 'nonzero', 'water');
 }
