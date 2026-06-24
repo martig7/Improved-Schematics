@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, type KVStore } from './mapCache';
+import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from './mapCache';
 
 // A precompute serializes via serializePre; a string `pre` (the degenerate
 // no-layout case) round-trips trivially, which is enough to exercise the cache.
@@ -82,6 +82,54 @@ test('mapCache: clearing a city drops its selections too', () => {
   writeSelections('nyc', 'f', [{ id: 'sel-0' }], s);
   clearCachedPre('nyc', s);
   assert.equal(readSelections('nyc', 'f', s), null);
+});
+
+// Sub-layout cache: a string `pre` round-trips through serialize/deserialize like the main
+// pre, so it stands in for a real SmoothedPrecomputed here.
+const FR = { x: 1, y: 2, w: 3, h: 4 };
+
+test('mapCache: sub-pre round-trips only when the fingerprint AND box match', () => {
+  const s = fakeStore();
+  writeSubPre('nyc', 'fpA', '1,2,3,4', 'SUB', FR, s);
+  assert.deepEqual(readSubPre('nyc', 'fpA', '1,2,3,4', s), { pre: 'SUB', selFrame: FR });
+  assert.equal(readSubPre('nyc', 'fpB', '1,2,3,4', s), null, 'fp mismatch → miss');
+  assert.equal(readSubPre('nyc', 'fpA', '9,9,9,9', s), null, 'different box → miss');
+  assert.equal(readSubPre('chi', 'fpA', '1,2,3,4', s), null, 'other city → miss');
+});
+
+test('mapCache: multiple boxes coexist under one fingerprint', () => {
+  const s = fakeStore();
+  writeSubPre('nyc', 'f', 'A', 'PA', null, s);
+  writeSubPre('nyc', 'f', 'B', 'PB', FR, s);
+  assert.deepEqual(readSubPre('nyc', 'f', 'A', s), { pre: 'PA', selFrame: null });
+  assert.deepEqual(readSubPre('nyc', 'f', 'B', s), { pre: 'PB', selFrame: FR });
+});
+
+test('mapCache: a new fingerprint resets the sub-pre map (old regions are stale)', () => {
+  const s = fakeStore();
+  writeSubPre('nyc', 'f1', 'A', 'PA', null, s);
+  writeSubPre('nyc', 'f2', 'B', 'PB', null, s); // different fp → fresh map
+  assert.equal(readSubPre('nyc', 'f1', 'A', s), null, 'old-fp region gone');
+  assert.deepEqual(readSubPre('nyc', 'f2', 'B', s), { pre: 'PB', selFrame: null });
+});
+
+test('mapCache: prune drops sub-pres whose box is not in the keep set', () => {
+  const s = fakeStore();
+  writeSubPre('nyc', 'f', 'A', 'PA', null, s);
+  writeSubPre('nyc', 'f', 'B', 'PB', null, s);
+  pruneSubPres('nyc', 'f', ['A'], s); // 'B' deleted/edited away
+  assert.deepEqual(readSubPre('nyc', 'f', 'A', s), { pre: 'PA', selFrame: null });
+  assert.equal(readSubPre('nyc', 'f', 'B', s), null);
+  // A prune under a DIFFERENT fp leaves the stored (other-fp) map untouched.
+  pruneSubPres('nyc', 'other', [], s);
+  assert.deepEqual(readSubPre('nyc', 'f', 'A', s), { pre: 'PA', selFrame: null });
+});
+
+test('mapCache: clearing a city drops its sub-pres too', () => {
+  const s = fakeStore();
+  writeSubPre('nyc', 'f', 'A', 'PA', null, s);
+  clearCachedPre('nyc', s);
+  assert.equal(readSubPre('nyc', 'f', 'A', s), null);
 });
 
 test('mapCache: settings round-trip per city, unconditional (no fingerprint)', () => {

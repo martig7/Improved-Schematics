@@ -39,6 +39,7 @@ const fpKey = (city: string) => `${KEY}:fp:${city}`;
 const preKey = (city: string) => `${KEY}:pre:${city}`;
 const selKey = (city: string) => `${KEY}:sel:${city}`;
 const setKey = (city: string) => `${KEY}:set:${city}`;
+const subKey = (city: string) => `${KEY}:sub:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
 /** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
@@ -177,6 +178,96 @@ export function readSelections(
   }
 }
 
+/** A cached sub-layout's frame (the panel's viewBox into its sub-map), or null. */
+type SubFrame = { x: number; y: number; w: number; h: number } | null;
+interface SubEntry { pre: string; selFrame: SubFrame }
+
+/** The cached sub-layout (a detail area's octi precompute of its cropped region) for
+ *  `boxKey` on the layout fingerprinted by `fp`, or null on miss. Lets a DetailInset skip
+ *  the heavy re-simulation on remount/reload — restoring the area instantly, like the main
+ *  map cache. fp-gated (the sub-layout is derived from the main inputs, so a changed layout
+ *  invalidates it) and box-keyed (each region is its own entry; editing the bounds is a new
+ *  key). Safe by the same argument as the main pre cache: same (fp, box) ⇒ deterministic
+ *  sub-layout, so a hit equals a recompute. */
+export function readSubPre(
+  city: string,
+  fp: string,
+  boxKey: string,
+  store: KVStore | null = defaultStore(),
+): { pre: SmoothedPrecomputed | string; selFrame: SubFrame } | null {
+  if (!store || !city) return null;
+  try {
+    const raw = store.getItem(subKey(city));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { stamp?: string; subs?: Record<string, SubEntry> };
+    if (o.stamp !== stamp(fp)) return null; // belongs to a different layout
+    const e = o.subs?.[boxKey];
+    if (!e) return null;
+    return { pre: deserializePre(e.pre), selFrame: e.selFrame ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a freshly-computed sub-layout under (fp, boxKey). One `:sub:` entry per city
+ *  holds a boxKey→sub-layout map stamped with the layout fp; a write under a NEW fp starts a
+ *  fresh map (the old regions are stale). Best-effort: on quota it drops the whole sub-cache
+ *  for the city and gives up (the area just re-simulates next time — never wrong, only slower). */
+export function writeSubPre(
+  city: string,
+  fp: string,
+  boxKey: string,
+  pre: SmoothedPrecomputed | string,
+  selFrame: SubFrame,
+  store: KVStore | null = defaultStore(),
+): void {
+  if (!store || !city) return;
+  try {
+    const preStr = serializePre(pre);
+    const o: { stamp: string; subs: Record<string, SubEntry> } = { stamp: stamp(fp), subs: {} };
+    const raw = store.getItem(subKey(city));
+    if (raw) {
+      try {
+        const prev = JSON.parse(raw) as { stamp?: string; subs?: Record<string, SubEntry> };
+        if (prev.stamp === stamp(fp) && prev.subs) o.subs = prev.subs; // same layout → merge in
+      } catch {
+        /* corrupt entry — start fresh */
+      }
+    }
+    o.subs[boxKey] = { pre: preStr, selFrame };
+    store.setItem(subKey(city), JSON.stringify(o));
+  } catch {
+    // Quota or error: drop the (purely-perf) sub-cache for this city and give up.
+    try { store.removeItem(subKey(city)); } catch { /* ignore */ }
+  }
+}
+
+/** Drop cached sub-layouts for `city`/`fp` whose box isn't in `keepBoxKeys` — keeps the
+ *  sub-cache aligned with the live areas, so a deleted or bounds-edited area's old region
+ *  doesn't linger and waste quota. No-op when the stored stamp is for a different fp. */
+export function pruneSubPres(
+  city: string,
+  fp: string,
+  keepBoxKeys: string[],
+  store: KVStore | null = defaultStore(),
+): void {
+  if (!store || !city) return;
+  try {
+    const raw = store.getItem(subKey(city));
+    if (!raw) return;
+    const o = JSON.parse(raw) as { stamp?: string; subs?: Record<string, SubEntry> };
+    if (o.stamp !== stamp(fp) || !o.subs) return;
+    const keep = new Set(keepBoxKeys);
+    let changed = false;
+    for (const k of Object.keys(o.subs)) {
+      if (!keep.has(k)) { delete o.subs[k]; changed = true; }
+    }
+    if (changed) store.setItem(subKey(city), JSON.stringify(o));
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Persist the user's appearance settings (the applied layout sliders + draw prefs)
  *  for `city`. UNVERSIONED on purpose: a renderer/pre format bump (VERSION) shouldn't
  *  wipe benign UI prefs, and the panel reads each field defensively (`?? default`), so a
@@ -215,6 +306,7 @@ export function clearCachedPre(city?: string, store: KVStore | null = defaultSto
       store.removeItem(preKey(city));
       store.removeItem(selKey(city));
       store.removeItem(setKey(city));
+      store.removeItem(subKey(city));
       return;
     }
     for (let i = store.length - 1; i >= 0; i--) {

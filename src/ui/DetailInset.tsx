@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { precomputeSmoothedSchematic, drawSmoothedSchematic, type SmoothedPrecomputed } from '../render/schematic';
 import { cropSubgraph } from '../render/cropSubgraph';
+import { readSubPre, writeSubPre } from '../render/mapCache';
 
 export interface Box {
   x0: number;
@@ -22,6 +23,10 @@ export interface Selection {
   /** Locked: the panel is pinned (can't be dragged) and pointer-transparent, so
    *  pan/zoom passes through to the map underneath. */
   locked?: boolean;
+  /** Saved popout panel rect in CONTENT (map) coords — the user's dragged position +
+   *  wheel-zoom. Persisted with the area so the popout restores where they left it;
+   *  absent for a freshly-drawn area (falls back to the default callout). */
+  rect?: { x: number; y: number; w: number; h: number };
 }
 export interface SelView {
   scale: number;
@@ -48,6 +53,10 @@ interface DetailInsetProps {
   /** The main render's precompute (for the unproject + stationPx bridge), read
    *  fresh so a map regeneration is picked up. */
   getMainPre: () => SmoothedPrecomputed | string | null;
+  /** The active layout's cache key (city + fingerprint) for persisting/restoring this
+   *  area's sub-layout, or null when there's no stable key (e.g. a file-loaded layout).
+   *  Read fresh at re-sim time. */
+  getCacheKey: () => { city: string; fp: string } | null;
   /** Full schematic input for the re-sim crop. */
   buildInput: () => unknown;
   /** Base map SVG — magnified-crop fallback + a re-sim trigger when it changes. */
@@ -62,6 +71,9 @@ interface DetailInsetProps {
   /** Report the in-progress (working) box to the parent on each corner drag, so it can
    *  apply it on commit (✓). The source box itself isn't touched until then. */
   onBoundsChange: (id: string, box: Box) => void;
+  /** Persist the popout panel rect (position + zoom) on the area, so it restores where the
+   *  user left it. Called on drag-end and a debounced wheel-zoom, not per frame. */
+  onRectChange: (id: string, rect: { x: number; y: number; w: number; h: number }) => void;
   onClose: (id: string) => void;
   /** Register/unregister an export descriptor getter so the parent can bake this
    *  panel (current dragged rect + rendered sub-SVG + frame) into the export. */
@@ -81,6 +93,7 @@ export function DetailInset({
   getView,
   registerReposition,
   getMainPre,
+  getCacheKey,
   buildInput,
   baseSvg,
   showStations,
@@ -88,6 +101,7 @@ export function DetailInset({
   labelScale,
   editing,
   onBoundsChange,
+  onRectChange,
   onClose,
   registerExport,
 }: DetailInsetProps) {
@@ -100,12 +114,26 @@ export function DetailInset({
   // Cached sub-layout (heavy octi precompute), keyed by box. Areas clear on any
   // layout change, so this is computed once per area; toggles just re-draw it.
   const subCacheRef = useRef<{ box: Box; pre: SmoothedPrecomputed | null; selFrame: Rect | null } | null>(null);
-  // Panel rect in CONTENT (map) coords; mutated on drag. Initialised to a ~2.5x
-  // callout to the right of the source box (height re-fit to the re-sim aspect).
+  // Panel rect in CONTENT (map) coords; mutated on drag/zoom. Restored from the saved rect
+  // if the area has one, else a ~2.5x callout to the right of the source box (height re-fit
+  // to the re-sim aspect). The initialiser runs once, so our own persist (below) can't loop.
   const bw = sel.box.x1 - sel.box.x0;
   const bh = sel.box.y1 - sel.box.y0;
-  const rectRef = useRef({ x: sel.box.x1 + bw * 0.4, y: sel.box.y0, w: bw * 2.5, h: bh * 2.5 });
+  const rectRef = useRef(sel.rect ?? { x: sel.box.x1 + bw * 0.4, y: sel.box.y0, w: bw * 2.5, h: bh * 2.5 });
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // Persist the panel rect (position + zoom) on the area so it restores next mount/reload.
+  // Imperative during the gesture (no re-render); pushed up on drag-end and a debounced
+  // wheel-zoom. A pending push is flushed on unmount (a mode switch right after a zoom).
+  const rectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistRect = useCallback(() => {
+    if (rectTimerRef.current) { clearTimeout(rectTimerRef.current); rectTimerRef.current = null; }
+    onRectChange(sel.id, { ...rectRef.current });
+  }, [onRectChange, sel.id]);
+  const scheduleRectPersist = useCallback(() => {
+    if (rectTimerRef.current) clearTimeout(rectTimerRef.current);
+    rectTimerRef.current = setTimeout(() => { rectTimerRef.current = null; onRectChange(sel.id, { ...rectRef.current }); }, 350);
+  }, [onRectChange, sel.id]);
+  useEffect(() => () => { if (rectTimerRef.current) { clearTimeout(rectTimerRef.current); onRectChange(sel.id, { ...rectRef.current }); } }, [onRectChange, sel.id]);
   // Bounds-edit state. The WORKING box lives here while editing so sel.box (and thus the
   // heavy re-sim, which keys on it) stays put until the parent commits on ✓. position()
   // draws the new-bounds outline + the 4 corner handles from it; the prior bounds keep
@@ -249,6 +277,21 @@ export function DetailInset({
 
     // Cache miss: compute the sub-layout once, deferred behind a spinner.
     const miss = (pre: SmoothedPrecomputed | null, selFrame: Rect | null) => { subCacheRef.current = { box, pre, selFrame }; };
+
+    // Persistent hit: this region was octi-computed for this exact layout before. Restore
+    // the sub-layout from localStorage (fp+box gated) and draw it instantly — no spinner,
+    // no re-sim. Mirrors the main map's cache read; falls through to compute on a miss.
+    const boxKey = `${box.x0},${box.y0},${box.x1},${box.y1}`;
+    const ck = getCacheKey();
+    if (ck) {
+      const saved = readSubPre(ck.city, ck.fp, boxKey);
+      if (saved && typeof saved.pre !== 'string') {
+        miss(saved.pre, saved.selFrame);
+        drawResim(saved.pre, saved.selFrame);
+        return;
+      }
+    }
+
     const pre = getMainPre();
     if (!pre || typeof pre === 'string') { miss(null, null); cropFallback(); return; }
     const core = new Set<string>();
@@ -293,10 +336,14 @@ export function DetailInset({
         }
         miss(subPre, selFrame);
         drawResim(subPre, selFrame);
+        // Persist AFTER the draw so the lazily-computed geometry (marker placement) is
+        // captured too — a restore then skips both octi and marker placement, like the
+        // main-map cache. Best-effort; fp+box gated.
+        if (ck) writeSubPre(ck.city, ck.fp, boxKey, subPre, selFrame);
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, baseSvg, showStations, showLabels, position, buildInput, applyLabelScale]);
+  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, position, buildInput, applyLabelScale]);
 
   // Re-apply the label scale when only the setting changes (no re-draw needed).
   useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);
@@ -322,10 +369,11 @@ export function DetailInset({
       // anchor the point under the cursor (content coords): x' + fx·w' = x + fx·w
       rectRef.current = { x: ir.x + fx * ir.w * (1 - z), y: ir.y + fy * ir.h * (1 - z), w: ir.w * z, h: ir.h * z };
       position();
+      scheduleRectPersist(); // debounced — wheel has no "end" event
     };
     panel.addEventListener('wheel', onWheel, { passive: false });
     return () => panel.removeEventListener('wheel', onWheel);
-  }, [position]);
+  }, [position, scheduleRectPersist]);
 
   // Drag the panel (content-space rect); stopPropagation so the map doesn't pan.
   const onDown = (e: React.PointerEvent) => {
@@ -345,7 +393,9 @@ export function DetailInset({
   };
   const onUp = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
+    const wasDragging = dragRef.current !== null;
     dragRef.current = null;
+    if (wasDragging) persistRect(); // save the new position once, on release
   };
 
   // Entering edit mode: seed the working box from the current source box and place the

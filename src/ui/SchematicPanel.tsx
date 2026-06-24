@@ -26,7 +26,7 @@ import { estimateTextWidth } from '../render/labels';
 import { LABEL_FONT_SIZE } from '../render/constants';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, pruneSubPres } from '../render/mapCache';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -616,7 +616,13 @@ export function SchematicPanel() {
     lastSmoothedSelRef.current = selections;
     const city = currentCityRef.current;
     const fp = currentFpRef.current;
-    if (city && fp) writeSelections(city, fp, selections);
+    if (city && fp) {
+      writeSelections(city, fp, selections);
+      // Keep the per-area sub-layout cache aligned with the live areas: drop entries for
+      // boxes that were deleted or bounds-edited away (the surviving boxes keep their
+      // cached re-sim, so they still restore instantly).
+      pruneSubPres(city, fp, selections.map((s) => `${s.box.x0},${s.box.y0},${s.box.x1},${s.box.y1}`));
+    }
   }, [selections]);
 
   // Persist appearance settings per city so a reload restores the sliders/toggles — and
@@ -896,6 +902,13 @@ export function SchematicPanel() {
   // its reposition fn, so pan/zoom keeps every inset + outline glued to the map.
   const getView = useCallback(() => viewRef.current, []);
   const getMainPre = useCallback(() => smoothedCacheRef.current?.pre ?? null, []);
+  // The active layout's sub-layout cache key (city + fingerprint), read fresh so each
+  // DetailInset can persist/restore its cropped re-sim. Null when there's no stable fp
+  // (a file-loaded layout sets currentFpRef=null), so those areas just re-simulate.
+  const getSubCacheKey = useCallback(
+    () => (currentCityRef.current && currentFpRef.current ? { city: currentCityRef.current, fp: currentFpRef.current } : null),
+    [],
+  );
   const registerReposition = useCallback((id: string, fn: (() => void) | null) => {
     if (fn) repositionFns.current.set(id, fn);
     else repositionFns.current.delete(id);
@@ -922,6 +935,12 @@ export function SchematicPanel() {
   const onBoundsChange = useCallback((id: string, box: Box) => {
     boundsDraftRef.current = { id, box };
   }, []);
+  // Persist a popout panel's position/zoom onto its area (rides the :sel: cache + restore).
+  // box identity is untouched, so this never re-simulates; called on drag-end / debounced
+  // wheel, so it's at most one write per interaction.
+  const onRectChange = useCallback((id: string, rect: { x: number; y: number; w: number; h: number }) => {
+    updateSelection(id, { rect });
+  }, [updateSelection]);
   const commitEdit = useCallback(() => {
     setEditingId((cur) => {
       const d = boundsDraftRef.current;
@@ -2035,6 +2054,7 @@ export function SchematicPanel() {
             getView={getView}
             registerReposition={registerReposition}
             getMainPre={getMainPre}
+            getCacheKey={getSubCacheKey}
             buildInput={buildInput}
             baseSvg={svg}
             showStations={showStations}
@@ -2042,6 +2062,7 @@ export function SchematicPanel() {
             labelScale={labelScale}
             editing={editingId === s.id}
             onBoundsChange={onBoundsChange}
+            onRectChange={onRectChange}
             onClose={closeSelection}
             registerExport={registerExport}
           />
