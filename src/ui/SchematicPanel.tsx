@@ -323,16 +323,6 @@ export function SchematicPanel() {
   const skipModeBlankRef = useRef(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // Build marker — fires once when the panel mounts so the game's dev console
-  // proves which bundle loaded. Bump the tag each iteration. NOTE: the "Draw
-  // area" button only shows in SMOOTHED mode after Generate Map.
-  useEffect(() => {
-    console.log(
-      '%c[improved-schematics] BUILD popout-box-p28 (open instantly with a loading spinner; restore deferred off the first render) loaded ✦ — wheel over a popup scales the WHOLE panel (frame + content) toward the cursor, like a map object; drag anywhere on it to move it. Lock via ≣ Areas to pan/zoom the map through it.',
-      'color:#38bdf8;font-weight:bold;font-size:13px',
-    );
-  }, []);
-
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
   const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
