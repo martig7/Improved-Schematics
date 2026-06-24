@@ -17,8 +17,9 @@ import {
   drawSmoothedSchematic,
   type SmoothedPrecomputed,
 } from '../render/schematic';
-import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
+import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescriptor } from './DetailInset';
 import { decideAreaAction } from './areaLifecycle';
+import { Icon } from './icons';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
@@ -188,6 +189,9 @@ export function SchematicPanel() {
   // is imperative (boxRef + the overlay div) to match the pan/zoom model that
   // bypasses React; on release it commits to a `selections` entry.
   const [drawMode, setDrawMode] = useState(false);
+  // Which area (if any) is in bounds-edit mode: its DetailInset shows corner handles and
+  // the menu row swaps the ✎ edit button for ✓/✗. Only one area edits at a time.
+  const [editingId, setEditingId] = useState<string | null>(null);
   // Each committed selection spawns a persistent, color-coded DetailInset (its own
   // outline on the map + a draggable re-sim panel). They live until closed. The
   // live drag is still imperative (boxRef + the draw overlay) to match the pan/zoom
@@ -910,11 +914,37 @@ export function SchematicPanel() {
   const updateSelection = useCallback((id: string, patch: Partial<Selection>) => {
     setSelections((xs) => xs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
+  // Bounds-edit: the DetailInset reports its in-progress (working) box here on each corner
+  // drag; ✓ applies it (a new `box` → one re-sim), ✗ discards. Kept in a ref so per-drag
+  // updates don't re-render. The draft is cleared when entering edit, so a no-drag ✓ is a
+  // no-op (id won't match / no draft).
+  const boundsDraftRef = useRef<{ id: string; box: Box } | null>(null);
+  const onBoundsChange = useCallback((id: string, box: Box) => {
+    boundsDraftRef.current = { id, box };
+  }, []);
+  const commitEdit = useCallback(() => {
+    setEditingId((cur) => {
+      const d = boundsDraftRef.current;
+      if (cur && d && d.id === cur) updateSelection(cur, { box: { ...d.box } });
+      boundsDraftRef.current = null;
+      return null;
+    });
+  }, [updateSelection]);
+  const cancelEdit = useCallback(() => {
+    boundsDraftRef.current = null;
+    setEditingId(null);
+  }, []);
   const clearSelections = useCallback(() => {
     repositionFns.current.clear();
     exportFns.current.clear();
     setSelections([]);
   }, []);
+
+  // Drop bounds-edit mode if the edited area is gone (deleted, cleared, or a layout
+  // change restored/cleared the set) — otherwise the ✓/✗ row would point at nothing.
+  useEffect(() => {
+    if (editingId && !selections.some((s) => s.id === editingId)) setEditingId(null);
+  }, [selections, editingId]);
 
   // Mirror of `selections` for the imperative (dep-[]) paths below.
   selectionsRef.current = selections;
@@ -1420,6 +1450,20 @@ export function SchematicPanel() {
     fontWeight: active ? 600 : 400,
     opacity: active ? 1 : 0.7,
   });
+  // Shared style for the area-row icon buttons (SVG <Icon> children). `as const` keeps the
+  // union-typed fields (display/alignItems) as literals so the object stays assignable to
+  // the style prop; per-button overrides (opacity/color) spread on top.
+  const iconBtn = {
+    cursor: 'pointer',
+    border: 'none',
+    background: 'transparent',
+    color: 'inherit',
+    opacity: 0.65,
+    padding: 2,
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+  } as const;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
@@ -1581,17 +1625,46 @@ export function SchematicPanel() {
                       onClick={() => updateSelection(s.id, { locked: !s.locked })}
                       title={s.locked ? 'Unlock (allow moving this area)' : 'Lock (pin it; pan/zoom passes through)'}
                       aria-label={s.locked ? 'Unlock area' : 'Lock area'}
-                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: s.locked ? 1 : 0.55, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                      style={{ ...iconBtn, opacity: s.locked ? 1 : 0.55 }}
                     >
-                      {s.locked ? '🔒' : '🔓'}
+                      <Icon name={s.locked ? 'lock' : 'unlock'} />
                     </button>
+                    {editingId === s.id ? (
+                      <>
+                        <button
+                          onClick={commitEdit}
+                          title="Apply the new bounds"
+                          aria-label="Apply bounds"
+                          style={{ ...iconBtn, color: '#4ade80', opacity: 1 }}
+                        >
+                          <Icon name="check" />
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          title="Cancel — keep the original bounds"
+                          aria-label="Cancel edit"
+                          style={{ ...iconBtn, color: '#f87171', opacity: 1 }}
+                        >
+                          <Icon name="x" />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => { boundsDraftRef.current = null; setEditingId(s.id); }}
+                        title="Edit bounds — drag the corner handles on the map"
+                        aria-label="Edit area bounds"
+                        style={iconBtn}
+                      >
+                        <Icon name="edit" />
+                      </button>
+                    )}
                     <button
                       onClick={() => closeSelection(s.id)}
                       title="Delete this area"
                       aria-label="Delete this area"
-                      style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: 0.65, fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+                      style={iconBtn}
                     >
-                      🗑
+                      <Icon name="trash" />
                     </button>
                   </div>
                 ))}
@@ -1958,6 +2031,8 @@ export function SchematicPanel() {
             showStations={showStations}
             showLabels={showLabels}
             labelScale={labelScale}
+            editing={editingId === s.id}
+            onBoundsChange={onBoundsChange}
             onClose={closeSelection}
             registerExport={registerExport}
           />

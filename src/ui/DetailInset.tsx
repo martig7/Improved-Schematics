@@ -32,6 +32,12 @@ export interface SelView {
 /** Detail-area accent colors, cycled in creation order. */
 export const SEL_COLORS = ['#22d3ee', '#e879f9', '#fb923c', '#4ade80']; // cyan, magenta, orange, green
 
+// Bounds-edit corner handles: [x-edge, y-edge] each handle controls, ordered TL, TR, BL, BR.
+const EDIT_CORNERS = [['x0', 'y0'], ['x1', 'y0'], ['x0', 'y1'], ['x1', 'y1']] as const;
+// Min box size (content px) enforced while resizing, so a corner can't cross the opposite
+// side and invert the box (clamp, not flip).
+const EDIT_MIN = 8;
+
 interface DetailInsetProps {
   sel: Selection;
   /** Current pan/zoom, read fresh (the parent mutates it imperatively). */
@@ -50,6 +56,12 @@ interface DetailInsetProps {
   showLabels: boolean;
   /** Label-size multiplier (the main map's setting); scaled onto this sub-map's labels. */
   labelScale: number;
+  /** Bounds-edit mode: show draggable corner handles over the source box (the prior
+   *  bounds stay lightly outlined; the new bounds outline + handles track the drag). */
+  editing: boolean;
+  /** Report the in-progress (working) box to the parent on each corner drag, so it can
+   *  apply it on commit (✓). The source box itself isn't touched until then. */
+  onBoundsChange: (id: string, box: Box) => void;
   onClose: (id: string) => void;
   /** Register/unregister an export descriptor getter so the parent can bake this
    *  panel (current dragged rect + rendered sub-SVG + frame) into the export. */
@@ -74,6 +86,8 @@ export function DetailInset({
   showStations,
   showLabels,
   labelScale,
+  editing,
+  onBoundsChange,
   onClose,
   registerExport,
 }: DetailInsetProps) {
@@ -92,6 +106,19 @@ export function DetailInset({
   const bh = sel.box.y1 - sel.box.y0;
   const rectRef = useRef({ x: sel.box.x1 + bw * 0.4, y: sel.box.y0, w: bw * 2.5, h: bh * 2.5 });
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // Bounds-edit state. The WORKING box lives here while editing so sel.box (and thus the
+  // heavy re-sim, which keys on it) stays put until the parent commits on ✓. position()
+  // draws the new-bounds outline + the 4 corner handles from it; the prior bounds keep
+  // showing via the (dimmed) source outline. editingRef lets the stable position() branch.
+  const editBoxRef = useRef<Box | null>(null);
+  const editOutlineRef = useRef<HTMLDivElement>(null);
+  const h0 = useRef<HTMLDivElement>(null);
+  const h1 = useRef<HTMLDivElement>(null);
+  const h2 = useRef<HTMLDivElement>(null);
+  const h3 = useRef<HTMLDivElement>(null);
+  const editDragRef = useRef<{ cx: 'x0' | 'x1'; cy: 'y0' | 'y1'; sx: number; sy: number; box0: Box } | null>(null);
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
   // The translucent fill shows while selecting; it's dropped once the detail loads.
   const [loaded, setLoaded] = useState(false);
   // Mirror the label-size setting so the (closure-bound) re-sim draw reads the current
@@ -134,6 +161,25 @@ export function DetailInset({
       line.setAttribute('y1', `${((sel.box.y0 + sel.box.y1) / 2 - view.vy) * view.scale}`);
       line.setAttribute('x2', `${(anchorX - view.vx) * view.scale}`);
       line.setAttribute('y2', `${(ir.y + ir.h / 2 - view.vy) * view.scale}`);
+    }
+    // Bounds-edit: the new-bounds outline + 4 corner handles, from the working box.
+    if (editingRef.current && editBoxRef.current) {
+      const eb = editBoxRef.current;
+      const eo = editOutlineRef.current;
+      if (eo) {
+        eo.style.left = `${(eb.x0 - view.vx) * view.scale}px`;
+        eo.style.top = `${(eb.y0 - view.vy) * view.scale}px`;
+        eo.style.width = `${(eb.x1 - eb.x0) * view.scale}px`;
+        eo.style.height = `${(eb.y1 - eb.y0) * view.scale}px`;
+      }
+      const cs: [number, number][] = [[eb.x0, eb.y0], [eb.x1, eb.y0], [eb.x0, eb.y1], [eb.x1, eb.y1]];
+      const hs = [h0, h1, h2, h3];
+      for (let i = 0; i < hs.length; i++) {
+        const h = hs[i].current;
+        if (!h) continue;
+        h.style.left = `${(cs[i][0] - view.vx) * view.scale}px`;
+        h.style.top = `${(cs[i][1] - view.vy) * view.scale}px`;
+      }
     }
   }, [getView, sel.box]);
 
@@ -302,6 +348,44 @@ export function DetailInset({
     dragRef.current = null;
   };
 
+  // Entering edit mode: seed the working box from the current source box and place the
+  // handles (they just mounted). Leaving: drop it. sel.box is stable during an edit —
+  // a commit changes it, which also ends editing — so this never reseeds mid-drag.
+  useEffect(() => {
+    editBoxRef.current = editing ? { ...sel.box } : null;
+    position();
+  }, [editing, sel.box, position]);
+
+  // Drag a corner handle: move its two edges by the cursor delta (÷scale → content px),
+  // clamped so the box keeps a min size (no inversion). Reports the working box up; the
+  // parent applies it on ✓. stopPropagation isn't strictly needed (handles are siblings
+  // of the map viewport, not children) but keeps intent clear + pointer capture clean.
+  const onHandleDown = (cx: 'x0' | 'x1', cy: 'y0' | 'y1') => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    editDragRef.current = { cx, cy, sx: e.clientX, sy: e.clientY, box0: { ...(editBoxRef.current ?? sel.box) } };
+  };
+  const onHandleMove = (e: React.PointerEvent) => {
+    const d = editDragRef.current;
+    const view = getView();
+    if (!d || !view) return;
+    e.stopPropagation();
+    const dx = (e.clientX - d.sx) / view.scale;
+    const dy = (e.clientY - d.sy) / view.scale;
+    const nb: Box = { ...d.box0 };
+    if (d.cx === 'x0') nb.x0 = Math.min(d.box0.x0 + dx, d.box0.x1 - EDIT_MIN);
+    else nb.x1 = Math.max(d.box0.x1 + dx, d.box0.x0 + EDIT_MIN);
+    if (d.cy === 'y0') nb.y0 = Math.min(d.box0.y0 + dy, d.box0.y1 - EDIT_MIN);
+    else nb.y1 = Math.max(d.box0.y1 + dy, d.box0.y0 + EDIT_MIN);
+    editBoxRef.current = nb;
+    onBoundsChange(sel.id, nb);
+    position();
+  };
+  const onHandleUp = (e: React.PointerEvent) => {
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    editDragRef.current = null;
+  };
+
   return (
     <>
       {/* Leader from the source box to the callout panel (positioned imperatively).
@@ -317,9 +401,54 @@ export function DetailInset({
           background: loaded ? 'transparent' : `${sel.color}22`,
           borderRadius: 2,
           pointerEvents: 'none',
-          boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
+          // While editing this shows the PRIOR bounds, lightly: dimmed + no drop shadow.
+          boxShadow: editing ? 'none' : '0 0 0 1px rgba(0,0,0,0.45)',
+          opacity: editing ? 0.4 : 1,
         }}
       />
+      {/* Bounds-edit: the NEW-bounds outline + 4 draggable corner handles, tracking the
+          working box (positioned imperatively in position()). Solid, full-color. */}
+      {editing && (
+        <>
+          <div
+            ref={editOutlineRef}
+            style={{
+              position: 'absolute',
+              border: `2px solid ${sel.color}`,
+              borderRadius: 2,
+              pointerEvents: 'none',
+              boxShadow: '0 0 0 1px rgba(0,0,0,0.55)',
+              zIndex: 4,
+            }}
+          />
+          {EDIT_CORNERS.map(([cx, cy], i) => (
+            <div
+              key={i}
+              ref={[h0, h1, h2, h3][i]}
+              onPointerDown={onHandleDown(cx, cy)}
+              onPointerMove={onHandleMove}
+              onPointerUp={onHandleUp}
+              onPointerLeave={onHandleUp}
+              title="Drag to resize this area"
+              style={{
+                position: 'absolute',
+                width: 12,
+                height: 12,
+                marginLeft: -6,
+                marginTop: -6,
+                borderRadius: 3,
+                background: '#fff',
+                border: `2px solid ${sel.color}`,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+                // TL/BR resize on the NW–SE diagonal; TR/BL on the NE–SW diagonal.
+                cursor: (cx === 'x0') === (cy === 'y0') ? 'nwse-resize' : 'nesw-resize',
+                touchAction: 'none',
+                zIndex: 5,
+              }}
+            />
+          ))}
+        </>
+      )}
       <div
         ref={panelRef}
         style={{
