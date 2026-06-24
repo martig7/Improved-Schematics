@@ -175,7 +175,7 @@ export function readSelections(
 
 /** A cached sub-layout's frame (the panel's viewBox into its sub-map), or null. */
 type SubFrame = { x: number; y: number; w: number; h: number } | null;
-interface SubEntry { pre: string; selFrame: SubFrame }
+export interface SubEntry { pre: string; selFrame: SubFrame }
 
 /** The cached sub-layout (a detail area's octi precompute of its cropped region) for
  *  `boxKey` on the layout fingerprinted by `fp`, or null on miss. Lets a DetailInset skip
@@ -233,6 +233,44 @@ export function writeSubPre(
     store.setItem(subKey(city), JSON.stringify(o));
   } catch {
     // Quota or error: drop the (purely-perf) sub-cache for this city and give up.
+    try { store.removeItem(subKey(city)); } catch { /* ignore */ }
+  }
+}
+
+/** Every cached sub-layout for (`city`, `fp`) as a raw boxKey→entry map (the serialized
+ *  sub strings, untouched), or null on miss / format change. Lets the panel bake the whole
+ *  sub-layout cache into a saved map file so a load restores each area instantly — exactly
+ *  like a localStorage cache hit. */
+export function readAllSubPres(
+  city: string,
+  fp: string,
+  store: KVStore | null = defaultStore(),
+): Record<string, SubEntry> | null {
+  if (!store || !city) return null;
+  try {
+    const raw = store.getItem(subKey(city));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { stamp?: string; subs?: Record<string, SubEntry> };
+    if (o.stamp !== stamp(fp) || !o.subs) return null;
+    return o.subs;
+  } catch {
+    return null;
+  }
+}
+
+/** Replace the whole sub-layout cache for (`city`, `fp`) with `subs` in one write. Used to
+ *  seed the sub-cache from a loaded map file, so its detail areas restore from cache instead
+ *  of re-simulating. Best-effort: on quota it drops the (purely-perf) sub-cache and gives up. */
+export function writeAllSubPres(
+  city: string,
+  fp: string,
+  subs: Record<string, SubEntry>,
+  store: KVStore | null = defaultStore(),
+): void {
+  if (!store || !city) return;
+  try {
+    store.setItem(subKey(city), JSON.stringify({ stamp: stamp(fp), subs }));
+  } catch {
     try { store.removeItem(subKey(city)); } catch { /* ignore */ }
   }
 }

@@ -24,7 +24,8 @@ import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres } from '../render/mapCache';
+import { cropSubgraph } from '../render/cropSubgraph';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -465,65 +466,6 @@ export function SchematicPanel() {
     };
   }, []);
 
-  // Dump the exact live render inputs, so in-game artifacts can be reproduced
-  // offline bit-for-bit (geojson reconstructions drift from the live save and
-  // the game's station grouping). storage.set silently drops multi-MB payloads,
-  // so deliver as a browser download instead — triggered on demand via the
-  // "input dump" control rather than auto-downloading when the panel opens.
-  const [dumpStatus, setDumpStatus] = useState<string | null>(null);
-  const downloadDump = useCallback(() => {
-    try {
-      const dark = api.ui.getResolvedTheme() === 'dark';
-      const payload = JSON.stringify({
-        at: new Date().toISOString(),
-        stationGroups: resolveStationGroupsFromGameState(api.gameState),
-        routes: api.gameState.getRoutes(),
-        tracks: api.gameState.getTracks(),
-        stations: api.gameState.getStations(),
-        // geography sets the projection BOUNDS (geoFramePts → computeBounds), so
-        // it must be captured or an offline repro projects the network into
-        // different bounds → a different octi layout than the game produces.
-        geography,
-        // The live render options (mode + appearance sliders, applied values),
-        // mirroring buildInput().options below, so an offline repro reproduces
-        // the user's current settings instead of the script's hardcoded ones.
-        // Derived values (warpAlpha/geographicAffinity/theme) are baked in so a
-        // script can pass `options` straight through without re-deriving them.
-        options: {
-          mode,
-          showStations,
-          showLabels,
-          dark,
-          padding: applied.mapMargin,
-          warpAlpha: warpAlphaFromPos(applied.warpPos),
-          geographicAffinity: affinityFromPos(applied.linePos),
-          boxExpand: boxExpandFromPos(applied.boxWarpPos),
-          boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
-          theme: {
-            ...(dark ? DARK_THEME : DEFAULT_THEME),
-            lineWidth: applied.lineWidth,
-            stationRadius: applied.stationRadius,
-          },
-        },
-        // Export-time controls (raster scale, JPEG quality, chosen format) —
-        // not render inputs, but captured so scripts can match the exported file.
-        exportOptions: { format: exportFormat, rasterScale, jpegQuality },
-      });
-      const blob = new Blob([payload], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'improvedschematics-input.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      setDumpStatus(`${(payload.length / 1e6).toFixed(1)}MB`);
-    } catch (err) {
-      setDumpStatus('failed: ' + String(err));
-    }
-  }, [geography, mode, showStations, showLabels, applied, exportFormat, rasterScale, jpegQuality]);
-
   // Per-mount cache of the expensive smoothed layout. Reused for label/station
   // toggles so those are a cheap redraw; cleared by (Re)generate to force a fresh
   // octi run. Lost on panel close — nothing is persisted automatically anymore.
@@ -591,6 +533,63 @@ export function SchematicPanel() {
       },
     };
   }, [geography, mode, showStations, showLabels, applied]);
+
+  // The exact live render inputs, captured for offline repro (geojson reconstructions
+  // drift from the live save and the game's station grouping). Formerly downloaded via a
+  // standalone "input dump" button; now baked into the saved map JSON (exportMap) so the
+  // one Save map file carries both the cache AND the debug inputs. IGNORED on load.
+  //
+  // Per-area inputs: for each detail area we also capture the cropped sub-graph input —
+  // the exact SchematicInput the inset's re-sim runs (cropSubgraph of the live network to
+  // the area's box, with the geography clipped to the box's geographic preimage). This lets
+  // any area be debugged on its own offline, the same way the whole map can.
+  const buildInputDump = useCallback(() => {
+    const dark = api.ui.getResolvedTheme() === 'dark';
+    const full = buildInput();
+    // One cropped sub-input per area, mirroring DetailInset's re-sim crop (core stations
+    // inside the box + the box's unprojected geographic bounds for the geography clip).
+    const pre = smoothedCacheRef.current?.pre;
+    const areas = selectionsRef.current.map((sel) => {
+      const box = sel.box;
+      const out: Record<string, unknown> = { id: sel.id, name: sel.name, box };
+      if (pre && typeof pre !== 'string') {
+        const core = new Set<string>();
+        for (const [sid, px] of pre.stationPx) {
+          if (px[0] >= box.x0 && px[0] <= box.x1 && px[1] >= box.y0 && px[1] <= box.y1) core.add(sid);
+        }
+        const bl = pre.unproject([box.x0, box.y1]);
+        const tr = pre.unproject([box.x1, box.y0]);
+        const clipBbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
+        out.coreStationIds = [...core];
+        out.clipBbox = clipBbox;
+        try {
+          out.input = core.size >= 2 ? cropSubgraph(full as never, core, clipBbox) : null;
+        } catch (err) {
+          out.input = null;
+          out.error = String(err);
+        }
+      }
+      return out;
+    });
+    return {
+      at: new Date().toISOString(),
+      stationGroups: full.stationGroups,
+      routes: full.routes,
+      tracks: full.tracks,
+      stations: full.stations,
+      // geography sets the projection BOUNDS (geoFramePts → computeBounds), so it must be
+      // captured or an offline repro projects the network into different bounds → a
+      // different octi layout than the game produces.
+      geography,
+      // The live render options (mirrors buildInput().options, with derived warp/affinity/
+      // theme baked in) so a script can pass `options` straight through.
+      options: full.options,
+      // Export-time controls — not render inputs, but captured so scripts can match the file.
+      exportOptions: { format: exportFormat, rasterScale, jpegQuality },
+      // Per-area cropped sub-inputs (see above) for debugging any area in isolation.
+      areas,
+    };
+  }, [buildInput, geography, exportFormat, rasterScale, jpegQuality]);
 
   const svg = useMemo(() => {
     if (mode === 'smoothed') {
@@ -867,27 +866,48 @@ export function SchematicPanel() {
     img.src = svgUrl;
   }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
 
-  // Save the generated map (precompute + settings) to a JSON file, so reloading
-  // the mod can restore it instantly instead of re-running the octi pipeline.
+  // Save the generated map to a JSON file, so reloading the mod can restore it instantly
+  // instead of re-running the octi pipeline. The file mirrors EVERYTHING the per-city
+  // localStorage cache holds — the precompute (`pre`), the layout fingerprint (`fp`), the
+  // detail areas (`selections`), the per-mode visual settings (`modeSettings`), and the
+  // per-area sub-layout cache (`subs`) — so a load reseeds the cache and behaves exactly
+  // like a cache hit (areas restore without re-simulating; a later Generate hits). The
+  // debug input dump (live render inputs + per-area cropped sub-inputs) rides along under
+  // `inputDump`; it's for offline repro and is ignored on load.
   const exportMap = useCallback(() => {
     const pre = smoothedCacheRef.current?.pre;
     if (mode !== 'smoothed' || !pre) { setMapMsg('Generate a smoothed map first'); return; }
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? 'map';
     const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
+    const fp = currentFpRef.current ?? undefined;
+    // Mirror the rest of the per-city cache: per-mode visual settings + the sub-layout cache
+    // (fp-gated, so only the subs that belong to THIS layout are captured).
+    const modeSettings: Record<string, unknown> = {};
+    for (const m of ['geographic', 'smoothed']) {
+      const v = readModeSettings(city, m);
+      if (v != null) modeSettings[m] = v;
+    }
+    const subs = fp ? (readAllSubPres(city, fp) ?? undefined) : undefined;
     try {
-      const json = serializeMap({ version: 1, city, settings, selections, pre });
+      const json = serializeMap({
+        version: 1, city, settings, selections, modeSettings, fp, subs, pre,
+        inputDump: buildInputDump(),
+      });
       triggerDownload(new Blob([json], { type: 'application/json' }), 'json', `improvedschematics-map-${city}`);
       setMapMsg(`Saved · ${(json.length / 1024 / 1024).toFixed(1)} MB`);
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState]);
+  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
-  // to redraw; storing under the CURRENT city keeps the generate/ready flow (and a
-  // later remount's hydration) happy. Used by file-load AND auto-restore.
-  const applyBundle = useCallback((bundle: { settings?: unknown; selections?: unknown; pre: SmoothedPrecomputed | string }) => {
+  // to redraw. When the file carries the layout fingerprint (`fp`) it loads EXACTLY
+  // like a cache hit: we set the live city/fp and reseed the per-city localStorage
+  // cache (pre, areas, per-mode settings, sub-layouts) so detail areas restore from
+  // their saved sub-layouts instead of re-simulating, and a later remount+Generate
+  // hits. The debug `inputDump` field is intentionally ignored here. Used by file-load.
+  const applyBundle = useCallback((bundle: import('../render/persist').MapBundle) => {
     const s = (bundle.settings ?? {}) as {
       showStations?: boolean;
       showLabels?: boolean;
@@ -921,9 +941,32 @@ export function SchematicPanel() {
       return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
     }, selCountRef.current);
     smoothedCacheRef.current = { pre: bundle.pre };
-    // A loaded file's layout has no computed fingerprint, so don't auto-persist areas
-    // under a stale fp; the next Generate recomputes it and re-enables area persistence.
-    currentFpRef.current = null;
+    // Loads exactly like a cache hit when the file carries its fingerprint: adopt the saved
+    // city + fp as the live layout identity so getSubCacheKey resolves and each area's saved
+    // sub-layout restores from cache (no re-sim), then reseed the per-city localStorage cache
+    // (pre, areas, per-mode settings, sub-layouts) so a later remount+Generate hits too. The
+    // fp came from the inputs the map was built on — it's stable and real (not transient), so
+    // persisting areas/subs under it is correct. Without an fp (older files) we fall back to
+    // the legacy null-fp behaviour: areas just re-simulate.
+    const loadCity = bundle.city || currentCityRef.current;
+    if (bundle.fp && loadCity) {
+      currentCityRef.current = loadCity;
+      currentFpRef.current = bundle.fp;
+      try {
+        writeCachedPre(loadCity, bundle.fp, bundle.pre);
+        writeSelections(loadCity, bundle.fp, restored);
+        if (bundle.subs) writeAllSubPres(loadCity, bundle.fp, bundle.subs);
+        if (bundle.modeSettings) {
+          for (const [m, v] of Object.entries(bundle.modeSettings)) writeModeSettings(loadCity, m, v);
+        }
+      } catch {
+        /* best-effort cache seed — the map still loads from the in-memory pre above */
+      }
+    } else {
+      // A loaded file's layout has no computed fingerprint, so don't auto-persist areas
+      // under a stale fp; the next Generate recomputes it and re-enables area persistence.
+      currentFpRef.current = null;
+    }
     if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
     setSelections([]); // drop any current areas; the inject effect installs the saved ones
     setGenerating(false);
@@ -1452,27 +1495,6 @@ export function SchematicPanel() {
         {mode === 'smoothed' && genMs != null && (
           <span style={{ color: '#888', fontSize: 11 }}>
             {genMs === 0 ? 'Cache used' : `Finished in ${(genMs / 1000).toFixed(2)}s`}
-          </span>
-        )}
-        {mode === 'smoothed' && (
-          <span style={{ opacity: 0.35, fontSize: 10, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            input dump
-            <button
-              onClick={downloadDump}
-              title="Download the live render inputs as JSON"
-              style={{
-                cursor: 'pointer',
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                font: 'inherit',
-                color: 'inherit',
-                lineHeight: 1,
-              }}
-            >
-              ↓
-            </button>
-            {dumpStatus ? ` ${dumpStatus}` : ''}
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
