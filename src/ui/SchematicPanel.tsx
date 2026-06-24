@@ -18,6 +18,7 @@ import {
   type SmoothedPrecomputed,
 } from '../render/schematic';
 import { DetailInset, SEL_COLORS, type Selection, type ExportDescriptor } from './DetailInset';
+import { decideAreaAction } from './areaLifecycle';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { estimateTextWidth } from '../render/labels';
@@ -317,6 +318,12 @@ export function SchematicPanel() {
   // Detail areas pending restore from a loaded map file. The inject effect's
   // layout-change branch (which normally CLEARS areas) installs these instead.
   const restoreSelectionsRef = useRef<Selection[] | null>(null);
+  // In-memory snapshot of the last SMOOTHED-mode selections (updated in the persist
+  // effect, smoothed-only). Reinstated when returning to smoothed from a non-smoothed
+  // mode: the smoothed layout is still cached so the memo's restore-queue path is skipped,
+  // and a file-loaded layout has no durable :sel: backing (its fp is null) — so this
+  // in-memory copy, not the store, is what survives a geographic round-trip.
+  const lastSmoothedSelRef = useRef<Selection[]>([]);
   // When a FILE load switches mode to smoothed, skip the mode effect's
   // smoothedReady blank for one run so the loaded map shows in a single settle
   // (no transient that would race the area restore). Starts false (no mount restore).
@@ -463,6 +470,12 @@ export function SchematicPanel() {
   // current pan/zoom when only labels/stations toggle (same layout redrawn).
   const layoutIdRef = useRef<unknown>(null);
   const lastLayoutIdRef = useRef<unknown>(undefined);
+  // Detail-area lifecycle key, kept SEPARATE from layoutIdRef. The view re-fit keys on
+  // the cache OBJECT (which is new on every (re)generate even when the layout is identical)
+  // — fine for pan/zoom, fatal for areas: clearing on it wiped freshly-drawn areas and
+  // persisted the wipe as an empty :sel: write under the same fp. Areas key on the layout
+  // FINGERPRINT instead, so a same-fp regenerate / spurious re-render keeps them.
+  const lastAreaKeyRef = useRef<string | undefined>(undefined);
   const geoIdRef = useRef<{ mode: RenderMode; geography: GeographyData | undefined } | null>(null);
 
   // The game exposes its real station groups (spatial-proximity-merged platforms,
@@ -590,6 +603,12 @@ export function SchematicPanel() {
   // clears the areas — doesn't overwrite the saved set with an empty list.
   useEffect(() => {
     if (modeRef.current !== 'smoothed') return;
+    // Snapshot the live smoothed areas (BEFORE the fp guard, so a file-loaded layout with
+    // a null fp is still captured) — the inject restores this on a geographic round-trip.
+    // Runs only on a real selections change, so the transient [] during a return-to-smoothed
+    // render (selections unchanged → effect skipped) can't clobber it; and it's mode-guarded
+    // so the →geographic clear (modeRef already geographic) doesn't either.
+    lastSmoothedSelRef.current = selections;
     const city = currentCityRef.current;
     const fp = currentFpRef.current;
     if (city && fp) writeSelections(city, fp, selections);
@@ -1133,17 +1152,30 @@ export function SchematicPanel() {
       applyToDom(true); // re-apply existing viewBox + counter-scale the new nodes
     } else {
       fit();
-      // A different layout (mode switch, regen, city/water reframe) invalidates the
-      // detail areas — their boxes are in the old layout's coords. Drop them — UNLESS
-      // this layout came from a loaded map file, in which case restore its areas.
-      if (lastLayoutIdRef.current) {
-        const restore = restoreSelectionsRef.current;
-        restoreSelectionsRef.current = null;
-        if (restore) setSelections(restore);
-        else clearSelections();
-      }
     }
     lastLayoutIdRef.current = layoutIdRef.current;
+    // Detail-area lifecycle — DECOUPLED from the view branch above (areas live in render-
+    // pixel coords; the cache OBJECT churns on every (re)generate and viewRef is briefly
+    // null on first paint, so keying the area reset on those wiped freshly-drawn areas and
+    // clobbered the durable store). The decision is a pure, unit-tested function keyed on
+    // the layout FINGERPRINT plus a queued restore and the in-memory smoothed snapshot —
+    // see areaLifecycle.ts for the full case analysis (round-trip, file-load, delete-all,
+    // genuine fp change, spurious re-render).
+    const areaKey = mode === 'smoothed' ? `s:${currentFpRef.current ?? ''}` : `m:${mode}`;
+    const restore = restoreSelectionsRef.current;
+    restoreSelectionsRef.current = null; // consumed below, or discarded (same layout)
+    const action = decideAreaAction<Selection>({
+      queuedRestore: restore,
+      prevKey: lastAreaKeyRef.current,
+      nextKey: areaKey,
+      isSmoothed: mode === 'smoothed',
+      snapshot: lastSmoothedSelRef.current,
+    });
+    console.log(`[areas] INJECT ${lastAreaKeyRef.current} -> ${areaKey} -> ${action.kind}${action.kind === 'restore' ? ' n=' + action.selections.length : ''}`);
+    if (action.kind === 'restore') setSelections(action.selections);
+    else if (action.kind === 'clear') clearSelections();
+    // 'keep' → leave the on-screen areas untouched.
+    lastAreaKeyRef.current = areaKey;
     // Surface the smoothed build time (geographic renders are cheap + auto).
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
     // The map is in the DOM now — drop the generating spinner.

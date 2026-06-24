@@ -125,8 +125,28 @@ export function writeSelections(
   store: KVStore | null = defaultStore(),
 ): void {
   if (!store || !city) return;
+  const dbg = (m: string) => { if (typeof window !== 'undefined') console.log(`[areas] WRITE ${city} ${m}`); };
   try {
+    // An EMPTY write must not clobber another LAYOUT's saved areas. There is one `:sel:`
+    // entry per city, so a write replaces whatever fp was stored. A generate under a
+    // *transient* fingerprint (classically before geography finishes loading → a `nogeo`
+    // fp) clears the live selections, and that empty write would otherwise overwrite the
+    // real `{geo-fp, [areas]}` — so the areas vanish even though the layout cache later
+    // hits. If the stored entry belongs to a DIFFERENT fp, preserve it. (A non-empty write
+    // always wins: the user is actively drawing on THIS layout.)
+    if (selections.length === 0) {
+      const raw = store.getItem(selKey(city));
+      if (raw) {
+        try {
+          const prev = JSON.parse(raw) as { stamp?: string };
+          if (prev.stamp && prev.stamp !== stamp(fp)) { dbg(`n=0 SKIP-preserve (stored ${prev.stamp} != ${stamp(fp)})`); return; }
+        } catch {
+          /* corrupt entry — fall through and overwrite */
+        }
+      }
+    }
     store.setItem(selKey(city), JSON.stringify({ stamp: stamp(fp), selections }));
+    dbg(`n=${selections.length} under ${stamp(fp)}`);
   } catch {
     /* ignore — areas are non-critical UI state */
   }
@@ -143,12 +163,15 @@ export function readSelections(
   store: KVStore | null = defaultStore(),
 ): unknown[] | null {
   if (!store || !city) return null;
+  const dbg = (m: string) => { if (typeof window !== 'undefined') console.log(`[areas] READ ${city} ${m}`); };
   try {
     const raw = store.getItem(selKey(city));
-    if (!raw) return null;
+    if (!raw) { dbg(`want ${stamp(fp)} -> ABSENT`); return null; }
     const o = JSON.parse(raw) as { stamp?: string; selections?: unknown };
-    if (o.stamp !== stamp(fp)) return null; // areas belong to a different layout
-    return Array.isArray(o.selections) ? o.selections : null;
+    if (o.stamp !== stamp(fp)) { dbg(`want ${stamp(fp)} have ${o.stamp} -> MISMATCH`); return null; } // areas belong to a different layout
+    const r = Array.isArray(o.selections) ? o.selections : null;
+    dbg(`want ${stamp(fp)} -> HIT n=${r ? r.length : 'null'}`);
+    return r;
   } catch {
     return null;
   }

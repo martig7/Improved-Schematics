@@ -52,6 +52,22 @@ test('mapCache: selections round-trip only when the fingerprint matches', () => 
   assert.equal(readSelections('sea', 'fpA', s), null, 'absent → null');
 });
 
+test('mapCache: an empty write does not clobber a DIFFERENT layout\'s areas', () => {
+  const s = fakeStore();
+  writeSelections('nyc', 'fpA', [{ id: 'sel-0' }], s); // areas on layout A
+  // A transient generate under a different fp (e.g. before geography loaded) clears the
+  // live selections → empty write under fpB. It must NOT destroy layout A's areas.
+  writeSelections('nyc', 'fpB', [], s);
+  assert.deepEqual(readSelections('nyc', 'fpA', s), [{ id: 'sel-0' }], 'layout A areas survive');
+  // An empty write under the SAME fp DOES persist (the user genuinely cleared them).
+  writeSelections('nyc', 'fpA', [], s);
+  assert.deepEqual(readSelections('nyc', 'fpA', s), [], 'same-fp clear persists');
+  // A non-empty write under a different fp wins (user actively drew on that layout).
+  writeSelections('nyc', 'fpC', [{ id: 'sel-1' }], s);
+  assert.deepEqual(readSelections('nyc', 'fpC', s), [{ id: 'sel-1' }]);
+  assert.equal(readSelections('nyc', 'fpA', s), null, 'fpA replaced by the non-empty fpC write');
+});
+
 test('mapCache: a new fingerprint orphans the old selections', () => {
   const s = fakeStore();
   writeSelections('nyc', 'fp1', [{ id: 'sel-0' }], s);
