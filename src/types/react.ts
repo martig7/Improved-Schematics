@@ -13,6 +13,7 @@ export default React;
 export const {
   useState,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useMemo,
   useRef,

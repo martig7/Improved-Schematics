@@ -10,7 +10,7 @@
  * Water is loaded from the city's ocean_depth_index on first open.
  */
 
-import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
+import { useMemo, useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import {
   generateSchematicSVG,
   precomputeSmoothedSchematic,
@@ -138,6 +138,60 @@ function Slider(props: {
       />
     </label>
   );
+}
+
+// Keep an absolutely-positioned popover (the top bar's Areas / Settings menus)
+// inside the panel. These menus anchor to the RIGHT edge of their button and
+// grow leftward, so when the panel is narrow and the top bar wraps the button
+// near the left edge, a fixed-width menu opens past the panel's left edge and
+// gets clipped. On open — and on panel/window resize — this measures the menu
+// against the panel bounds and (a) caps its width/height to the panel, then
+// (b) nudges it horizontally so neither edge spills out. `signature` re-runs the
+// measure when the menu's own content changes size (e.g. areas added/removed).
+function useClampedPopover(
+  open: boolean,
+  boundsRef: { current: HTMLElement | null },
+  signature: string,
+  desiredWidth: number,
+  maxHeightCap = Infinity,
+) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = ref.current;
+    if (!el) return;
+    const M = 6; // gutter kept between the menu and the panel edge
+    const adjust = () => {
+      const br = (boundsRef.current ?? document.documentElement).getBoundingClientRect();
+      // Width: never wider than the panel; shrink below the desired width only
+      // when the panel genuinely can't fit it.
+      const availW = Math.max(0, br.width - M * 2);
+      el.style.transform = 'none';
+      el.style.minWidth = `${Math.min(desiredWidth, availW)}px`;
+      el.style.maxWidth = `${availW}px`;
+      // Horizontal: pull in whichever edge spills past the panel.
+      const pr = el.getBoundingClientRect();
+      let dx = 0;
+      if (pr.right > br.right - M) dx = br.right - M - pr.right;
+      if (pr.left + dx < br.left + M) dx = br.left + M - pr.left;
+      el.style.transform = dx ? `translateX(${dx}px)` : 'none';
+      // Vertical: cap to the room below (within any design cap) so a tall menu
+      // scrolls instead of spilling past the panel's bottom edge.
+      const availH = Math.max(0, br.bottom - M - pr.top);
+      el.style.maxHeight = `${Math.min(maxHeightCap, availH)}px`;
+      el.style.overflowY = 'auto';
+    };
+    adjust();
+    const bounds = boundsRef.current;
+    const ro = bounds ? new ResizeObserver(adjust) : null;
+    if (bounds) ro?.observe(bounds);
+    window.addEventListener('resize', adjust);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', adjust);
+    };
+  }, [open, boundsRef, signature, desiredWidth, maxHeightCap]);
+  return ref;
 }
 
 // The automatic map cache (localStorage :pre:/:svg:/:meta:, the in-memory
@@ -274,6 +328,8 @@ export function SchematicPanel() {
   const [genMs, setGenMs] = useState<number | null>(null);
   const genMsRef = useRef<number | null>(null);
 
+  // The panel root — the bounds the top bar's popovers are clamped within.
+  const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   // Canvas-mode render surface + the parsed display list it paints. The SVG path
   // injects into a separate host div (svgHostRef) so the two never fight over the
@@ -1388,8 +1444,14 @@ export function SchematicPanel() {
     opacity: active ? 1 : 0.7,
   });
 
+  // Clamp each top-bar popover within the panel so a narrow/wrapped top bar
+  // can't push it off the left edge (or below the bottom). Re-measures when the
+  // menu's content changes size (areas list, smoothed-only sliders).
+  const areasPopRef = useClampedPopover(areasOpen, rootRef, `areas:${selections.length}`, 290, 360);
+  const settingsPopRef = useClampedPopover(settingsOpen, rootRef, `settings:${mode}`, 230);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
       {/* position+zIndex so the toolbar (and its popovers) always stack above the
           map layer's detail-area panels. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
@@ -1460,7 +1522,7 @@ export function SchematicPanel() {
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}
-        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.24 · deferred-restore</span>
+        <span style={{ opacity: 0.35, fontSize: 10 }}>v1.2.25 · popover-clamp</span>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setDrawMode((v) => !v)}
@@ -1482,6 +1544,7 @@ export function SchematicPanel() {
             </button>
             {areasOpen && (
               <div
+                ref={areasPopRef}
                 role="menu"
                 style={{
                   position: 'absolute',
@@ -1597,6 +1660,7 @@ export function SchematicPanel() {
           </button>
           {settingsOpen && (
             <div
+              ref={settingsPopRef}
               role="menu"
               style={{
                 position: 'absolute',
