@@ -90,6 +90,14 @@ const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p)
 // boxes); left (realistic) eases the box warp toward off (expand → 1). [-1, +1].
 const boxExpandFromPos = (p: number) => Math.max(1, 4 * Math.pow(4, p));
 const boxGrowthFromPos = (p: number) => Math.max(1, 1.2 * Math.pow(2.5, p));
+// Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
+// smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
+// boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It
+// bakes into the layout (which regions warp), so it rides the Apply/Save flow and is
+// part of the fingerprint. A direct value in [BOX_FRAC_MIN, BOX_FRAC_MAX]; default 0.4.
+const DEFAULT_BOX_FRAC = 0.4;
+const BOX_FRAC_MIN = 0.1;
+const BOX_FRAC_MAX = 0.8;
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -199,7 +207,7 @@ function useClampedPopover(
 type RestoredSettings = {
   showStations?: boolean;
   showLabels?: boolean;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -281,15 +289,20 @@ export function SchematicPanel() {
   const [warpPos, setWarpPos] = useState(rapp?.warpPos ?? DEFAULT_REALISM_POS);
   const [linePos, setLinePos] = useState(rapp?.linePos ?? DEFAULT_REALISM_POS);
   const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
+  // Box density cutoff (densityBoxWarp frac) — same draft→Save flow as the realism sliders.
+  const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
   const [applied, setApplied] = useState(
-    rapp ?? {
-      lineWidth: DEFAULT_LINE_WIDTH,
-      stationRadius: DEFAULT_STATION_RADIUS,
-      mapMargin: DEFAULT_MAP_MARGIN,
-      warpPos: DEFAULT_REALISM_POS,
-      linePos: DEFAULT_REALISM_POS,
-      boxWarpPos: DEFAULT_REALISM_POS,
-    },
+    rapp
+      ? { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC } // older files lack boxFrac → default it
+      : {
+          lineWidth: DEFAULT_LINE_WIDTH,
+          stationRadius: DEFAULT_STATION_RADIUS,
+          mapMargin: DEFAULT_MAP_MARGIN,
+          warpPos: DEFAULT_REALISM_POS,
+          linePos: DEFAULT_REALISM_POS,
+          boxWarpPos: DEFAULT_REALISM_POS,
+          boxFrac: DEFAULT_BOX_FRAC,
+        },
   );
   const appearanceDirty =
     applied.lineWidth !== lineWidth ||
@@ -297,7 +310,8 @@ export function SchematicPanel() {
     applied.mapMargin !== mapMargin ||
     applied.warpPos !== warpPos ||
     applied.linePos !== linePos ||
-    applied.boxWarpPos !== boxWarpPos;
+    applied.boxWarpPos !== boxWarpPos ||
+    applied.boxFrac !== boxFrac;
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -307,12 +321,14 @@ export function SchematicPanel() {
     warpPos === DEFAULT_REALISM_POS &&
     linePos === DEFAULT_REALISM_POS &&
     boxWarpPos === DEFAULT_REALISM_POS &&
+    boxFrac === DEFAULT_BOX_FRAC &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
     applied.warpPos === DEFAULT_REALISM_POS &&
     applied.linePos === DEFAULT_REALISM_POS &&
-    applied.boxWarpPos === DEFAULT_REALISM_POS;
+    applied.boxWarpPos === DEFAULT_REALISM_POS &&
+    applied.boxFrac === DEFAULT_BOX_FRAC;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -393,7 +409,7 @@ export function SchematicPanel() {
     if (target === modeRef.current) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     const v = ((readModeSettings(mountCity, target) as RestoredSettings | null) ?? shared ?? {}) as RestoredSettings;
-    const ap = v.applied ?? {
+    const apRaw = v.applied ?? {
       lineWidth: DEFAULT_LINE_WIDTH,
       stationRadius: DEFAULT_STATION_RADIUS,
       mapMargin: DEFAULT_MAP_MARGIN,
@@ -401,6 +417,7 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
     };
+    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC }; // older entries lack boxFrac
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
@@ -411,6 +428,7 @@ export function SchematicPanel() {
     setWarpPos(ap.warpPos);
     setLinePos(ap.linePos);
     setBoxWarpPos(ap.boxWarpPos);
+    setBoxFrac(ap.boxFrac);
     setMode(target);
   }, [mountCity]);
   // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
@@ -545,6 +563,7 @@ export function SchematicPanel() {
         geographicAffinity: affinityFromPos(applied.linePos),
         boxExpand: boxExpandFromPos(applied.boxWarpPos),
         boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
+        boxFrac: applied.boxFrac,
         theme: {
           ...(dark ? DARK_THEME : DEFAULT_THEME),
           lineWidth: applied.lineWidth,
@@ -972,6 +991,7 @@ export function SchematicPanel() {
       warpPos: num(s.applied.warpPos, -1, 1, DEFAULT_REALISM_POS),
       linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
       boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
+      boxFrac: num(s.applied.boxFrac, BOX_FRAC_MIN, BOX_FRAC_MAX, DEFAULT_BOX_FRAC),
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
@@ -986,6 +1006,7 @@ export function SchematicPanel() {
       setWarpPos(clampedApplied.warpPos);
       setLinePos(clampedApplied.linePos);
       setBoxWarpPos(clampedApplied.boxWarpPos);
+      setBoxFrac(clampedApplied.boxFrac);
     }
     // Queue the saved detail areas; the inject effect restores them after the new
     // layout settles (instead of clearing). Bump the id counter past the restored
@@ -1017,6 +1038,7 @@ export function SchematicPanel() {
       warpPos: DEFAULT_REALISM_POS,
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
+      boxFrac: DEFAULT_BOX_FRAC,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
     const liveFp = fp
@@ -1032,6 +1054,7 @@ export function SchematicPanel() {
             geographicAffinity: affinityFromPos(ap.linePos),
             boxExpand: boxExpandFromPos(ap.boxWarpPos),
             boxGrowth: boxGrowthFromPos(ap.boxWarpPos),
+            boxFrac: ap.boxFrac,
             dark,
             theme: { lineWidth: ap.lineWidth },
           },
@@ -1893,6 +1916,18 @@ export function SchematicPanel() {
                     display={boxWarpPos === 0 ? 'Default' : boxWarpPos < 0 ? 'Realistic' : 'Stylized'}
                     onChange={setBoxWarpPos}
                   />
+                  {/* Density cutoff for which clusters become warp boxes: lower = looser
+                      cutoff → more/larger boxes; higher = only the densest cores → fewer.
+                      Toggle "Warp boxes" in the top bar to see the effect. */}
+                  <Slider
+                    label="Box density cutoff"
+                    value={boxFrac}
+                    min={BOX_FRAC_MIN}
+                    max={BOX_FRAC_MAX}
+                    step={0.05}
+                    display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`}
+                    onChange={setBoxFrac}
+                  />
                 </>
               )}
 
@@ -1907,6 +1942,7 @@ export function SchematicPanel() {
                     setWarpPos(DEFAULT_REALISM_POS);
                     setLinePos(DEFAULT_REALISM_POS);
                     setBoxWarpPos(DEFAULT_REALISM_POS);
+                    setBoxFrac(DEFAULT_BOX_FRAC);
                     setApplied({
                       lineWidth: DEFAULT_LINE_WIDTH,
                       stationRadius: DEFAULT_STATION_RADIUS,
@@ -1914,6 +1950,7 @@ export function SchematicPanel() {
                       warpPos: DEFAULT_REALISM_POS,
                       linePos: DEFAULT_REALISM_POS,
                       boxWarpPos: DEFAULT_REALISM_POS,
+                      boxFrac: DEFAULT_BOX_FRAC,
                     });
                     // Smoothed bakes these into the precompute → rebuild.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
@@ -1936,7 +1973,7 @@ export function SchematicPanel() {
                 </button>
                 <button
                   onClick={() => {
-                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos });
+                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac });
                     // Smoothed bakes these into the precompute → rebuild if shown.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
                   }}
