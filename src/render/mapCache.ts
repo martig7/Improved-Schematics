@@ -385,3 +385,19 @@ export function clearCachedPre(city?: string, store: KVStore | null = defaultSto
     /* ignore */
   }
 }
+
+/** Drop one city's cached LAYOUT (fp/pre/selections/sub-layouts) while KEEPING its saved
+ *  appearance settings (`:set:<city>` and the per-mode `:set:<city>:<mode>`). For a
+ *  "clear cache" control that should force a fresh rebuild without resetting the user's
+ *  appearance preferences. */
+export function clearCityLayout(city: string, store: KVStore | null = defaultStore()): void {
+  if (!store || !city) return;
+  try {
+    store.removeItem(fpKey(city));
+    store.removeItem(preKey(city));
+    store.removeItem(selKey(city));
+    store.removeItem(subKey(city));
+  } catch {
+    /* ignore */
+  }
+}

@@ -24,7 +24,7 @@ import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
 import { cropSubgraph } from '../render/cropSubgraph';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
@@ -1077,6 +1077,23 @@ export function SchematicPanel() {
     reader.readAsText(file);
   }, [applyBundle]);
 
+  // Wipe the current city's cached LAYOUT (the localStorage :fp:/:pre:/:sel:/:sub: entries) —
+  // an escape hatch when a city's cached layout is stale or wrong. Keeps the saved appearance
+  // settings (:set:) so clearing doesn't reset the user's preferences. Non-destructive to the
+  // current session: the on-screen map stays, but a reload (or the next Generate) now starts
+  // fresh. We also drop the in-memory layout fingerprint so the area-persist and cache-write
+  // effects (both gated on currentFpRef) can't immediately re-seed the just-cleared cache;
+  // the next Generate recomputes the fp and re-enables caching normally.
+  const clearCache = useCallback(() => {
+    const city = currentCityRef.current || modState.cityCode || api.utils.getCityCode?.() || '';
+    if (!city) { setMapMsg('No city to clear'); return; }
+    clearCityLayout(city);
+    currentFpRef.current = null;
+    cacheWriteRef.current = null;
+    setCacheHit(false);
+    setMapMsg(`Cache cleared · ${city}`);
+  }, [modState]);
+
   // (Auto-persist + deferred-restore removed with the auto-cache. A generated map
   // lives only in smoothedCacheRef for the session; use Save map to keep it.)
 
@@ -2012,6 +2029,15 @@ export function SchematicPanel() {
                     ⭱ Load map
                   </button>
                 </div>
+                {/* Clear the saved layout cache for this city — escape hatch for a stale/wrong
+                    cached layout; the on-screen map stays, but reload/next Generate rebuilds. */}
+                <button
+                  onClick={clearCache}
+                  title="Delete this city's saved layout cache (forces a fresh rebuild on next Generate or reload)"
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12, fontWeight: 600, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(192,90,80,0.5)', background: 'transparent', color: '#cf5b52', cursor: 'pointer' }}
+                >
+                  <Icon name="trash" size={13} /> Clear cache
+                </button>
                 {mapMsg && <span style={{ fontSize: 11, opacity: 0.7 }}>{mapMsg}</span>}
                 <input
                   ref={mapFileRef}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readCachedPre, writeCachedPre, clearCachedPre, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from './mapCache';
+import { readCachedPre, writeCachedPre, clearCachedPre, clearCityLayout, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from './mapCache';
 
 // A precompute serializes via serializePre; a string `pre` (the degenerate
 // no-layout case) round-trips trivially, which is enough to exercise the cache.
@@ -40,6 +40,24 @@ test('mapCache: clear removes one city, or all', () => {
   assert.equal(readCachedPre('chi', 'f', s), 'C');
   clearCachedPre(undefined, s);
   assert.equal(readCachedPre('chi', 'f', s), null);
+});
+
+test('mapCache: clearCityLayout drops the layout but KEEPS the saved settings', () => {
+  const s = fakeStore();
+  const areas = [{ id: 'sel-0', box: { x0: 1, y0: 2, x1: 3, y1: 4 }, color: '#f00', name: 'A', locked: false }];
+  writeCachedPre('nyc', 'f', 'N', s);
+  writeSelections('nyc', 'f', areas, s);
+  writeSubPre('nyc', 'f', '1,2,3,4', 'SUB', null, s);
+  writeSettings('nyc', { exportFormat: 'png' }, s);
+  writeModeSettings('nyc', 'smoothed', { labelScale: 1.2 }, s);
+  clearCityLayout('nyc', s);
+  // Layout gone.
+  assert.equal(readCachedPre('nyc', 'f', s), null, 'pre cleared');
+  assert.equal(readSelections('nyc', 'f', s), null, 'selections cleared');
+  assert.equal(readSubPre('nyc', 'f', '1,2,3,4', s), null, 'sub-layout cleared');
+  // Settings kept.
+  assert.deepEqual(readSettings('nyc', s), { exportFormat: 'png' }, 'shared settings kept');
+  assert.deepEqual(readModeSettings('nyc', 'smoothed', s), { labelScale: 1.2 }, 'per-mode settings kept');
 });
 
 test('mapCache: selections round-trip only when the fingerprint matches', () => {
