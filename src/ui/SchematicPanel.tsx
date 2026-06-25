@@ -1618,11 +1618,6 @@ export function SchematicPanel() {
         <button onClick={() => requestToggle(() => setShowLabels((v) => !v))} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
-        {mode === 'smoothed' && smoothedReady && !generating && (
-          <button onClick={regenerate} style={toggleStyle(false)} title="Regenerate — rebuild the smoothed map from current game state" aria-label="Regenerate">
-            ↻
-          </button>
-        )}
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setShowWarpBoxes((v) => !v)}
@@ -1630,6 +1625,11 @@ export function SchematicPanel() {
             title="Outline the dense-core regions the box-warp magnified (overlay only; Regenerate to populate on maps cached before this)"
           >
             {showWarpBoxes ? '✓ Warp boxes' : 'Warp boxes'}
+          </button>
+        )}
+        {mode === 'smoothed' && smoothedReady && !generating && (
+          <button onClick={regenerate} style={toggleStyle(false)} title="Regenerate — rebuild the smoothed map from current game state" aria-label="Regenerate">
+            ↻
           </button>
         )}
         {(rerendering || geoLoading) && (
