@@ -1508,11 +1508,13 @@ export function SchematicPanel() {
       const b = boxRef.current;
       boxRef.current = null;
       positionBox(); // hide the live draw box; a committed selection gets its own outline
-      // Commit only a real drag; a click (tiny box) just cancels. Each commit
-      // spawns a new color-cycled DetailInset that persists until closed.
+      // Commit only a real drag; a click (tiny box) exits draw mode instead. Each
+      // commit spawns a new color-cycled DetailInset that persists until closed.
       if (b && b.x1 - b.x0 > 3 && b.y1 - b.y0 > 3) {
         const n = selCountRef.current++;
         setSelections((xs) => [...xs, { id: `sel-${n}`, box: b, color: SEL_COLORS[n % SEL_COLORS.length], name: '', locked: false }]);
+      } else {
+        setDrawMode(false); // a click (no real drag) dismisses draw mode
       }
       return;
     }
