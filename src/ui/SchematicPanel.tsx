@@ -233,6 +233,12 @@ export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(rvis.showStations ?? true);
   const [showLabels, setShowLabels] = useState(rvis.showLabels ?? false);
+  // Debug overlay: outline the dense-core regions the box-warp magnified (pre.denseBoxesPx).
+  // Display-only + in-session (defaults off, not persisted, not in the layout fingerprint);
+  // mirrored to a ref so the dep-[] drawCanvas can read it.
+  const [showWarpBoxes, setShowWarpBoxes] = useState(false);
+  const showWarpBoxesRef = useRef(showWarpBoxes);
+  showWarpBoxesRef.current = showWarpBoxes;
   const [dragging, setDragging] = useState(false);
   // Area-select ("Draw area"): a mode where a pointer drag rubber-bands a box in
   // MAP/content space (so it tracks pan + zoom) instead of panning. The live drag
@@ -1216,11 +1222,20 @@ export function SchematicPanel() {
       ctx.clearRect(0, 0, bw, bh);
       return;
     }
+    // Warp-box overlay: only in smoothed mode (it's a smoothed-layout feature), only
+    // when the toggle is on and the precompute carries the boxes (older cached layouts
+    // lack them → none drawn until the next Generate).
+    const pre = smoothedCacheRef.current?.pre;
+    const warpBoxes =
+      showWarpBoxesRef.current && modeRef.current === 'smoothed' && pre && typeof pre !== 'string'
+        ? pre.denseBoxesPx
+        : undefined;
     drawScene(ctx, prepared, view, {
       dpr,
       cssWidth: cssW,
       cssHeight: cssH,
       clipBoxes: selectionsRef.current.map((s) => s.box),
+      warpBoxes,
       labelScale: labelScaleRef.current,
     });
   }, []);
@@ -1356,6 +1371,11 @@ export function SchematicPanel() {
   useEffect(() => {
     applyToDom(true);
   }, [labelScale, applyToDom]);
+
+  // Warp-box overlay is display-only: toggling it just repaints (no scene rebuild).
+  useEffect(() => {
+    applyToDom(true);
+  }, [showWarpBoxes, applyToDom]);
 
   // Resize the backing store + repaint when the viewport resizes.
   useEffect(() => {
@@ -1578,6 +1598,15 @@ export function SchematicPanel() {
         {mode === 'smoothed' && smoothedReady && !generating && (
           <button onClick={regenerate} style={toggleStyle(false)} title="Rebuild the smoothed map from current game state">
             ↻ Regenerate
+          </button>
+        )}
+        {mode === 'smoothed' && smoothedReady && (
+          <button
+            onClick={() => setShowWarpBoxes((v) => !v)}
+            style={toggleStyle(showWarpBoxes)}
+            title="Outline the dense-core regions the box-warp magnified (overlay only; Regenerate to populate on maps cached before this)"
+          >
+            {showWarpBoxes ? '✓ Warp boxes' : 'Warp boxes'}
           </button>
         )}
         {(rerendering || geoLoading) && (

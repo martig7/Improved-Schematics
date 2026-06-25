@@ -96,3 +96,31 @@ test('buildSepBoxWarp: composes separable + box, fold-free, expands core more th
   const jBoth = jacDet(both, [50, 50]);
   assert.ok(jBoth > jSep, `combined expands core more than separable: ${jBoth.toFixed(2)} > ${jSep.toFixed(2)}`);
 });
+
+test('buildBoxExpandWarp: out.boxes are the dense boxes mapped into warp-OUTPUT space', () => {
+  const s = clusterAt(50, 50, 200);
+  const opts = { bins: 48, frac: 0.4, expand: 1.4, marginFrac: 1 };
+  const inBoxes = findDenseBoxes(s, BOX, opts); // deterministic → same boxes the warp uses
+  assert.ok(inBoxes.length >= 1, 'a dense box exists');
+  const out: { boxes?: typeof inBoxes } = {};
+  const W = buildBoxExpandWarp(s, BOX, opts, out);
+  assert.ok(out.boxes && out.boxes.length === inBoxes.length, 'one out box per dense box');
+  for (let i = 0; i < inBoxes.length; i++) {
+    const a = W([inBoxes[i].x0, inBoxes[i].y0]); // top-left through the warp
+    const c = W([inBoxes[i].x1, inBoxes[i].y1]); // bottom-right through the warp
+    const ob = out.boxes![i];
+    assert.ok(Math.abs(ob.x0 - a[0]) < 1e-9 && Math.abs(ob.y0 - a[1]) < 1e-9, 'top-left mapped through warp');
+    assert.ok(Math.abs(ob.x1 - c[0]) < 1e-9 && Math.abs(ob.y1 - c[1]) < 1e-9, 'bottom-right mapped through warp');
+    assert.ok(ob.x1 > ob.x0 && ob.y1 > ob.y0, 'stays axis-aligned + corner order preserved');
+  }
+});
+
+test('out.boxes: empty with no cluster; populated (and ordered) for sep+box', () => {
+  const none: { boxes?: { x0: number; y0: number; x1: number; y1: number }[] } = {};
+  buildBoxExpandWarp([], BOX, {}, none);
+  assert.deepEqual(none.boxes, [], 'no samples → no boxes');
+  const sepOut: { boxes?: { x0: number; y0: number; x1: number; y1: number }[] } = {};
+  buildSepBoxWarp(clusterAt(50, 50, 200), BOX, { alpha: 0.8 }, { bins: 48, frac: 0.4, expand: 3, marginFrac: 2 }, sepOut);
+  assert.ok(sepOut.boxes && sepOut.boxes.length >= 1, 'sep+box surfaces the dense box');
+  for (const b of sepOut.boxes!) assert.ok(b.x1 > b.x0 && b.y1 > b.y0, 'axis-aligned + ordered');
+});
