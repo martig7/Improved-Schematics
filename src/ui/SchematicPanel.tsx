@@ -24,7 +24,8 @@ import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres } from '../render/mapCache';
+import { cropSubgraph } from '../render/cropSubgraph';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -219,6 +220,11 @@ export function SchematicPanel() {
     return { city, shared, geoVis };
   }, []);
   const mountCity = mountSeed.city; // the city these restored settings belong to
+  // The city whose settings are CURRENTLY displayed. Starts as the mount city; a file load
+  // (applyBundle) repoints it at the loaded file's city. The per-mode settings-persist effect
+  // gates on this so loading a file for a DIFFERENT city than the live game can't clobber the
+  // live city's saved settings with the loaded file's values.
+  const settingsCityRef = useRef(mountCity);
   const rset = mountSeed.shared; // shared export prefs (rasterScale, jpegQuality, exportFormat)
   const rvis = mountSeed.geoVis; // per-mode visual settings for the open (geographic) mode
   const rapp = rvis.applied;
@@ -353,6 +359,11 @@ export function SchematicPanel() {
   // Detail areas pending restore from a loaded map file. The inject effect's
   // layout-change branch (which normally CLEARS areas) installs these instead.
   const restoreSelectionsRef = useRef<Selection[] | null>(null);
+  // Bumped by a file load to force the inject effect to run even when the loaded layout is
+  // byte-identical to the one on screen (load the map you just saved → same fp → same svg
+  // string → the [svg, mode] inject deps don't change → the queued restore would never be
+  // consumed). An explicit nonce in the inject deps guarantees it fires.
+  const [restoreNonce, setRestoreNonce] = useState(0);
   // In-memory snapshot of the last SMOOTHED-mode selections (updated in the persist
   // effect, smoothed-only). Reinstated when returning to smoothed from a non-smoothed
   // mode: the smoothed layout is still cached so the memo's restore-queue path is skipped,
@@ -414,6 +425,10 @@ export function SchematicPanel() {
   // Tile-derived geography (water + parks) for the current city, harvested from
   // the game's MapLibre vector tiles on first open. Undefined = no backdrop.
   const [geography, setGeography] = useState<GeographyData | undefined>(undefined);
+  // Mirror geography into a ref so the `[]`-dep file-load handler (applyBundle) can read
+  // the live backdrop to validate a loaded file's fingerprint without re-creating itself.
+  const geographyRef = useRef(geography);
+  geographyRef.current = geography;
   // True while the tile harvest is in flight, so the top bar can show the small
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
   const [geoLoading, setGeoLoading] = useState(false);
@@ -464,65 +479,6 @@ export function SchematicPanel() {
       }
     };
   }, []);
-
-  // Dump the exact live render inputs, so in-game artifacts can be reproduced
-  // offline bit-for-bit (geojson reconstructions drift from the live save and
-  // the game's station grouping). storage.set silently drops multi-MB payloads,
-  // so deliver as a browser download instead — triggered on demand via the
-  // "input dump" control rather than auto-downloading when the panel opens.
-  const [dumpStatus, setDumpStatus] = useState<string | null>(null);
-  const downloadDump = useCallback(() => {
-    try {
-      const dark = api.ui.getResolvedTheme() === 'dark';
-      const payload = JSON.stringify({
-        at: new Date().toISOString(),
-        stationGroups: resolveStationGroupsFromGameState(api.gameState),
-        routes: api.gameState.getRoutes(),
-        tracks: api.gameState.getTracks(),
-        stations: api.gameState.getStations(),
-        // geography sets the projection BOUNDS (geoFramePts → computeBounds), so
-        // it must be captured or an offline repro projects the network into
-        // different bounds → a different octi layout than the game produces.
-        geography,
-        // The live render options (mode + appearance sliders, applied values),
-        // mirroring buildInput().options below, so an offline repro reproduces
-        // the user's current settings instead of the script's hardcoded ones.
-        // Derived values (warpAlpha/geographicAffinity/theme) are baked in so a
-        // script can pass `options` straight through without re-deriving them.
-        options: {
-          mode,
-          showStations,
-          showLabels,
-          dark,
-          padding: applied.mapMargin,
-          warpAlpha: warpAlphaFromPos(applied.warpPos),
-          geographicAffinity: affinityFromPos(applied.linePos),
-          boxExpand: boxExpandFromPos(applied.boxWarpPos),
-          boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
-          theme: {
-            ...(dark ? DARK_THEME : DEFAULT_THEME),
-            lineWidth: applied.lineWidth,
-            stationRadius: applied.stationRadius,
-          },
-        },
-        // Export-time controls (raster scale, JPEG quality, chosen format) —
-        // not render inputs, but captured so scripts can match the exported file.
-        exportOptions: { format: exportFormat, rasterScale, jpegQuality },
-      });
-      const blob = new Blob([payload], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'improvedschematics-input.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      setDumpStatus(`${(payload.length / 1e6).toFixed(1)}MB`);
-    } catch (err) {
-      setDumpStatus('failed: ' + String(err));
-    }
-  }, [geography, mode, showStations, showLabels, applied, exportFormat, rasterScale, jpegQuality]);
 
   // Per-mount cache of the expensive smoothed layout. Reused for label/station
   // toggles so those are a cheap redraw; cleared by (Re)generate to force a fresh
@@ -592,6 +548,63 @@ export function SchematicPanel() {
     };
   }, [geography, mode, showStations, showLabels, applied]);
 
+  // The exact live render inputs, captured for offline repro (geojson reconstructions
+  // drift from the live save and the game's station grouping). Formerly downloaded via a
+  // standalone "input dump" button; now baked into the saved map JSON (exportMap) so the
+  // one Save map file carries both the cache AND the debug inputs. IGNORED on load.
+  //
+  // Per-area inputs: for each detail area we also capture the cropped sub-graph input —
+  // the exact SchematicInput the inset's re-sim runs (cropSubgraph of the live network to
+  // the area's box, with the geography clipped to the box's geographic preimage). This lets
+  // any area be debugged on its own offline, the same way the whole map can.
+  const buildInputDump = useCallback(() => {
+    const dark = api.ui.getResolvedTheme() === 'dark';
+    const full = buildInput();
+    // One cropped sub-input per area, mirroring DetailInset's re-sim crop (core stations
+    // inside the box + the box's unprojected geographic bounds for the geography clip).
+    const pre = smoothedCacheRef.current?.pre;
+    const areas = selectionsRef.current.map((sel) => {
+      const box = sel.box;
+      const out: Record<string, unknown> = { id: sel.id, name: sel.name, box };
+      if (pre && typeof pre !== 'string') {
+        const core = new Set<string>();
+        for (const [sid, px] of pre.stationPx) {
+          if (px[0] >= box.x0 && px[0] <= box.x1 && px[1] >= box.y0 && px[1] <= box.y1) core.add(sid);
+        }
+        const bl = pre.unproject([box.x0, box.y1]);
+        const tr = pre.unproject([box.x1, box.y0]);
+        const clipBbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
+        out.coreStationIds = [...core];
+        out.clipBbox = clipBbox;
+        try {
+          out.input = core.size >= 2 ? cropSubgraph(full as never, core, clipBbox) : null;
+        } catch (err) {
+          out.input = null;
+          out.error = String(err);
+        }
+      }
+      return out;
+    });
+    return {
+      at: new Date().toISOString(),
+      stationGroups: full.stationGroups,
+      routes: full.routes,
+      tracks: full.tracks,
+      stations: full.stations,
+      // geography sets the projection BOUNDS (geoFramePts → computeBounds), so it must be
+      // captured or an offline repro projects the network into different bounds → a
+      // different octi layout than the game produces.
+      geography,
+      // The live render options (mirrors buildInput().options, with derived warp/affinity/
+      // theme baked in) so a script can pass `options` straight through.
+      options: full.options,
+      // Export-time controls — not render inputs, but captured so scripts can match the file.
+      exportOptions: { format: exportFormat, rasterScale, jpegQuality },
+      // Per-area cropped sub-inputs (see above) for debugging any area in isolation.
+      areas,
+    };
+  }, [buildInput, geography, exportFormat, rasterScale, jpegQuality]);
+
   const svg = useMemo(() => {
     if (mode === 'smoothed') {
       // Stay blank until the user clicks Generate Map.
@@ -616,6 +629,9 @@ export function SchematicPanel() {
         const hit = !force && city ? readCachedPre(city, fp) : null;
         currentCityRef.current = city;
         currentFpRef.current = fp;
+        // A real generate establishes the live city as the one the displayed settings belong
+        // to — re-enabling the per-mode settings persist that a cross-city file load disabled.
+        settingsCityRef.current = city;
         if (hit != null) {
           cache = { pre: hit };
           genMsRef.current = 0; // restored from cache (≈instant)
@@ -684,6 +700,13 @@ export function SchematicPanel() {
   // clears the areas — doesn't overwrite the saved set with an empty list.
   useEffect(() => {
     if (modeRef.current !== 'smoothed') return;
+    // A queued restore (file load / fresh generate) is mid-flight: applyBundle resets
+    // selections to [] and the inject effect installs the saved areas a beat later. Under
+    // batched updates this effect can fire on that transient [] BEFORE the inject restores —
+    // which would writeSelections([]) and pruneSubPres([]), wiping the just-seeded areas and
+    // their cached sub-layouts. Skip while a restore is pending; the restore itself re-fires
+    // this effect (with restoreSelectionsRef cleared) and persists the real areas.
+    if (restoreSelectionsRef.current) return;
     // Snapshot the live smoothed areas (BEFORE the fp guard, so a file-loaded layout with
     // a null fp is still captured) — the inject restores this on a geographic round-trip.
     // Runs only on a real selections change, so the transient [] during a return-to-smoothed
@@ -708,9 +731,12 @@ export function SchematicPanel() {
   // (idempotent); `applied` only changes on Apply/Save, so draft slider drags don't churn.
   useEffect(() => {
     // Only persist while still on the city these settings were restored for — guards a
-    // live city switch (no remount) from writing the displayed sliders under another city.
+    // live city switch (no remount) from writing the displayed sliders under another city —
+    // AND while the displayed settings belong to that same city (settingsCityRef), so a
+    // file load for a different city than the live game can't clobber the live city's saved
+    // settings with the loaded file's values.
     const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-    if (city && city === mountCity) {
+    if (city && city === mountCity && city === settingsCityRef.current) {
       // Per-mode visual settings (toggles + appearance + label size) under the CURRENT mode,
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
@@ -867,27 +893,55 @@ export function SchematicPanel() {
     img.src = svgUrl;
   }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
 
-  // Save the generated map (precompute + settings) to a JSON file, so reloading
-  // the mod can restore it instantly instead of re-running the octi pipeline.
+  // Save the generated map to a JSON file, so reloading the mod can restore it instantly
+  // instead of re-running the octi pipeline. The file mirrors EVERYTHING the per-city
+  // localStorage cache holds — the precompute (`pre`), the layout fingerprint (`fp`), the
+  // detail areas (`selections`), the per-mode visual settings (`modeSettings`), and the
+  // per-area sub-layout cache (`subs`) — so a load reseeds the cache and behaves exactly
+  // like a cache hit (areas restore without re-simulating; a later Generate hits). The
+  // debug input dump (live render inputs + per-area cropped sub-inputs) rides along under
+  // `inputDump`; it's for offline repro and is ignored on load.
   const exportMap = useCallback(() => {
     const pre = smoothedCacheRef.current?.pre;
     if (mode !== 'smoothed' || !pre) { setMapMsg('Generate a smoothed map first'); return; }
-    const city = modState.cityCode ?? api.utils.getCityCode?.() ?? 'map';
+    // Stamp the file with the city the DISPLAYED layout belongs to (settingsCityRef tracks it
+    // across generate/adopt/non-adopt loads), not the live game city — otherwise loading a
+    // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
+    // city's mode settings). Falls back to the live city when nothing's been loaded.
+    const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
     const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
+    const fp = currentFpRef.current ?? undefined;
+    // Mirror the rest of the per-city cache: per-mode visual settings + the sub-layout cache
+    // (fp-gated, so only the subs that belong to THIS layout are captured).
+    const modeSettings: Record<string, unknown> = {};
+    for (const m of ['geographic', 'smoothed']) {
+      const v = readModeSettings(city, m);
+      if (v != null) modeSettings[m] = v;
+    }
+    const subs = fp ? (readAllSubPres(city, fp) ?? undefined) : undefined;
     try {
-      const json = serializeMap({ version: 1, city, settings, selections, pre });
+      const json = serializeMap({
+        version: 1, city, settings, selections, modeSettings, fp, subs, pre,
+        inputDump: buildInputDump(),
+      });
       triggerDownload(new Blob([json], { type: 'application/json' }), 'json', `improvedschematics-map-${city}`);
       setMapMsg(`Saved · ${(json.length / 1024 / 1024).toFixed(1)} MB`);
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState]);
+  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
-  // to redraw; storing under the CURRENT city keeps the generate/ready flow (and a
-  // later remount's hydration) happy. Used by file-load AND auto-restore.
-  const applyBundle = useCallback((bundle: { settings?: unknown; selections?: unknown; pre: SmoothedPrecomputed | string }) => {
+  // to redraw. When the file carries the layout fingerprint (`fp`) AND that fingerprint
+  // still matches the live game (same network/geography, recomputed below), it loads
+  // EXACTLY like a cache hit: we adopt the saved city/fp and reseed the per-city
+  // localStorage cache (pre, areas, per-mode settings, sub-layouts) so detail areas restore
+  // from their saved sub-layouts instead of re-simulating, and a later remount+Generate
+  // hits. If the live inputs have moved (or the file predates fingerprints), it still
+  // displays from `pre` but does NOT adopt the fp — areas re-simulate and nothing is cached
+  // under a stale key. The debug `inputDump` field is ignored here. Used by file-load.
+  const applyBundle = useCallback((bundle: import('../render/persist').MapBundle) => {
     const s = (bundle.settings ?? {}) as {
       showStations?: boolean;
       showLabels?: boolean;
@@ -897,19 +951,35 @@ export function SchematicPanel() {
       exportFormat?: ExportFormat;
       labelScale?: number;
     };
+    // Clamp every loaded numeric to its slider's LIVE range before applying it. An older
+    // (or hand-edited) file can carry a value outside the current bounds — e.g. a labelScale
+    // saved before the [0.2, 1.5] range existed, or an out-of-range warp position — which
+    // would otherwise render a broken control and a distorted layout. A non-finite/absent
+    // field (a pre-boxWarpPos legacy file, or a truncated hand-edit) falls back to its default
+    // rather than clamping to NaN (clamp(undefined) → NaN → a broken controlled slider).
+    const num = (v: unknown, lo: number, hi: number, def: number) =>
+      Number.isFinite(v as number) ? clamp(v as number, lo, hi) : def;
+    const clampedApplied = s.applied && {
+      lineWidth: num(s.applied.lineWidth, 1, 8, DEFAULT_LINE_WIDTH),
+      stationRadius: num(s.applied.stationRadius, 1, 6, DEFAULT_STATION_RADIUS),
+      mapMargin: num(s.applied.mapMargin, 0, 0.15, DEFAULT_MAP_MARGIN),
+      warpPos: num(s.applied.warpPos, -1, 1, DEFAULT_REALISM_POS),
+      linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
+      boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
+    };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
-    if (s.rasterScale != null) setRasterScale(s.rasterScale);
-    if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
-    if (s.exportFormat) setExportFormat(s.exportFormat);
-    if (s.labelScale != null) setLabelScale(s.labelScale);
-    if (s.applied) {
-      setLineWidth(s.applied.lineWidth);
-      setStationRadius(s.applied.stationRadius);
-      setMapMargin(s.applied.mapMargin);
-      setWarpPos(s.applied.warpPos);
-      setLinePos(s.applied.linePos);
-      setBoxWarpPos(s.applied.boxWarpPos);
+    if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
+    if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
+    if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
+    if (s.labelScale != null) setLabelScale(clamp(s.labelScale, LABEL_SCALE_MIN, LABEL_SCALE_MAX));
+    if (clampedApplied) {
+      setLineWidth(clampedApplied.lineWidth);
+      setStationRadius(clampedApplied.stationRadius);
+      setMapMargin(clampedApplied.mapMargin);
+      setWarpPos(clampedApplied.warpPos);
+      setLinePos(clampedApplied.linePos);
+      setBoxWarpPos(clampedApplied.boxWarpPos);
     }
     // Queue the saved detail areas; the inject effect restores them after the new
     // layout settles (instead of clearing). Bump the id counter past the restored
@@ -921,15 +991,75 @@ export function SchematicPanel() {
       return Number.isFinite(n) ? Math.max(mx, n + 1) : mx;
     }, selCountRef.current);
     smoothedCacheRef.current = { pre: bundle.pre };
-    // A loaded file's layout has no computed fingerprint, so don't auto-persist areas
-    // under a stale fp; the next Generate recomputes it and re-enables area persistence.
-    currentFpRef.current = null;
+    // Adopt-as-cache-hit ONLY when the file provably matches the LIVE game. A saved file
+    // carries the fingerprint (`fp`) its layout was built under; recompute that same
+    // fingerprint from the live game network + backdrop combined with the file's own
+    // (clamped) render settings, and adopt the saved city/fp — reseeding the per-city cache
+    // so detail areas restore from their saved sub-layouts and a later Generate hits — ONLY
+    // if it matches. On ANY mismatch (the network or geography changed since the save, a
+    // different city, or the backdrop hasn't loaded yet so the live fp reads `nogeo`) fall
+    // back to the legacy null-fp path: the map still DISPLAYS from the in-memory `pre`, but
+    // currentFpRef stays null so getSubCacheKey returns null — areas re-simulate locally and
+    // nothing is written under a fingerprint that may not match the live inputs. This keeps
+    // the in-memory layer as fp-honest as the (already fp-gated) localStorage layer.
+    const loadCity = bundle.city || currentCityRef.current;
+    const fp = bundle.fp;
+    const ap = clampedApplied ?? {
+      lineWidth: DEFAULT_LINE_WIDTH,
+      stationRadius: DEFAULT_STATION_RADIUS,
+      mapMargin: DEFAULT_MAP_MARGIN,
+      warpPos: DEFAULT_REALISM_POS,
+      linePos: DEFAULT_REALISM_POS,
+      boxWarpPos: DEFAULT_REALISM_POS,
+    };
+    const dark = api.ui.getResolvedTheme() === 'dark';
+    const liveFp = fp
+      ? fingerprintInputs({
+          routes: api.gameState.getRoutes(),
+          tracks: api.gameState.getTracks(),
+          stations: api.gameState.getStations(),
+          stationGroups: resolveStationGroupsFromGameState(api.gameState),
+          geography: geographyRef.current,
+          options: {
+            padding: ap.mapMargin,
+            warpAlpha: warpAlphaFromPos(ap.warpPos),
+            geographicAffinity: affinityFromPos(ap.linePos),
+            boxExpand: boxExpandFromPos(ap.boxWarpPos),
+            boxGrowth: boxGrowthFromPos(ap.boxWarpPos),
+            dark,
+            theme: { lineWidth: ap.lineWidth },
+          },
+        } as never).fp
+      : null;
+    if (fp && loadCity && liveFp === fp) {
+      currentCityRef.current = loadCity;
+      currentFpRef.current = fp;
+      settingsCityRef.current = loadCity; // file matches the live game → its settings are the live city's
+      try {
+        writeCachedPre(loadCity, fp, bundle.pre);
+        writeSelections(loadCity, fp, restored);
+        if (bundle.subs) writeAllSubPres(loadCity, fp, bundle.subs);
+        if (bundle.modeSettings) {
+          for (const [m, v] of Object.entries(bundle.modeSettings)) writeModeSettings(loadCity, m, v);
+        }
+      } catch {
+        /* best-effort cache seed — the map still loads from the in-memory pre above */
+      }
+    } else {
+      // No adoption: don't auto-persist areas/subs under a fingerprint that may not match the
+      // live inputs (the legacy null-fp behaviour). Point settingsCityRef at the file's own
+      // city so the per-mode settings-persist effect stays disabled while the displayed
+      // settings belong to a city other than the live game's; a later Generate re-enables it.
+      currentFpRef.current = null;
+      settingsCityRef.current = bundle.city || '';
+    }
     if (modeRef.current !== 'smoothed') skipModeBlankRef.current = true; // single settle, no blank
     setSelections([]); // drop any current areas; the inject effect installs the saved ones
     setGenerating(false);
     setSmoothedReady(true);
     setMode('smoothed');
-    setApplied((a) => ({ ...(s.applied ?? a) })); // new ref → svg memo redraws from cache
+    setApplied((a) => ({ ...(clampedApplied ?? a) })); // new ref → svg memo redraws from cache
+    setRestoreNonce((n) => n + 1); // force the inject to run even if the layout is unchanged
   }, []);
 
   const importMap = useCallback((file: File) => {
@@ -949,13 +1079,6 @@ export function SchematicPanel() {
 
   // (Auto-persist + deferred-restore removed with the auto-cache. A generated map
   // lives only in smoothedCacheRef for the session; use Save map to keep it.)
-
-  // Auto-clear the save/load status line.
-  useEffect(() => {
-    if (!mapMsg) return;
-    const t = setTimeout(() => setMapMsg(null), 4000);
-    return () => clearTimeout(t);
-  }, [mapMsg]);
 
   // Auto-clear the save/load status line.
   useEffect(() => {
@@ -1198,7 +1321,7 @@ export function SchematicPanel() {
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
     // The map is in the DOM now — drop the generating spinner.
     if (svg) setGenerating(false);
-  }, [svg, mode, fit, applyToDom, clearSelections]);
+  }, [svg, mode, restoreNonce, fit, applyToDom, clearSelections]);
 
   // The cutout depends only on the box GEOMETRY, so key the effect on that — not
   // the whole `selections` array — so editing a color/name doesn't rebuild (and
@@ -1455,27 +1578,6 @@ export function SchematicPanel() {
         {mode === 'smoothed' && genMs != null && (
           <span style={{ color: '#888', fontSize: 11 }}>
             {genMs === 0 ? 'Cache used' : `Finished in ${(genMs / 1000).toFixed(2)}s`}
-          </span>
-        )}
-        {mode === 'smoothed' && (
-          <span style={{ opacity: 0.35, fontSize: 10, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            input dump
-            <button
-              onClick={downloadDump}
-              title="Download the live render inputs as JSON"
-              style={{
-                cursor: 'pointer',
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                font: 'inherit',
-                color: 'inherit',
-                lineHeight: 1,
-              }}
-            >
-              ↓
-            </button>
-            {dumpStatus ? ` ${dumpStatus}` : ''}
           </span>
         )}
         {/* Build marker: proves which bundle the game actually loaded. */}

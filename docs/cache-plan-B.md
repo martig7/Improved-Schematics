@@ -17,6 +17,18 @@ persisted automatically, so opening the panel / reloading the game requires a
 fresh **Generate** (octi: Chi ~3.7s · NYC ~14s · Sea ~17s · SF ~139s · London
 ~158s). The explicit **Save/Load map file** is the only persistence.
 
+> **Save file = a portable cache snapshot.** The Save map JSON (`persist.ts`
+> `MapBundle`) now mirrors EVERYTHING the per-city localStorage cache holds for the
+> shown layout: the precompute (`pre`), the layout fingerprint (`fp`), the detail
+> areas (`selections`), the per-mode visual settings (`modeSettings`), and the
+> per-area sub-layout cache (`subs`). On load the panel reseeds the localStorage
+> cache from those fields and adopts the saved `city`/`fp`, so a file-load behaves
+> exactly like a cache hit — detail areas restore from their saved sub-layouts
+> without re-simulating, and a later remount + Generate hits. The file also carries
+> a debug `inputDump` (the former standalone "input dump": the exact live render
+> inputs, plus a cropped sub-input per detail area so any area can be debugged in
+> isolation offline). `inputDump` is for repro only and is **ignored on load**.
+
 Build Plan B **only if** re-paying octi on reload becomes painful enough (London
 158s) to justify it — and **only after** the id-stability prerequisite below
 passes. It re-adds reload-survival while staying correct, by caching exactly one

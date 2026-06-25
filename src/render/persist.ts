@@ -15,6 +15,15 @@ import type { SmoothedPrecomputed } from './schematic';
 const MAP_TAG = '__impmap__';
 const N = 256; // unproject sample count per axis
 
+/** One cached sub-layout entry in a saved map: a detail area's serialized sub
+ *  precompute (serializePre output — already a string) + its viewBox frame.
+ *  Mirrors the localStorage `:sub:` cache entry so a load restores areas without
+ *  re-simulating, exactly like a cache hit. */
+export interface MapSubEntry {
+  pre: string;
+  selFrame: { x: number; y: number; w: number; h: number } | null;
+}
+
 export interface MapBundle {
   version: number;
   city: string;
@@ -22,7 +31,18 @@ export interface MapBundle {
   settings: unknown;
   /** Opaque detail-area selections (plain data: id/box/color/name). */
   selections?: unknown;
+  /** Per-mode visual settings (mode → blob), mirroring the `:set:<mode>` cache entries. */
+  modeSettings?: Record<string, unknown>;
+  /** The layout fingerprint the pre/areas/subs were built under (mirrors `:fp:`). Lets a
+   *  load reseed the localStorage cache so a file-load behaves exactly like a cache hit. */
+  fp?: string;
+  /** Per-area sub-layout cache (boxKey → sub entry), mirroring the `:sub:` cache so loaded
+   *  detail areas restore instantly instead of re-simulating. */
+  subs?: Record<string, MapSubEntry>;
   pre: SmoothedPrecomputed | string;
+  /** Debug-only snapshot of the exact live render inputs (the former "input dump"), plus a
+   *  cropped sub-input per detail area. Captured for offline repro; IGNORED on load. */
+  inputDump?: unknown;
 }
 
 function replacer(_k: string, v: unknown): unknown {
