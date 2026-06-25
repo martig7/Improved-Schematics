@@ -121,6 +121,10 @@ export interface RenderRibbonsArgs {
   /** Stations toggle: when false, the line-name bullets inside stop dots are
    *  hidden (markers themselves always render in ribbon modes). */
   showStations?: boolean;
+  /** Fallback marker style for over-dense (un-seatable) bundles: 'box' (default,
+   *  the opaque rounded rect) or 'curve' (a soft squircle of the same footprint).
+   *  Draw-time only — consumed in paintRibbons, never in computeRibbonGeometry. */
+  megaFallback?: 'box' | 'curve';
   water?: WaterCollection;
   transfers?: TransferPair[];
   /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
@@ -2024,7 +2028,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
   }
   const stopsPrims: Prim[] = [];
-  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined);
+  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'box');
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];

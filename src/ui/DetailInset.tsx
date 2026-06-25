@@ -63,6 +63,9 @@ interface DetailInsetProps {
   baseSvg: string;
   showStations: boolean;
   showLabels: boolean;
+  /** Dense-hub fallback shape (the main map's setting) — re-sims of the crop may also
+   *  hit un-seatable hubs, so they honour the same box/curve choice. */
+  megaFallback: 'box' | 'curve';
   /** Label-size multiplier (the main map's setting); scaled onto this sub-map's labels. */
   labelScale: number;
   /** Bounds-edit mode: show draggable corner handles over the source box (the prior
@@ -98,6 +101,7 @@ export function DetailInset({
   baseSvg,
   showStations,
   showLabels,
+  megaFallback,
   labelScale,
   editing,
   onBoundsChange,
@@ -253,7 +257,7 @@ export function DetailInset({
     };
     // Cheap redraw of a cached sub-layout with the CURRENT toggles.
     const drawResim = (subPre: SmoothedPrecomputed, selFrame: Rect | null) => {
-      const out = drawSmoothedSchematic(subPre, { showLabels, showStations });
+      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, megaFallback });
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
       applyLabelScale();
@@ -343,7 +347,7 @@ export function DetailInset({
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, position, buildInput, applyLabelScale]);
+  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, megaFallback, position, buildInput, applyLabelScale]);
 
   // Re-apply the label scale when only the setting changes (no re-draw needed).
   useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);

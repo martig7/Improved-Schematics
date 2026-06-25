@@ -19,6 +19,7 @@ export function renderStops(
   degByNode?: Map<string, number>,
   showNames?: boolean,
   prims?: Prim[],
+  megaFallback: 'box' | 'curve' = 'box',
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
@@ -167,6 +168,64 @@ export function renderStops(
       // into an unreadable cluster (user: "leave them as boxes but remove the
       // station circles"). The box alone marks the interchange; the crossing
       // lines read through it.
+      if (megaFallback === 'curve') {
+        // Curve fallback: render this un-seatable crossing like a normal multi-line
+        // capsule — border + fill at capsule width, with the per-line dots drawn ON
+        // TOP — but follow a SMOOTH spline through the marks instead of the octilinear
+        // polyline. Boxed marks have no solved chain order, so order them along the
+        // bundle's principal axis (farthest pair). Dots may overlap freely here (the
+        // bundle boxed precisely because they couldn't be seated apart).
+        let pi = 0, pj = 0, pbest = -1;
+        for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) {
+          const dx = marks[i].pos[0] - marks[j].pos[0], dy = marks[i].pos[1] - marks[j].pos[1];
+          const dd = dx * dx + dy * dy;
+          if (dd > pbest) { pbest = dd; pi = i; pj = j; }
+        }
+        const A = marks[pi].pos, B = marks[pj].pos;
+        let axx = B[0] - A[0], axy = B[1] - A[1];
+        const alen = Math.sqrt(axx * axx + axy * axy) || 1;
+        axx /= alen; axy /= alen;
+        // marks ordered by projection onto the axis (stable: tie-break by index)
+        const orderedPos = marks
+          .map((m, i) => ({ p: m.pos, t: (m.pos[0] - A[0]) * axx + (m.pos[1] - A[1]) * axy, i }))
+          .sort((u, v) => (u.t - v.t) || (u.i - v.i))
+          .map((u) => u.p);
+        const spine = rdpSimplify(orderedPos, 0.75); // drop collinear jitter, keep genuine bends
+        const f = (n: number) => n.toFixed(1);
+        // Catmull-Rom -> cubic bezier through the spine (clamped endpoints); a 1-point
+        // (coincident) spine degenerates to a round-capped dot.
+        let dCurve = 'M ' + f(spine[0][0]) + ' ' + f(spine[0][1]);
+        if (spine.length === 1) {
+          dCurve += ' L ' + f(spine[0][0]) + ' ' + f(spine[0][1]);
+        } else {
+          for (let i = 0; i < spine.length - 1; i++) {
+            const p0 = spine[i === 0 ? 0 : i - 1], p1 = spine[i], p2 = spine[i + 1];
+            const p3 = spine[i + 2 < spine.length ? i + 2 : spine.length - 1];
+            const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+            const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+            dCurve += ' C ' + f(c1x) + ' ' + f(c1y) + ' ' + f(c2x) + ' ' + f(c2y) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
+          }
+        }
+        // Border then fill at the SAME widths a normal capsule uses, both round — the
+        // d string is shared by markup + prim. (Mirrors the capsule branch below.)
+        const capPath = (color: string, w: number, withAttrs: boolean): string => {
+          prims?.push({
+            kind: 'path',
+            d: dCurve, fill: 'none', stroke: color, strokeWidth: +w.toFixed(1),
+            lineCap: 'round', lineJoin: 'round',
+            layer: 'stops', worldScale: true,
+          });
+          return '<path d="' + dCurve + '" fill="none" stroke="' + color +
+            '" stroke-width="' + w.toFixed(1) +
+            '" stroke-linecap="round" stroke-linejoin="round"' + (withAttrs ? attrs : '') + '/>';
+        };
+        const inner = capPath(stroke, 2 * rCap + 6 * MARKER_SCALE, false) + capPath(fill, 2 * rCap + 3 * MARKER_SCALE, true);
+        const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
+        const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
+        out.push(wrap(cx, cy, inner + dots)); // per-line dots drawn ON TOP, overlap allowed
+        flushDots(); // markup order: border path, fill path, THEN dots
+        continue;
+      }
       out.push(wrap((x0 + x1) / 2, (y0 + y1) / 2,
         '<rect x="' + x0.toFixed(1) + '" y="' + y0.toFixed(1) +
         '" width="' + (x1 - x0).toFixed(1) + '" height="' + (y1 - y0).toFixed(1) +

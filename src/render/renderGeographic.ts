@@ -1013,7 +1013,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
  *  precomputeSmoothed — this is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean },
+  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve' },
   sceneOut?: SceneOut,
 ): string {
   const args = {
@@ -1025,6 +1025,7 @@ export function drawSmoothed(
     dark: pre.dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
+    megaFallback: opts.megaFallback ?? 'box',
     transfers: pre.transfers,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
@@ -1040,7 +1041,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, megaFallback: opts.megaFallback });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

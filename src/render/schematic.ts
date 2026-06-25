@@ -105,5 +105,5 @@ export function drawSmoothedSchematic(
   sceneOut?: SceneOut,
 ): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...options };
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations }, sceneOut);
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, megaFallback: opts.megaFallback }, sceneOut);
 }

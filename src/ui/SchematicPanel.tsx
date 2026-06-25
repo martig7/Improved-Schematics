@@ -207,6 +207,7 @@ function useClampedPopover(
 type RestoredSettings = {
   showStations?: boolean;
   showLabels?: boolean;
+  megaFallback?: 'box' | 'curve';
   applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number };
   rasterScale?: number;
   jpegQuality?: number;
@@ -241,6 +242,9 @@ export function SchematicPanel() {
   const [mode, setMode] = useState<RenderMode>('geographic');
   const [showStations, setShowStations] = useState(rvis.showStations ?? true);
   const [showLabels, setShowLabels] = useState(rvis.showLabels ?? false);
+  // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
+  // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
+  const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? 'box');
   // Debug overlay: outline the dense-core regions the box-warp magnified (pre.denseBoxesPx).
   // Display-only + in-session (defaults off, not persisted, not in the layout fingerprint);
   // mirrored to a ref so the dep-[] drawCanvas can read it.
@@ -420,6 +424,7 @@ export function SchematicPanel() {
     const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC }; // older entries lack boxFrac
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
+    setMegaFallback(v.megaFallback ?? 'box');
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
     setApplied(ap);
     setLineWidth(ap.lineWidth);
@@ -441,7 +446,7 @@ export function SchematicPanel() {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     if (!shared) return;
-    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, applied: shared.applied, labelScale: shared.labelScale };
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale };
     for (const m of ['geographic', 'smoothed'] as const) {
       if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
     }
@@ -692,7 +697,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, megaFallback }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -705,7 +710,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, megaFallback, geography, smoothedReady, applied, buildInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -766,10 +771,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, applied, labelScale });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, megaFallback, applied, labelScale });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
+  }, [showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -934,7 +939,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale };
+    const settings = { mode, showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale };
     const fp = currentFpRef.current ?? undefined;
     // Mirror the rest of the per-city cache: per-mode visual settings + the sub-layout cache
     // (fp-gated, so only the subs that belong to THIS layout are captured).
@@ -954,7 +959,7 @@ export function SchematicPanel() {
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
+  }, [mode, showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
@@ -970,6 +975,7 @@ export function SchematicPanel() {
     const s = (bundle.settings ?? {}) as {
       showStations?: boolean;
       showLabels?: boolean;
+      megaFallback?: 'box' | 'curve';
       applied?: typeof applied;
       rasterScale?: number;
       jpegQuality?: number;
@@ -995,6 +1001,7 @@ export function SchematicPanel() {
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
+    if (s.megaFallback === 'box' || s.megaFallback === 'curve') setMegaFallback(s.megaFallback);
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
     if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
     if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
@@ -1531,7 +1538,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations]);
+  }, [showLabels, showStations, megaFallback]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -1618,6 +1625,15 @@ export function SchematicPanel() {
         <button onClick={() => requestToggle(() => setShowLabels((v) => !v))} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
+        {mode === 'smoothed' && smoothedReady && (
+          <button
+            onClick={() => requestToggle(() => setMegaFallback((v) => (v === 'box' ? 'curve' : 'box')))}
+            style={toggleStyle(megaFallback === 'curve')}
+            title="Dense-hub fallback shape when a bundle can't seat octilinearly: Box (rectangle) or Curve (squircle)"
+          >
+            {megaFallback === 'curve' ? 'Hubs: Curve' : 'Hubs: Box'}
+          </button>
+        )}
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setShowWarpBoxes((v) => !v)}
@@ -2174,6 +2190,7 @@ export function SchematicPanel() {
             baseSvg={svg}
             showStations={showStations}
             showLabels={showLabels}
+            megaFallback={megaFallback}
             labelScale={labelScale}
             editing={editingId === s.id}
             onBoundsChange={onBoundsChange}

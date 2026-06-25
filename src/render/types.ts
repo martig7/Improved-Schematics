@@ -64,6 +64,12 @@ export interface SchematicOptions {
   bounds?: BoundingBox;
   showStations: boolean;
   showLabels: boolean;
+  /** How to render the fallback marker for an over-dense bundle that can't seat
+   *  octilinearly (a "megabox"): 'box' = the opaque rounded rectangle (default),
+   *  'curve' = a soft squircle blob of the same footprint. DRAW-TIME only — it
+   *  does not change the layout, so it's excluded from the cache fingerprint and
+   *  toggling it just repaints. Default 'box' (byte-identical to before). */
+  megaFallback?: 'box' | 'curve';
   /** Diagnostic: overlay the Hanan routing grid underneath the routes
    *  (Smoothed mode only — that's the only renderer that uses one). */
   showGrid?: boolean;
@@ -127,6 +133,7 @@ export const DEFAULT_OPTIONS: SchematicOptions = {
   padding: 0.06,
   showStations: true,
   showLabels: false,
+  megaFallback: 'box',
   mode: 'geographic',
   dark: false,
   theme: DEFAULT_THEME,
