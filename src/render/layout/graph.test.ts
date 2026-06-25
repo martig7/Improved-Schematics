@@ -39,6 +39,51 @@ test('buildTransitGraph builds edges between consecutive distinct groups', () =>
   assert.deepEqual([...graph.lineTraversals.keys()], ['r1']);
 });
 
+test('buildTransitGraph collapses same-bullet+colour routes (loop directions) into one line', () => {
+  // A loop the game models as two routes: clockwise + counter-clockwise, same bullet+colour
+  // (colour case differs to exercise the case-insensitive match).
+  const cw = { id: 'rCW', bullet: 'A', color: '#ee352e', stCombos: [{ startStNodeId: 'n1', endStNodeId: 'n3', path: [], distance: 0 }], stComboTimings: [] };
+  const ccw = { id: 'rCCW', bullet: 'A', color: '#EE352E', stCombos: [{ startStNodeId: 'n3', endStNodeId: 'n1', path: [], distance: 0 }], stComboTimings: [] };
+  const graph = buildTransitGraph(stations, [cw, ccw] as unknown as Route[], buildStationGroups(stations));
+  assert.equal(graph.edges.length, 1, 'one shared edge g1<->g2');
+  assert.equal(graph.edges[0].lines.length, 1, 'both directions bundle as ONE line');
+  assert.equal(graph.edges[0].lines[0].id, 'rCW', 'collapsed onto the first route id');
+  assert.deepEqual([...graph.lineTraversals.keys()], ['rCW'], 'one traversal under the canonical id');
+});
+
+test('buildTransitGraph keeps same-bullet DIFFERENT-colour routes separate', () => {
+  const red = { id: 'rRed', bullet: 'A', color: '#ee352e', stCombos: [{ startStNodeId: 'n1', endStNodeId: 'n3', path: [], distance: 0 }], stComboTimings: [] };
+  const blue = { id: 'rBlue', bullet: 'A', color: '#0000ff', stCombos: [{ startStNodeId: 'n3', endStNodeId: 'n1', path: [], distance: 0 }], stComboTimings: [] };
+  const graph = buildTransitGraph(stations, [red, blue] as unknown as Route[], buildStationGroups(stations));
+  assert.equal(graph.edges[0].lines.length, 2, 'different colours are different lines');
+});
+
+test('buildTransitGraph does not collapse blank-bullet routes together', () => {
+  const a = { id: 'rA', bullet: '', color: '#888888', stCombos: [{ startStNodeId: 'n1', endStNodeId: 'n3', path: [], distance: 0 }], stComboTimings: [] };
+  const b = { id: 'rB', bullet: '  ', color: '#888888', stCombos: [{ startStNodeId: 'n3', endStNodeId: 'n1', path: [], distance: 0 }], stComboTimings: [] };
+  const graph = buildTransitGraph(stations, [a, b] as unknown as Route[], buildStationGroups(stations));
+  assert.equal(graph.edges[0].lines.length, 2, 'blank bullets are not a meaningful name → never merged');
+});
+
+test('buildTransitGraph keeps a BRANCH (same bullet+colour, DIVERGENT edges) as distinct lines', () => {
+  // A trunk T→J that diverges to two terminals A and B, modelled (like the game does) as two
+  // same-bullet+colour routes. Their edge sets differ, so they must NOT collapse — else one arm
+  // would be dropped (the DAL "Ross Av" bug). True loop directions (equal edge sets) still collapse.
+  const mk = (id: string, tg: string, node: string, lng: number, lat: number) =>
+    ({ id, name: id, coords: [lng, lat], trackIds: ['tk-' + id], trackGroupId: tg, buildType: 'constructed', stNodeIds: [node], routeIds: [], createdAt: 0, nearbyStations: [] });
+  const brStations = [mk('sT', 'gT', 'nT', -96.0, 32.0), mk('sJ', 'gJ', 'nJ', -96.1, 32.0), mk('sA', 'gA', 'nA', -96.2, 32.1), mk('sB', 'gB', 'nB', -96.2, 31.9)] as unknown as Station[];
+  const combo = (a: string, b: string) => ({ startStNodeId: a, endStNodeId: b, path: [], distance: 0 });
+  const r1 = { id: 'br1', bullet: 'X', color: '#123456', stCombos: [combo('nT', 'nJ'), combo('nJ', 'nA')], stComboTimings: [] };
+  const r2 = { id: 'br2', bullet: 'X', color: '#123456', stCombos: [combo('nT', 'nJ'), combo('nJ', 'nB')], stComboTimings: [] };
+  const graph = buildTransitGraph(brStations, [r1, r2] as unknown as Route[], buildStationGroups(brStations));
+  assert.equal(graph.lineTraversals.size, 2, 'divergent branch arms stay distinct lines (no collapse)');
+  const edge = (x: string, y: string) => graph.edges.find((e) => (e.from === x && e.to === y) || (e.from === y && e.to === x))!;
+  assert.equal(edge('gT', 'gJ').lines.length, 2, 'the shared trunk edge carries BOTH line ids (for the Y-split)');
+  assert.equal(edge('gJ', 'gA').lines.length, 1, 'branch A edge carries one line');
+  assert.equal(edge('gJ', 'gB').lines.length, 1, 'branch B edge carries one line');
+  assert.notEqual(edge('gJ', 'gA').lines[0].id, edge('gJ', 'gB').lines[0].id, 'the two arms are different lines');
+});
+
 test('parallel forward/back tracks in one API station group attach one corridor geo', () => {
   const platformA = {
     id: 's1', name: 'Hub', coords: [-122.0, 47.0], trackIds: ['fwd', 'back'], trackGroupId: 'tg1',

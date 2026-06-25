@@ -14,7 +14,9 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 1; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 2; // bump to bust all fingerprints when the renderer's inputs change
+// v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
+// buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {

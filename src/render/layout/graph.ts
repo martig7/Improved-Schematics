@@ -431,6 +431,47 @@ export function buildTransitGraph(
     nodes.set(g.id, { id: g.id, label: g.name, pos: project(lng, lat), lngLat: [lng, lat] as Coordinate });
   }
 
+  // Routes that share a (non-empty) bullet AND colour MIGHT be one logical line the game
+  // models as two routes (e.g. a loop's clockwise + counter-clockwise directions). Collapse
+  // such a pair onto ONE line id so it bundles as a single ribbon — but ONLY when they are
+  // genuinely the same line: a loop's two directions cover the SAME undirected edge set, while
+  // a BRANCH (a trunk diverging to two terminals, also two same-bullet+colour routes) covers
+  // DIFFERENT edges. The line model is single-path, so collapsing a branch forces a tree into
+  // it and silently drops the divergent arm (the other terminal goes non-contiguous). So
+  // collapse only EQUAL-edge-set routes; a divergent route seeds its OWN line id and draws as a
+  // proper branch (the trunk edge carries both ids, which the LOOM/untangle layer Y-splits).
+  // Blank-bullet / edge-less routes never collapse.
+  const canonLineId = new Map<string, string>(); // route.id -> canonical line id
+  {
+    const routeEdgeSet = (route: Route): Set<string> => {
+      const visits = walkRouteVisits(route, stNodeToGroup, trackToGroup);
+      const s = new Set<string>();
+      for (let i = 0; i < visits.length - 1; i++) {
+        const a = visits[i], b = visits[i + 1];
+        if (a.breakAfter || a.groupId === b.groupId) continue;
+        s.add(groupEdgeKey(a.groupId, b.groupId)); // undirected: identical for both loop directions
+      }
+      return s;
+    };
+    const setEq = (a: Set<string>, b: Set<string>): boolean => {
+      if (a.size !== b.size) return false;
+      for (const k of a) if (!b.has(k)) return false;
+      return true;
+    };
+    const repsByKey = new Map<string, { id: string; edges: Set<string> }[]>();
+    for (const route of routes) {
+      if (route.tempParentId) continue;
+      const label = String(route.bullet ?? '').trim();
+      const edges = label ? routeEdgeSet(route) : new Set<string>();
+      if (!label || edges.size === 0) { canonLineId.set(route.id, route.id); continue; }
+      const key = label + ' ' + normalizeColor(route.color).toLowerCase(); // hex colour is case-insensitive
+      const reps = repsByKey.get(key) ?? (repsByKey.set(key, []).get(key)!);
+      const match = reps.find((rep) => setEq(rep.edges, edges)); // same edges = a loop direction
+      if (match) canonLineId.set(route.id, match.id);
+      else { reps.push({ id: route.id, edges }); canonLineId.set(route.id, route.id); } // divergent -> own line
+    }
+  }
+
   const edgeMap = new Map<string, GraphEdge>();
   let edgeN = 0;
   const lineTraversals = new Map<string, TraversalStep[]>();
@@ -440,8 +481,9 @@ export function buildTransitGraph(
     const visits = walkRouteVisits(route, stNodeToGroup, trackToGroup);
     // label = the bullet printed inside dots; an empty/whitespace bullet prints
     // NOTHING (a blank dot), not the route's UUID. Lines are matched by id, so
-    // the label is display-only and may safely be empty.
-    const line: LineRef = { id: route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color) };
+    // the label is display-only and may safely be empty. The id is canonicalized
+    // above so same-bullet+colour routes (loop directions) share one line.
+    const line: LineRef = { id: canonLineId.get(route.id) ?? route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color) };
     const traversal: TraversalStep[] = [];
 
     for (let i = 0; i < visits.length - 1; i++) {
@@ -470,7 +512,12 @@ export function buildTransitGraph(
       traversal.push({ edgeId: edge.id, reversed: !forward });
     }
 
-    if (traversal.length > 0) lineTraversals.set(line.id, traversal);
+    // Collapsed lines (loop directions) hit this twice; keep the longer traversal so the
+    // merged line still covers every edge it runs on (equal-length → keep the first).
+    if (traversal.length > 0) {
+      const prev = lineTraversals.get(line.id);
+      if (!prev || traversal.length > prev.length) lineTraversals.set(line.id, traversal);
+    }
   }
 
   const edges = [...edgeMap.values()];
