@@ -83,13 +83,13 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
 // Box-warp strength: the LOCAL dense-core expansion (densityBoxWarp). 0 (center)
-// = the tuned default (expand 4 / growth 1.2). MULTIPLICATIVE in the slider
+// = the tuned default (expand 6 / growth 1.5). MULTIPLICATIVE in the slider
 // position (each step scales by a constant), so the control is symmetric and
-// uses its full range: right (stylized) magnifies crowded hubs up to expand 16 /
-// growth 3.0 — the useful ceiling (past ~16 the extra distortion reintroduces
-// boxes); left (realistic) eases the box warp toward off (expand → 1). [-1, +1].
-const boxExpandFromPos = (p: number) => Math.max(1, 4 * Math.pow(4, p));
-const boxGrowthFromPos = (p: number) => Math.max(1, 1.2 * Math.pow(2.5, p));
+// uses its full range: right (stylized) magnifies crowded hubs up to expand 36 /
+// growth 4.5 (box-rescue + the box density cutoff keep that strength usable);
+// left (realistic) eases the box warp toward off (expand → 1). [-1, +1].
+const boxExpandFromPos = (p: number) => Math.max(1, 6 * Math.pow(6, p));
+const boxGrowthFromPos = (p: number) => Math.max(1, 1.5 * Math.pow(3, p));
 // Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
 // smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
 // boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It
