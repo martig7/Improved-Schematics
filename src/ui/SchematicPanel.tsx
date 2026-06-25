@@ -1396,15 +1396,18 @@ export function SchematicPanel() {
     return () => document.removeEventListener('mousedown', onDown);
   }, [settingsOpen]);
 
-  // Same for the detail-areas manager popover.
+  // Same for the detail-areas manager popover — EXCEPT while editing an area's bounds:
+  // the corner-handle drags land on the map (outside the menu), which would otherwise
+  // close it, stranding the ✓/✗ controls. Keep it open until the edit is committed/cancelled.
   useEffect(() => {
     if (!areasOpen) return;
     const onDown = (e: MouseEvent) => {
+      if (editingId) return; // bounds-edit in progress — keep the menu open
       if (!areasRef.current?.contains(e.target as Node)) setAreasOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [areasOpen]);
+  }, [areasOpen, editingId]);
 
   // Drop the manager open-state once there's nothing to manage (its button
   // unmounts), so it doesn't auto-reopen when the next area is drawn.
