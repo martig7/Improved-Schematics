@@ -1540,7 +1540,13 @@ export function SchematicPanel() {
         <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
         <div style={{ display: 'flex', gap: 4 }}>
           {MODES.map((m) => (
-            <button key={m.id} onClick={() => switchMode(m.id)} style={toggleStyle(mode === m.id)}>
+            <button
+              key={m.id}
+              onClick={() => switchMode(m.id)}
+              disabled={geoLoading}
+              style={{ ...toggleStyle(mode === m.id), ...(geoLoading ? { cursor: 'not-allowed', opacity: 0.4 } : null) }}
+              title={geoLoading ? 'Geography loading…' : undefined}
+            >
               {m.label}
             </button>
           ))}
@@ -1573,6 +1579,9 @@ export function SchematicPanel() {
               willChange: 'transform',
             }}
           />
+        )}
+        {geoLoading && (
+          <span style={{ color: '#888', fontSize: 11 }}>Geography loading, please wait</span>
         )}
         <span style={{ flex: 1 }} />
         {mode === 'smoothed' && genMs != null && (
@@ -1732,8 +1741,9 @@ export function SchematicPanel() {
         <div ref={settingsRef} style={{ position: 'relative' }}>
           <button
             onClick={() => setSettingsOpen((v) => !v)}
-            style={{ ...toggleStyle(settingsOpen), display: 'inline-flex', alignItems: 'center', padding: '4px 8px' }}
-            title="Settings"
+            disabled={geoLoading}
+            style={{ ...toggleStyle(settingsOpen), display: 'inline-flex', alignItems: 'center', padding: '4px 8px', ...(geoLoading ? { cursor: 'not-allowed', opacity: 0.4 } : null) }}
+            title={geoLoading ? 'Geography loading…' : 'Settings'}
             aria-label="Settings"
             aria-expanded={settingsOpen}
           >
