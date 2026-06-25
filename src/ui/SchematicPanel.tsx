@@ -1619,8 +1619,8 @@ export function SchematicPanel() {
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
         {mode === 'smoothed' && smoothedReady && !generating && (
-          <button onClick={regenerate} style={toggleStyle(false)} title="Rebuild the smoothed map from current game state">
-            ↻ Regenerate
+          <button onClick={regenerate} style={toggleStyle(false)} title="Regenerate — rebuild the smoothed map from current game state" aria-label="Regenerate">
+            ↻
           </button>
         )}
         {mode === 'smoothed' && smoothedReady && (
