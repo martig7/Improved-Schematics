@@ -118,6 +118,9 @@ export interface DrawSceneOpts {
   clipBoxes?: ClipBox[];
   /** multiplier on the constant on-screen label size (user "label size" setting). */
   labelScale?: number;
+  /** dense box-warp regions in world coords — drawn as a debug overlay on top of
+   *  everything (the "show warp boxes" toggle). Display-only. */
+  warpBoxes?: ClipBox[];
 }
 
 export function drawScene(
@@ -244,6 +247,25 @@ export function drawScene(
     ctx.textAlign = label.align;
     ctx.fillStyle = label.fill;
     ctx.fillText(label.text, label.ax + label.x * ls, label.ay + label.y * ls);
+  }
+
+  // Warp-box debug overlay (LAST, on top of everything): the dense-core regions the
+  // box-warp magnified. World space so it pans/zooms with the map; stroke width and
+  // dash are divided by scale for a constant on-screen size.
+  const wb = opts.warpBoxes;
+  if (wb && wb.length > 0) {
+    camera();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(225,29,143,0.08)';
+    ctx.strokeStyle = '#e11d8f';
+    ctx.lineWidth = 2 / scale;
+    ctx.setLineDash([9 / scale, 6 / scale]);
+    for (const b of wb) {
+      const w = b.x1 - b.x0, h = b.y1 - b.y0;
+      ctx.fillRect(b.x0, b.y0, w, h);
+      ctx.strokeRect(b.x0, b.y0, w, h);
+    }
+    ctx.setLineDash([]);
   }
 }
 

@@ -16,7 +16,7 @@ import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
-import { buildBoxExpandWarp, buildSepBoxWarp } from './layout/densityBoxWarp';
+import { buildBoxExpandWarp, buildSepBoxWarp, type DenseBox } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -438,6 +438,12 @@ export interface SmoothedPrecomputed {
    *  the precompute. When present, a draw (and every cache read) skips the 80-90%
    *  placement cost and only paints. See docs/cache-read-perf.md. */
   geometry?: RibbonGeometry;
+  /** The dense-core regions the box-warp magnified, in render px (the same space as
+   *  stationPx). For the optional "show warp boxes" debug overlay — display-only, not
+   *  part of the layout/fingerprint. Empty for non-box warp modes (separable/2d) — no
+   *  boxes are magnified — and absent (undefined) only for pre-existing cached layouts
+   *  computed before this field existed. */
+  denseBoxesPx?: DenseBox[];
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -649,18 +655,25 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin, growthCap: boxGrowth };
   const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
+  // Capture the dense boxes the box-warp magnified (box/both modes only), in the
+  // warp's OUTPUT space; the per-axis refit below maps them on to final render px for
+  // the optional "show warp boxes" debug overlay.
+  const warpOut: { boxes?: DenseBox[] } = {};
   const warp =
     warpMode === 'separable'
       ? buildDensityWarp(warpSamples, warpBox, sepOpts)
       : warpMode === '2d'
         ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
         : warpMode === 'box'
-          ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts)
-          : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts); // default 'both'
+          ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts, warpOut)
+          : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts, warpOut); // default 'both'
   let proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
+  // The per-axis refit applied below (identity until set), reused to map the warp
+  // boxes from warp-output px on to final render px.
+  let refitPx: (p: Pixel) => Pixel = (p) => p;
   // Re-fit to the WARPED content extent. The warp pushes content outward, and the
   // geography (which reaches past the network) can land OUTSIDE the [0,width]
   // canvas — where the land-base rect, viewBox and export frame don't reach, so
@@ -696,8 +709,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       const oy = height * m - mnY * sy;
       const inner = proj;
       proj = { ...inner, toSVG: (c: Coordinate) => { const p = inner.toSVG(c); return [p[0] * sx + ox, p[1] * sy + oy]; } };
+      refitPx = (p: Pixel) => [p[0] * sx + ox, p[1] * sy + oy];
     }
   }
+  // Map the captured warp boxes (warp-output px) through the same refit to final
+  // render px (the space stationPx live in). Per-axis monotone → stays axis-aligned.
+  const denseBoxesPx: DenseBox[] = (warpOut.boxes ?? []).map((b) => {
+    const a = refitPx([b.x0, b.y0]);
+    const c = refitPx([b.x1, b.y1]);
+    return { x0: a[0], y0: a[1], x1: c[0], y1: c[1] };
+  });
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
 
   // Inverse of the warped projection (render pixel -> geographic coord). The whole
@@ -978,7 +999,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame, unproject, geoBboxFrame };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame, unproject, geoBboxFrame, denseBoxesPx };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to

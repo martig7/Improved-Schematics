@@ -113,17 +113,22 @@ export function findDenseBoxes(
 }
 
 /** Build the dense-box expansion warp. Drop-in WarpFn (same shape as
- *  buildDensityWarp). Identity where there are no dense boxes. */
+ *  buildDensityWarp). Identity where there are no dense boxes. When `out` is given,
+ *  `out.boxes` is set to the dense boxes mapped THROUGH this warp (i.e. in the
+ *  warp's OUTPUT space), so a caller can overlay where the magnified cores landed. */
 export function buildBoxExpandWarp(
   samples: readonly Pixel[],
   box: WarpBox,
   opts: BoxWarpOptions = {},
+  out?: { boxes?: DenseBox[] },
 ): WarpFn {
   const boxes = findDenseBoxes(samples, box, opts);
-  if (boxes.length === 0) return (p) => [p[0], p[1]];
+  if (boxes.length === 0) { if (out) out.boxes = []; return (p) => [p[0], p[1]]; }
   const strengthTarget = Math.max(0, (opts.expand ?? 1.4) - 1);
   const marginFrac = opts.marginFrac ?? 1;
-  if (strengthTarget === 0) return (p) => [p[0], p[1]];
+  // Identity warp (expand≈1): the dense regions exist but aren't magnified, so they
+  // land where they are (input space == output space).
+  if (strengthTarget === 0) { if (out) out.boxes = boxes.map((b) => ({ ...b })); return (p) => [p[0], p[1]]; }
 
   const bs = boxes.map((b) => {
     const cx = (b.x0 + b.x1) / 2;
@@ -199,10 +204,21 @@ export function buildBoxExpandWarp(
     console.error(`[boxwarp] boxes=${bs.length} strength=${strength.toFixed(2)} rawGrowth=${((xr - xl) / cw2).toFixed(2)}x scale=${sx.toFixed(3)},${sy.toFixed(3)} (per-axis fill, cap=${cap}) sizes=[${sz}]`);
   }
 
-  return (p) => {
+  const warpFn: WarpFn = (p) => {
     const q = raw(p[0], p[1]);
     return [cxCanvas + (q[0] - cxWarp) * sx, cyCanvas + (q[1] - cyWarp) * sy];
   };
+  // Map each dense box's corners through the warp into output space. The warp is
+  // monotone increasing per axis, so an axis-aligned box stays axis-aligned and the
+  // corner order (x0<x1, y0<y1) is preserved.
+  if (out) {
+    out.boxes = boxes.map((b) => {
+      const a = warpFn([b.x0, b.y0]);
+      const c = warpFn([b.x1, b.y1]);
+      return { x0: a[0], y0: a[1], x1: c[0], y1: c[1] };
+    });
+  }
+  return warpFn;
 }
 
 // Overlap the separable density warp with the dense-box expansion: separable
@@ -216,9 +232,13 @@ export function buildSepBoxWarp(
   box: WarpBox,
   sepOpts: DensityWarpOptions,
   boxOpts: BoxWarpOptions,
+  out?: { boxes?: DenseBox[] },
 ): WarpFn {
   const sep = buildDensityWarp(samples, box, sepOpts);
   const warpedSamples = samples.map((s) => sep([s[0], s[1]]) as Pixel);
-  const bx = buildBoxExpandWarp(warpedSamples, box, boxOpts);
+  // The boxes are found in separable-warped space and `bx` maps them to its output
+  // space, which IS the composed warp's output (bx is applied last) — so `out.boxes`
+  // is correct for the full sep+box warp without further mapping.
+  const bx = buildBoxExpandWarp(warpedSamples, box, boxOpts, out);
   return (p) => bx(sep(p));
 }
