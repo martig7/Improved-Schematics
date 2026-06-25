@@ -90,6 +90,12 @@ export interface SchematicOptions {
    *  densityBoxWarp `growthCap`). Raised alongside boxExpand so stronger core
    *  expansion adds room instead of crushing the far field. Default 1.2. */
   boxGrowth?: number;
+  /** Smoothed mode only: the box-warp density CUTOFF (densityBoxWarp `frac`, 0–1) —
+   *  a cell counts as "dense" (and joins a warp box) when its smoothed density is at
+   *  least this fraction of the peak. Lower = looser cutoff → more/larger boxes
+   *  (broader warping); higher = only the densest cores → fewer/smaller boxes.
+   *  Default 0.4. */
+  boxFrac?: number;
   /** Render with a dark background/palette. */
   dark: boolean;
   theme: SchematicTheme;

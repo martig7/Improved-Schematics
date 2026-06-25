@@ -38,6 +38,7 @@ test('fingerprint changes on each layout-affecting input', () => {
   assert.notEqual(fp((i) => ((i.stations[0] as { id: string }).id = 'sX')), ref, 'station id');
   assert.notEqual(fp((i) => ((i.tracks[0] as { coords: number[][] }).coords = [[9, 9], [8, 8]])), ref, 'track coords');
   assert.notEqual(fp((i) => (i.options!.warpAlpha = 0.2)), ref, 'warp option');
+  assert.notEqual(fp((i) => (i.options!.boxFrac = 0.6)), ref, 'boxFrac (box density cutoff)');
   assert.notEqual(fp((i) => (i.options!.theme!.lineWidth = 8)), ref, 'lineWidth (feeds dHat)');
   assert.notEqual(fp((i) => (i.options!.dark = true)), ref, 'dark');
   assert.notEqual(fp((i) => (i.geography = undefined)), ref, 'geography presence (bug-1 token)');

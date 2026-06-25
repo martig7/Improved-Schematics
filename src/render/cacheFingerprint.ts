@@ -38,6 +38,7 @@ export interface FingerprintInput {
     geographicAffinity?: number;
     boxExpand?: number;
     boxGrowth?: number;
+    boxFrac?: number;
     dark?: boolean;
     theme?: { lineWidth?: number };
   };
@@ -112,6 +113,7 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.geographicAffinity ?? '',
     o.boxExpand ?? '',
     o.boxGrowth ?? '',
+    o.boxFrac ?? '',
     o.dark ? 'd' : 'l',
     o.theme?.lineWidth ?? '',
   ].join('|');

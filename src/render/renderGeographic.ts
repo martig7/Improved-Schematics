@@ -562,7 +562,14 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
   const envNum = (k: string): number =>
     typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[k]) : NaN;
-  const boxFrac = Number.isFinite(envNum('OCTI_BOX_FRAC')) && envNum('OCTI_BOX_FRAC') > 0 ? envNum('OCTI_BOX_FRAC') : 0.4;
+  // boxFrac (density cutoff) takes the user's "Box density cutoff" setting via opts
+  // (the env OCTI_BOX_FRAC override still wins for dev sweeps), mirroring boxExpand/boxGrowth.
+  const boxFrac = (() => {
+    const f = envNum('OCTI_BOX_FRAC');
+    if (Number.isFinite(f) && f > 0) return f; // dev sweep override wins
+    if (typeof opts.boxFrac === 'number' && Number.isFinite(opts.boxFrac) && opts.boxFrac > 0) return opts.boxFrac;
+    return 0.4;
+  })();
   // boxExpand / boxGrowth take the user's "Box warp" setting via opts (the env
   // OCTI_BOX_* overrides still win for dev sweeps), mirroring warpAlpha above.
   const boxExpand = (() => {
