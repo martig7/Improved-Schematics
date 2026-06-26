@@ -261,6 +261,15 @@ export function DetailInset({
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
       applyLabelScale();
+      // Clamp the frame to the rendered canvas. geoBboxFrame is the geography BBOX corners,
+      // which the warp re-fit can push outside [0,width] (it only fits the drawn content, not
+      // the bbox); the land + water/green backdrop only covers the canvas, so a frame past it
+      // shows blank edges where the lines reach but the geography doesn't.
+      if (selFrame) {
+        const x0 = Math.max(0, selFrame.x), y0 = Math.max(0, selFrame.y);
+        const x1 = Math.min(subPre.width, selFrame.x + selFrame.w), y1 = Math.min(subPre.height, selFrame.y + selFrame.h);
+        if (x1 - x0 > 1 && y1 - y0 > 1) selFrame = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      }
       const isvg = bodyRef.current.querySelector('svg');
       if (isvg && selFrame) {
         isvg.setAttribute('viewBox', `${selFrame.x} ${selFrame.y} ${selFrame.w} ${selFrame.h}`);
