@@ -2640,7 +2640,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const pb = lineEndAt(b.edgeId, lineId, startB);
       if (!pa || !pb) continue;
       const gap = hyp(pb[0] - pa[0], pb[1] - pa[1]);
-      if (gap < 0.5 || gap > spacing * 8) continue; // coincident, or not a lane jog
+      // A graph-contiguous continuation at a shared node is ALWAYS the same line
+      // jogging between lane slots — it MUST be bridged or the drawn route breaks.
+      // The only non-bridge case is a genuinely coincident pair (gap < 0.5). The
+      // old fixed upper cap (spacing*8 = 44px) dropped legitimate large slot jogs
+      // at dense hubs where a line crosses a wide bundle (Broadway×Lex at 14 St-
+      // Union Sq: 45-71px), leaving Q/R/N/W/1/4/5/6 visibly broken. Bound the
+      // bridge to the actual incident bundle span instead of refusing it, so every
+      // real slot jog connects while a pathological cross-canvas jump (never
+      // produced by a same-node continuation) is still rejected. OCTI_CONN_MAXGAP
+      // overrides the cap for dev sweeps.
+      const bundleSpan = ((orderOf.get(a.edgeId)?.length ?? 1) + (orderOf.get(b.edgeId)?.length ?? 1)) * spacing;
+      const maxGapEnv =
+        typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_CONN_MAXGAP) : NaN;
+      const maxGap = Number.isFinite(maxGapEnv) && maxGapEnv > 0 ? maxGapEnv : Math.max(spacing * 8, bundleSpan);
+      if (gap < 0.5 || gap > maxGap) continue; // coincident, or pathological jump
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
       // Tangent-matched cubic instead of a straight chord: a lateral lane jog

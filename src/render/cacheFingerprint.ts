@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 5; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 6; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -27,6 +27,12 @@ const SCHEMA = 5; // bump to bust all fingerprints when the renderer's inputs ch
 // the forward-corner DOGLEG (B at Montgomery, H/E single-corner turns) inserts a
 // 45° octilinear leg — replacing the spike/loop dart. Renderer-side layout change,
 // unchanged raw inputs; bust main caches + detail-inset sub-pres.
+// v6: renderOctilinear node-connector big-jog cutoff raised from a fixed spacing*8
+// (44px) to the incident bundle span, so a line that crosses a wide bundle at a
+// dense hub (its lane slot jumping many slots — Broadway×Lex at 14 St-Union Sq:
+// 45-71px) is bridged instead of left as a visible break. Reconnects NYC-difficult
+// Q/R/N/W/1/4/5/6. Renderer-side draw change, unchanged raw inputs; bust so cached
+// maps + detail-inset sub-pres re-sim with the contiguous geometry.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
