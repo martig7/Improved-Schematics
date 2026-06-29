@@ -14,9 +14,19 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 2; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 5; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
+// v3: partner-block orientation propagation in untangle.ts changes line order on
+// partner blocks (fixes the sub-area lane-braid) — a layout change, unchanged raw
+// inputs; bust so main caches AND detail-inset sub-pres (both fp-keyed) re-sim.
+// v4: renderOctilinear join-pass big-gap cutoff raised (OCTI_GAP_MULT) so an
+// out-and-back line keeps a contiguous lane across a slot jump (B at Montgomery).
+// v5: octilinear turn handling at slot-change turns — TURN-MITER (regressive
+// corners, F at Ferry) pins both lane-ends to their octilinear meet corner, and
+// the forward-corner DOGLEG (B at Montgomery, H/E single-corner turns) inserts a
+// 45° octilinear leg — replacing the spike/loop dart. Renderer-side layout change,
+// unchanged raw inputs; bust main caches + detail-inset sub-pres.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {

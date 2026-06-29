@@ -230,6 +230,32 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // how often the traversal passes over it.
   const spacing = LINE_WIDTH + LINE_GAP;
   const CHAIN_ARC_LIMIT = 24; // ±arc window per lane curve (~one grid cell)
+  // Capsule-placement search-area expansion. When the base solve (±CHAIN_ARC_LIMIT)
+  // boxes a station, the escalation retries at ±CHAIN_ARC_LIMIT·WIDE_MULT (a wider
+  // slide window AND a longer lane curve to find a row-line crossing). Default 2 =
+  // shipped behaviour. OCTI_WIDE_MULT lets us probe whether a still-wider search
+  // recovers boxes (diagnostic for coincident- vs divergent-lane megaboxes).
+  const WIDE_MULT = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WIDE_MULT) : NaN;
+    return Number.isFinite(v) && v >= 1 ? v : 2;
+  })();
+  const WIDE_ARC = CHAIN_ARC_LIMIT * WIDE_MULT;
+  // Max lateral lane-jog (in slot-widths) the node join pass will bridge with a
+  // taper before giving up and leaving a raw diagonal. 8 = legacy; raised to 16
+  // so a line sweeping most of the bundle (B's out-and-back at Montgomery) draws
+  // contiguously. OCTI_GAP_MULT overrides.
+  const bigGapMult = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_GAP_MULT) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : 16;
+  })();
+  // Max corner extension per row, as a multiple of `spacing`. The ext1+ext2 cost
+  // term in pairEval now keeps elbows short on its own (SOFT elbow), so extCap is
+  // a large safety bound rather than a hard divergent-bundle reject. Raised 6→12
+  // so the divergent NO-PAIRING hubs (Beach & Mason ms15, Columbus ms17) seat.
+  const extCapMult = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_EXTCAP_MULT) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : 12;
+  })();
   const segPath = new Map<string, Pixel[]>(); // edge.id|lineId -> offset polyline
   const dByLine = new Map<string, string[]>();
   // Corner fillets: every interior bend of a lane polyline is rounded with a
@@ -469,8 +495,96 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const t = ((p1[0] - p3[0]) * (p3[1] - p4[1]) - (p1[1] - p3[1]) * (p3[0] - p4[0])) / den;
     return [p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1])];
   };
+  // Infinite-line intersection of the line through `pa` along `da` and the line
+  // through `pb` along `db` (unit dirs). Returns the meet point, or null when the
+  // lines are (near-)parallel. Used to MITER an out-and-back/sharp lane TURN at a
+  // 45/90-degree octilinear corner: each lane runs octilinear up to its end, so
+  // pinning both ends to the shared meet point keeps both legs octilinear while
+  // removing the overshoot spike and the chord that crossed the outgoing lane.
+  const lineMeet = (pa: Pixel, da: Pixel, pb: Pixel, db: Pixel): Pixel | null => {
+    const den = da[0] * db[1] - da[1] * db[0]; // cross(da, db)
+    if (Math.abs(den) < 1e-6) return null;
+    const t = ((pb[0] - pa[0]) * db[1] - (pb[1] - pa[1]) * db[0]) / den;
+    return [pa[0] + da[0] * t, pa[1] + da[1] * t];
+  };
+  // The eight octilinear unit directions (E/W/N/S + the four 45-degree
+  // diagonals). SQRT1_2 keeps the diagonals exactly unit-length so a snapped
+  // direction stays octilinear under the dot/length tests below. Deterministic:
+  // a literal, no hypot.
+  const SQ = Math.SQRT1_2;
+  const OCTI8: Pixel[] = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [SQ, SQ], [SQ, -SQ], [-SQ, SQ], [-SQ, -SQ],
+  ];
+  // Snap an arbitrary unit dir to the nearest of the 8 octilinear dirs (the lane
+  // ends already run octilinear, so this just removes sub-pixel rounding drift).
+  const snapOcti = (d: Pixel): Pixel => {
+    let best = OCTI8[0];
+    let bd = -Infinity;
+    for (const o of OCTI8) {
+      const dot = d[0] * o[0] + d[1] * o[1];
+      if (dot > bd) { bd = dot; best = o; }
+    }
+    return best;
+  };
+  // FORWARD-turn dogleg: a turn where the inbound lane (heading dirA) and the
+  // outbound lane (heading dirB) make a ~45-degree forward bend (dirA.dirB>0) but
+  // sit at DIFFERENT lateral slots, so a single octilinear corner cannot bridge
+  // them without reversing a leg (the turn-miter declines: its meet lands forward
+  // of the inbound end or behind the outbound end). The octilinear answer routes a
+  // diagonal D from the inbound end to a bend B2 on the outbound line, then
+  // continues along dirB. We pick the octi direction D whose two bends (dirA->D and
+  // D->dirB) are both multiples of 45 degrees, preferring the FEWEST bends — a
+  // `collinearIn` D extends the inbound straight into a SINGLE clean corner (no
+  // stub), versus a genuine two-bend dogleg whose perpendicular stub protrudes from
+  // the parallel bundle. Returns B2, the chosen D, and whether the inbound leg is
+  // collinear (so the caller can apply only the clean single-corner variant), or
+  // null when no octi route exists (then the caller declines and the S stands).
+  const findDogleg = (
+    qa: Pixel, dirA: Pixel, qb: Pixel, dirB: Pixel, cap: number,
+  ): { B2: Pixel; D: Pixel; collinearIn: boolean } | null => {
+    let best: { B2: Pixel; D: Pixel; collinearIn: boolean; bends: number; len: number } | null = null;
+    for (const D of OCTI8) {
+      // B2 = ray(qa, D) intersect line(qb, dirB).  t = distance along D from qa,
+      // s = signed distance along dirB from qb.
+      const den = D[0] * dirB[1] - D[1] * dirB[0];
+      if (Math.abs(den) < 1e-6) continue; // D parallel to outbound: no unique bend
+      const t = ((qb[0] - qa[0]) * dirB[1] - (qb[1] - qa[1]) * dirB[0]) / den;
+      if (t < 0.5) continue; // B2 must lie strictly forward of qa along D
+      const s = ((qb[0] - qa[0]) * D[1] - (qb[1] - qa[1]) * D[0]) / den;
+      const bendIn = dirA[0] * D[0] + dirA[1] * D[1];   // cos(turn at qa)
+      const bendOut = D[0] * dirB[0] + D[1] * dirB[1];  // cos(turn at B2)
+      // Reject reversals (180) and sharper-than-135 kinks at either bend.
+      if (bendIn < -0.5 || bendOut < -0.5) continue;
+      const B2: Pixel = [qa[0] + D[0] * t, qa[1] + D[1] * t];
+      // Cap both legs so a near-parallel / runaway pair declines (keeps the S).
+      if (t > cap || Math.abs(s) > cap) continue;
+      const collinearIn = bendIn > 0.99;
+      // Prefer the route with the FEWEST real bends: a collinear-in D extends the
+      // inbound straight into a SINGLE clean corner (no vertical/lateral stub poking
+      // out of the bend); only when no such route exists do we take the genuine
+      // two-bend dogleg. Break ties by least added length.
+      const bends = (collinearIn ? 0 : 1) + (bendOut > 0.99 ? 0 : 1);
+      const len = t + Math.abs(s);
+      if (!best || bends < best.bends || (bends === best.bends && len < best.len)) {
+        best = { B2, D, collinearIn, bends, len };
+      }
+    }
+    return best ? { B2: best.B2, D: best.D, collinearIn: best.collinearIn } : null;
+  };
+  // OCTI_NO_TURNMITER=1 A/B-disables the octilinear turn miter (default ON).
+  const noTurnMiter =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_NO_TURNMITER === '1';
+  // OCTI_NO_DOGLEG=1 A/B-disables the forward-turn two-bend dogleg (default ON),
+  // independently of the turn miter.
+  const noDogleg =
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_NO_DOGLEG === '1';
+  const JOIN_TRACE = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_JOIN_TRACE : undefined;
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
+    const jlog = (m: string) => { if (JOIN_TRACE === lineId) console.error('[join] ' + m); };
     for (let i = 1; i < traversal.length; i++) {
       const a = traversal[i - 1];
       const b = traversal[i];
@@ -490,6 +604,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const keyB = b.edgeId + '|' + lineId + '|' + (bAtStart ? 's' : 'e');
       if (endMoved.has(keyA) || endMoved.has(keyB)) continue;
       const join = curveLaneJoin(pA, aAtStart, pB, bAtStart, SMOOTH_R, spacing * 4);
+      if (JOIN_TRACE === lineId) {
+        const qaT = aAtStart ? pA[0] : pA[pA.length - 1];
+        const qbT = bAtStart ? pB[0] : pB[pB.length - 1];
+        jlog(`${endA} gap=${hyp(qbT[0] - qaT[0], qbT[1] - qaT[1]).toFixed(1)} join=${join ? 'CURVE' : 'null'} nA=${pA.length} nB=${pB.length}`);
+      }
       if (join) {
         endMoved.add(keyA);
         endMoved.add(keyB);
@@ -515,7 +634,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const qb = bAtStart ? pB[0] : pB[pB.length - 1];
       const qb1 = bAtStart ? pB[1] : pB[pB.length - 2];
       const gap = hyp(qb[0] - qa[0], qb[1] - qa[1]);
-      if (gap < 0.5 || gap > spacing * 8) continue;
+      // Upper bound raised spacing*8 → spacing*16: a large lateral jog (a line
+      // sweeping most of the bundle width across a node, e.g. B's out-and-back at
+      // Montgomery, gap≈44px=8 slots) used to fall past spacing*8 and get NO
+      // connector — drawn as a raw diagonal hidden under the trunk lanes (the
+      // non-contiguity). Allow it through to the taper branch so it draws as a
+      // contiguous slant. The absolute cap still rejects pathological cross-canvas
+      // jumps. OCTI_GAP_MULT overrides the multiple (8 = legacy/off).
+      if (gap < 0.5 || gap > spacing * bigGapMult) { jlog(`  ${endA} CONTINUE gap=${gap.toFixed(1)} (out of [0.5, ${(spacing * bigGapMult).toFixed(0)}])`); continue; }
       const lenA = hyp(qa[0] - qa1[0], qa[1] - qa1[1]);
       const lenB = hyp(qb[0] - qb1[0], qb[1] - qb1[1]);
       if (lenA < 1e-6 || lenB < 1e-6) continue;
@@ -523,6 +649,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const dirA: Pixel = [(qa[0] - qa1[0]) / lenA, (qa[1] - qa1[1]) / lenA];
       const dirB: Pixel = [(qb1[0] - qb[0]) / lenB, (qb1[1] - qb[1]) / lenB];
       const dot = dirA[0] * dirB[0] + dirA[1] * dirB[1];
+      jlog(`  ${endA} gap=${gap.toFixed(1)} dot=${dot.toFixed(2)} ${dot < 0.85 ? 'SHARP(uncross/S)' : 'taper-branch'}`);
       if (dot < 0.85) {
         // Genuine sharp corner the join rejected. If the two lane end-segments
         // CROSS — the inside of the turn, where the line's slot jogs across the
@@ -547,6 +674,130 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           endMoved.add(keyB);
           const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
           mitered.add(lineId + '|' + endA + '|' + pk);
+          continue;
+        }
+        // Non-crossing sharp TURN where the two lane ends sit at DIFFERENT
+        // lateral slots (the out-and-back fold: F at Ferry comes in heading east
+        // on the Embarcadero bundle, leaves heading NW on the Market diagonal,
+        // its two lanes ~18px apart on opposite sides of the node). The old S
+        // connector bridged that lateral gap with a near-vertical chord — a
+        // regressive dart to a spike tip that then CROSSED the outgoing lane (the
+        // teardrop loop). Miter it instead: each lane is octilinear right up to
+        // its end, so the line through each end along its own octi direction meets
+        // its partner at a clean 45/90-degree corner. Pin both ends to that meet
+        // point: the overshoot (spike) and the crossing chord (loop) both vanish,
+        // and both legs stay octilinear. Guarded to a real turn (dirs not
+        // collinear) with a bounded, forward-sensible corner so it never balloons.
+        if (!noTurnMiter && !endMoved.has(keyA) && !endMoved.has(keyB)) {
+          const C = lineMeet(qa, dirA, qb, dirB);
+          if (C) {
+            const dispA = hyp(C[0] - qa[0], C[1] - qa[1]);
+            const dispB = hyp(C[0] - qb[0], C[1] - qb[1]);
+            // the meet must land inside the node neighbourhood (cap each end's
+            // move at the lane-end segment length, with a slot-scaled floor) so a
+            // near-parallel pair (intersection far away) keeps the S connector
+            const capA = Math.max(spacing * 6, lenA);
+            const capB = Math.max(spacing * 6, lenB);
+            // the corner must lie BEHIND the inbound end (clip/retract, not extend
+            // past it forward) and AHEAD of the outbound end — i.e. on the turn's
+            // inside — so the legs shorten into the bend rather than overshoot it
+            const behindA = (C[0] - qa[0]) * dirA[0] + (C[1] - qa[1]) * dirA[1] <= 0.01 * lenA;
+            const aheadB = (C[0] - qb[0]) * dirB[0] + (C[1] - qb[1]) * dirB[1] >= -0.01 * lenB;
+            if (dispA <= capA && dispB <= capB && behindA && aheadB) {
+              // Pin each lane's node end to C, but first pop any trailing
+              // (near-)collinear vertices that C retracts PAST — otherwise the
+              // last segment folds back on itself (a 3-6px nub poking out of the
+              // corner: F's inbound run is straight horizontal, so its
+              // penultimate point sits east of C). Stop popping at a genuine bend
+              // (the leg's straight run ended) or when only the corner remains.
+              const setEnd = (poly: Pixel[], atStart: boolean, dir: Pixel, pt: Pixel) => {
+                if (atStart) {
+                  while (poly.length > 2 && (pt[0] - poly[1][0]) * dir[0] + (pt[1] - poly[1][1]) * dir[1] <= 0) poly.shift();
+                  poly[0] = pt;
+                } else {
+                  while (poly.length > 2 && (pt[0] - poly[poly.length - 2][0]) * dir[0] + (pt[1] - poly[poly.length - 2][1]) * dir[1] <= 0) poly.pop();
+                  poly[poly.length - 1] = pt;
+                }
+              };
+              // inbound retracts along -dirA (dirA points INTO the node), so the
+              // surviving penultimate must lie BEFORE C along dirA; outbound
+              // extends/retracts along dirB (points OUT of the node)
+              setEnd(pA, aAtStart, dirA, C);
+              setEnd(pB, bAtStart, [-dirB[0], -dirB[1]], C);
+              endMoved.add(keyA);
+              endMoved.add(keyB);
+              const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+              mitered.add(lineId + '|' + endA + '|' + pk);
+              jlog(`  ${endA} TURN-MITER C=(${C[0].toFixed(1)},${C[1].toFixed(1)}) dispA=${dispA.toFixed(1)} dispB=${dispB.toFixed(1)}`);
+              continue;
+            }
+          }
+        }
+        // FORWARD-turn dogleg (the single-corner miter declined above): the two
+        // lane ends make a forward ~45-degree bend at different lateral slots, so
+        // we route an octilinear dogleg through a bend point B2 on the outbound
+        // line instead of letting the pair fall to the darting S chord. Only fires
+        // for a genuinely forward turn (dot>0) — the regressive case is the miter's
+        // job and must stay there.
+        //
+        // We APPLY only the single-corner (collinear-in) variant: the inbound run
+        // extends straight into ONE clean 45/90-degree corner on the outbound line
+        // (B at Montgomery mn130). That is provably clean — no stub pokes out of
+        // the bend. The genuine TWO-bend variant (no collinear D exists: H at
+        // Embarcadero mn4, E at 4th&King mn132) routes a perpendicular stub whose
+        // length protrudes from the parallel through-bundle — it trades the lateral
+        // S-dart for a stub spike (E mn132) or, worse, a self-loop where the stub
+        // re-crosses the line's return pass at the stacked neighbouring turn. So we
+        // DECLINE the two-bend case (keep the prior S connector) per the
+        // "decline gracefully when no clean octilinear route exists" rule, rather
+        // than emit a fresh spike/loop. (findDogleg still reports it for the trace.)
+        if (!noDogleg && dot > 0 && !endMoved.has(keyA) && !endMoved.has(keyB)) {
+          const sdirA = snapOcti(dirA);
+          const sdirB = snapOcti(dirB);
+          const cap = Math.max(spacing * 6, lenA, lenB);
+          const dl = findDogleg(qa, sdirA, qb, sdirB, cap);
+          if (dl && !dl.collinearIn) {
+            jlog(`  ${endA} DOGLEG-DECLINE (two-bend, would stub) B2=(${dl.B2[0].toFixed(1)},${dl.B2[1].toFixed(1)})`);
+          }
+          if (dl && dl.collinearIn) {
+            const { B2, D } = dl;
+            // Inbound side (collinear: D continues the inbound run straight into the
+            // corner): move the node-end forward to B2, popping any inbound vertices
+            // the extension passes so the leg never folds back on itself.
+            const extendInbound = (poly: Pixel[], atStart: boolean) => {
+              if (atStart) {
+                while (poly.length > 2 && (B2[0] - poly[1][0]) * sdirA[0] + (B2[1] - poly[1][1]) * sdirA[1] <= 0) poly.shift();
+                poly[0] = B2;
+              } else {
+                while (poly.length > 2 && (B2[0] - poly[poly.length - 2][0]) * sdirA[0] + (B2[1] - poly[poly.length - 2][1]) * sdirA[1] <= 0) poly.pop();
+                poly[poly.length - 1] = B2;
+              }
+            };
+            // Outbound side: drop any leading vertices that sit BEHIND B2 along
+            // dirB (the overshoot stub east of the bend), then ensure the lane
+            // STARTS at B2. If B2 is behind the current start (we extend the lane
+            // back toward the node) we insert B2; otherwise we overwrite the
+            // trimmed start with B2.
+            const startOutbound = (poly: Pixel[], atStart: boolean) => {
+              if (atStart) {
+                while (poly.length > 2 && (poly[1][0] - B2[0]) * sdirB[0] + (poly[1][1] - B2[1]) * sdirB[1] <= 0) poly.shift();
+                const ahead = (poly[0][0] - B2[0]) * sdirB[0] + (poly[0][1] - B2[1]) * sdirB[1];
+                if (ahead > 0.01) poly.unshift(B2); else poly[0] = B2;
+              } else {
+                while (poly.length > 2 && (poly[poly.length - 2][0] - B2[0]) * sdirB[0] + (poly[poly.length - 2][1] - B2[1]) * sdirB[1] <= 0) poly.pop();
+                const ahead = (poly[poly.length - 1][0] - B2[0]) * sdirB[0] + (poly[poly.length - 1][1] - B2[1]) * sdirB[1];
+                if (ahead > 0.01) poly.push(B2); else poly[poly.length - 1] = B2;
+              }
+            };
+            extendInbound(pA, aAtStart);
+            startOutbound(pB, bAtStart);
+            endMoved.add(keyA);
+            endMoved.add(keyB);
+            const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
+            mitered.add(lineId + '|' + endA + '|' + pk);
+            jlog(`  ${endA} DOGLEG (single corner) B2=(${B2[0].toFixed(1)},${B2[1].toFixed(1)}) D=(${D[0].toFixed(2)},${D[1].toFixed(2)})`);
+            continue;
+          }
         }
         continue; // S connector for non-crossing sharp corners
       }
@@ -557,6 +808,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       };
       const taperA = Math.min(spacing * 8, polyLenOf(pA) * 0.45);
       const taperB = Math.min(spacing * 8, polyLenOf(pB) * 0.45);
+      jlog(`  ${endA} taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)} gap=${gap.toFixed(1)} lenA=${polyLenOf(pA).toFixed(0)} lenB=${polyLenOf(pB).toFixed(0)} ${(taperA < gap || taperB < gap) ? ((taperA < spacing * 1.5 || taperB < spacing * 1.5) ? 'CONTINUE(short)' : 'taper-anyway') : 'taper-mid'}`);
       if (taperA < gap || taperB < gap) {
         // A big band-on-band exchange — the WHOLE bundle reorders at one straight
         // node (Flatbush mn59: grays/greens swap sides) — would otherwise draw as
@@ -891,6 +1143,20 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XMASK) : NaN;
       return Number.isFinite(v) && v > 0 ? v : MARKER_SCALE;
     })();
+    // SOFT cross-station mask parameters (replace the hard veto). comfort radius
+    // = the drawn casing-touch distance (2r·factor) so the penalty spans exactly
+    // the zone where distinct rings would overlap; stack floor = the true
+    // dot-coincidence guard (a small fraction of comfort) kept as the ONLY hard
+    // veto so placement never stacks two distinct stations' bullets exactly.
+    // weight is tuned (OCTI_XMASK_W) to bias spacing without dominating the
+    // slide (W_S·s) / rotation (W_ROT·rot) state costs — a full-contact dot
+    // costs ~one extra 45° rotation step.
+    const xMaskComfort = 2 * r * xMaskFactor - 0.05;
+    const xMaskStack = Math.max(1.5, 0.4 * xMaskComfort);
+    const xMaskWeight = (() => {
+      const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XMASK_W) : NaN;
+      return Number.isFinite(v) && v >= 0 ? v : 40;
+    })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
@@ -1076,15 +1342,33 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const ropts = {
           minGap: intraGap,
           arcLimit: CHAIN_ARC_LIMIT,
-          extCap: 6 * spacing,
+          // Max corner extension per row (how far the capsule's elbow may reach
+          // to pair two diverging bundles). OCTI_EXTCAP_MULT probes whether the
+          // divergent-lane NO-PAIRING boxes (lanes leave the node too far apart
+          // to pair within the cap) recover with a longer connector. Default 6.
+          extCap: extCapMult * spacing,
           dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
-          // spec §6 mask: dots of already-placed stations veto row states —
-          // never dropped in this model (a masked station boxes instead)
+          // SOFT spec §6 mask: a candidate dot is no longer VETOED for sitting
+          // near an already-placed station — instead it pays a proximity PENALTY
+          // that ramps from 0 (at/beyond a comfort radius) up to xMaskWeight (at
+          // contact). This biases placement toward clear seats but lets a crowded
+          // hub (Ferry, Howard, Powel & Post) seat close rather than mega-box.
+          // The hard veto survives ONLY at true dot-stacking (comfortR floor) so
+          // two distinct stations' dots never coincide — the post-slide marker
+          // de-overlap pass then guarantees the casing-touch separation.
           blocked: (p: Pixel) => {
             for (const q of placedDots) {
-              if (hyp(p[0] - q[0], p[1] - q[1]) < 2 * r * xMaskFactor - 0.05) return true;
+              if (hyp(p[0] - q[0], p[1] - q[1]) < xMaskStack) return true; // true-stacking veto only
             }
             return false;
+          },
+          proximity: (p: Pixel) => {
+            let pen = 0;
+            for (const q of placedDots) {
+              const d = hyp(p[0] - q[0], p[1] - q[1]);
+              if (d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort; // linear ramp toward contact
+            }
+            return pen;
           },
         };
         let sol = solveRows(curves, groups, ropts);
@@ -1092,9 +1376,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (!sol) {
           // window escalation: rebuild curves at twice the arc window
           wide = s.marks.map((mk) =>
-            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2),
+            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
           );
-          sol = solveRows(wide, groups, { ...ropts, arcLimit: CHAIN_ARC_LIMIT * 2 });
+          sol = solveRows(wide, groups, { ...ropts, arcLimit: WIDE_ARC });
         }
         if (!sol && boxRescueMax > 0) {
           // box-rescue: walk the intra-dot floor DOWN (slack up, in 0.25px steps)
@@ -1103,14 +1387,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // are untouched; blocked() (cross-station) stays strict.
           if (!wide) {
             wide = s.marks.map((mk) =>
-              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2),
+              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
             );
           }
           for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol; sl += 0.25) {
             sol = solveRows(wide, groups, {
               ...ropts,
               minGap: Math.max(2, intraGap - sl),
-              arcLimit: CHAIN_ARC_LIMIT * 2,
+              arcLimit: WIDE_ARC,
             });
           }
         }
@@ -1143,7 +1427,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
             const nm = s.marks.length || 1;
             console.error(
-              `[box-regime] ${s.nodeId} at=(${(cx / nm).toFixed(0)},${(cy / nm).toFixed(0)}) deg=${deg} ldeg=${ldegOf(s.nodeId)} ` +
+              `[box-regime] ${s.nodeId} name="${layout.nodes.get(s.nodeId)?.label ?? ''}" at=(${(cx / nm).toFixed(0)},${(cy / nm).toFixed(0)}) deg=${deg} ldeg=${ldegOf(s.nodeId)} ` +
                 `bundles=${groups.length} members=[${groups.map((gr) => gr.length).join(',')}] → ` +
                 (deg > 8 ? 'PORT-SATURATION (deg>8)' : 'OVER-WELD/FAN-FOLD (deg<=8, lines bundled)'),
             );
@@ -1408,7 +1692,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               let p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT), A, u, mk.pos);
               if (!p) {
                 // wide-window retry (mirrors placement escalation at solveRows)
-                p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT * 2), A, u, mk.pos);
+                p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC), A, u, mk.pos);
               }
               if (!p) { ok = false; break; }
               const ea = laneEdgeArc(mk, p);
@@ -1596,6 +1880,435 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         }
         if (!movedAny) break;
       }
+      // ---- POST-SLIDE NO-OVERLAP FLOOR (marker-level GUARANTEE) -------------
+      // The mutual-slide pass above thresholds on SPINE-HULL penetration, not on
+      // the drawn casing rings: a capsule whose spine clears can still have an
+      // end-dot ring overlapping a neighbour's ring (root-cause bucket D — dense-
+      // cluster residual). This final pass measures the actual nearest MARKER
+      // (dot-to-dot) distance between every pair of distinct non-mega stations
+      // and, where it is below casing-touch (2r+1.5), slides them apart ALONG
+      // their own lanes (reusing rigidSlide → applySlide, so the spine stays
+      // octilinear by construction). It iterates to convergence; any pair STILL
+      // overlapping after the cap boxes the more-flexible (fewer-marks) station
+      // as a TRUE last resort, GUARANTEEING no residual distinct-station marker
+      // overlap. OCTI_NOOVL_FLOOR=0 disables it (diagnostic / legacy).
+      const noOvlEnabled = !(
+        typeof process !== 'undefined' &&
+        (process as { env?: Record<string, string> }).env?.OCTI_NOOVL_FLOOR === '0'
+      );
+      if (noOvlEnabled) {
+        const touch = 2 * r + 1.5; // casing rings just clear at this center gap
+        // Last-resort BOX threshold: slides aim to fully separate to `touch`, but
+        // a residual is only boxed when distinct bullets visibly MERGE — centers
+        // closer than the bullet-FILL touch distance 2r (two r-radius fills just
+        // touch). Residuals in the casing-only band [2r, touch) are two distinct
+        // bullets whose outer rings graze but whose fills are clear (e.g. adjacent
+        // consecutive stops) — left as-is (and reported) rather than boxed.
+        // DEFAULT OFF (boxFloor 0): boxing a residual overlap traded it for an ugly
+        // <rect>, and in SF's genuinely-crowded core that ballooned the box count
+        // (10→20) — worse than the overlap it removed. The residual crowded-core
+        // overlaps are an UPSTREAM octi grid-quantization symptom (consecutive stops
+        // collapsed below marker resolution), to be fixed there, not by boxing here.
+        // The slide + along-corridor spread above still run (they cleanly separate
+        // the slidable/straight-corridor cases). OCTI_NOOVL_BOX=<px> re-enables the
+        // last-resort box (e.g. =2r to box fill-merges, =touch to box every graze).
+        const boxFloor = (() => {
+          const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_NOOVL_BOX) : NaN;
+          return Number.isFinite(v) && v >= 0 ? v : 0;
+        })();
+        // A station is "boxed" (renders as a rect, no rings) when either it is a
+        // STRUCTURAL mega box (boxOf().mega: members>1 & ldeg≥12) OR a per-mark
+        // mega flag was set (mega-escape slide, or this floor's last resort).
+        // boxOf().mega does NOT read mk.mega, so both must be checked.
+        const isBoxed = (s: StMarks): boolean => boxOf(s).mega || s.marks.some((m) => m.mega);
+        // nearest dot-pair between two stations (correctly-rounded hyp), plus the
+        // midpoint (push-apart pivot). Returns dist=Infinity for an empty side.
+        const nearestMarks = (
+          A: StMarks,
+          B: StMarks,
+        ): { dist: number; mid: Pixel } => {
+          let md = Infinity;
+          let mx = 0;
+          let my = 0;
+          for (const p of A.marks) {
+            for (const q of B.marks) {
+              const dd = hyp(p.pos[0] - q.pos[0], p.pos[1] - q.pos[1]);
+              if (dd < md) { md = dd; mx = (p.pos[0] + q.pos[0]) / 2; my = (p.pos[1] + q.pos[1]) / 2; }
+            }
+          }
+          return { dist: md, mid: [mx, my] };
+        };
+        const pad = r + 3;
+        const clearMegas = (mv: Array<{ p: Pixel }>): boolean => {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const t of mv) { x0 = Math.min(x0, t.p[0]); y0 = Math.min(y0, t.p[1]); x1 = Math.max(x1, t.p[0]); y1 = Math.max(y1, t.p[1]); }
+          return megas.every((m) => {
+            const b = boxOf(m);
+            return x0 - pad >= b.x1 + 1 || x1 + pad <= b.x0 - 1 || y0 - pad >= b.y1 + 1 || y1 + pad <= b.y0 - 1;
+          });
+        };
+        // min dist from a proposed S placement to every OTHER non-boxed station
+        // (so we can tell a globally-clearing slide from one that merely shifts
+        // the overlap onto a third station — used for the FULL-clear preference).
+        const minToOthers = (S: StMarks, pts: Pixel[]): number => {
+          let md = Infinity;
+          for (const T of smalls) {
+            if (T === S || isBoxed(T)) continue;
+            for (let i = 0; i < pts.length; i++) for (const q of T.marks) {
+              const dd = hyp(pts[i][0] - q.pos[0], pts[i][1] - q.pos[1]);
+              if (dd < md) md = dd;
+            }
+          }
+          return md;
+        };
+        const minToO = (pts: Pixel[], O: StMarks): number => {
+          let md = Infinity;
+          for (let i = 0; i < pts.length; i++) for (const q of O.marks) {
+            const dd = hyp(pts[i][0] - q.pos[0], pts[i][1] - q.pos[1]);
+            if (dd < md) md = dd;
+          }
+          return md;
+        };
+        // Slide station S away from `pivot`. Prefer the smallest d that FULLY
+        // clears S of EVERY other station (ends the pair without spawning a new
+        // one). Failing that, take the smallest d that clears the IMMEDIATE pair
+        // (S↔O ≥ touch) — partial progress the sweeps then build on as the
+        // cluster relaxes outward. Rigid → applySlide keeps the spine octilinear
+        // (it declines any bent candidate, so this can never break octilinearity).
+        const slideClear = (S: StMarks, O: StMarks, pivot: Pixel): boolean => {
+          for (let d = 4; d <= 64; d += 4) {
+            const moved = rigidSlide(S, pivot, d);
+            if (!moved) break;
+            const pts = moved.map((m) => m.p);
+            if (minToOthers(S, pts) < touch || !clearMegas(moved)) continue;
+            if (applySlide(S, moved, d)) return true;
+          }
+          for (let d = 4; d <= 64; d += 4) {
+            const moved = rigidSlide(S, pivot, d);
+            if (!moved) break;
+            const pts = moved.map((m) => m.p);
+            if (minToO(pts, O) < touch || !clearMegas(moved)) continue;
+            if (applySlide(S, moved, d)) return true;
+          }
+          return false;
+        };
+        const NOOVL_SWEEPS = 8;
+        for (let sweep = 0; sweep < NOOVL_SWEEPS; sweep++) {
+          let movedAny = false;
+          for (let ai = 0; ai < smalls.length; ai++) {
+            const A = smalls[ai];
+            if (isBoxed(A)) continue;
+            for (let bi = ai + 1; bi < smalls.length; bi++) {
+              const B = smalls[bi];
+              if (isBoxed(B)) continue;
+              const nm = nearestMarks(A, B);
+              if (nm.dist >= touch) continue;
+              // slide the more-flexible (fewer-marks) station away from the
+              // overlap midpoint; if it can't clear, try the other one.
+              const S = A.marks.length <= B.marks.length ? A : B;
+              const O = S === A ? B : A;
+              if (slideClear(S, O, nm.mid)) { movedAny = true; continue; }
+              if (slideClear(O, S, nm.mid)) { movedAny = true; continue; }
+            }
+          }
+          if (!movedAny) break;
+        }
+        // ---- ALONG-CORRIDOR SPREAD (bucket-C: coincident consecutive stops) --
+        // The octi grid (~431m cell) contracts a run of consecutive same-line
+        // single-bullet stops that are spaced <~216m on the ground until their
+        // markers fall coincident (e.g. the 20th/18th/16th-St chain, the Hyde
+        // cable corridor, the Embarcadero Stockton/Sansome/Bay run). Boxing such
+        // a single-bullet stop is WRONG — it should be SPREAD along its own lane.
+        // This pass, run BEFORE the last-resort box, finds single-bullet pairs
+        // that (a) sit near each other, (b) are NOT boxed, and (c) are GRAPH-
+        // ADJACENT on a shared drawn line (an edge whose {from,to} are the two
+        // marks' flagNodes), unions them into chains, derives ONE octilinear
+        // spread axis per chain (snapped from the longest corridor poly, else a
+        // member's lane tangent), and re-seats each member at a `touch`-spaced
+        // slot along a STRAIGHT line in that axis through the chain centroid —
+        // octilinear by construction (a single bullet on an AXES direction). The
+        // commit is ATOMIC per chain (octilinearity + outside-station floor +
+        // intra-chain marker floor all checked first; any failure abandons the
+        // WHOLE chain so a partial spread can't nudge a neighbour into a box).
+        // Overlapping (< touch) corridor pairs are recorded so the last-resort
+        // box SKIPS them. Determinism: hyp(), projection + nodeId tie-breaks.
+        // Gated under OCTI_NOOVL_FLOOR (default on); OCTI_CORRIDOR_SPREAD=0
+        // disables only this spread (diagnostic — falls back to box-everything).
+        const spreadEnabled = !(typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CORRIDOR_SPREAD === '0');
+        const corridorPairs = new Set<string>(); // "ai|bi" (ai<bi) seen adjacent
+        const pairKey = (i: number, j: number) => (i < j ? i + '|' + j : j + '|' + i);
+        // Shared drawn corridor between two stations: a lineId carried by a mark
+        // in each whose flagNodes are joined by one drawn edge. Returns the edge
+        // lane polyline (the actual offset ribbon centreline) + the two marks, or
+        // null. Deterministic: scans layout.edges / marks in array order.
+        const sharedCorridor = (A: StMarks, B: StMarks): Pixel[] | null => {
+          for (const ma of A.marks) {
+            for (const mb of B.marks) {
+              if (ma.lineId !== mb.lineId) continue;
+              if (ma.flagNode === mb.flagNode) continue;
+              for (const e of layout.edges) {
+                const joins =
+                  (e.from === ma.flagNode && e.to === mb.flagNode) ||
+                  (e.from === mb.flagNode && e.to === ma.flagNode);
+                if (!joins) continue;
+                const poly = segPath.get(e.id + '|' + ma.lineId);
+                if (!poly || poly.length < 2) continue;
+                return poly;
+              }
+            }
+          }
+          return null;
+        };
+        // Translate a whole station's capsule rigidly by (dx,dy), re-deriving its
+        // corners on a clone first; commit only if the clone stays octilinear (a
+        // single-mark capsule trivially passes — no spine). Returns committed.
+        const rigidShift = (st: StMarks, dx: number, dy: number): boolean => {
+          if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return true;
+          const clone = st.marks.map((m) => ({
+            ...m,
+            pos: [m.pos[0] + dx, m.pos[1] + dy] as Pixel,
+            cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined,
+          }));
+          if (!spineOctilinear(clone)) return false;
+          for (const mk of st.marks) {
+            mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
+            if (mk.cornerAfter) mk.cornerAfter = [mk.cornerAfter[0] + dx, mk.cornerAfter[1] + dy];
+          }
+          return true;
+        };
+        // Build the coincident-corridor graph over non-boxed stations, union into
+        // chains, then spread each chain along its shared lane.
+        const parent = smalls.map((_, i) => i);
+        const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+        const union = (i: number, j: number) => { const ri = find(i), rj = find(j); if (ri !== rj) parent[Math.max(ri, rj)] = Math.min(ri, rj); };
+        const centre = (st: StMarks): Pixel => {
+          let cx = 0, cy = 0;
+          for (const mk of st.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
+          return [cx / st.marks.length, cy / st.marks.length];
+        };
+        // adjacency over station indices: each undirected edge carries the shared
+        // corridor poly. Only STILL-overlapping (< touch), non-boxed, distinct-
+        // nodeId pairs that share ONE drawn line edge between their flagNodes.
+        const adj = new Map<number, Array<{ to: number; poly: Pixel[] }>>();
+        const link = (i: number, to: number, poly: Pixel[]) => (adj.get(i) ?? adj.set(i, []).get(i)!).push({ to, poly });
+        // Only SINGLE-BULLET stops take part: the bucket-C problem is consecutive
+        // single-line stops octi-squished coincident (20th/18th/16th St, the Hyde
+        // cable corridor, Embarcadero Stockton/Sansome/Bay). Multi-mark stations
+        // are interchanges (Salesforce/Montgomery/12th-St) whose capsule centroid
+        // ≠ its nearest marker, so a centroid-delta translation can't guarantee
+        // marker separation and risks dragging a junction onto a branch — those
+        // genuinely-stuck piles are left to the last-resort box.
+        const singleBullet = (st: StMarks) => st.marks.length === 1;
+        // A pair JOINS a corridor chain when both are single-bullet, graph-
+        // adjacent on a shared drawn line, and their markers sit within LINK_NEAR.
+        // LINK_NEAR is a touch over `touch` so a run the slide pass already pried
+        // to just past `touch` still joins ONE chain (otherwise a tight corridor
+        // can split into fragments that collide when each spreads independently),
+        // but stays tight enough not to rope in well-separated neighbours. Only
+        // pairs actually OVERLAPPING (< touch) flag corridorPairs (the box-skip
+        // set); a wider graph-adjacent link only stitches the chain together.
+        const LINK_NEAR = touch + 2 * r; // ≈ casing-touch + one fill diameter
+        // Restrict to SINGLE-BULLET stops by default: a single-mark member's
+        // marker IS its centroid, so the centroid-spaced spread guarantees marker
+        // separation and never drags a capsule onto a junction. Multi-mark
+        // capsules link junction hubs into large messy chains that (even with the
+        // atomic guard) can leave a residual severe overlap, so they stay off
+        // unless OCTI_CORRIDOR_MULTI=1 opts them in (the atomic plan still guards).
+        const allowMulti = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CORRIDOR_MULTI === '1';
+        const eligible = (st: StMarks) => allowMulti || singleBullet(st);
+        const singles: number[] = [];
+        if (spreadEnabled) for (let i = 0; i < smalls.length; i++) if (!isBoxed(smalls[i]) && eligible(smalls[i])) singles.push(i);
+        for (const ai of singles) {
+          for (const bi of singles) {
+            if (bi <= ai) continue;
+            if (smalls[ai].nodeId === smalls[bi].nodeId) continue; // not a corridor pair
+            const d = nearestMarks(smalls[ai], smalls[bi]).dist;
+            if (d >= LINK_NEAR) continue;
+            const sc = sharedCorridor(smalls[ai], smalls[bi]);
+            if (!sc) continue;
+            if (d < touch) corridorPairs.add(pairKey(ai, bi)); // overlapping → box-skip
+            union(ai, bi);
+            link(ai, bi, sc);
+            link(bi, ai, sc);
+          }
+        }
+        // group members by chain root (only nodes that have a corridor link)
+        const chains = new Map<number, number[]>();
+        for (let i = 0; i < smalls.length; i++) {
+          if (!adj.has(i)) continue;
+          const root = find(i);
+          (chains.get(root) ?? chains.set(root, []).get(root)!).push(i);
+        }
+        // nearest dist from a candidate point set to every NON-chain non-boxed
+        // station (the chain members spread among themselves; they must not crash
+        // into an outsider). Returns Infinity if none nearby.
+        const minToOutside = (pts: Pixel[], chainSet: Set<number>): number => {
+          let md = Infinity;
+          for (let t = 0; t < smalls.length; t++) {
+            if (chainSet.has(t) || isBoxed(smalls[t])) continue;
+            for (const p of pts) for (const q of smalls[t].marks) {
+              const dd = hyp(p[0] - q.pos[0], p[1] - q.pos[1]);
+              if (dd < md) md = dd;
+            }
+          }
+          return md;
+        };
+        let spreadChains = 0;
+        let spreadMembers = 0;
+        const SPREAD_DBG = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.CSPREAD_DEBUG;
+        for (const members of chains.values()) {
+          if (members.length < 2) continue;
+          // only spread chains that actually contain an OVERLAPPING (< touch)
+          // pair — a chain stitched only from > touch graph-adjacent links is
+          // already separated and must not be disturbed.
+          let hasOverlap = false;
+          for (let x = 0; x < members.length && !hasOverlap; x++) for (let y = x + 1; y < members.length; y++) if (corridorPairs.has(pairKey(members[x], members[y]))) { hasOverlap = true; break; }
+          if (!hasOverlap) continue;
+          const chainSet = new Set(members);
+          // ---- order the chain (walk the adjacency from an endpoint) ----------
+          // pick a deterministic endpoint: the member with the fewest in-chain
+          // links (a path end), tie-broken by nodeId. Walk to the far end.
+          const deg = (i: number) => (adj.get(i) ?? []).filter((e) => chainSet.has(e.to)).length;
+          let startNode = members[0];
+          for (const i of members) {
+            const di = deg(i), ds = deg(startNode);
+            if (di < ds || (di === ds && smalls[i].nodeId < smalls[startNode].nodeId)) startNode = i;
+          }
+          const order: number[] = [];
+          const seen = new Set<number>();
+          let curN = startNode;
+          while (curN !== undefined && !seen.has(curN)) {
+            order.push(curN); seen.add(curN);
+            // next = unseen neighbour, deterministic by nodeId
+            let nxt: number | undefined;
+            for (const e of (adj.get(curN) ?? [])) {
+              if (!chainSet.has(e.to) || seen.has(e.to)) continue;
+              if (nxt === undefined || smalls[e.to].nodeId < smalls[nxt].nodeId) nxt = e.to;
+            }
+            curN = nxt as number;
+          }
+          // any members not reached by the walk (branchy cluster) → append by
+          // nodeId so they still get a slot rather than colliding.
+          for (const i of members) if (!seen.has(i)) order.push(i);
+          // collapse duplicate-nodeId members (a station rendered twice via a
+          // stationGroup): keep the first occurrence so the chain has ONE slot
+          // per physical station — never splits one station across two slots.
+          const seenNode = new Set<string>();
+          const orderU = order.filter((i) => { const nid = smalls[i].nodeId; if (seenNode.has(nid)) return false; seenNode.add(nid); return true; });
+          order.length = 0; order.push(...orderU);
+          if (order.length < 2) continue;
+          // ---- spread axis (a single octilinear direction) --------------------
+          // The shared lanes between coincident stops are octi-CONTRACTED, often
+          // to sub-pixel length — too short to give a reliable direction. Derive
+          // the corridor axis as a snapped octilinear unit vector, preferring (in
+          // order): the longest shared-corridor poly's end-to-end direction; else
+          // a representative member's drawn-lane TANGENT (buildLaneCurve). Spread
+          // members along a STRAIGHT line in that axis through the chain centroid
+          // — the axis is snapped to an AXES direction, so every placed marker is
+          // octilinear by construction (a single bullet on an octi axis).
+          let axis: Pixel | null = null;
+          let axisLen = -1;
+          for (const i of order) for (const { poly } of adj.get(i) ?? []) {
+            const dx = poly[poly.length - 1][0] - poly[0][0], dy = poly[poly.length - 1][1] - poly[0][1];
+            const len = hyp(dx, dy);
+            if (len > axisLen + 1e-6 && len > 0.5) { axisLen = len; axis = snapAxis(dx, dy); }
+          }
+          if (!axis) {
+            // all corridor polys degenerate: use the run-axis of the chain's own
+            // member positions if they are spread; else a member's lane tangent.
+            const a0 = centre(smalls[order[0]]), aN = centre(smalls[order[order.length - 1]]);
+            if (hyp(aN[0] - a0[0], aN[1] - a0[1]) > 0.5) axis = snapAxis(aN[0] - a0[0], aN[1] - a0[1]);
+            else for (const i of order) {
+              const mk = smalls[i].marks[0];
+              if (!mk) continue;
+              const c = buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT);
+              const tg = curveTangent(c, c.anchorT);
+              if (hyp(tg[0], tg[1]) > 1e-6) { axis = snapAxis(tg[0], tg[1]); break; }
+            }
+          }
+          if (!axis) continue; // no derivable direction → leave for the box pass
+          // signed position of each member along the axis (projection of centre),
+          // then ORDER by it (tie-break nodeId) and re-space at `touch` intervals
+          // recentred on the chain centroid. Straight-line, so no extrapolation
+          // edge cases; a chain whose lane is sub-pixel still separates cleanly.
+          const cen = (i: number) => centre(smalls[i]);
+          let gx = 0, gy = 0;
+          for (const i of order) { const c = cen(i); gx += c[0]; gy += c[1]; }
+          gx /= order.length; gy /= order.length;
+          const proj = (i: number) => { const c = cen(i); return (c[0] - gx) * axis![0] + (c[1] - gy) * axis![1]; };
+          const seq2 = [...order].sort((a, b) => (proj(a) - proj(b)) || (smalls[a].nodeId < smalls[b].nodeId ? -1 : 1));
+          const step = touch;
+          const mid = (seq2.length - 1) / 2;
+          // ATOMIC commit: compute every member's slot translation, and verify
+          // ALL of them stay octilinear AND keep every marker ≥ `outsideFloor`
+          // from any NON-chain station. `outsideFloor` is the DRAWN ring-touch
+          // distance (scaled marker fill 2·r·MARKER_SCALE ≈ the diag's "severe"
+          // floor) — a spread member may GRAZE a crossing corridor's stop (the
+          // Hyde cable line is crossed by Lombard etc. in a dense district) but
+          // never MERGE drawn fills. If ANY member fails, the WHOLE chain is
+          // abandoned (no partial spread — a partial leaves the failing member
+          // boxed AND nudges its neighbours into NEW boxes) and ALL its corridor
+          // pairs are dropped so the last-resort box reproduces the un-spread
+          // baseline for that cluster.
+          const outsideFloor = Math.min(boxFloor, 2 * r * MARKER_SCALE);
+          const plan: Array<{ i: number; dx: number; dy: number; pts: Pixel[] }> = [];
+          let ok = true;
+          let failNid = '';
+          for (let k = 0; k < seq2.length && ok; k++) {
+            const i = seq2[k];
+            const st = smalls[i];
+            const off = (k - mid) * step;
+            const c = cen(i);
+            const dx = gx + axis[0] * off - c[0], dy = gy + axis[1] * off - c[1];
+            const pts = st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel);
+            if (minToOutside(pts, chainSet) < outsideFloor) { ok = false; failNid = `${smalls[i].nodeId}/outside`; break; }
+            // octilinearity dry-run (rigidShift's guard, without mutating)
+            const clone = st.marks.map((m) => ({ ...m, pos: [m.pos[0] + dx, m.pos[1] + dy] as Pixel, cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined }));
+            if (!spineOctilinear(clone)) { ok = false; failNid = `${smalls[i].nodeId}/octi`; break; }
+            plan.push({ i, dx, dy, pts });
+          }
+          // intra-chain marker floor: planned markers (in slot order) must stay
+          // ≥ touch from EVERY other planned member, not just the slot neighbour —
+          // for a curved corridor or a multi-mark member the centroid spacing can
+          // still leave two nearest markers tight. Abandon the chain if so.
+          for (let x = 0; ok && x < plan.length; x++) for (let y = x + 1; y < plan.length; y++) {
+            let md = Infinity;
+            for (const p of plan[x].pts) for (const q of plan[y].pts) { const dd = hyp(p[0] - q[0], p[1] - q[1]); if (dd < md) md = dd; }
+            if (md < touch - 1e-6) { ok = false; failNid = `${smalls[plan[x].i].nodeId}~${smalls[plan[y].i].nodeId}/intra`; }
+          }
+          if (!ok) {
+            for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) corridorPairs.delete(pairKey(members[x], members[y]));
+            if (SPREAD_DBG) console.error(`[CSPREAD] chain ABANDON fail=${failNid} order=[${seq2.map((i) => smalls[i].nodeId).join(',')}]`);
+            continue;
+          }
+          for (const p of plan) if (rigidShift(smalls[p.i], p.dx, p.dy)) spreadMembers++;
+          spreadChains++;
+          if (SPREAD_DBG) console.error(`[CSPREAD] chain SPREAD n=${seq2.length} axis=[${axis[0].toFixed(2)},${axis[1].toFixed(2)}] order=[${seq2.map((i) => smalls[i].nodeId).join(',')}]`);
+        }
+        if (spreadChains > 0) console.error(`[stops] corridor-spread: ${spreadChains} chains, ${spreadMembers} members`);
+        // last-resort: any pair whose bullet FILLS still merge (< boxFloor) →
+        // box the fewer-marks station. Casing-only grazes (boxFloor ≤ d < touch)
+        // are left as drawn-but-clear-fill adjacent bullets and reported below.
+        // Corridor-adjacent pairs (spread above) are SKIPPED — a consecutive
+        // single-bullet stop is spread along its lane, never boxed.
+        let floorBoxed = 0;
+        for (let ai = 0; ai < smalls.length; ai++) {
+          const A = smalls[ai];
+          if (isBoxed(A)) continue;
+          for (let bi = ai + 1; bi < smalls.length; bi++) {
+            const B = smalls[bi];
+            if (isBoxed(B)) continue;
+            if (corridorPairs.has(pairKey(ai, bi))) continue; // spread, not boxed
+            if (nearestMarks(A, B).dist >= boxFloor) continue;
+            const S = A.marks.length <= B.marks.length ? A : B;
+            for (const mk of S.marks) mk.mega = true;
+            floorBoxed++;
+            const O = S === A ? B : A;
+            console.error(`[stops] NO-OVERLAP-FLOOR boxed ${S.nodeId} "${layout.nodes.get(S.nodeId)?.label ?? ''}" (residual marker overlap with ${O.nodeId} "${layout.nodes.get(O.nodeId)?.label ?? ''}")`);
+          }
+        }
+        if (floorBoxed > 0) console.error('[stops] no-overlap-floor boxed: ' + floorBoxed);
+      }
       // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps — bullet rings
       // (radius r+0.75, diameter 2r+1.5) crossing where they shouldn't. XSTN =
       // two DIFFERENT stations' bullets overlap; INSTN = two bullets of ONE
@@ -1605,9 +2318,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
       const ringDia = 2 * r + 1.5;
       const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
-      for (let ai = 0; ai < smalls.length; ai++) {
-        for (let bi = ai + 1; bi < smalls.length; bi++) {
-          const A = smalls[ai], B = smalls[bi];
+      // Re-filter to stations still drawn as bullets: a station boxed by the
+      // post-slide no-overlap floor renders as a <rect>, so its marks no longer
+      // draw rings and cannot constitute a ring overlap (matches the drawn SVG).
+      const ringSmalls = smalls.filter((s) => !boxOf(s).mega && !s.marks.some((m) => m.mega));
+      for (let ai = 0; ai < ringSmalls.length; ai++) {
+        for (let bi = ai + 1; bi < ringSmalls.length; bi++) {
+          const A = ringSmalls[ai], B = ringSmalls[bi];
           let md = Infinity, mx = 0, my = 0;
           for (const p of A.marks) for (const q of B.marks) {
             const dx = p.pos[0] - q.pos[0], dy = p.pos[1] - q.pos[1];
@@ -1632,10 +2349,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         }
       }
       ovls.sort((p, q) => p.dist - q.dist);
-      for (const o of ovls.slice(0, 25)) {
-        console.error(`[stops] ${o.kind} ${o.dist.toFixed(1)}px ${o.a} vs ${o.b} @(${o.x.toFixed(0)},${o.y.toFixed(0)})`);
+      const lbl = (id: string) => layout.nodes.get(id)?.label ?? '';
+      const xstnAll = ovls.filter((o) => o.kind === 'XSTN');
+      for (const o of (process.env.OCTI_XSTN_ALL ? xstnAll : ovls.slice(0, 25))) {
+        const nm = o.kind === 'XSTN' ? ` "${lbl(o.a)}" vs "${lbl(o.b)}"` : '';
+        console.error(`[stops] ${o.kind} ${o.dist.toFixed(1)}px ${o.a} vs ${o.b}${nm} @(${o.x.toFixed(0)},${o.y.toFixed(0)})`);
       }
-      console.error(`[stops] egregious overlaps: ${ovls.length} (ringDia=${ringDia.toFixed(1)})`);
+      const xstnSevere = xstnAll.filter((o) => o.dist < 3.2).length; // dots actually overlap
+      console.error(`[stops] egregious overlaps: ${ovls.length} (ringDia=${ringDia.toFixed(1)}) XSTN=${xstnAll.length} XSTN_SEVERE=${xstnSevere} INSTN=${ovls.length - xstnAll.length}`);
       }
     }
     if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
@@ -1938,6 +2659,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // sweeps instead of tight Z-jogs)
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
+      if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CONN_TRACE === lineId) {
+        const np = layout.nodes.get(endA)?.cell;
+        console.error(`[conn] ${endA} pa=(${pa[0].toFixed(1)},${pa[1].toFixed(1)}) pb=(${pb[0].toFixed(1)},${pb[1].toFixed(1)}) gap=${gap.toFixed(1)} prevA=(${prevA[0].toFixed(1)},${prevA[1].toFixed(1)}) nextB=(${nextB[0].toFixed(1)},${nextB[1].toFixed(1)}) dirA=(${dirA[0].toFixed(2)},${dirA[1].toFixed(2)}) dirB=(${dirB[0].toFixed(2)},${dirB[1].toFixed(2)}) nA=${polyA.length} nB=${polyB.length} edges=${a.edgeId}|${b.edgeId} cell=${np ? np[0] + ',' + np[1] : '?'}`);
+      }
       // The S only works when the jog makes forward progress along the
       // travel direction: cap the tangent extension at the chord's
       // LONGITUDINAL span. A pure lateral jog (lanes of two collinear edges

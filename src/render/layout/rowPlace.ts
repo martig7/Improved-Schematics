@@ -22,6 +22,10 @@ export interface RowOpts {
   rotW?: number;         // W_ROT, default 20 (px per 45-degree step)
   blocked?: (p: Pixel) => boolean; // spec §6 mask — a row state is infeasible
                                    // if ANY of its dots is blocked (never dropped)
+  proximity?: (p: Pixel) => number; // SOFT §6 mask — per-dot proximity penalty
+                                     // (≥0) added to the state cost; biases the
+                                     // search toward spacing without vetoing a
+                                     // crowded-but-feasible seat (MASKED hubs)
   dbgLabel?: string; // OCTI_PLACE_DEBUG: station id, for the per-box diagnosis log
 }
 
@@ -130,7 +134,7 @@ export function solveRows(
       typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_TURNW) : NaN;
     return Number.isFinite(v) ? v : 12;
   })();
-  const { minGap, arcLimit, extCap, blocked } = opts;
+  const { minGap, arcLimit, extCap, blocked, proximity } = opts;
   const n = curves.length;
   const g = groups.length;
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
@@ -203,6 +207,12 @@ export function solveRows(
           }
         }
         if (!feas) continue;
+        // SOFT §6 mask: instead of vetoing crowded dots, charge a per-dot
+        // proximity penalty so the chain-DP biases toward states that seat
+        // clear of already-placed neighbours but STILL seats a crowded hub
+        // (MASKED boxes) rather than mega-boxing it.
+        let proxPen = 0;
+        if (proximity) for (const p of dots) proxPen += proximity(p);
         const asc = dots.map((_, gi) => gi).sort((x, y) => (pr[x] - pr[y]) || (x - y)); // total tie-break: index unique (cross-V8 stable)
         const dIdx = (((axis - restIdx) % 4) + 4) % 4;
         const rot = Math.min(dIdx, 4 - dIdx); // 45° steps from rest: 0..2
@@ -214,7 +224,7 @@ export function solveRows(
           asc,
           a: dots[asc[0]],
           b: dots[asc[asc.length - 1]],
-          cost: slideW * Math.abs(s) + rotW * rot,
+          cost: slideW * Math.abs(s) + rotW * rot + proxPen,
         });
       }
     }
@@ -342,7 +352,12 @@ export function solveRows(
       ext1 = hyp(corner[0] - e1[0], corner[1] - e1[1]);
       ext2 = hyp(corner[0] - e2[0], corner[1] - e2[1]);
     }
-    if (ext1 > extCap || ext2 > extCap) return null; // markers stay local
+    // SOFT elbow: the ext1+ext2 cost term already biases the DP toward short
+    // connectors, so extCap is kept only as a LARGE safety bound (a runaway
+    // elbow that reaches across the map is still rejected). Divergent bundles
+    // whose facing ends sit beyond the old hard cap (Beach & Mason ms15,
+    // Columbus ms17) now PAIR — their elbow length is simply paid for in cost.
+    if (ext1 > extCap || ext2 > extCap) return null; // safety bound only (extCap now large)
     // the corner must clear every dot of BOTH rows (spec §2.2). Applied to
     // the parallel join too: its synthetic corner crowds the facing dots as
     // the gap closes, which the spec's blanket clearance clause forbids —

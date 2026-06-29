@@ -268,7 +268,11 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
     return false;
   };
-  for (let round = 0; round < 4; round++) {
+  // OCTI_NO_YSPLIT=1 skips the Y/dogbone trunk-split rewrite — a probe to test
+  // whether the stacked-sibling offset composition is what braids consistent-
+  // order lanes at a stack seam.
+  const noYSplit = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_YSPLIT === '1';
+  if (!noYSplit) for (let round = 0; round < 4; round++) {
     let changed = false;
     for (const nd of [...optAdj.keys()]) if (tryY(nd)) changed = true;
     if (!changed) break;
@@ -378,8 +382,12 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       if (!bySig.has(sig)) bySig.set(sig, []);
       bySig.get(sig)!.push(l);
     }
+    // OCTI_NO_PARTNERS=1 disables partner-block collapsing (every line optimized
+    // standalone) — a probe to test whether forcing a fixed-order contiguous block
+    // through the per-edge rev mirroring is what braids the block's end lanes.
+    const noPartners = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_PARTNERS === '1';
     const drop = new Set<string>();
-    for (const members of bySig.values()) {
+    if (!noPartners) for (const members of bySig.values()) {
       if (members.length < 2) continue;
       members.sort();
       partnerBlock.set(members[0], members);
@@ -421,10 +429,34 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   // ---- scorer (OptGraphScorer port) ------------------------------------------
   type Cfg = Map<number, string[]>; // opt edge id -> line order (canonical dir)
   const maxDeg = Math.max(...[...incident.values()].map((a) => a.length));
-  const pens = DEFAULT_UNTANGLE_PENS;
+  // OCTI_DIFFPEN_MULT scales the diff-segment crossing penalties (open-track and
+  // in-station) to probe whether fighting junction fan-out crossings harder
+  // reduces them — and the boxes they cause — without trading too much same-seg /
+  // separation. Default 1 = shipped LOOM weights.
+  const diffPenMult = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_DIFFPEN_MULT) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : 1;
+  })();
+  const pens: UntanglePens =
+    diffPenMult === 1
+      ? DEFAULT_UNTANGLE_PENS
+      : { ...DEFAULT_UNTANGLE_PENS, diffSegCrossPen: DEFAULT_UNTANGLE_PENS.diffSegCrossPen * diffPenMult, inStatCrossPenDiffSeg: DEFAULT_UNTANGLE_PENS.inStatCrossPenDiffSeg * diffPenMult };
   const inStatCrossPenDegTwo =
     maxDeg * Math.max(pens.sameSegCrossPen, pens.diffSegCrossPen, pens.inStatCrossPenSameSeg, pens.inStatCrossPenDiffSeg);
   const inStatSplitPenDegTwo = maxDeg * Math.max(pens.splitPen, pens.inStatSplitPen);
+  // Self-seam (slot-coupling) probe: the crossing terms only score pairs of
+  // DIFFERENT lines, never ONE line at different lateral fractions on the two
+  // edges it connects through a node. The idea was to pull an out-and-back line's
+  // two passes onto the same slot. EMPIRICALLY INEFFECTIVE for the B-at-Montgomery
+  // case: in the scorer's rev frame B is already "consistent" (no inversion), and
+  // the real jump is the GEOMETRIC, cardinality-forced trunk→solo peel-off at mn130
+  // (skipped here by the M≥2 guard) — so this combinatorial term cannot move B and
+  // mildly regresses crossings at high weight. Kept gated OFF (OCTI_SELF_SEAM weight;
+  // default 0 = no-op) as a probe; the real fix is render-side (taper the peel-off).
+  const selfSeamW = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_SELF_SEAM) : NaN;
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  })();
 
   const crossPenSameSeg = (nd: string): number => {
     if (freeCross.has(nd)) return 0;
@@ -518,6 +550,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     let sameDouble = 0; // raw count (feeds the diff-seg correction)
     let sameWeighted = 0; // corner-discounted (feeds the score)
     let seps = 0;
+    let selfSeam = 0; // Σ |Δ fractional slot| of each line across the two edges it connects (slot-coupling)
     // Inlined crossSepsPair with the rank map hoisted to the ea loop: it was
     // rebuilt for every (ea, eb) PAIR (deg² Map allocations per node — the
     // metro-scale hot path), but the rank depends only on ea's order. The
@@ -536,9 +569,11 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
         const revB = eb.from !== nd;
         const rev = revA === revB; // === !(revA !== revB)
         const ceb = cfg.get(eb.id)!;
+        const M = ceb.length;
         const relCross: number[] = [];
         const relSep: number[] = [];
-        for (const line of ceb) {
+        for (let j = 0; j < M; j++) {
+          const line = ceb[j];
           const br = baseRank.get(line);
           if (br === undefined || !connOccurs(line, nd, ea, eb)) {
             relSep.push(Number.MAX_SAFE_INTEGER);
@@ -547,6 +582,10 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
           const r = rev ? L - 1 - br : br;
           relCross.push(r);
           relSep.push(r);
+          // slot-coupling: this line connects through nd on both ea and eb; charge
+          // its lateral-fraction mismatch (r is its ea-rank in eb's frame; j is its
+          // eb index). Both edges must have ≥2 lines (a solo slot is forced).
+          if (selfSeamW > 0 && L >= 2 && M >= 2) selfSeam += Math.abs(r / (L - 1) - j / (M - 1));
         }
         let pairSeps = 0;
         for (let i = 1; i < relSep.length; i++) {
@@ -567,7 +606,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       diff -= sameDouble;
       if (diff < 0) diff = 0;
     }
-    return (sameWeighted / 2) * crossPenSameSeg(nd) + diff * crossPenDiffSeg(nd) + seps * sepPen(nd);
+    return (sameWeighted / 2) * crossPenSameSeg(nd) + diff * crossPenDiffSeg(nd) + seps * sepPen(nd) + (selfSeam / 2) * selfSeamW;
   };
 
   /** Same-color family fragmentation of an edge order: adjacent different-
@@ -961,11 +1000,223 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
   }
 
+  // ---- partner-block orientation propagation ---------------------------------
+  // A partner block is opaque to the scorer (collapsed to one rep slot), so the
+  // scorer keeps the REP's order consistent but never sees the block's INTERNAL
+  // orientation. Write-back then reconstructs that orientation mechanically — a
+  // fixed member order flipped per-edge by part.rev — which is NOT continuous
+  // across opt-edge seams: at a junction where the two opt-edges carry opposite
+  // rev parity for the block's continuation, the fixed block TWISTS and its end
+  // lanes braid (the L/K-at-Powell case), invisibly to the optimizer.
+  //
+  // Fix: treat each block as a rigid sub-bundle and PROPAGATE one orientation
+  // across all the layout edges it rides, using the SAME mirror rule the scorer
+  // uses — at a shared node nd, e2's block order = (rev ? reverse : identity) of
+  // e1's, where rev = (e1.from!==nd) === (e2.from!==nd). This yields zero block
+  // self-inversions by construction (the scorer's inversion test is monotone in
+  // exactly this rank frame), so a block can no longer twist at a seam. Only the
+  // members' own slots are rewritten — their position relative to other lines
+  // (the scorer's actual decision) is untouched. The seed orientation is
+  // arbitrary (partners are interchangeable); we keep the root edge's as-is.
+  // OCTI_BLOCK_ORIENT=0 disables the pass (A/B + escape hatch); default on.
+  const blockOrient = !(typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BLOCK_ORIENT === '0');
+  if (blockOrient) for (const [, members] of partnerBlock) {
+    if (members.length < 2) continue;
+    const mset = new Set(members);
+    // Every block edge carries the WHOLE block (partners ride identical opt-edge
+    // sets ⇒ identical layout-edge sets), so requiring all members is exact.
+    const blockEdges = edges.filter((e) => members.every((m) => e.lineOrder.includes(m)));
+    if (blockEdges.length < 2) continue;
+    const incBlk = new Map<string, LayoutEdge[]>();
+    for (const e of blockEdges) for (const n of [e.from, e.to]) {
+      let a = incBlk.get(n);
+      if (!a) { a = []; incBlk.set(n, a); }
+      a.push(e);
+    }
+    const sub = (e: LayoutEdge): string[] => e.lineOrder.filter((l) => mset.has(l)); // from→to block order
+    const oriented = new Map<string, string[]>();
+    // deterministic root: lowest edge id (cross-V8 stable)
+    const root = blockEdges.reduce((m, e) => (e.id < m.id ? e : m), blockEdges[0]);
+    oriented.set(root.id, sub(root));
+    const queue: LayoutEdge[] = [root];
+    while (queue.length) {
+      const e1 = queue.shift()!;
+      const b1 = oriented.get(e1.id)!;
+      for (const nd of [e1.from, e1.to]) {
+        for (const e2 of incBlk.get(nd) ?? []) {
+          if (oriented.has(e2.id)) continue;
+          const rev = (e1.from !== nd) === (e2.from !== nd);
+          oriented.set(e2.id, rev ? [...b1].reverse() : b1.slice());
+          queue.push(e2);
+        }
+      }
+    }
+    // Rewrite each block edge: drop the propagated member order into the members'
+    // existing slots (in from→to slot order) — contiguity not assumed.
+    for (const e of blockEdges) {
+      const want = oriented.get(e.id);
+      if (!want) continue; // disconnected block component: leave as written
+      const out = e.lineOrder.slice();
+      let k = 0;
+      for (let i = 0; i < out.length; i++) if (mset.has(out[i])) out[i] = want[k++];
+      e.lineOrder = out;
+    }
+  }
+
   if (DBG) {
+    // Block self-crossings: total mirror-aware inversions of any partner block's
+    // members across its incident edges — the braid metric the scorer can't see.
+    // 0 after the orientation pass; >0 with OCTI_BLOCK_ORIENT=0.
+    let blockSelfX = 0;
+    for (const [, members] of partnerBlock) {
+      if (members.length < 2) continue;
+      const ms = new Set(members);
+      const be = edges.filter((e) => members.every((m) => e.lineOrder.includes(m)));
+      const inc = new Map<string, LayoutEdge[]>();
+      for (const e of be) for (const n of [e.from, e.to]) { let a = inc.get(n); if (!a) { a = []; inc.set(n, a); } a.push(e); }
+      for (const [nd, es] of inc) for (let i = 0; i < es.length; i++) for (let j = i + 1; j < es.length; j++) {
+        const e1 = es[i], e2 = es[j];
+        const s1 = e1.lineOrder.filter((l) => ms.has(l)), s2 = e2.lineOrder.filter((l) => ms.has(l));
+        const rev = (e1.from !== nd) === (e2.from !== nd);
+        const want = rev ? [...s1].reverse() : s1;
+        if (want.join() !== s2.join()) blockSelfX++;
+      }
+    }
     const t = tally();
     console.error(
       `[untangle] comps=${nComps} (${nExhaustive} exhaustive, ${nHillClimb} hill) ` +
-      `partners=${partnerBlock.size} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
+      `partners=${partnerBlock.size} blockSelfCross=${blockSelfX} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
     );
+  }
+
+  // OCTI_TRACE=<lineIdA>,<lineIdB>: dump the relative lateral order of two lines
+  // on every layout edge that carries BOTH, with node labels, the opt-edge it
+  // belongs to, and whether the node is a service boundary for the pair — so a
+  // braid (order flips then flips back along a corridor) is visible edge-by-edge.
+  // OCTI_TRACE1=<lineId>: dump that ONE line's index in e.lineOrder (and bundle
+  // size) on every edge it rides, with node labels + opt-edge id — to see a line
+  // jump position in the bundle (e.g. B at pos 1 then pos 9) and where.
+  const trace1 = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE1 : undefined;
+  if (trace1) {
+    const lbl = (n: string) => layout.nodes.get(n)?.label || '·';
+    const es = edges.filter((e) => e.lineOrder.includes(trace1));
+    console.error(`[trace1] line=${trace1.slice(0, 8)} on ${es.length} edges`);
+    for (const e of es) {
+      const oes = (optByLayout.get(e.id) ?? []).map((o) => o.id).join('/');
+      console.error(`[trace1] ${e.from}"${lbl(e.from)}"->${e.to}"${lbl(e.to)}" optE=${oes} idx=${e.lineOrder.indexOf(trace1)}/${e.lineOrder.length} term=${e.lines.length === 1 ? 'solo' : ''} @(${e.path[0][0].toFixed(0)},${e.path[0][1].toFixed(0)})->(${e.path[e.path.length - 1][0].toFixed(0)},${e.path[e.path.length - 1][1].toFixed(0)})`);
+    }
+  }
+  const traceEnv = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE : undefined;
+  if (traceEnv) {
+    const [a, b] = traceEnv.split(',');
+    const lbl = (n: string) => layout.nodes.get(n)?.label || '·';
+    console.error(`[trace] A=${a} B=${b} (A=first letter shown as 'A', B as 'B')`);
+    // partner-block status: a dropped member rides its REP's slot and is invisible
+    // to the opt-edge cfg (and thus the opt-edge crossing counter).
+    const memberToRep = new Map<string, string>();
+    for (const [rep, members] of partnerBlock) for (const m of members) memberToRep.set(m, rep);
+    const repOf = (l: string) => memberToRep.get(l) ?? l;
+    const status = (l: string) => partnerBlock.has(l) ? `REP(block=[${partnerBlock.get(l)!.map((x) => x.slice(0, 4)).join(',')}])` : memberToRep.has(l) ? `MEMBER of rep ${memberToRep.get(l)!.slice(0, 8)}` : 'standalone';
+    console.error(`[trace] A partner: ${status(a)} | B partner: ${status(b)} | repA=${repOf(a).slice(0, 8)} repB=${repOf(b).slice(0, 8)}`);
+    // third block member M (if a partner block), and a rev lookup per layout edge
+    const blockMembers = partnerBlock.get(repOf(a)) ?? partnerBlock.get(repOf(b)) ?? [];
+    const mLine = blockMembers.find((l) => l !== a && l !== b);
+    const revOf = (e: LayoutEdge): string => {
+      for (const oe of optByLayout.get(e.id) ?? []) { const p = oe.parts.find((pp) => pp.edge === e); if (p) return p.rev ? 'R' : '.'; }
+      return '?';
+    };
+    const both = edges.filter((e) => e.lines.some((l) => l.id === a) && e.lines.some((l) => l.id === b));
+    for (const e of both) {
+      const ia = e.lineOrder.indexOf(a);
+      const ib = e.lineOrder.indexOf(b);
+      const p0 = e.path[0];
+      const pN = e.path[e.path.length - 1];
+      const oes = (optByLayout.get(e.id) ?? []).map((o) => o.id).join('/');
+      const ord = e.lineOrder.map((x) => (x === a ? 'A' : x === b ? 'B' : x === mLine ? 'M' : '.')).join('');
+      // block order reading the STORED from->to direction (filtered to L/M/K)
+      const blk = e.lineOrder.filter((x) => x === a || x === b || x === mLine).map((x) => (x === a ? 'L' : x === b ? 'K' : 'M')).join('');
+      console.error(
+        `[trace] ${e.from}"${lbl(e.from)}" -> ${e.to}"${lbl(e.to)}" optE=${oes} rev=${revOf(e)} blk=${blk} ord=[${ord}] ${ia < ib ? 'A<B' : 'B<A'}` +
+        ` @(${p0[0].toFixed(0)},${p0[1].toFixed(0)})->(${pN[0].toFixed(0)},${pN[1].toFixed(0)})`,
+      );
+    }
+    // Rigorous A/B crossing per node (rev-aware, the same logic as the scorer):
+    // at each node, for each pair of incident opt-edges through which BOTH lines
+    // connect, the pair crosses iff their nd-relative order inverts. Reports the
+    // exact junction nodes where A and B actually cross — a braid shows as TWO.
+    let totalX = 0;
+    let totalRaw = 0; // crossings IGNORING connOccurs (geometric: both lines present on both edges)
+    for (const [nd, adj] of optAdj) {
+      if (adj.length < 2) continue;
+      let nodeX = 0;
+      let nodeRaw = 0;
+      for (let i = 0; i < adj.length; i++) for (let j = i + 1; j < adj.length; j++) {
+        const ea = adj[i], eb = adj[j];
+        const ca = cfg.get(ea.id)!, cb = cfg.get(eb.id)!;
+        const ia = ca.indexOf(a), ib = ca.indexOf(b), ja = cb.indexOf(a), jb = cb.indexOf(b);
+        if (ia < 0 || ib < 0 || ja < 0 || jb < 0) continue; // both lines must ride both edges
+        const revA = ea.from !== nd, revB = eb.from !== nd, rev = revA === revB;
+        const ra = rev ? ca.length - 1 - ia : ia, rb = rev ? ca.length - 1 - ib : ib;
+        const cross = (ra - rb) * (ja - jb) < 0 ? 1 : 0; // scorer inversion test
+        if (cross) {
+          nodeRaw++;
+          if (connOccurs(a, nd, ea, eb) && connOccurs(b, nd, ea, eb)) nodeX++; // what the SCORER actually counts/penalizes
+        }
+      }
+      if (nodeRaw > 0) { totalX += nodeX; totalRaw += nodeRaw; console.error(`[trace] CROSS(opt) @ ${nd}"${lbl(nd)}" deg=${adj.length} scored=${nodeX} raw=${nodeRaw}`); }
+    }
+    console.error(`[trace] OPT-EDGE A/B crossings: scored(connOccurs)=${totalX} raw=${totalRaw}`);
+
+    // COMPOSED-ORDER crossings: detect L/K inversions on the FINAL written-back
+    // layout e.lineOrder (after partner-block expansion + Y-stack composition),
+    // which is what actually draws. This catches braids the opt-edge cfg counter
+    // cannot see — the partner/stack write-back is downstream of cfg.
+    const incL = new Map<string, LayoutEdge[]>();
+    for (const e of both) { for (const n of [e.from, e.to]) { if (!incL.has(n)) incL.set(n, []); incL.get(n)!.push(e); } }
+    let compX = 0;
+    for (const [nd, inc] of incL) {
+      if (inc.length < 2) continue;
+      for (let i = 0; i < inc.length; i++) for (let j = i + 1; j < inc.length; j++) {
+        const e1 = inc[i], e2 = inc[j];
+        const ia = e1.lineOrder.indexOf(a), ib = e1.lineOrder.indexOf(b), ja = e2.lineOrder.indexOf(a), jb = e2.lineOrder.indexOf(b);
+        if (ia < 0 || ib < 0 || ja < 0 || jb < 0) continue;
+        const rev = (e1.from !== nd) === (e2.from !== nd);
+        const ra = rev ? e1.lineOrder.length - 1 - ia : ia, rb = rev ? e1.lineOrder.length - 1 - ib : ib;
+        if ((ra - rb) * (ja - jb) < 0) { compX++; console.error(`[trace] CROSS(composed) @ ${nd}"${lbl(nd)}" e1=${e1.from}->${e1.to} e2=${e2.from}->${e2.to}`); }
+      }
+    }
+    console.error(`[trace] COMPOSED-ORDER A/B crossings = ${compX} (this is what draws)`);
+  }
+
+  // OCTI_XDUMP: per-node residual crossing breakdown (label + same/diff-seg
+  // counts + node degree + max incident line count), sorted worst-first. Used
+  // to localize where the surviving crossings concentrate and correlate them
+  // with the boxed hubs. Coords are octi-layout px (not the 2700 render space).
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_XDUMP) {
+    const posOf = (nd: string): [number, number] => {
+      for (const e of edges) {
+        if (e.from === nd && e.path.length) return e.path[0] as [number, number];
+        if (e.to === nd && e.path.length) return e.path[e.path.length - 1] as [number, number];
+      }
+      return [0, 0];
+    };
+    const maxLines = (nd: string): number => Math.max(0, ...(optAdj.get(nd) ?? []).map((oe) => oe.lines.length));
+    const rows: Array<{ nd: string; label: string; x: number; y: number; same: number; diff: number; deg: number; ml: number }> = [];
+    for (const nd of optAdj.keys()) {
+      const adj = optAdj.get(nd) ?? [];
+      if (adj.length < 2) continue;
+      let sameDouble = 0;
+      let seps = 0;
+      for (const ea of adj) for (const eb of adj) { if (ea === eb) continue; const r = crossSepsPair(nd, ea, eb, cfg); sameDouble += r.cross; seps += r.seps; }
+      let diff = 0;
+      if (adj.length > 2) { let d = 0; for (const ea of adj) d += diffSweep(nd, ea, cfg); diff = Math.max(0, d - sameDouble); }
+      const same = sameDouble / 2;
+      if (same + diff > 0) { const p = posOf(nd); rows.push({ nd, label: layout.nodes.get(nd)?.label ?? '', x: p[0], y: p[1], same, diff, deg: adj.length, ml: maxLines(nd) }); }
+    }
+    rows.sort((a, b) => (b.same + b.diff) - (a.same + a.diff));
+    let ts = 0, td = 0;
+    for (const r of rows) { ts += r.same; td += r.diff; }
+    console.error(`[xdump] ${rows.length} nodes with residual crossings | total same=${ts} diff=${td}`);
+    for (const r of rows.slice(0, 40)) console.error(`[xdump] ${r.nd} "${r.label}" @(${r.x.toFixed(0)},${r.y.toFixed(0)}) deg=${r.deg} maxLines=${r.ml} same=${r.same} diff=${r.diff}`);
   }
 }
