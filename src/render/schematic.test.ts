@@ -239,3 +239,64 @@ test('redrawing a cached layout is stable (no mutation across toggles)', () => {
   assert.equal(withLabels, withLabelsAgain, 'redraw with same options must be identical');
   assert.notEqual(withLabels, noLabels, 'label toggle must actually change the output');
 });
+
+test('route lines do not poke past a terminal capsule (terminus overshoot / "nub")', () => {
+  // N single-letter lines all TERMINATE at one node A -> a terminal capsule.
+  // A -> (track at T) -> A makes T a pass-through so A is the sole capsule; the
+  // edge is slightly slanted after octi, which used to leave the outermost
+  // lanes' round caps poking past the pill on the far side (the "nub").
+  const N = 6;
+  const stations = [
+    { id: 'A', name: 'word', coords: [0, 0], trackIds: [], trackGroupId: 'gA',
+      buildType: 'constructed', stNodeIds: ['A_sn'], routeIds: [], createdAt: 0, nearbyStations: [] },
+    { id: 'T', name: '', coords: [0, 0.02], trackIds: ['tN'], trackGroupId: 'gT',
+      buildType: 'constructed', stNodeIds: ['T_sn'], routeIds: [], createdAt: 0, nearbyStations: [] },
+  ];
+  const stationGroups = [
+    { id: 'gA', name: 'word', center: [0, 0], stationIds: ['A'] },
+    { id: 'gT', name: '', center: [0, 0.02], stationIds: ['T'] },
+  ];
+  const palette = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#0a84ff'];
+  const routes = Array.from({ length: N }, (_, k) => ({
+    id: 'L' + (k < 10 ? '0' + k : k),
+    bullet: String.fromCharCode(97 + k),
+    color: palette[k],
+    stCombos: [{ startStNodeId: 'A_sn', endStNodeId: 'A_sn', path: [{ trackId: 'tN', reversed: false }], distance: 100 }],
+  }));
+
+  const svg = generateSchematicSVG({
+    routes: routes as never,
+    tracks: [],
+    stations: stations as never,
+    stationGroups,
+    options: { mode: 'smoothed', width: 1600, height: 1600, warpAlpha: 0, geographicAffinity: 0.5, showStations: true, showLabels: false, dark: true },
+  });
+
+  // Capsule bullet dots (data-line circles) define the row and the pill.
+  const dots = [...svg.matchAll(/<circle cx="(-?[\d.]+)" cy="(-?[\d.]+)" r="([\d.]+)" fill="[^"]*" stroke="#[0-9a-fA-F]{6}"[^>]*data-line="/g)]
+    .map((m) => ({ cy: +m[2] }));
+  assert.equal(dots.length, N, `expected ${N} capsule dots, got ${dots.length}`);
+  const ys = dots.map((d) => d.cy).sort((a, b) => a - b);
+  const rowY = ys[ys.length >> 1];
+  const pm = svg.match(/fill="none" stroke="#e4e4e7" stroke-width="([\d.]+)" stroke-linecap="round"/);
+  assert.ok(pm, 'capsule border stroke not found');
+  const pillHalf = +pm![1] / 2;
+
+  // Farthest any route line's INK (endpoint + its round cap) reaches past the
+  // row on the non-tail (far) side — that cap is what pokes past the pill.
+  let maxInk = 0;
+  for (const p of svg.matchAll(/<path d="([^"]*)" fill="none" stroke="#[0-9a-fA-F]{6}" stroke-width="([\d.]+)"[^>]*data-line-id="[^"]*"/g)) {
+    const nums = p[1].match(/-?[\d.]+/g)?.map(Number) ?? [];
+    const capR = +p[2] / 2;
+    let beyond = 0;
+    for (let i = 1; i < nums.length; i += 2) beyond = Math.max(beyond, nums[i] - rowY);
+    maxInk = Math.max(maxInk, beyond + capR);
+  }
+  // The terminating lane must stop at its stop: its ink must not reach past the
+  // pill edge. Pre-fix the outermost lane's cap poked ~5px past the row (well
+  // beyond the pill); trimming the lane to the seated bullet keeps it inside.
+  assert.ok(
+    maxInk <= pillHalf + 0.5,
+    `route line ink reaches ${maxInk.toFixed(1)}px past the capsule row; pill half=${pillHalf.toFixed(1)} — terminus overshoot not trimmed`,
+  );
+});

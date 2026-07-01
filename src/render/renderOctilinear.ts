@@ -2410,7 +2410,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (!poly || !edge || poly.length < 2) continue;
         const pts = edge.from === mk.flagNode ? poly : [...poly].reverse();
         const d = arcToPoint(pts, mk.pos);
-        if (d > r + 2) trimLaneAt(incEdge, mk.lineId, mk.flagNode, d);
+        // A CAPSULE terminus draws a pill around the seated dot row; a lane that
+        // runs even slightly past its dot pokes its round cap out the far side of
+        // the pill (the "nub" — worst on a slanted terminal edge, where the row is
+        // re-seated square but the lanes still end along the slant). Trim capsule
+        // termini flush to the stop. A lone terminal dot has no pill, so a small
+        // overhang past it reads as a normal line end — keep the looser threshold.
+        const isCapsule = s.marks.length >= 2 || (membersByNode?.get(s.nodeId) ?? 0) > 1;
+        if (d > (isCapsule ? 0.5 : r + 2)) trimLaneAt(incEdge, mk.lineId, mk.flagNode, d);
       }
     }
 
