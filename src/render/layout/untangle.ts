@@ -1107,7 +1107,10 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     }
   }
   const traceEnv = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE : undefined;
-  if (traceEnv) {
+  // Requires the two-line form "<lineIdA>,<lineIdB>" — a bare OCTI_TRACE=1
+  // (the boolean style other stages accept) has no pair to trace; skip instead
+  // of crashing on the missing second id.
+  if (traceEnv && traceEnv.includes(',')) {
     const [a, b] = traceEnv.split(',');
     const lbl = (n: string) => layout.nodes.get(n)?.label || '·';
     console.error(`[trace] A=${a} B=${b} (A=first letter shown as 'A', B as 'B')`);
