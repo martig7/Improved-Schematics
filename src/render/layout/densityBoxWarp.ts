@@ -150,6 +150,114 @@ export function mergeIntersectingBoxes(boxes: DenseBox[]): DenseBox[] {
   return out;
 }
 
+export type BoxKind = 'density' | 'contraction' | 'capsule';
+/** A pairwise spacing requirement: the warped distance between nodes a,b must
+ *  reach `required` px (capsule separation — CONSTANT under the warp, unlike
+ *  the octi contraction threshold, which moves as the map stretches). */
+export interface PairTarget { a: number; b: number; required: number }
+/** A warp box with its oracle kind and extra spacing targets. Every box also
+ *  implicitly carries the octi-contraction floor (inside-edge median ≥
+ *  ĉ/2·slack) in the refinement — `pairs` ADD capsule-scale requirements. */
+export interface DemandBox extends DenseBox {
+  kind: BoxKind;
+  pairs: PairTarget[];
+}
+
+export interface CapsuleOracleOptions {
+  /** Marker lane pitch in px (LINE_WIDTH + LINE_GAP at the call site). */
+  spacing: number;
+  /** Per-capsule slack beyond the marker row, px. Default 4. */
+  margin?: number;
+  /** Inter-capsule clearance (casing + breathing room), px. Default 8. */
+  casing?: number;
+}
+
+/** Capsule-demand oracle: stations whose MARKER ROWS cannot both fit in the
+ *  space between them. Per node, the capsule half-length is
+ *  (lineCount−1)·spacing/2 + margin (a 1-line node is a plain dot — excluded).
+ *  Pairs are found by SPATIAL proximity (bucket grid), NOT graph adjacency —
+ *  capsule collisions don't require a shared edge (SEA mn89×mn461). Flagged
+ *  pairs union-find into clusters → one box per cluster carrying ALL its
+ *  violating pairs as targets. Deterministic: index-ordered scans, integer
+ *  bucket keys iterated per node (not per Map order). */
+export function findCapsuleBoxes(
+  g: BoxGraph,
+  lineCounts: readonly number[],
+  o: CapsuleOracleOptions,
+): DemandBox[] {
+  const margin = o.margin ?? 4;
+  const casing = o.casing ?? 8;
+  const need = (i: number): number =>
+    (lineCounts[i] ?? 1) >= 2 ? (((lineCounts[i] ?? 1) - 1) * o.spacing) / 2 + margin : 0;
+  const idx: number[] = [];
+  let maxNeed = 0;
+  for (let i = 0; i < g.nodes.length; i++) {
+    const n = need(i);
+    if (n > 0) { idx.push(i); if (n > maxNeed) maxNeed = n; }
+  }
+  if (idx.length < 2) return [];
+  // bucket grid at the largest possible pair threshold so any violating pair
+  // sits in the same or an adjacent cell
+  const cell = 2 * maxNeed + casing;
+  const key = (x: number, y: number): string => Math.floor(x / cell) + ',' + Math.floor(y / cell);
+  const buckets = new Map<string, number[]>();
+  for (const i of idx) {
+    const k = key(g.nodes[i][0], g.nodes[i][1]);
+    let arr = buckets.get(k);
+    if (!arr) { arr = []; buckets.set(k, arr); }
+    arr.push(i);
+  }
+  const parent = new Map<number, number>(idx.map((i) => [i, i]));
+  const find = (i: number): number => {
+    let root = i;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (parent.get(i) !== i) { const nx = parent.get(i)!; parent.set(i, root); i = nx; }
+    return root;
+  };
+  const pairs: PairTarget[] = [];
+  for (const i of idx) {
+    const [ix, iy] = g.nodes[i];
+    const cx = Math.floor(ix / cell);
+    const cy = Math.floor(iy / cell);
+    for (let oy = -1; oy <= 1; oy++)
+      for (let ox = -1; ox <= 1; ox++) {
+        const arr = buckets.get(cx + ox + ',' + (cy + oy));
+        if (!arr) continue;
+        for (const j of arr) {
+          if (j <= i) continue; // each pair once, index-ordered → deterministic
+          const dx = ix - g.nodes[j][0];
+          const dy = iy - g.nodes[j][1];
+          const required = need(i) + need(j) + casing;
+          if (Math.sqrt(dx * dx + dy * dy) >= required) continue;
+          pairs.push({ a: i, b: j, required });
+          const ra = find(i), rb = find(j);
+          if (ra !== rb) parent.set(rb, ra);
+        }
+      }
+  }
+  if (pairs.length === 0) return [];
+  const byRoot = new Map<number, { x0: number; y0: number; x1: number; y1: number; pairs: PairTarget[]; pad: number }>();
+  for (const t of pairs) {
+    const r = find(t.a);
+    let e = byRoot.get(r);
+    if (!e) { e = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, pairs: [], pad: 0 }; byRoot.set(r, e); }
+    for (const n of [t.a, t.b]) {
+      const p = g.nodes[n];
+      if (p[0] < e.x0) e.x0 = p[0];
+      if (p[0] > e.x1) e.x1 = p[0];
+      if (p[1] < e.y0) e.y0 = p[1];
+      if (p[1] > e.y1) e.y1 = p[1];
+      if (need(n) > e.pad) e.pad = need(n);
+    }
+    e.pairs.push(t);
+  }
+  const out: DemandBox[] = [];
+  for (const e of byRoot.values()) {
+    out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+  }
+  return out;
+}
+
 // (DemandOptions, below, extends the same option bag densityGrid2D reads.)
 type DensityWarp2DOptionsLike = DensityWarpOptions & { sigmaPx?: number };
 

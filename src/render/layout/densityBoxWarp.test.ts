@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
-import type { BoxGraph, DenseBox } from './densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes } from './densityBoxWarp';
+import type { BoxGraph, DenseBox, PairTarget } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
@@ -332,4 +332,51 @@ test('buildSepDemandBoxWarp: composes separable + demand warp; growth passes thr
       assert.ok(wy1 > wy0, `y-monotone at (${x2},${y2}): ${wy1} > ${wy0}`);
     }
   }
+});
+
+test('findCapsuleBoxes: a close big-interchange pair gets a box with the pair target; spaced pairs do not', () => {
+  // nodes 0,1: 7-line and 6-line interchanges 30px apart (capsules need far more);
+  // node 2: 5-line interchange 400px away (clear); nodes 3,4: single-line (excluded).
+  const g: BoxGraph = {
+    nodes: [[100, 100], [130, 100], [500, 100], [110, 130], [90, 80]],
+    edges: [[0, 1], [1, 2], [0, 3], [0, 4]],
+  };
+  const lineCounts = [7, 6, 5, 1, 1];
+  const spacing = 5.5;
+  const boxes = findCapsuleBoxes(g, lineCounts, { spacing, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  const b = boxes[0];
+  assert.equal(b.kind, 'capsule');
+  assert.equal(b.pairs.length, 1);
+  assert.deepEqual([b.pairs[0].a, b.pairs[0].b], [0, 1]);
+  // required = needA + needB + casing = ((7-1)*5.5/2 + 4) + ((6-1)*5.5/2 + 4) + 8
+  const needA = ((7 - 1) * spacing) / 2 + 4;
+  const needB = ((6 - 1) * spacing) / 2 + 4;
+  assert.ok(Math.abs(b.pairs[0].required - (needA + needB + 8)) < 1e-9);
+  // box covers both nodes, padded
+  assert.ok(b.x0 < 100 && b.x1 > 130 && b.y0 < 100 && b.y1 > 100);
+});
+
+test('findCapsuleBoxes: chains of close interchanges cluster into one box with all violating pairs', () => {
+  // three 4-line stations in a 25px-spaced row: pairs (0,1),(1,2) violate; (0,2) may too.
+  const g: BoxGraph = { nodes: [[100, 100], [125, 100], [150, 100]], edges: [[0, 1], [1, 2]] };
+  const boxes = findCapsuleBoxes(g, [4, 4, 4], { spacing: 5.5, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  assert.ok(boxes[0].pairs.length >= 2);
+  for (const t of boxes[0].pairs) assert.ok(t.required > 0 && t.a < t.b);
+});
+
+test('findCapsuleBoxes: proximity does not require a shared edge', () => {
+  // two 5-line interchanges 20px apart with NO connecting edge still flag.
+  const g: BoxGraph = { nodes: [[100, 100], [120, 100]], edges: [] };
+  const boxes = findCapsuleBoxes(g, [5, 5], { spacing: 5.5, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].pairs.length, 1);
+});
+
+test('findCapsuleBoxes: deterministic', () => {
+  const g: BoxGraph = { nodes: [[100, 100], [130, 100], [110, 130]], edges: [[0, 1]] };
+  const a = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
+  const b = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
+  assert.deepEqual(a, b);
 });
