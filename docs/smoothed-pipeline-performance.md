@@ -33,7 +33,7 @@ input (routes/tracks/stations/groups)
   ▼
 buildTransitGraph + getOrBuildStationGroups    graph.ts          ── §3
   ▼
-density warp construction (buildSepBoxWarp)     densityWarp*.ts   ── §4
+density warp construction (buildSepDemandBoxWarp) densityWarp*.ts ── §4
   │  + re-fit to warped extent                  renderGeographic.ts:632-660
   ▼
 LOOM topo merge (buildSupportGraph)             topo.ts           ── §5
@@ -137,15 +137,16 @@ Symbols: `S` = warp samples (≈ N × small int, low thousands), `B` = histogram
 |---|---|---|---|
 | `separable` | `O(S + B·r)` | **`O(1)`** — direct CDF index + lerp (`densityWarp.ts:152-165`) | no |
 | `box` | `O(S + B²·r)` | `O(#boxes)`, 1–5 | boxes only |
-| **`both` (default, `buildSepBoxWarp`)** | `O(S + B²·r)` | **`O(1)` + `O(#boxes)`** (`densityBoxWarp.ts:202-205`) | boxes only |
+| **`both` (default, `buildSepDemandBoxWarp`)** | `O(S + B²·r)` (+ ≤4 refinement rebuilds + `O(E)` contraction oracle) | **`O(1)` + `O(#boxes)`** | boxes only |
 | `2d` (rejected) | `O(iters·(S + B²·rad²))` | **`O(iters)`** ≈ 20 bilinear samples/pt | **yes — 10 steps** |
 
-**Default path (`buildSepBoxWarp`, `densityBoxWarp.ts:214`):** a separable CDF warp for
-global magnification composed with a box-expansion warp for local room. Construction is
-dominated by one 2D Gaussian smoothing (`O(B²·r)` ≈ 157k ops) — still milliseconds.
-Evaluation is effectively `O(1)` per point, with its only real tax being **~3–4
-short-lived array allocations per warped point** (`densityBoxWarp.ts:160, 203, 204` plus
-`sep`'s tuple). Across tens of thousands of vertices that's the stage's main GC pressure.
+**Default path (`buildSepDemandBoxWarp`):** a separable CDF warp for
+global magnification composed with the demand-driven box warp for local room.
+Construction is dominated by one 2D Gaussian smoothing (`O(B²·r)` ≈ 157k ops) plus the
+contraction oracle (`O(E)` union-find) and a bounded (≤4, usually 1) refinement loop
+that re-advects the graph per rebuild — still milliseconds. Evaluation is effectively
+`O(1)` per point, with its only real tax being **~3–4 short-lived array allocations
+per warped point** (the push/raw tuples plus `sep`'s tuple). Across tens of thousands of vertices that's the stage's main GC pressure.
 
 **Why `2d` was rejected (the perf reason).** `buildDensityWarp2D` (Gastner–Newman,
 `densityWarp2d.ts:211`) loops `iterations` (default 10) times, each building a `O(B²·rad²)`
