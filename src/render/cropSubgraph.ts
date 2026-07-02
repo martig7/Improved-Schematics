@@ -88,6 +88,11 @@ export function cropSubgraph(
   input: SchematicInput,
   coreStationIds: Set<string>,
   clipBbox?: BoundingBox,
+  /** width/height of the user's DRAWN BOX (render px). When given, the sub-
+   *  canvas takes the box's aspect (long side keeps the base size), so the
+   *  re-sim fills a box-shaped canvas and the popout frame matches the drawn
+   *  region's shape instead of being stretched into a square. */
+  frameAspect?: number,
 ): SchematicInput {
   const routes = input.routes as unknown as RouteLike[];
   const tracks = input.tracks as unknown as { id: string }[];
@@ -149,11 +154,38 @@ export function cropSubgraph(
       }
       if (mnX < mxX && mnY < mxY) box = [mnX, mnY, mxX, mxY];
     }
-    if (box) croppedGeo = clipGeographyToBox(geo, box);
+    if (box) {
+      // Clip with a margin PAST the selection (but stamp the exact selection as
+      // the bbox/frame): the popout frames on the stamped bbox, and the margin
+      // lets water/parks continue seamlessly past the frame edge — exactly like
+      // the main map — instead of being amputated at the frame. 0.35 > the
+      // renderer's 0.25 canvas margin (detailCrop), so the margin backdrop
+      // covers the whole sub-canvas.
+      const PAD = 0.35;
+      const pw = (box[2] - box[0]) * PAD;
+      const ph = (box[3] - box[1]) * PAD;
+      croppedGeo = {
+        ...clipGeographyToBox(geo, [box[0] - pw, box[1] - ph, box[2] + pw, box[3] + ph]),
+        bbox: box,
+      };
+    }
+  }
+
+  // Detail-crop render options: flag the sub-render (the re-fit pins the clip
+  // rect's corners on-canvas — see SchematicOptions.detailCrop) and shape the
+  // sub-canvas to the drawn box's aspect so the popout frame matches it.
+  const baseOpts = (input as { options?: { width?: number; height?: number } }).options;
+  let options: typeof baseOpts = { ...baseOpts, detailCrop: true } as typeof baseOpts;
+  if (frameAspect !== undefined && Number.isFinite(frameAspect) && frameAspect > 0) {
+    const base = Math.max(baseOpts?.width ?? 2700, baseOpts?.height ?? 2700);
+    const w = frameAspect >= 1 ? base : Math.max(400, Math.round(base * frameAspect));
+    const h = frameAspect >= 1 ? Math.max(400, Math.round(base / frameAspect)) : base;
+    options = { ...options, width: w, height: h };
   }
 
   return {
     ...input,
+    options: options as never,
     routes: fRoutes as never,
     tracks: fTracks as never,
     stations: fStations as never,

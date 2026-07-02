@@ -791,6 +791,35 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (p[1] < mnY) mnY = p[1];
       if (p[1] > mxY) mxY = p[1];
     }
+    // Detail-area crops: the stamped bbox IS the deliverable frame (the drawn
+    // box's geographic preimage). Frame the canvas on THAT rect (padded by a
+    // proportional margin) instead of the content bbox — the one-hop ring
+    // stations and their track courses reach arbitrarily far outside the drawn
+    // region and would otherwise squash the frame to a sliver of the canvas
+    // (wrong aspect) or push it off-canvas entirely (clamped frame = popout
+    // shows a truncated region). Proportional per-axis padding keeps
+    // frame aspect == canvas aspect == the drawn box's aspect, and the margin
+    // shows the (margin-clipped) geography continuing past the frame edge just
+    // like the main map. Ring content beyond the margin draws off-canvas —
+    // harmless, the popout's viewBox is the frame. (See SchematicOptions.detailCrop.)
+    if (opts.detailCrop && input.geography) {
+      const [g0, g1, g2, g3] = input.geography.bbox;
+      let fx0 = Infinity, fy0 = Infinity, fx1 = -Infinity, fy1 = -Infinity;
+      for (const c of [[g0, g1], [g2, g1], [g2, g3], [g0, g3]] as Coordinate[]) {
+        const p = proj.toSVG(c);
+        if (p[0] < fx0) fx0 = p[0];
+        if (p[0] > fx1) fx1 = p[0];
+        if (p[1] < fy0) fy0 = p[1];
+        if (p[1] > fy1) fy1 = p[1];
+      }
+      if (fx0 < fx1 && fy0 < fy1) {
+        const pad = 0.25; // per-axis margin fraction (< cropSubgraph's geo clip pad)
+        mnX = fx0 - (fx1 - fx0) * pad;
+        mxX = fx1 + (fx1 - fx0) * pad;
+        mnY = fy0 - (fy1 - fy0) * pad;
+        mxY = fy1 + (fy1 - fy0) * pad;
+      }
+    }
     if (mnX < mxX && mnY < mxY) {
       const m = 0; // flush fill — content reaches the canvas edge (the panel zooms for labels)
       const sx = (outW * (1 - 2 * m)) / (mxX - mnX);

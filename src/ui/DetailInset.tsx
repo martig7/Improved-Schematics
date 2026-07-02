@@ -324,7 +324,9 @@ export function DetailInset({
         if (cancelled || !bodyRef.current) return;
         let subPre: SmoothedPrecomputed | string;
         try {
-          subPre = precomputeSmoothedSchematic(cropSubgraph(buildInput() as never, core, clipBbox));
+          subPre = precomputeSmoothedSchematic(
+            cropSubgraph(buildInput() as never, core, clipBbox, (box.x1 - box.x0) / (box.y1 - box.y0)),
+          );
         } catch {
           miss(null, null); cropFallback(); return;
         }

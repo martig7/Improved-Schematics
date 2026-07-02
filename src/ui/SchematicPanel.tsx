@@ -609,7 +609,7 @@ export function SchematicPanel() {
         out.coreStationIds = [...core];
         out.clipBbox = clipBbox;
         try {
-          out.input = core.size >= 2 ? cropSubgraph(full as never, core, clipBbox) : null;
+          out.input = core.size >= 2 ? cropSubgraph(full as never, core, clipBbox, (box.x1 - box.x0) / (box.y1 - box.y0)) : null;
         } catch (err) {
           out.input = null;
           out.error = String(err);

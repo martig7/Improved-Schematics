@@ -108,6 +108,15 @@ export interface SchematicOptions {
    *  (broader warping); higher = only the densest cores → fewer/smaller boxes.
    *  Default 0.4. */
   boxFrac?: number;
+  /** Detail-area sub-render (set by cropSubgraph, never on a main render): the
+   *  cropped geography's bbox is the drawn box's geographic preimage — the
+   *  region the popout must show. Treat its four corners as CONTENT in the
+   *  post-warp re-fit so the whole drawn region stays on-canvas; otherwise a
+   *  box with empty margins (no water crossing, no stations) projects past the
+   *  content-fitted canvas and geoBboxFrame gets clamped — the popout then
+   *  shows a truncated, wrong-aspect region. Not for main renders: the city
+   *  bbox has slack past the real polygons and would shrink the content fit. */
+  detailCrop?: boolean;
   /** Render with a dark background/palette. */
   dark: boolean;
   theme: SchematicTheme;
