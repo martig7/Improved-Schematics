@@ -580,7 +580,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // OCTI_BOX_* overrides still win for dev sweeps), mirroring warpAlpha above.
   // boxExpand is now the demand MULTIPLIER (userMult): 1 = expand each box by
   // exactly what its edges need to survive octi contraction; >1 adds aesthetic
-  // magnification on top. (Was: absolute expansion factor, default 4.)
+  // magnification on top. (Was: absolute expansion factor, default 4.) Any
+  // value > 0 is accepted — boxDemand floors the result at 1 internally, so
+  // sub-1 multipliers only soften the aesthetic headroom, never invert.
   const boxUserMult = (() => {
     const e = envNum('OCTI_BOX_EXPAND');
     if (Number.isFinite(e) && e > 0) return e; // dev sweep override wins
@@ -868,6 +870,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // >= 1 cell ~= 6.6 line-widths (at lineWidth 3.5) so unmerged parallels
   // read as separate lines instead of a crammed band; 2.5 stayed compressed,
   // 1.0 reintroduced spiral wraps at terminal loops.
+  // NOTE: mirrored pre-warp as `divisorEst` (box-warp contraction oracle,
+  // ~line 685) — keep the threshold + constants in sync if tuned here.
   const divisor =
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
