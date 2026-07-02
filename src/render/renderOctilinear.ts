@@ -1258,7 +1258,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const capPlaceDebug = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_PLACE_DEBUG === '1';
     const capOvlOn = capNoOvlMode !== '' || capPlaceDebug;
     const placedHulls: Array<{ nodeId: string; hull: Hull }> = [];
-    const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0 };
+    const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0, retried: 0, retriedOk: 0 };
     let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
     // Placement order (spec §6): an earlier station's dots mask a later one's
     // row states, so a station boxed ONLY because a flexible neighbor claimed
@@ -1414,51 +1414,114 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         }
         // Seat-time hull overlap check (experiment; see capNoOvlMode above).
         // Runs AFTER all escalations so it judges the solution that would
-        // actually be committed; a reject falls into the mega branch below.
+        // actually be committed. Mode 'retry': a cross-violating solution gets
+        // ONE re-solve with the placed hulls baked into the blocked/proximity
+        // masks (the "heavily punished in scoring" variant) — the DP hunts for
+        // a non-crossing seat; only a still-crossing retry falls to the mega
+        // branch. NOTE the masks are per-DOT, so a retried row can still CROSS
+        // a hull mid-segment between clear dots — the re-check catches that.
         if (sol && capOvlOn && s.marks.length >= 2) {
-          const verts: Pixel[] = [];
-          for (let k = 0; k < sol.order.length; k++) {
-            verts.push(sol.pos[sol.order[k]]);
-            const c = sol.cornerAfter.get(k);
-            if (c) verts.push(c);
-          }
-          const hull: Hull = [];
-          for (let k = 1; k < verts.length; k++) hull.push({ a: verts[k - 1], b: verts[k], half: r + 3 });
-          if (hull.length === 0) hull.push({ a: verts[0], b: verts[0], half: r + 3 });
           const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
-          let selfOvl = false;
-          for (let i = 0; i < hull.length && !selfOvl; i++) {
-            for (let j = i + 2; j < hull.length; j++) {
-              // non-adjacent legs only; skip pairs meeting at a shared vertex
-              // (zero-length corner stubs make i+2 segments touch legitimately)
-              if (near(hull[i].b, hull[j].a) || near(hull[i].a, hull[j].b) || near(hull[i].a, hull[j].a) || near(hull[i].b, hull[j].b)) continue;
-              // TRUE centerline crossing only (the Z-fold). Hull-width proximity
-              // between non-adjacent legs is NORMAL at an elbow — legs joined
-              // through a short bridge segment pass within capsule width of each
-              // other at every corner — so a width-based test flags every bent
-              // capsule (17/63 on SEA) and is useless as a feasibility predicate.
-              if (segSegDist(hull[i].a, hull[i].b, hull[j].a, hull[j].b) < 0.5) { selfOvl = true; break; }
+          const evalSol = (so: NonNullable<typeof sol>): { hull: Hull; verts: Pixel[]; selfOvl: boolean; crossOvl: string | null } => {
+            const verts: Pixel[] = [];
+            for (let k = 0; k < so.order.length; k++) {
+              verts.push(so.pos[so.order[k]]);
+              const c = so.cornerAfter.get(k);
+              if (c) verts.push(c);
             }
-          }
-          let crossOvl: string | null = null;
-          for (const ph of placedHulls) {
-            if (penBetween(hull, ph.hull) > 0.5) { crossOvl = ph.nodeId; break; }
-          }
+            const hull: Hull = [];
+            for (let k = 1; k < verts.length; k++) hull.push({ a: verts[k - 1], b: verts[k], half: r + 3 });
+            if (hull.length === 0) hull.push({ a: verts[0], b: verts[0], half: r + 3 });
+            let selfOvl = false;
+            for (let i = 0; i < hull.length && !selfOvl; i++) {
+              for (let j = i + 2; j < hull.length; j++) {
+                // non-adjacent legs only; skip pairs meeting at a shared vertex
+                // (zero-length corner stubs make i+2 segments touch legitimately)
+                if (near(hull[i].b, hull[j].a) || near(hull[i].a, hull[j].b) || near(hull[i].a, hull[j].a) || near(hull[i].b, hull[j].b)) continue;
+                // TRUE centerline crossing only (the Z-fold). Hull-width proximity
+                // between non-adjacent legs is NORMAL at an elbow — legs joined
+                // through a short bridge segment pass within capsule width of each
+                // other at every corner — so a width-based test flags every bent
+                // capsule (17/63 on SEA) and is useless as a feasibility predicate.
+                if (segSegDist(hull[i].a, hull[i].b, hull[j].a, hull[j].b) < 0.5) { selfOvl = true; break; }
+              }
+            }
+            let crossOvl: string | null = null;
+            for (const ph of placedHulls) {
+              if (penBetween(hull, ph.hull) > 0.5) { crossOvl = ph.nodeId; break; }
+            }
+            return { hull, verts, selfOvl, crossOvl };
+          };
+          let ev = evalSol(sol);
           capOvlStats.capsules++;
-          if (selfOvl) capOvlStats.self++;
-          if (crossOvl) capOvlStats.cross++;
-          const reject =
-            ((capNoOvlMode.includes('self') || capNoOvlMode.includes('both')) && selfOvl) ||
-            ((capNoOvlMode.includes('cross') || capNoOvlMode.includes('both')) && crossOvl !== null);
-          if ((selfOvl || crossOvl) && capPlaceDebug) {
+          if (ev.selfOvl) capOvlStats.self++;
+          if (ev.crossOvl) capOvlStats.cross++;
+          const wantSelf = capNoOvlMode.includes('self') || capNoOvlMode.includes('both');
+          const wantCross = capNoOvlMode.includes('cross') || capNoOvlMode.includes('both');
+          let reject = (wantSelf && ev.selfOvl) || (wantCross && ev.crossOvl !== null);
+          let retried = '';
+          // Retry: only for pure cross violations (a per-dot mask cannot express
+          // "don't cross yourself"). Hulls prefiltered to this station's vicinity
+          // so the DP's per-dot mask stays cheap on dense maps.
+          if (reject && capNoOvlMode.includes('retry') && ev.crossOvl !== null && !ev.selfOvl) {
+            capOvlStats.retried++;
             let cx = 0, cy = 0;
-            for (const v of verts) { cx += v[0]; cy += v[1]; }
+            for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
+            cx /= s.marks.length; cy /= s.marks.length;
+            const nearHulls: Hull = [];
+            for (const ph of placedHulls)
+              for (const sg of ph.hull)
+                if (segSegDist([cx, cy], [cx, cy], sg.a, sg.b) < 400) nearHulls.push(sg);
+            // block a dot whose RING would sit inside a placed hull; penalize a
+            // comfort band outside that, mirroring the dot-mask ramp above.
+            const hullClearance = (p: Pixel): number => {
+              let md = Infinity;
+              for (const sg of nearHulls) {
+                const d = segSegDist(p, p, sg.a, sg.b) - (sg.half + r);
+                if (d < md) md = d;
+              }
+              return md;
+            };
+            const ropts2 = {
+              ...ropts,
+              blocked: (p: Pixel) => ropts.blocked(p) || hullClearance(p) < 0,
+              proximity: (p: Pixel) => {
+                let pen = ropts.proximity(p);
+                const d = hullClearance(p);
+                if (d >= 0 && d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort;
+                return pen;
+              },
+            };
+            let sol2 = solveRows(curves, groups, ropts2);
+            if (!sol2) {
+              if (!wide) wide = s.marks.map((mk) => buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC));
+              sol2 = solveRows(wide, groups, { ...ropts2, arcLimit: WIDE_ARC });
+            }
+            if (!sol2 && boxRescueMax > 0 && wide) {
+              for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol2; sl += 0.25) {
+                sol2 = solveRows(wide, groups, { ...ropts2, minGap: Math.max(2, intraGap - sl), arcLimit: WIDE_ARC });
+              }
+            }
+            if (sol2) {
+              const ev2 = evalSol(sol2);
+              if (!ev2.selfOvl && ev2.crossOvl === null) {
+                sol = sol2;
+                ev = ev2;
+                reject = false;
+                capOvlStats.retriedOk++;
+                retried = ' RETRY-OK';
+              } else retried = ' retry-still-crosses';
+            } else retried = ' retry-unseatable';
+          }
+          if ((ev.selfOvl || ev.crossOvl || retried) && capPlaceDebug) {
+            let cx = 0, cy = 0;
+            for (const v of ev.verts) { cx += v[0]; cy += v[1]; }
             console.error(
-              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / verts.length).toFixed(0)},${(cy / verts.length).toFixed(0)})${selfOvl ? ' self' : ''}${crossOvl ? ` cross(${crossOvl})` : ''}${reject ? ' → mega' : ''}`,
+              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${retried}${reject ? ' → mega' : ''}`,
             );
           }
           if (reject) { capOvlStats.rejected++; sol = null; }
-          else placedHulls.push({ nodeId: s.nodeId, hull });
+          else placedHulls.push({ nodeId: s.nodeId, hull: ev.hull });
         }
         if (sol) {
           for (let k = 0; k < sol.order.length; k++) {
@@ -1501,7 +1564,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
     if (capOvlOn && capOvlStats.capsules > 0)
       console.error(
-        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} rejected=${capOvlStats.rejected} (mode=${capNoOvlMode || 'count-only'})`,
+        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} retried=${capOvlStats.retried} retriedOk=${capOvlStats.retriedOk} rejected=${capOvlStats.rejected} (mode=${capNoOvlMode || 'count-only'})`,
       );
     const megas = gathered.filter((s) => boxOf(s).mega);
     // EXPERIMENT (see capNoOvlMode): shared spine-hull builder — chain-ordered
