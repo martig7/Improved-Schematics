@@ -253,6 +253,46 @@ test('buildDemandBoxWarp: deterministic; out reports boxes (output space) and pe
   assert.ok(o1.boxes!.some((b) => p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1));
 });
 
+test('buildDemandBoxWarp: two clusters with different demands get different expands, both clear need', () => {
+  // cluster A: gaps ~8px (high demand); cluster B: gaps ~20px (lower demand);
+  // sparse chain keeps the global median high so both are sub-threshold.
+  // A and B are far apart inside DBOX so their boxes don't merge.
+  const nodes: Pixel[] = [
+    [60, 60], [68, 60], [60, 68], [68, 68],         // cluster A (8px)
+    [450, 120], [470, 120], [450, 140], [470, 140], // cluster B (20px)
+    [200, 180], [350, 250], [500, 350], [350, 450], [200, 500], [60, 400], // sparse chain
+  ];
+  const aEdges: [number, number][] = [[0, 1], [0, 2], [1, 3]];
+  const bEdges: [number, number][] = [[4, 5], [4, 6], [5, 7]];
+  const edges: [number, number][] = [
+    ...aEdges, ...bEdges,
+    [3, 8], [8, 9], [9, 10], [10, 11], [11, 12], [12, 13], [7, 10], // all >150px
+  ];
+  const g: BoxGraph = { nodes, edges };
+  const medLen = medianEdgeLenPx(g);
+  const need = (DOPTS.cellFromMedLen(medLen) / 2) * DOPTS.slack;
+  assert.ok(need > 20, `both clusters sub-threshold (need ${need.toFixed(1)})`);
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const r = buildDemandBoxWarp([], g, DBOX, DOPTS, o);
+  // (a) exactly two boxes with DISTINCT per-box expands, A's (tighter) > B's
+  assert.equal(o.boxes!.length, 2);
+  assert.equal(o.expands!.length, 2);
+  const iA = o.boxes![0].x0 < o.boxes![1].x0 ? 0 : 1; // A's box is the left one
+  const iB = 1 - iA;
+  assert.ok(o.expands![iA] > o.expands![iB], `A demands more: ${o.expands![iA]} > ${o.expands![iB]}`);
+  // (b) every intra-cluster edge of BOTH clusters clears need after warping
+  const warped = g.nodes.map((p) => r.warp([p[0], p[1]]));
+  for (const [a, b] of [...aEdges, ...bEdges]) {
+    const d = Math.sqrt((warped[a][0] - warped[b][0]) ** 2 + (warped[a][1] - warped[b][1]) ** 2);
+    assert.ok(d >= need, `edge ${a}-${b}: ${d.toFixed(1)} < need ${need.toFixed(1)}`);
+  }
+  // (c) growth equals the warped corner-span ratio per axis
+  const tl = r.warp([DBOX.minX, DBOX.minY]);
+  const br = r.warp([DBOX.maxX, DBOX.maxY]);
+  assert.ok(Math.abs((br[0] - tl[0]) - (DBOX.maxX - DBOX.minX) * r.growthX) < 1e-6);
+  assert.ok(Math.abs((br[1] - tl[1]) - (DBOX.maxY - DBOX.minY) * r.growthY) < 1e-6);
+});
+
 test('buildDemandBoxWarp: refinement — post-warp gaps in every box clear the RE-DERIVED need', () => {
   const g = pinnedGraph();
   // Lock BOTH slack regimes: 1.3 (the default headroom) and 1.0 (bare survival,
