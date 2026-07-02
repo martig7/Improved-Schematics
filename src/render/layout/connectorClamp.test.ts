@@ -39,3 +39,13 @@ test('connectorControls: collinear ends unchanged', () => {
   assert.deepEqual(c1, [22, 0]);
   assert.deepEqual(c2, [28, 0]);
 });
+
+test('connectorControls: reverse-perp approach (review sign hole) — overshoot < 1px', () => {
+  // dirA's perpendicular component points AWAY from pb's lane. The unsigned
+  // clamp drove c1 past pa's OWN lane (2.8px overshoot); the signed clamp
+  // shortens the tangent instead (stray bounded by the 0.75px TOL).
+  const pa: [number, number] = [0, 0], pb: [number, number] = [30, 10];
+  const dirA: [number, number] = [SQ, -SQ], dirB: [number, number] = [1, 0];
+  const { c1, c2 } = connectorControls(pa, pb, dirA, dirB, 22.0);
+  assert.ok(overshoot(pa, pb, c1, c2, dirB) < 1, `overshoot ${overshoot(pa, pb, c1, c2, dirB)}`);
+});
