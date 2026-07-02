@@ -1594,13 +1594,29 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return null;
     };
+    // TRUE centerline self-crossing of one capsule's hull (the Z-fold) — the
+    // same non-adjacent-leg intersection test the seat check applies to a
+    // fresh solution. The move guards below also run it on the SLID clone:
+    // a slide can bend a clean chain into a self-cross (NYC mn216 — seat
+    // clean, folded by a later pass), which capsHullClash cannot see because
+    // it only measures against OTHER capsules.
+    const capsHullSelfCrosses = (hull: Hull): boolean => {
+      const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
+      for (let i = 0; i < hull.length; i++)
+        for (let j = i + 2; j < hull.length; j++) {
+          // non-adjacent legs only; skip pairs meeting at a shared vertex
+          // (zero-length corner stubs make i+2 segments touch legitimately)
+          if (near(hull[i].b, hull[j].a) || near(hull[i].a, hull[j].b) || near(hull[i].a, hull[j].a) || near(hull[i].b, hull[j].b)) continue;
+          if (segSegDist(hull[i].a, hull[i].b, hull[j].a, hull[j].b) < 0.5) return true;
+        }
+      return false;
+    };
     // Diagnostic audit (OCTI_PLACE_DEBUG=1): hull cross/self counts over the
     // CURRENT mark positions of drawn (non-boxed) capsules, called after each
     // post-placement pass — so overlap BORN by a pass (not just at seat time)
     // is attributable. Pure diagnostics; the enforcement no longer needs it.
     const capsAudit = (label: string): void => {
       if (!capPlaceDebug) return;
-      const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
       const items: Array<{ nodeId: string; hull: Hull }> = [];
       for (const s of gathered) {
         if (s.marks.length < 2 || boxOf(s).mega || s.marks.some((m) => m.mega)) continue;
@@ -1612,15 +1628,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         for (let j = i + 1; j < items.length; j++)
           if (penBetween(items[i].hull, items[j].hull) > 0.5) crossPairs.push(items[i].nodeId + '×' + items[j].nodeId);
       const selfs: string[] = [];
-      for (const it of items) {
-        let hit = false;
-        for (let i = 0; i < it.hull.length && !hit; i++)
-          for (let j = i + 2; j < it.hull.length; j++) {
-            if (near(it.hull[i].b, it.hull[j].a) || near(it.hull[i].a, it.hull[j].b) || near(it.hull[i].a, it.hull[j].a) || near(it.hull[i].b, it.hull[j].b)) continue;
-            if (segSegDist(it.hull[i].a, it.hull[i].b, it.hull[j].a, it.hull[j].b) < 0.5) { hit = true; break; }
-          }
-        if (hit) selfs.push(it.nodeId);
-      }
+      for (const it of items) if (capsHullSelfCrosses(it.hull)) selfs.push(it.nodeId);
       console.error(
         `[capsaudit:${label}] cross=${crossPairs.length}${crossPairs.length ? ' [' + crossPairs.join(',') + ']' : ''} self=${selfs.length}${selfs.length ? ' [' + selfs.join(',') + ']' : ''}`,
       );
@@ -1961,10 +1969,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
         }
         // Hull guard (OCTI_CAPSULE_GUARD=0 disables): decline a slide whose
-        // resulting hull would cross another drawn capsule (the clone already
-        // carries the slid corners).
+        // resulting hull would cross another drawn capsule OR ITSELF (the
+        // clone already carries the slid corners).
         if (capGuardOn && st.marks.length >= 2) {
-          const clash = capsHullClash(st, capsHullOf(clone));
+          const slidHull = capsHullOf(clone);
+          if (capsHullSelfCrosses(slidHull)) {
+            if (capPlaceDebug) console.error(`[capsovl] slide declined (would self-cross) ${st.nodeId}`);
+            return false;
+          }
+          const clash = capsHullClash(st, slidHull);
           if (clash) {
             if (capPlaceDebug) console.error(`[capsovl] slide declined (would cross ${clash}) ${st.nodeId}`);
             return false;
@@ -2271,9 +2284,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }));
           if (!spineOctilinear(clone)) return false;
           // Hull guard (OCTI_CAPSULE_GUARD=0 disables): a corridor-spread shift
-          // must not drag this capsule across another drawn capsule's hull
-          // (same veto as applySlide's).
-          if (capGuardOn && st.marks.length >= 2 && capsHullClash(st, capsHullOf(clone))) return false;
+          // must not drag this capsule across another drawn capsule's hull —
+          // or fold it across itself (same vetoes as applySlide's).
+          if (capGuardOn && st.marks.length >= 2) {
+            const shiftedHull = capsHullOf(clone);
+            if (capsHullSelfCrosses(shiftedHull) || capsHullClash(st, shiftedHull)) return false;
+          }
           for (const mk of st.marks) {
             mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
             if (mk.cornerAfter) mk.cornerAfter = [mk.cornerAfter[0] + dx, mk.cornerAfter[1] + dy];
