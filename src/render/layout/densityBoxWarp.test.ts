@@ -1,8 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
 import type { BoxGraph, DenseBox } from './densityBoxWarp';
-import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
 
@@ -11,6 +10,11 @@ const BOX = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
 // which do not fit inside BOX (100×100). The warp box is arbitrary, so use a
 // dedicated 600×600 canvas for those tests.
 const DBOX = { minX: 0, minY: 0, maxX: 600, maxY: 600 };
+const DOPTS = {
+  bins: 48, frac: 0.4, marginFrac: 1,
+  cellFromMedLen: (m: number) => Math.max(12, m / 1.6),
+  safety: 1.3, slack: 1.3, userMult: 1, expandMax: 10, maxGrowth: 8,
+};
 
 // numeric area magnification J = det(Jacobian) at p, via finite differences
 function jacDet(W: (p: Pixel) => Pixel, p: Pixel, h = 0.5): number {
@@ -49,86 +53,40 @@ test('findDenseBoxes: higher cutoff selects a smaller (or equal) dense area', ()
   assert.ok(area(hi) <= area(lo) + 1e-6, `stricter cutoff ≤ area: ${area(hi)} vs ${area(lo)}`);
 });
 
-test('buildBoxExpandWarp: magnifies the core relative to its surround, with no localized thinning', () => {
-  const W = buildBoxExpandWarp(clusterAt(50, 50, 160), BOX, { bins: 48, frac: 0.4, expand: 1.4, marginFrac: 1 });
-  const jCore = jacDet(W, [50, 50]); // inside the dense box → magnified
-  const jFar = jacDet(W, [96, 4]); // far corner → the uniform global shrink factor
+// Empty graph → findContractionBoxes contributes nothing, so these tests
+// exercise the density oracle + per-box demand in isolation (userMult acts as
+// pure aesthetic magnification, same role `expand` played in the old builder).
+const EMPTY_GRAPH: BoxGraph = { nodes: [], edges: [] };
+
+test('buildDemandBoxWarp: magnifies the core relative to its surround, with no localized thinning', () => {
+  const opts = { bins: 48, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 4 };
+  const r = buildDemandBoxWarp(clusterAt(50, 50, 160), EMPTY_GRAPH, BOX, opts);
+  const jCore = jacDet(r.warp, [50, 50]); // inside the dense box → magnified
+  const jFar = jacDet(r.warp, [96, 4]); // far corner → the global scale (1 when growth fits)
   assert.ok(jCore > jFar * 1.05, `core magnified vs surround, core=${jCore.toFixed(3)} far=${jFar.toFixed(3)}`);
-  // No LOCALIZED thinning: after normalization the ONLY compression anywhere is
-  // the gentle uniform global rescale (jFar). Nothing is thinner than that — the
-  // old taper's compression ring is gone, not replaced by a localized dip.
+  // No LOCALIZED thinning: the only compression anywhere is the global scale
+  // sx/sy (1 here — maxGrowth defaults to 2, well above what this demand needs).
+  // Nothing is thinner than that — no compression ring, no localized dip.
   for (let y = 2; y < 100; y += 4) for (let x = 2; x < 100; x += 4) {
-    assert.ok(jacDet(W, [x, y]) > jFar - 0.03, `no point thinner than the global shrink at (${x},${y}), J=${jacDet(W, [x, y]).toFixed(3)} vs ${jFar.toFixed(3)}`);
+    assert.ok(jacDet(r.warp, [x, y]) > jFar - 0.03, `no point thinner than the global scale at (${x},${y}), J=${jacDet(r.warp, [x, y]).toFixed(3)} vs ${jFar.toFixed(3)}`);
   }
 });
 
-test('buildBoxExpandWarp: bounded — the warped canvas fits growthCap, no blowup', () => {
-  const opts = { bins: 48, frac: 0.4, expand: 4, marginFrac: 3 } as const;
-  const bbox = (W: (p: Pixel) => Pixel) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let y = 0; y <= 100; y += 2) for (let x = 0; x <= 100; x += 2) {
-      const [wx, wy] = W([x, y]);
-      if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
-      if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
-    }
-    return { w: maxX - minX, h: maxY - minY };
-  };
-  // growthCap 1 = canvas-preserving (like the separable warp): even at expand 4
-  // the warped canvas does not exceed the 100×100 box.
-  const b1 = bbox(buildBoxExpandWarp(clusterAt(50, 50, 300), BOX, { ...opts, growthCap: 1 }));
-  assert.ok(b1.w <= 100.1 && b1.h <= 100.1, `growthCap 1 stays bounded, got ${b1.w.toFixed(1)}×${b1.h.toFixed(1)}`);
-  // a larger growthCap deliberately allows the map to grow a little more
-  const b2 = bbox(buildBoxExpandWarp(clusterAt(50, 50, 300), BOX, { ...opts, growthCap: 1.5 }));
-  assert.ok(b2.w > b1.w + 1, `growthCap 1.5 grows more than 1.0, ${b2.w.toFixed(1)} vs ${b1.w.toFixed(1)}`);
+test('buildDemandBoxWarp: deterministic; empty samples+graph → identity; userMult=1 with clear gaps → identity', () => {
+  assert.deepEqual(buildDemandBoxWarp([], EMPTY_GRAPH, BOX, DOPTS).warp([3, 4]), [3, 4]);
+  // A graph whose edges already clear the contraction threshold and no density
+  // samples: no demand (userMult 1) and no aesthetic boost → identity.
+  const clearGraph: BoxGraph = { nodes: [[10, 10], [90, 90]], edges: [[0, 1]] };
+  assert.deepEqual(buildDemandBoxWarp([], clearGraph, BOX, { ...DOPTS, userMult: 1 }).warp([3, 4]), [3, 4]);
+  const a = buildDemandBoxWarp(clusterAt(40, 60, 120), EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 1.4 });
+  const b = buildDemandBoxWarp(clusterAt(40, 60, 120), EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 1.4 });
+  for (const p of [[10, 10], [40, 60], [90, 90]] as Pixel[]) assert.deepEqual(a.warp(p), b.warp(p));
 });
 
-test('buildBoxExpandWarp: deterministic; expand=1 or no samples → identity', () => {
-  assert.deepEqual(buildBoxExpandWarp([], BOX, {})([3, 4]), [3, 4]);
-  assert.deepEqual(buildBoxExpandWarp(clusterAt(50, 50), BOX, { expand: 1 })([3, 4]), [3, 4]);
-  const a = buildBoxExpandWarp(clusterAt(40, 60, 120), BOX, { bins: 32, frac: 0.4, expand: 1.4 });
-  const b = buildBoxExpandWarp(clusterAt(40, 60, 120), BOX, { bins: 32, frac: 0.4, expand: 1.4 });
-  for (const p of [[10, 10], [40, 60], [90, 90]] as Pixel[]) assert.deepEqual(a(p), b(p));
-});
-
-test('buildSepBoxWarp: composes separable + box, fold-free, expands core more than separable alone', () => {
-  const s = clusterAt(50, 50, 200);
-  const sep = buildDensityWarp(s, BOX, { alpha: 0.8 });
-  const both = buildSepBoxWarp(s, BOX, { alpha: 0.8 }, { bins: 48, frac: 0.4, expand: 3, marginFrac: 2 });
-  for (let y = 2; y < 100; y += 5) for (let x = 2; x < 100; x += 5) {
-    assert.ok(jacDet(both, [x, y]) > 0, `det>0 at (${x},${y})`);
-  }
-  // the box adds expansion on top of separable: J at the core is strictly larger
-  const jSep = jacDet(sep, [50, 50]);
-  const jBoth = jacDet(both, [50, 50]);
-  assert.ok(jBoth > jSep, `combined expands core more than separable: ${jBoth.toFixed(2)} > ${jSep.toFixed(2)}`);
-});
-
-test('buildBoxExpandWarp: out.boxes are the dense boxes mapped into warp-OUTPUT space', () => {
-  const s = clusterAt(50, 50, 200);
-  const opts = { bins: 48, frac: 0.4, expand: 1.4, marginFrac: 1 };
-  const inBoxes = findDenseBoxes(s, BOX, opts); // deterministic → same boxes the warp uses
-  assert.ok(inBoxes.length >= 1, 'a dense box exists');
-  const out: { boxes?: typeof inBoxes } = {};
-  const W = buildBoxExpandWarp(s, BOX, opts, out);
-  assert.ok(out.boxes && out.boxes.length === inBoxes.length, 'one out box per dense box');
-  for (let i = 0; i < inBoxes.length; i++) {
-    const a = W([inBoxes[i].x0, inBoxes[i].y0]); // top-left through the warp
-    const c = W([inBoxes[i].x1, inBoxes[i].y1]); // bottom-right through the warp
-    const ob = out.boxes![i];
-    assert.ok(Math.abs(ob.x0 - a[0]) < 1e-9 && Math.abs(ob.y0 - a[1]) < 1e-9, 'top-left mapped through warp');
-    assert.ok(Math.abs(ob.x1 - c[0]) < 1e-9 && Math.abs(ob.y1 - c[1]) < 1e-9, 'bottom-right mapped through warp');
-    assert.ok(ob.x1 > ob.x0 && ob.y1 > ob.y0, 'stays axis-aligned + corner order preserved');
-  }
-});
-
-test('out.boxes: empty with no cluster; populated (and ordered) for sep+box', () => {
-  const none: { boxes?: { x0: number; y0: number; x1: number; y1: number }[] } = {};
-  buildBoxExpandWarp([], BOX, {}, none);
-  assert.deepEqual(none.boxes, [], 'no samples → no boxes');
-  const sepOut: { boxes?: { x0: number; y0: number; x1: number; y1: number }[] } = {};
-  buildSepBoxWarp(clusterAt(50, 50, 200), BOX, { alpha: 0.8 }, { bins: 48, frac: 0.4, expand: 3, marginFrac: 2 }, sepOut);
-  assert.ok(sepOut.boxes && sepOut.boxes.length >= 1, 'sep+box surfaces the dense box');
-  for (const b of sepOut.boxes!) assert.ok(b.x1 > b.x0 && b.y1 > b.y0, 'axis-aligned + ordered');
+test('buildDemandBoxWarp: out.boxes empty with no cluster and no contraction demand', () => {
+  const none: { boxes?: DenseBox[] } = {};
+  buildDemandBoxWarp([], EMPTY_GRAPH, BOX, DOPTS, none);
+  assert.deepEqual(none.boxes, [], 'no samples, no graph demand → no boxes');
 });
 
 test('findContractionBoxes: pinned sub-threshold cluster gets a box, spread nodes do not', () => {
@@ -183,11 +141,6 @@ function pinnedGraph(): BoxGraph {
   ];
   return { nodes, edges };
 }
-const DOPTS = {
-  bins: 48, frac: 0.4, marginFrac: 1,
-  cellFromMedLen: (m: number) => Math.max(12, m / 1.6),
-  safety: 1.3, slack: 1.3, userMult: 1, expandMax: 10, maxGrowth: 8,
-};
 
 test('buildDemandBoxWarp: demanded expansion lifts a pinned cluster past the contraction need', () => {
   const g = pinnedGraph();
