@@ -9,10 +9,14 @@
 // predicted octi contraction (findContractionBoxes, a union-find over edges
 // shorter than the predicted contraction threshold — this is what catches
 // small pinned clusters, like JFK's 8px-apart terminals, that are invisible
-// to fraction-of-peak density). Overlapping boxes are merged to a fixpoint
-// (mergeIntersectingBoxes) so pushes never double-stack. Each box is then
-// expanded by exactly what its OWN edges need to survive octi contraction
-// (a per-box demand, not one global `expand` strength) via a smooth
+// to fraction-of-peak density) UNION predicted capsule collisions
+// (findCapsuleBoxes, a spatial pair scan over marker-row needs — interchanges
+// closer than their combined capsule half-lengths, which need FAR more room
+// than the contraction threshold grants). Overlapping boxes are merged to a
+// nesting-aware fixpoint (mergeDemandBoxes: same-kind unions, cross-kind
+// containment nests and compounds) so pushes never double-stack. Each box is
+// then expanded by exactly what its OWN targets need — contraction survival
+// plus any capsule pair separations — via a smooth
 // saturating per-axis push: inside the box half-extent the map ramps at unit
 // slope, eases the slope to 0 across the margin, then HOLDS constant — so the
 // surround is carried outward rather than crammed back to identity. Tapering
@@ -495,8 +499,10 @@ function buildWarpFromBoxes(
 }
 
 /** Demand-driven dense-box warp: boxes from density peaks ∪ predicted octi
- *  contraction, each expanded by exactly what its edges need to survive
- *  contraction (× userMult), growth absorbed by the canvas up to maxGrowth. */
+ *  contraction ∪ predicted capsule collisions (when opts.capsule is supplied),
+ *  each expanded by exactly what its own targets need — contraction survival
+ *  plus capsule pair separations (× userMult) — growth absorbed by the canvas
+ *  up to maxGrowth. */
 export function buildDemandBoxWarp(
   samples: readonly Pixel[],
   g: BoxGraph,

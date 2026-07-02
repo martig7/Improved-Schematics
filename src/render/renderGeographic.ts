@@ -552,10 +552,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // size, then the demand-driven box warp (densityBoxWarp.ts) adds LOCAL
   // rectilinear room on the magnified core to declutter it — geography stays
   // faithful elsewhere. The box warp discovers boxes from density peaks ∪
-  // predicted octi contraction, sizes each box's expansion to exactly what its
-  // own edges need to clear the contraction threshold (ĉ/2), and GROWS the output
-  // canvas (up to OCTI_BOX_GROWTH) to absorb the demand instead of clawing it
-  // back. OCTI_WARP_MODE=separable = separable only (the proven baseline); =box =
+  // predicted octi contraction ∪ predicted capsule collisions (interchange
+  // pairs closer than their combined marker-row needs), sizes each box's
+  // expansion to exactly what its own targets need (contraction threshold ĉ/2;
+  // capsule pair separations), and GROWS the output canvas (up to
+  // OCTI_BOX_GROWTH) to absorb the demand instead of clawing it back. OCTI_WARP_MODE=separable = separable only (the proven baseline); =box =
   // box demand only (no global magnification); =2d = the (rejected) density-
   // equalizing 2D warp.
   // Box knobs (tune by eye): OCTI_BOX_FRAC (density cutoff as fraction of peak,
