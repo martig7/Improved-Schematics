@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 6; // bump to invalidate every cached entry on a format change
+const VERSION = 7; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // the 80-90% draw cost — bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it —
@@ -27,6 +27,10 @@ const VERSION = 6; // bump to invalidate every cached entry on a format change
 // v6: detail-area sub-renders changed shape (box-aspect canvas + the clip rect
 // pinned on-canvas via options.detailCrop) — purge cached subPres computed under
 // the old square/truncated framing.
+// v7: pres carry projected geography rings (geoRingsPx) and gridOverlay no longer
+// bakes the water in — the backdrop is built at draw time so the landmass style
+// (simplified/rounded blobs) re-renders as a repaint. Old pres would draw
+// faithfully but couldn't restyle; purge so every pre gains its rings.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

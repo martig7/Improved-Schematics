@@ -210,6 +210,8 @@ type RestoredSettings = {
   showStations?: boolean;
   showLabels?: boolean;
   megaFallback?: 'box' | 'curve';
+  landmass?: 'faithful' | 'rounded' | 'diagram';
+  landmassDetail?: number;
   applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number };
   rasterScale?: number;
   jpegQuality?: number;
@@ -247,6 +249,12 @@ export function SchematicPanel() {
   // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
   // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
   const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? 'box');
+  // Landmass style: geography backdrop as-is ('faithful'), simplified rounded
+  // blobs ('rounded'), or octilinear-snapped diagram blobs ('diagram'), with a
+  // 0..1 strength. Draw-time only (not in the layout fingerprint); persisted
+  // per mode like the toggles.
+  const [landmass, setLandmass] = useState<'faithful' | 'rounded' | 'diagram'>(rvis.landmass ?? 'faithful');
+  const [landmassDetail, setLandmassDetail] = useState(rvis.landmassDetail ?? 0.5);
   // Debug overlay: outline the dense-core regions the box-warp magnified (pre.denseBoxesPx).
   // Display-only + in-session (defaults off, not persisted, not in the layout fingerprint);
   // mirrored to a ref so the dep-[] drawCanvas can read it.
@@ -427,6 +435,8 @@ export function SchematicPanel() {
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setMegaFallback(v.megaFallback ?? 'box');
+    setLandmass(v.landmass ?? 'faithful');
+    setLandmassDetail(v.landmassDetail ?? 0.5);
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
     setApplied(ap);
     setLineWidth(ap.lineWidth);
@@ -699,7 +709,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, megaFallback }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, megaFallback, landmass, landmassDetail }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -712,7 +722,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, megaFallback, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, megaFallback, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -773,10 +783,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, megaFallback, applied, labelScale });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, megaFallback, landmass, landmassDetail, applied, labelScale });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
+  }, [showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -941,7 +951,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale };
+    const settings = { mode, showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
     // the displayed pre across load/generate sequences (the zombie-pre bug:
@@ -966,7 +976,7 @@ export function SchematicPanel() {
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
+  }, [mode, showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
@@ -983,6 +993,8 @@ export function SchematicPanel() {
       showStations?: boolean;
       showLabels?: boolean;
       megaFallback?: 'box' | 'curve';
+      landmass?: 'faithful' | 'rounded' | 'diagram';
+      landmassDetail?: number;
       applied?: typeof applied;
       rasterScale?: number;
       jpegQuality?: number;
@@ -1009,6 +1021,8 @@ export function SchematicPanel() {
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
     if (s.megaFallback === 'box' || s.megaFallback === 'curve') setMegaFallback(s.megaFallback);
+    if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
+    if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
     if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
     if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
@@ -1553,7 +1567,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, megaFallback]);
+  }, [showLabels, showStations, megaFallback, landmass, landmassDetail]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -1648,6 +1662,34 @@ export function SchematicPanel() {
           >
             {megaFallback === 'curve' ? 'Hubs: Curve' : 'Hubs: Box'}
           </button>
+        )}
+        {mode === 'smoothed' && smoothedReady && (
+          <button
+            onClick={() =>
+              requestToggle(() =>
+                setLandmass((v) => (v === 'faithful' ? 'rounded' : v === 'rounded' ? 'diagram' : 'faithful')),
+              )
+            }
+            style={toggleStyle(landmass !== 'faithful')}
+            title="Landmass style: Faithful (real coastlines) → Rounded (simplified soft blobs, MTA-style) → Diagram (octilinear blobs, TfL-style). Tune the strength with the slider that appears."
+          >
+            {landmass === 'faithful' ? 'Land: Faithful' : landmass === 'rounded' ? 'Land: Rounded' : 'Land: Diagram'}
+          </button>
+        )}
+        {mode === 'smoothed' && smoothedReady && landmass !== 'faithful' && (
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={landmassDetail}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              requestToggle(() => setLandmassDetail(v));
+            }}
+            style={{ width: 70 }}
+            title={`Landmass simplification strength: ${landmassDetail.toFixed(2)} (left = subtle, right = full diagram blobs)`}
+          />
         )}
         {mode === 'smoothed' && smoothedReady && (
           <button
@@ -2206,6 +2248,8 @@ export function SchematicPanel() {
             showStations={showStations}
             showLabels={showLabels}
             megaFallback={megaFallback}
+            landmass={landmass}
+            landmassDetail={landmassDetail}
             labelScale={labelScale}
             editing={editingId === s.id}
             onBoundsChange={onBoundsChange}

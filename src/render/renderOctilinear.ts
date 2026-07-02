@@ -132,9 +132,15 @@ export interface RenderRibbonsArgs {
    *  labels for these — the ghost is invisible by design (lines pass through
    *  it but no circle is drawn). */
   ghostNodeIds?: Set<string>;
+  /** Geography backdrop (water/green groups), built at DRAW time by
+   *  drawSmoothed from the pre's projected rings — faithful polygons or the
+   *  simplified landmass blobs, per the landmass style. Drawn under
+   *  gridOverlay. */
+  backdrop?: string;
   /** Optional pre-rendered SVG snippet (a single `<g>...</g>`) drawn between
    *  the water layer and the route ribbons. Used to overlay the Hanan grid
-   *  for diagnostic purposes (showGrid option). */
+   *  for diagnostic purposes (showGrid option). On legacy pres this also
+   *  carries the baked water polygons. */
   gridOverlay?: string;
   /** Station-group marker data (smoothed mode): ONE marker per group at its
    *  node — capsule iff the group has multiple member stations — gathering
@@ -3156,7 +3162,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // land background
     prims.push({ kind: 'rect', x: 0, y: 0, w: width, h: height, rx: 0, fill: bg, stroke: 'none', strokeWidth: 0, layer: 'background', worldScale: false });
     // static water/green backdrop + optional grid overlay (small + static)
-    const staticFrag = (waterPart || '') + (args.gridOverlay || '');
+    const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
     // edges: the markup emits ALL casings first, THEN all strokes
     // (edgeParts = [...casingParts, ...strokeParts]) — match that order exactly.
@@ -3189,6 +3195,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
     '" height="' + height + '"' + frameAttr + '>\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
     (waterPart ? waterPart + '\n' : '') +
+    (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     (transferPart ? transferPart + '\n' : '') +

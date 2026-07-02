@@ -31,7 +31,8 @@ import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
 import { untangleLineOrder } from './layout/untangle';
-import { geographyBackdrop } from './geographyBackdrop';
+import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
+import type { LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
 // Diagnostic stash (set only when OCTI_WARP_DEBUG is in the env, so the game
@@ -418,9 +419,15 @@ export interface SmoothedPrecomputed {
   stationPx: Map<string, Pixel>;
   transfers: TransferPair[];
   stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
-  /** Static overlay drawn between water and routes (water polygons + optional
-   *  Γ' grid); independent of the label/station toggles. */
+  /** Static overlay drawn between water and routes (the optional Γ' grid; on
+   *  legacy pres this also carried the baked water polygons — new pres carry
+   *  the backdrop as geoRingsPx and build it at draw time). */
   gridOverlay: string;
+  /** Projected water/green rings + fills, for the draw-time backdrop build —
+   *  faithful polygons by default, simplified landmass blobs when the landmass
+   *  style is on. Absent on legacy pres (their gridOverlay bakes the water in)
+   *  and when there's no geography. */
+  geoRingsPx?: GeoRingsPx;
   width: number;
   height: number;
   dark: boolean;
@@ -1123,10 +1130,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
 
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
-  // The support graph carries no lngLat for renderRibbons' affine map, so draw
-  // geography through the real (warped) projection — so water + parks deform with
-  // the network — and inject it (plus the optional Γ' overlay) via gridOverlay.
-  const waterOverlay = geographyBackdrop(input.geography, proj, theme, dark);
+  // The support graph carries no lngLat for renderRibbons' affine map, so
+  // project the geography rings here through the real (warped) projection — so
+  // water + parks deform with the network — and store them on the pre: the
+  // BACKDROP is built from them at draw time (drawSmoothed), which is what lets
+  // the landmass style re-render as a cheap repaint instead of a re-sim.
+  const geoRingsPx = projectGeoRings(input.geography, proj, theme, dark);
   const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
   const stations = [...supportM.stations.values()].map((st) => ({
     nodeId: st.nodeId,
@@ -1139,16 +1148,40 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
+
+/** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
+ *  toggling labels/stations doesn't re-run the union+trace pass. WeakMap: never
+ *  serialized, dies with the pre. */
+const lmBackdropCache = new WeakMap<SmoothedPrecomputed, { key: string; svg: string }>();
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
  *  precomputeSmoothed — this is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve' },
+  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams },
   sceneOut?: SceneOut,
 ): string {
+  // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
+  // when the style is on. Params come in base-2700 px — rescale to this canvas
+  // so a grown map keeps the same visual character. Legacy pres (no geoRingsPx)
+  // still carry the water baked inside gridOverlay and just skip the style.
+  const lm = opts.landmass;
+  const scale = Math.min(pre.width, pre.height) / 2700;
+  const style = lm
+    ? { simplifyPx: lm.simplify * scale, roundPx: lm.round * scale, minAreaPx2: lm.minArea * scale * scale, octi: lm.octi }
+    : undefined;
+  // The styled build unions + retraces the whole geography (~100ms on a big
+  // city) — memoize per (pre, style) so label/station toggles just repaint.
+  const lmKey = style ? JSON.stringify(style) : '';
+  const cached = lmBackdropCache.get(pre);
+  let backdrop: string;
+  if (cached && cached.key === lmKey) backdrop = cached.svg;
+  else {
+    backdrop = pre.geoRingsPx ? backdropFromRings(pre.geoRingsPx, { w: pre.width, h: pre.height }, style) : '';
+    lmBackdropCache.set(pre, { key: lmKey, svg: backdrop });
+  }
   const args = {
     layout: pre.layout,
     nodePx: pre.nodePx,
@@ -1160,6 +1193,7 @@ export function drawSmoothed(
     showStations: opts.showStations,
     megaFallback: opts.megaFallback ?? 'box',
     transfers: pre.transfers,
+    backdrop,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,

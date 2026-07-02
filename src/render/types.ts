@@ -108,6 +108,18 @@ export interface SchematicOptions {
    *  (broader warping); higher = only the densest cores → fewer/smaller boxes.
    *  Default 0.4. */
   boxFrac?: number;
+  /** Landmass style for the geography backdrop (smoothed mode). DRAW-TIME only —
+   *  like megaFallback it never changes the layout, is excluded from the cache
+   *  fingerprint, and toggling it just repaints. 'faithful' (default) draws the
+   *  raw projected polygons; 'rounded' culls small features, simplifies each
+   *  coastline to few segments and rounds every corner (MTA-style blobs);
+   *  'diagram' additionally snaps edges to the octilinear grid (TfL/Sound
+   *  Transit look). */
+  landmass?: 'faithful' | 'rounded' | 'diagram';
+  /** Landmass simplification strength, 0..1 (0 = subtle, 1 = full diagram
+   *  blobs). Scales the wiggle-erase tolerance, corner radius and the
+   *  small-feature cull floor together. Default 0.5. */
+  landmassDetail?: number;
   /** Detail-area sub-render (set by cropSubgraph, never on a main render): the
    *  cropped geography's bbox is the drawn box's geographic preimage — the
    *  region the popout must show. Treat its four corners as CONTENT in the

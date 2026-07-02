@@ -2,8 +2,73 @@ import type { Projection } from './projection';
 import type { SchematicTheme } from './types';
 import { DARK_THEME } from './types';
 import type { GeographyData, GeoPolyFeature } from '../geography/types';
+import { stylizeRingsPathD, type LandmassStyle, type Pt } from './geoSimplify';
 
 const r = (n: number): number => Math.round(n * 10) / 10;
+
+/** The smoothed pre's draw-time backdrop source: every water/green ring already
+ *  projected to render px (rounded 0.1, same as the emitted path data), plus the
+ *  resolved fills. Lets the landmass style re-render the backdrop on toggle
+ *  without re-running the projection (which lives in the heavy precompute). */
+export interface GeoRingsPx {
+  green: Pt[][];
+  water: Pt[][];
+  greenFill: string;
+  waterFill: string;
+}
+
+/** Project every polygon ring of both categories through `proj` into px space. */
+export function projectGeoRings(
+  geo: GeographyData | undefined,
+  proj: Projection,
+  theme: SchematicTheme,
+  dark: boolean,
+): GeoRingsPx | undefined {
+  if (!geo) return undefined;
+  const project = (feats: GeoPolyFeature[]): Pt[][] => {
+    const rings: Pt[][] = [];
+    for (const f of feats) {
+      if (f.geometry.type !== 'Polygon') continue;
+      for (const ring of f.geometry.coordinates) {
+        const out: Pt[] = [];
+        for (const c of ring) {
+          const [x, y] = proj.toSVG(c);
+          out.push([r(x), r(y)]);
+        }
+        rings.push(out);
+      }
+    }
+    return rings;
+  };
+  return {
+    green: project(geo.green),
+    water: project(geo.water),
+    greenFill: dark ? DARK_THEME.green : theme.green,
+    waterFill: dark ? DARK_THEME.water : theme.water,
+  };
+}
+
+/** Build the backdrop groups from pre-projected rings — the faithful polygons
+ *  when `style` is absent, the simplified/rounded landmass blobs when set.
+ *  Mirrors geographyBackdrop's structure (green under water, one path per
+ *  category, nonzero fill). */
+export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: number }, style?: LandmassStyle): string {
+  const group = (rs: Pt[][], fill: string, cls: string): string => {
+    let d = '';
+    if (style) {
+      d = stylizeRingsPathD(rs, style, extent);
+    } else {
+      for (const ring of rs) {
+        ring.forEach((p, i) => { d += (i === 0 ? 'M' : 'L') + p[0] + ' ' + p[1] + ' '; });
+        d += 'Z ';
+      }
+      d = d.trim();
+    }
+    if (!d) return '';
+    return `<g class="${cls}" fill="${fill}" fill-rule="nonzero" stroke="none"><path d="${d}"/></g>`;
+  };
+  return group(rings.green, rings.greenFill, 'green') + group(rings.water, rings.waterFill, 'water');
+}
 
 /** Render a set of polygon features as one filled SVG group through `proj`.
  *  `fillRule` is 'evenodd' for water (so island holes read as land) and
