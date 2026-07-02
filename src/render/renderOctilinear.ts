@@ -4,6 +4,7 @@
 // mode uses (ported from dev/reference/renderSvg.js + gridToPx.js).
 
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
+import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
 import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
@@ -2929,8 +2930,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // junction reads as the line passing straight through
         d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
       } else {
-        const c1: Pixel = [pa[0] + dirA[0] * k, pa[1] + dirA[1] * k];
-        const c2: Pixel = [pb[0] - dirB[0] * k, pb[1] - dirB[1] * k];
+        const { c1, c2 } = connectorControls(pa, pb, dirA, dirB, k);
         d.push(
           'C' + c1[0].toFixed(1) + ',' + c1[1].toFixed(1) + ' ' +
           c2[0].toFixed(1) + ',' + c2[1].toFixed(1) + ' ' +

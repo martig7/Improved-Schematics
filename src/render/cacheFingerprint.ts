@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 8; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 9; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -44,6 +44,10 @@ const SCHEMA = 8; // bump to bust all fingerprints when the renderer's inputs ch
 // secant targets) + capsule overlap enforcement on by default (seat-time
 // hull check with hull-masked retry, move-commit hull guard). Layout AND
 // placement change, unchanged raw inputs; bust main + detail-inset caches.
+// v9: node-connector tangents clamped to the lane band (bundle-join spike)
+// and zero-progress synthetic hooks spliced to octilinear shortcuts after
+// supportToLayout (LON pink-triangle). Both change drawn geometry/layouts,
+// unchanged raw inputs; bust main + detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
