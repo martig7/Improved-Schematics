@@ -167,6 +167,10 @@ function resolveSteps(trav: TraversalStep[], edgeById: Map<string, LayoutEdge>):
   for (let k = 0; k < trav.length; k++) {
     const s = trav[k];
     const e = edgeById.get(s.edgeId);
+    // Defensive only: a traversal step referencing a nonexistent edge would be
+    // an upstream invariant violation (doesn't occur). If it DID drop a step,
+    // the surviving steps' travIndex span would be non-contiguous and a splice
+    // over it would eat the skipped step — so this continue must stay dead.
     if (!e) continue;
     const from = s.reversed ? e.to : e.from;
     const to = s.reversed ? e.from : e.to;
@@ -285,7 +289,7 @@ function tryRun(
   // (contiguous in trav) with one step over the shortcut edge.
   const startIdx = run[0].travIndex;
   const endIdx = run[run.length - 1].travIndex;
-  const reversed = shortcut.from === A ? false : true; // shortcut.from is A here
+  const reversed = false; // shortcut is always built from A, so the spliced step runs forward
   trav.splice(startIdx, endIdx - startIdx + 1, { edgeId: shortcutId, reversed });
 
   // Purge emptied edges from the layout + index.

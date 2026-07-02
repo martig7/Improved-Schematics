@@ -161,6 +161,62 @@ test('suppressHooks: A==E closed loop is untouched', () => {
   assert.ok(layout.edges.find((e) => e.id === 'e1'));
 });
 
+// Reversed-step fixture: same LON triangle geometry, but every edge is
+// oriented BACKWARDS relative to travel — e0: s1->A, e1: s2->s1 — and the
+// traversal reaches the hook via {reversed: true} steps, so the node sequence
+// [to, from] must be used and stop flags must be read through the reversed
+// orientation (stopAtTo = reversed ? atFrom : atTo).
+function reversedTriangleLayout(opts?: { stopAtS1?: boolean }): {
+  layout: Layout;
+  stations: Set<string>;
+} {
+  const A = node('A', 2244, 1980);
+  const s1 = node('s1', 2244, 2112);
+  const s2 = node('s2', 2288, 2068);
+  const e0Stops: Record<string, EdgeStop> = opts?.stopAtS1
+    ? // interior stop at s1 = e0.from: only the REVERSED reading (atFrom) sees it
+      { mag: { atFrom: true, atTo: false } }
+    : // boundary stop at A = e0.to: reversed boundary reading is stop.atTo
+      { mag: { atFrom: false, atTo: true } };
+  const e0 = edge({ id: 'e0', from: 's1', to: 'A', lineIds: ['mag'], stops: e0Stops });
+  const e1 = edge({ id: 'e1', from: 's2', to: 's1', lineIds: ['mag'] });
+  const layout = makeLayout(
+    [A, s1, s2],
+    [e0, e1],
+    { mag: [{ edgeId: 'e0', reversed: true }, { edgeId: 'e1', reversed: true }] },
+  );
+  return { layout, stations: new Set(['A', 's2']) };
+}
+
+test('suppressHooks: reversed-step hook splices — node sequence from [to,from], boundary stop carried', () => {
+  const { layout, stations } = reversedTriangleLayout();
+  const res = suppressHooks(layout, isStationFrom(stations));
+  assert.equal(res.spliced, 1, 'reversed-step hook spliced');
+
+  const shortcut = layout.edges.find((e) => e.id === 'hook:A:s2');
+  assert.ok(shortcut, 'shortcut built A->s2 (travel order, not edge orientation)');
+  assert.equal(shortcut!.from, 'A');
+  assert.equal(shortcut!.to, 's2');
+
+  const trav = layout.lineTraversals.get('mag')!;
+  assert.equal(trav.length, 1, 'traversal collapsed to one step');
+  assert.deepEqual(trav[0], { edgeId: 'hook:A:s2', reversed: false });
+
+  // the boundary stop at A (read via the reversed orientation) rides along
+  assert.deepEqual(shortcut!.stops.get('mag'), { atFrom: true, atTo: false });
+
+  assert.ok(!layout.edges.find((e) => e.id === 'e0'), 'e0 deleted (emptied)');
+  assert.ok(!layout.edges.find((e) => e.id === 'e1'), 'e1 deleted (emptied)');
+});
+
+test('suppressHooks: reversed-step run with an interior stop (reversed flag reading) is untouched', () => {
+  const { layout, stations } = reversedTriangleLayout({ stopAtS1: true });
+  const res = suppressHooks(layout, isStationFrom(stations));
+  assert.equal(res.spliced, 0, 'interior stop seen through reversed reading blocks the splice');
+  assert.ok(layout.edges.find((e) => e.id === 'e0'), 'e0 kept');
+  assert.ok(layout.edges.find((e) => e.id === 'e1'), 'e1 kept');
+});
+
 test('suppressHooks: deterministic — two structurally-equal inputs give deep-equal outputs', () => {
   const a = triangleLayout({ extraLine: true });
   const b = triangleLayout({ extraLine: true });
