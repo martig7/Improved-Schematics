@@ -274,12 +274,16 @@ test('buildDemandBoxWarp: two clusters with different demands get different expa
   assert.ok(need > 20, `both clusters sub-threshold (need ${need.toFixed(1)})`);
   const o: { boxes?: DenseBox[]; expands?: number[] } = {};
   const r = buildDemandBoxWarp([], g, DBOX, DOPTS, o);
-  // (a) exactly two boxes with DISTINCT per-box expands, A's (tighter) > B's
+  // (a) exactly two boxes; A (tighter) demands at least as much as B, and the
+  // demands stay DISTINCT unless both are clamped at the expandMax ceiling
+  // (tuning-robust: joint saturation is the only way they may legally collide).
   assert.equal(o.boxes!.length, 2);
   assert.equal(o.expands!.length, 2);
   const iA = o.boxes![0].x0 < o.boxes![1].x0 ? 0 : 1; // A's box is the left one
   const iB = 1 - iA;
-  assert.ok(o.expands![iA] > o.expands![iB], `A demands more: ${o.expands![iA]} > ${o.expands![iB]}`);
+  assert.ok(o.expands![iA] >= o.expands![iB], `A demands at least as much: ${o.expands![iA]} >= ${o.expands![iB]}`);
+  const bothSaturated = o.expands![iA] === DOPTS.expandMax && o.expands![iB] === DOPTS.expandMax;
+  assert.ok(bothSaturated || o.expands![iA] > o.expands![iB], `distinct demands (A ${o.expands![iA]}, B ${o.expands![iB]})`);
   // (b) every intra-cluster edge of BOTH clusters clears need after warping
   const warped = g.nodes.map((p) => r.warp([p[0], p[1]]));
   for (const [a, b] of [...aEdges, ...bEdges]) {

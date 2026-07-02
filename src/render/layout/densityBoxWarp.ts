@@ -27,7 +27,10 @@
 // octi contraction, each box is expanded by exactly what its OWN edges need to
 // survive contraction (per-box strengths, not one global `expand`), and the
 // resulting growth is KEPT by growing the output canvas (up to `maxGrowth`)
-// instead of normalizing it back to the input canvas.
+// instead of normalizing it back to the input canvas. A bounded secant
+// refinement pass then re-solves each box against the POST-warp threshold (the
+// median edge length rises as boxes expand), and buildSepDemandBoxWarp composes
+// the separable warp (global magnification) under the demand warp (local room).
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
 import type { Pixel } from './types';
@@ -548,12 +551,13 @@ export function buildDemandBoxWarp(
       const advected = g.nodes.map((p) => result.warp([p[0], p[1]]) as Pixel);
       const needAfter = (opts.cellFromMedLen(medianEdgeLenPx({ nodes: advected, edges: g.edges })) / 2) * slack;
       const gapNow = boxes.map((_, i) => gapInBox(oref.boxes![i], advected));
-      let bumped = false;
       const eNext = expands.map((e, i) => {
         const gap = gapNow[i];
         if (!Number.isFinite(gap) || gap >= needAfter) return e; // cleared
-        bumped = true;
         const margin = needAfter * 0.05; // headroom for the affine-model error
+        // (the two 1e-9 guards below are just "<= 0 with an fp cushion";
+        // scale-independent — the guarded deltas are far above 1e-9 whenever
+        // a real step happened.)
         const de = e - ePrev[i];
         if (de <= 1e-9) return Math.min(expandMax, (e * (needAfter + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - gapPrev[i]) - (needAfter - needPrev);
@@ -564,7 +568,9 @@ export function buildDemandBoxWarp(
         const target = e + ((needAfter + margin - gap) * de) / denom;
         return Math.min(expandMax, Math.max(e, target));
       });
-      if (!bumped) break;
+      // No progress — every box either cleared or sits saturated at the
+      // ceiling: another pass would rebuild bit-identically, so stop.
+      if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; gapPrev = gapNow; needPrev = needAfter;
       expands = eNext;
       result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
