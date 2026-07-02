@@ -17,6 +17,7 @@ import { buildSupportGraph, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
+import { LINE_WIDTH, LINE_GAP } from './constants';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -653,6 +654,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const refGap = finiteGaps.length ? finiteGaps[finiteGaps.length >> 1] : 1;
 
   const warpSamples: Pixel[] = [];
+  const nodeLineCounts: number[] = []; // per nodeIds index — capsule-oracle input
   for (const n of graph.nodes.values()) {
     const p = nodePos.get(n.id)!;
     const lines = new Set<string>();
@@ -661,6 +663,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (e) for (const l of e.lines) lines.add(l.id);
     }
     const lineWeight = Math.max(1, Math.min(warpLineCap, lines.size));
+    nodeLineCounts.push(lines.size);
     const g = meanGap.get(n.id)!;
     // closer-than-median neighbours → boost > 1; farther → < 1; clamped both ways
     // crowdGamma default is 1 → pow(x,1)=x; bypass the (non-correctly-rounded)
@@ -690,12 +693,18 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const divisorEst = graph.edges.length > 800 ? 1.2 : 1.6;
   const cellFromMedLen = (m: number) => Math.max(12, m / divisorEst);
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
+  // Capsule-demand oracle (spec 2026-07-02): marker geometry constants +
+  // per-node line counts. OCTI_CAPS_MARGIN / OCTI_CAPS_CASING override the
+  // per-capsule slack / inter-capsule clearance for dev sweeps.
+  const capsMargin = Number.isFinite(envNum('OCTI_CAPS_MARGIN')) && envNum('OCTI_CAPS_MARGIN') >= 0 ? envNum('OCTI_CAPS_MARGIN') : 4;
+  const capsCasing = Number.isFinite(envNum('OCTI_CAPS_CASING')) && envNum('OCTI_CAPS_CASING') >= 0 ? envNum('OCTI_CAPS_CASING') : 8;
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
     userMult: boxUserMult,
     maxGrowth: boxMaxGrowth,
     cellFromMedLen,
+    capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
   };
   const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
   // Capture the dense boxes the warp magnified (box/both modes), in the warp's
