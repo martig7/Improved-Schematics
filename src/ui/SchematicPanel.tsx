@@ -942,7 +942,12 @@ export function SchematicPanel() {
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
     const settings = { mode, showStations, showLabels, megaFallback, applied, rasterScale, jpegQuality, exportFormat, labelScale };
-    const fp = currentFpRef.current ?? undefined;
+    // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
+    // precomputeSmoothed itself), never a remembered ref that can desync from
+    // the displayed pre across load/generate sequences (the zombie-pre bug:
+    // LON-2 carried a fresh v9 fp on a byte-identical morning-old layout).
+    // Legacy fallback (string pre / pre-stamp layouts): the old ref.
+    const fp = (typeof pre !== 'string' ? pre.builtFp : undefined) ?? currentFpRef.current ?? undefined;
     // Mirror the rest of the per-city cache: per-mode visual settings + the sub-layout cache
     // (fp-gated, so only the subs that belong to THIS layout are captured).
     const modeSettings: Record<string, unknown> = {};
@@ -1069,7 +1074,13 @@ export function SchematicPanel() {
           },
         } as never).fp
       : null;
-    if (fp && loadCity && liveFp === fp) {
+    // Adoption additionally requires the PRE'S OWN provenance stamp to match:
+    // bundle.fp alone proved forgeable (a save can pair a stale pre with a
+    // freshly computed fp — the zombie-pre bug), so the layout itself must
+    // attest it was built under the fingerprint we're about to cache it as.
+    // Legacy files (pre-stamp pres) fall to the display-only path below.
+    const preBuiltFp = typeof bundle.pre !== 'string' ? bundle.pre.builtFp : undefined;
+    if (fp && loadCity && liveFp === fp && preBuiltFp === fp) {
       currentCityRef.current = loadCity;
       currentFpRef.current = fp;
       settingsCityRef.current = loadCity; // file matches the live game → its settings are the live city's

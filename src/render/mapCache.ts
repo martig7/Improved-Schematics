@@ -14,9 +14,12 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 3; // bump to invalidate every cached entry on a format change
+const VERSION = 4; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // the 80-90% draw cost — bumped so pre-geometry entries refresh on next Generate.
+// v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it —
+// purge all pre-stamp entries (kills any zombie pre poisoned under a foreign
+// fingerprint by the old save→load reseed; see SmoothedPrecomputed.builtFp).
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {
@@ -66,7 +69,13 @@ export function readCachedPre(
     if (store.getItem(fpKey(city)) !== stamp(fp)) return null; // miss → caller runs octi
     const preStr = store.getItem(preKey(city));
     if (!preStr) return null;
-    return deserializePre(preStr);
+    const pre = deserializePre(preStr);
+    // Provenance guard: an object pre must have been BUILT under the fp it's
+    // filed under — a mismatch means a stale layout was filed under a live
+    // fingerprint (the zombie-pre bug); treat as a miss so the caller re-sims.
+    // String pres (the degenerate no-layout SVG fallback) carry no stamp — pass.
+    if (typeof pre !== 'string' && pre.builtFp !== fp) return null;
+    return pre;
   } catch {
     return null;
   }
@@ -82,6 +91,10 @@ export function writeCachedPre(
   store: KVStore | null = defaultStore(),
 ): boolean {
   if (!store || !city) return false;
+  // Provenance guard (write side): never FILE a layout under a fingerprint it
+  // wasn't built from — this is the exact write that poisoned the cache when a
+  // loaded file's stale pre was reseeded under a freshly computed fp.
+  if (typeof pre !== 'string' && pre.builtFp !== fp) return false;
   const preStr = serializePre(pre);
   const write = (): boolean => {
     store.setItem(preKey(city), preStr);

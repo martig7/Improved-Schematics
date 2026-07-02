@@ -11,6 +11,7 @@ import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, projectedBounds, type Projection, type FrameRect } from './projection';
 import { extractRouteLines } from './routes';
 import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './layout/graph';
+import { fingerprintInputs } from './cacheFingerprint';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
@@ -446,6 +447,14 @@ export interface SmoothedPrecomputed {
    *  boxes are magnified — and absent (undefined) only for pre-existing cached layouts
    *  computed before this field existed. */
   denseBoxesPx?: DenseBox[];
+  /** The layout fingerprint this precompute was BUILT under — stamped HERE, at
+   *  compute time, never at save/load time. Provenance: the cache write/read
+   *  paths and the file-load adoption verify a layout against it, so a stale
+   *  pre can never ride under a freshly computed fingerprint (the LON
+   *  zombie-pre bug: a schema-7 layout paired with a v9 fp survived rebuilds
+   *  and manual cache clears by reseeding through save→load). Absent only on
+   *  legacy caches (purged by the mapCache VERSION bump). */
+  builtFp?: string;
 }
 
 /** Heavy half of smoothed mode: density warp → topo merge → octi → image merge
@@ -457,6 +466,18 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const { width, height, padding, dark } = opts;
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
+  // Provenance stamp (see SmoothedPrecomputed.builtFp): the fingerprint of the
+  // EXACT inputs this layout is computed from — the same digest the panel keys
+  // its cache on (fingerprintInputs reads only its known fields, so the extra
+  // render-only options here don't perturb it).
+  const builtFp = fingerprintInputs({
+    routes: input.routes,
+    tracks: input.tracks ?? [],
+    stations: input.stations,
+    stationGroups: input.stationGroups,
+    geography: input.geography,
+    options: input.options,
+  } as never).fp;
   // Stage timing (dev): OCTI_PERF=1 logs per-stage wall-clock to stderr so the
   // octi pass can be isolated from topo merge / untangle / render when profiling.
   const PERF = typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_PERF;
@@ -1083,7 +1104,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
