@@ -14,12 +14,16 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 4; // bump to invalidate every cached entry on a format change
+const VERSION = 5; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // the 80-90% draw cost — bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it —
 // purge all pre-stamp entries (kills any zombie pre poisoned under a foreign
 // fingerprint by the old save→load reseed; see SmoothedPrecomputed.builtFp).
+// v5: frame/geoBboxFrame were clamped to the PRE-GROWTH canvas (the composed proj
+// inherited baseProj's width/height) — cached pres carry truncated frames on any
+// grown canvas, so exports/area popouts cropped the wrong region. Layouts are
+// unchanged; only the frame metadata needed recomputing.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

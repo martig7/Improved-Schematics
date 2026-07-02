@@ -753,6 +753,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const outH = Math.round(height * warpGrowth[1]);
   let proj: Projection = {
     ...baseProj,
+    // The composed projection renders onto the GROWN canvas — carry outW/outH,
+    // not baseProj's pre-growth dims: projectedBounds clamps frames to
+    // proj.width/height, so a stale 2700 here truncates geoBboxFrame and the
+    // export frame to the pre-growth box whenever the warp granted growth.
+    width: outW,
+    height: outH,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
   };
   // The per-axis refit applied below (identity until set), reused to map the warp
