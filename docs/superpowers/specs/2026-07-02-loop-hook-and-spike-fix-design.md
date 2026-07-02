@@ -42,6 +42,13 @@ suppression — with the bearing-aware topo merge guard held in reserve).
 
 ### 1. Connector overshoot clamp (renderOctilinear.ts)
 
+> **Amended during implementation:** the unsigned formula below was superseded
+> by a SIGNED clamp (`connectorClamp.ts` — see its header comment) after review
+> found a reverse-perp corner where the unsigned form overshot the NEAR lane.
+> The signed form stops the control point exactly at the far lane when heading
+> toward it and bounds the stray to 0.75px when heading away, making the
+> zero-overshoot goal true universally.
+
 Extract the connector control-point computation into a small pure helper
 (testable): given `pa, pb, dirA, dirB, spacing`, return `c1, c2`. Clamp each
 tangent length PER END so its control point cannot cross the far end's lane

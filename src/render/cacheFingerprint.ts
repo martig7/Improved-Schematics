@@ -39,15 +39,15 @@ const SCHEMA = 9; // bump to bust all fingerprints when the renderer's inputs ch
 // boxExpand/boxGrowth keep their option names but change semantics
 // (multiplier / max-growth), so cached layouts keyed on the old meanings must
 // re-sim. Layout change, unchanged raw inputs; bust main + detail-inset caches.
-// v9: node-connector tangents clamped to the lane band (bundle-join spike)
-// and zero-progress synthetic hooks spliced to octilinear shortcuts after
-// supportToLayout (LON pink-triangle). Both change drawn geometry/layouts,
-// unchanged raw inputs; bust main + detail-inset caches.
 // v8: capsule-demand oracle (third warp-box source: interchange pairs closer
 // than their combined marker-row needs; nesting-aware box merge; per-kind
 // secant targets) + capsule overlap enforcement on by default (seat-time
 // hull check with hull-masked retry, move-commit hull guard). Layout AND
 // placement change, unchanged raw inputs; bust main + detail-inset caches.
+// v9: node-connector tangents clamped to the lane band (bundle-join spike)
+// and zero-progress synthetic hooks spliced to octilinear shortcuts after
+// supportToLayout (LON pink-triangle). Both change drawn geometry/layouts,
+// unchanged raw inputs; bust main + detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
