@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 6; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 7; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -33,6 +33,12 @@ const SCHEMA = 6; // bump to bust all fingerprints when the renderer's inputs ch
 // 45-71px) is bridged instead of left as a visible break. Reconnects NYC-difficult
 // Q/R/N/W/1/4/5/6. Renderer-side draw change, unchanged raw inputs; bust so cached
 // maps + detail-inset sub-pres re-sim with the contiguous geometry.
+// v7: demand-driven box warp — boxes from density ∪ predicted-contraction
+// clusters, per-box expansion sized to clear the octi contraction threshold,
+// canvas grows (boxGrowth = max growth) instead of clawing expansion back.
+// boxExpand/boxGrowth keep their option names but change semantics
+// (multiplier / max-growth), so cached layouts keyed on the old meanings must
+// re-sim. Layout change, unchanged raw inputs; bust main + detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
