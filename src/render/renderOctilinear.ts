@@ -436,6 +436,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return acc;
     };
+    // Phase 1: detect candidates against the PRISTINE segPath. (Two-phase so
+    // the sibling test below sees the full picture, and jog measurements are
+    // order-independent — the old in-loop delete let an earlier suppression
+    // hide a later line's neighbour endpoint.)
+    const candidates: Array<{ key: string; edgeId: string }> = [];
+    const candidateKeys = new Set<string>();
     for (const [lineId, traversal] of layout.lineTraversals) {
       if (!lineById.has(lineId)) continue;
       const endAt = (eid: string, nd: string): Pixel | null => {
@@ -449,7 +455,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const e = edgeById.get(step.edgeId);
         if (!e) continue;
         const key = e.id + '|' + lineId;
-        if (suppressed.has(key)) continue;
+        if (candidateKeys.has(key)) continue;
         const poly = segPath.get(key);
         if (!poly) continue;
         const arc = arcOf(poly);
@@ -466,9 +472,33 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (mine && theirs) jog += hyp(mine[0] - theirs[0], mine[1] - theirs[1]);
         }
         if (jog <= arc * 0.6) continue;
-        suppressed.add(key);
-        segPath.delete(key);
+        candidates.push({ key, edgeId: e.id });
+        candidateKeys.add(key);
       }
+    }
+    // Phase 2: delete a candidate ONLY when no co-drawn sibling on the same
+    // edge survives. The heuristic targets a LONE dangling sliver (the 9's 9px
+    // Butler St hop); an interlined bundle member whose sibling keeps its
+    // piece is NOT a stub — deleting just one lane of the pair cuts that line
+    // visibly in half, and at the adjacent interchange its marker loses the
+    // suppressed direction's lane tangent, flipping the grouping axis and
+    // bending the capsule into its neighbour's seat space (LON Coombe
+    // Gardens/Arterberry Rd: the 2-line's 11px piece on me466 jogged 11.19 >
+    // 6.93 while the interlined 1-line's piece survived → cut line → bent
+    // 19px capsule → capsule cross → unseatable retry → megabox). The
+    // surviving sibling proves the corridor is genuinely drawn there.
+    for (const { key, edgeId } of candidates) {
+      const e = edgeById.get(edgeId);
+      let siblingSurvives = false;
+      if (e) {
+        for (const l of e.lines) {
+          const k2 = edgeId + '|' + l.id;
+          if (k2 !== key && segPath.has(k2) && !candidateKeys.has(k2)) { siblingSurvives = true; break; }
+        }
+      }
+      if (siblingSurvives) continue;
+      suppressed.add(key);
+      segPath.delete(key);
     }
   }
 
