@@ -132,8 +132,9 @@ to expandMax. Deterministic; converges in 1-2 rebuilds in practice.
   cross-V8 discipline as the existing warps.
 - **Cache:** new knobs (`maxGrowth`, demand params) and the discovery change
   enter the cache fingerprint; schema bump so stale layouts invalidate.
-- **UI:** density-cutoff slider unchanged; Box warp slider → demand
-  multiplier `userMult`; the box-warp range slider → `maxGrowth`. The
+- **UI:** density-cutoff slider unchanged; the single Box warp slider
+  (`boxWarpPos`) drives BOTH knobs — demand multiplier `userMult` (0.25..4,
+  center 1) and `maxGrowth` (1..4, center 2). The
   warp-boxes debug overlay keeps working (`out.boxes` → `denseBoxesPx`);
   debug output gains per-box expand factors.
 - **Downstream frames:** DetailInset clamps its frames to
