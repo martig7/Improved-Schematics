@@ -65,15 +65,26 @@ const svg = generateSchematicSVG({
   stations,
   stationGroups,
   water,
+  // The dumped geography backdrop. DO NOT drop this: geography feeds the layout
+  // bounds → projection → warp, so a geo-less replay computes a DIFFERENT
+  // layout than the game while claiming the same fingerprint (LON: 2921²
+  // offline vs the game's true 4468² — a day of "divergence" debugging traced
+  // to this omission).
+  geography: dump.geography,
   options: {
     mode: 'smoothed',
     width: 2700,
     height: 2700,
     showStations: dumped.showStations ?? true,
-    // Carry the user's appearance settings through when present.
+    // Carry the user's appearance settings through when present. Every
+    // FINGERPRINTED option must pass through (padding, warpAlpha, affinity,
+    // boxExpand/boxGrowth/boxFrac, dark, lineWidth) or the replay diverges.
     ...(dumped.padding !== undefined ? { padding: dumped.padding } : {}),
     ...(dumped.warpAlpha !== undefined ? { warpAlpha: dumped.warpAlpha } : {}),
     ...(dumped.geographicAffinity !== undefined ? { geographicAffinity: dumped.geographicAffinity } : {}),
+    ...(dumped.boxExpand !== undefined ? { boxExpand: dumped.boxExpand } : {}),
+    ...(dumped.boxGrowth !== undefined ? { boxGrowth: dumped.boxGrowth } : {}),
+    ...(dumped.boxFrac !== undefined ? { boxFrac: dumped.boxFrac } : {}),
     theme,
     showLabels,
     dark,
