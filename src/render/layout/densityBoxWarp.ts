@@ -112,6 +112,31 @@ export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[]
   return boxes;
 }
 
+/** Merge intersecting boxes to their union bbox, repeated to a fixpoint, so the
+ *  summed per-axis pushes never double-stack on overlapping regions (density
+ *  boxes and contraction boxes can overlap). Deterministic: fixed scan order. */
+export function mergeIntersectingBoxes(boxes: DenseBox[]): DenseBox[] {
+  const out = boxes.map((b) => ({ ...b }));
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < out.length; i++)
+      for (let j = i + 1; j < out.length; j++) {
+        const a = out[i], b = out[j];
+        if (a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1) {
+          out[i] = {
+            x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+            x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+          };
+          out.splice(j, 1);
+          merged = true;
+          break outer;
+        }
+      }
+  }
+  return out;
+}
+
 export interface BoxWarpOptions extends DensityWarp2DOptionsLike {
   /** Cutoff as a fraction of the PEAK excess density (0–1): cells above
    *  frac·max are "dense". Threshold on the peak, NOT a percentile over all

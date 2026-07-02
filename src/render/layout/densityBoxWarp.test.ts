@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes } from './densityBoxWarp';
+import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { Pixel } from './types';
 
@@ -146,4 +146,21 @@ test('findContractionBoxes: two separate clusters → two boxes', () => {
   const nodes: Pixel[] = [[10, 10], [15, 10], [300, 300], [305, 300]];
   const edges: [number, number][] = [[0, 1], [2, 3]];
   assert.equal(findContractionBoxes({ nodes, edges }, 20).length, 2);
+});
+
+test('mergeIntersectingBoxes: overlapping chain collapses to one bbox; disjoint boxes survive', () => {
+  const merged = mergeIntersectingBoxes([
+    { x0: 0, y0: 0, x1: 10, y1: 10 },
+    { x0: 8, y0: 8, x1: 20, y1: 20 },   // overlaps #0
+    { x0: 18, y0: 18, x1: 30, y1: 30 }, // overlaps #1 only AFTER #0+#1 merge
+    { x0: 100, y0: 100, x1: 110, y1: 110 },
+  ]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged[0], { x0: 0, y0: 0, x1: 30, y1: 30 });
+  assert.deepEqual(merged[1], { x0: 100, y0: 100, x1: 110, y1: 110 });
+});
+
+test('mergeIntersectingBoxes: empty and singleton inputs pass through', () => {
+  assert.deepEqual(mergeIntersectingBoxes([]), []);
+  assert.deepEqual(mergeIntersectingBoxes([{ x0: 1, y0: 2, x1: 3, y1: 4 }]), [{ x0: 1, y0: 2, x1: 3, y1: 4 }]);
 });
