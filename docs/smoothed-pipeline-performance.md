@@ -137,13 +137,13 @@ Symbols: `S` = warp samples (≈ N × small int, low thousands), `B` = histogram
 |---|---|---|---|
 | `separable` | `O(S + B·r)` | **`O(1)`** — direct CDF index + lerp (`densityWarp.ts:152-165`) | no |
 | `box` | `O(S + B²·r)` | `O(#boxes)`, 1–5 | boxes only |
-| **`both` (default, `buildSepDemandBoxWarp`)** | `O(S + B²·r)` (+ ≤4 refinement rebuilds + `O(E)` contraction oracle) | **`O(1)` + `O(#boxes)`** | boxes only |
+| **`both` (default, `buildSepDemandBoxWarp`)** | `O(S + B²·r)` (+ ≤4 refinement rebuilds + `O(E)` contraction oracle + `O(N)` bucket-grid capsule oracle) | **`O(1)` + `O(#boxes)`** | boxes only |
 | `2d` (rejected) | `O(iters·(S + B²·rad²))` | **`O(iters)`** ≈ 20 bilinear samples/pt | **yes — 10 steps** |
 
 **Default path (`buildSepDemandBoxWarp`):** a separable CDF warp for
 global magnification composed with the demand-driven box warp for local room.
 Construction is dominated by one 2D Gaussian smoothing (`O(B²·r)` ≈ 157k ops) plus the
-contraction oracle (`O(E)` union-find) and a bounded (≤4, usually 1) refinement loop
+contraction oracle (`O(E)` union-find), the capsule oracle (`O(N)` bucket-grid pair scan over marker-row needs), and a bounded (≤4, usually 1) refinement loop
 that re-advects the graph per rebuild — still milliseconds. Evaluation is effectively
 `O(1)` per point, with its only real tax being **~3–4 short-lived array allocations
 per warped point** (the push/raw tuples plus `sep`'s tuple). Across tens of thousands of vertices that's the stage's main GC pressure.
