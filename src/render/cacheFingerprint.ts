@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 8; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 9; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -39,6 +39,10 @@ const SCHEMA = 8; // bump to bust all fingerprints when the renderer's inputs ch
 // boxExpand/boxGrowth keep their option names but change semantics
 // (multiplier / max-growth), so cached layouts keyed on the old meanings must
 // re-sim. Layout change, unchanged raw inputs; bust main + detail-inset caches.
+// v9: node-connector tangents clamped to the lane band (bundle-join spike)
+// and zero-progress synthetic hooks spliced to octilinear shortcuts after
+// supportToLayout (LON pink-triangle). Both change drawn geometry/layouts,
+// unchanged raw inputs; bust main + detail-inset caches.
 // v8: capsule-demand oracle (third warp-box source: interchange pairs closer
 // than their combined marker-row needs; nesting-aware box merge; per-kind
 // secant targets) + capsule overlap enforcement on by default (seat-time
