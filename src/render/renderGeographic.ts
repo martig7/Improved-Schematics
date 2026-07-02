@@ -16,7 +16,7 @@ import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
-import { buildBoxExpandWarp, buildSepBoxWarp, type DenseBox } from './layout/densityBoxWarp';
+import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import {
@@ -546,18 +546,24 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : NaN;
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
-  // Warp mode. DEFAULT 'both' (buildSepBoxWarp): the separable warp supplies the
-  // GLOBAL magnification that blows the dense network up to readable size, then
-  // the dense-box expansion (densityBoxWarp.ts) adds LOCAL rectilinear room on
-  // the magnified core to declutter it — geography stays faithful elsewhere.
-  // OCTI_WARP_MODE=separable = separable only (the proven baseline); =box = box
-  // expansion only (no global magnification); =2d = the (rejected) density-
+  // Warp mode. DEFAULT 'both' (buildSepDemandBoxWarp): the separable warp
+  // supplies the GLOBAL magnification that blows the dense network up to readable
+  // size, then the demand-driven box warp (densityBoxWarp.ts) adds LOCAL
+  // rectilinear room on the magnified core to declutter it — geography stays
+  // faithful elsewhere. The box warp discovers boxes from density peaks ∪
+  // predicted octi contraction, sizes each box's expansion to exactly what its
+  // own edges need to clear the contraction threshold (ĉ/2), and GROWS the output
+  // canvas (up to OCTI_BOX_GROWTH) to absorb the demand instead of clawing it
+  // back. OCTI_WARP_MODE=separable = separable only (the proven baseline); =box =
+  // box demand only (no global magnification); =2d = the (rejected) density-
   // equalizing 2D warp.
-  // Box knobs (tune by eye): OCTI_BOX_FRAC (cutoff as fraction of peak density,
-  // default 0.4), OCTI_BOX_EXPAND (relative core magnification, default 4),
+  // Box knobs (tune by eye): OCTI_BOX_FRAC (density cutoff as fraction of peak,
+  // default 0.4), OCTI_BOX_EXPAND (demand MULTIPLIER; 1 = expand each box by
+  // exactly its survival need, >1 magnifies aesthetically, default 1),
   // OCTI_BOX_MARGIN (saturation margin as fraction of box half-extent, default
-  // 3), OCTI_BOX_GROWTH (how much the overall map may grow; 1 = canvas-preserving
-  // like separable, 1.2 = up to 20% bigger; default 1).
+  // 3), OCTI_BOX_GROWTH (MAX per-axis canvas growth; 1 = canvas-preserving like
+  // separable, 2 = up to 2× bigger; demand past the cap shrinks globally,
+  // default 2).
   const warpMode =
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
   const envNum = (k: string): number =>
@@ -572,18 +578,24 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   })();
   // boxExpand / boxGrowth take the user's "Box warp" setting via opts (the env
   // OCTI_BOX_* overrides still win for dev sweeps), mirroring warpAlpha above.
-  const boxExpand = (() => {
+  // boxExpand is now the demand MULTIPLIER (userMult): 1 = expand each box by
+  // exactly what its edges need to survive octi contraction; >1 adds aesthetic
+  // magnification on top. (Was: absolute expansion factor, default 4.)
+  const boxUserMult = (() => {
     const e = envNum('OCTI_BOX_EXPAND');
-    if (Number.isFinite(e) && e >= 1) return e; // dev sweep override wins
-    if (typeof opts.boxExpand === 'number' && Number.isFinite(opts.boxExpand) && opts.boxExpand >= 1) return opts.boxExpand;
-    return 4;
+    if (Number.isFinite(e) && e > 0) return e; // dev sweep override wins
+    if (typeof opts.boxExpand === 'number' && Number.isFinite(opts.boxExpand) && opts.boxExpand > 0) return opts.boxExpand;
+    return 1;
   })();
   const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
-  const boxGrowth = (() => {
-    const g = envNum('OCTI_BOX_GROWTH');
-    if (Number.isFinite(g) && g >= 1) return g; // dev sweep override wins
+  // boxGrowth is now the MAX per-axis canvas growth that absorbs the demanded
+  // expansion (2 = output canvas may be up to 2x the base canvas; demand past
+  // the cap shrinks globally). (Was: growthCap with claw-back, default 1.2.)
+  const boxMaxGrowth = (() => {
+    const gv = envNum('OCTI_BOX_GROWTH');
+    if (Number.isFinite(gv) && gv >= 1) return gv; // dev sweep override wins
     if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
-    return 1.2;
+    return 2;
   })();
   const warpSigmaPx = (() => {
     const env =
@@ -659,21 +671,52 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const w = Math.max(1, Math.round(lineWeight * crowd));
     for (let i = 0; i < w; i++) warpSamples.push(p);
   }
+  // Demand inputs for the box warp: the projected graph as index-pair edges.
+  // Node order = graph.nodes insertion order (already id-canonicalized upstream).
+  const nodeIds = [...graph.nodes.keys()];
+  const nodeIndex = new Map(nodeIds.map((id, i) => [id, i]));
+  const boxGraph: BoxGraph = {
+    nodes: nodeIds.map((id) => nodePos.get(id)!),
+    edges: graph.edges
+      .map((e) => [nodeIndex.get(e.from), nodeIndex.get(e.to)] as [number | undefined, number | undefined])
+      .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined),
+  };
+  // ĉ estimate for the contraction oracle: mirrors the real post-warp
+  // cellSize = max(12, medianSupportEdgeLen / divisor). graph edge count is a
+  // PROXY for the support edge count (topo merge hasn't run yet) — the demand
+  // safety factor covers the regime mismatch.
+  const divisorEst = graph.edges.length > 800 ? 1.2 : 1.6;
+  const cellFromMedLen = (m: number) => Math.max(12, m / divisorEst);
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
-  const boxOpts = { frac: boxFrac, expand: boxExpand, marginFrac: boxMargin, growthCap: boxGrowth };
+  const boxOpts = {
+    frac: boxFrac,
+    marginFrac: boxMargin,
+    userMult: boxUserMult,
+    maxGrowth: boxMaxGrowth,
+    cellFromMedLen,
+  };
   const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
-  // Capture the dense boxes the box-warp magnified (box/both modes only), in the
-  // warp's OUTPUT space; the per-axis refit below maps them on to final render px for
-  // the optional "show warp boxes" debug overlay.
-  const warpOut: { boxes?: DenseBox[] } = {};
-  const warp =
-    warpMode === 'separable'
-      ? buildDensityWarp(warpSamples, warpBox, sepOpts)
-      : warpMode === '2d'
-        ? buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters })
-        : warpMode === 'box'
-          ? buildBoxExpandWarp(warpSamples, warpBox, boxOpts, warpOut)
-          : buildSepBoxWarp(warpSamples, warpBox, sepOpts, boxOpts, warpOut); // default 'both'
+  // Capture the dense boxes the warp magnified (box/both modes), in the warp's
+  // OUTPUT space, plus per-box expands for the debug overlay/log.
+  const warpOut: { boxes?: DenseBox[]; expands?: number[] } = {};
+  // Per-axis canvas growth granted by the demand warp (1,1 for non-box modes).
+  let warpGrowth: [number, number] = [1, 1];
+  const warp = (() => {
+    if (warpMode === 'separable') return buildDensityWarp(warpSamples, warpBox, sepOpts);
+    if (warpMode === '2d')
+      return buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters });
+    const r =
+      warpMode === 'box'
+        ? buildDemandBoxWarp(warpSamples, boxGraph, warpBox, boxOpts, warpOut)
+        : buildSepDemandBoxWarp(warpSamples, boxGraph, warpBox, sepOpts, boxOpts, warpOut); // default 'both'
+    warpGrowth = [r.growthX, r.growthY];
+    return r.warp;
+  })();
+  // The REAL output canvas: base canvas × granted growth. Everything downstream
+  // (refit target, land base, viewBox, export frame, pre.width/height) uses the
+  // grown dims, so the demanded room is kept instead of clawed back.
+  const outW = Math.round(width * warpGrowth[0]);
+  const outH = Math.round(height * warpGrowth[1]);
   let proj: Projection = {
     ...baseProj,
     toSVG: (c: Coordinate) => warp(baseProj.toSVG(c)),
@@ -710,10 +753,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     }
     if (mnX < mxX && mnY < mxY) {
       const m = 0; // flush fill — content reaches the canvas edge (the panel zooms for labels)
-      const sx = (width * (1 - 2 * m)) / (mxX - mnX);
-      const sy = (height * (1 - 2 * m)) / (mxY - mnY);
-      const ox = width * m - mnX * sx;
-      const oy = height * m - mnY * sy;
+      const sx = (outW * (1 - 2 * m)) / (mxX - mnX);
+      const sy = (outH * (1 - 2 * m)) / (mxY - mnY);
+      const ox = outW * m - mnX * sx;
+      const oy = outH * m - mnY * sy;
       const inner = proj;
       proj = { ...inner, toSVG: (c: Coordinate) => { const p = inner.toSVG(c); return [p[0] * sx + ox, p[1] * sy + oy]; } };
       refitPx = (p: Pixel) => [p[0] * sx + ox, p[1] * sy + oy];
@@ -767,7 +810,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const edges = [...graph.edges]
       .map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined])
       .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
-    __warpDebug = { warp, width, height, nodes, nodesRaw, edges, samples: warpSamples.map((s) => [s[0], s[1]] as Pixel) };
+    __warpDebug = { warp, width: outW, height: outH, nodes, nodesRaw, edges, samples: warpSamples.map((s) => [s[0], s[1]] as Pixel) };
     // Skip the ~70s octi pass: dev/warp-preview.ts only needs the captured warp
     // inputs to render a fast no-octi preview while tuning the warp.
     if (env?.OCTI_WARP_CAPTURE_ONLY) return 'CAPTURE_ONLY';
@@ -1006,7 +1049,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width, height, dark, frame, unproject, geoBboxFrame, denseBoxesPx };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: waterOverlay + gridSvg, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx };
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
