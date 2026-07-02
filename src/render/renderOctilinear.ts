@@ -790,7 +790,31 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (dl && !dl.collinearIn) {
             jlog(`  ${endA} DOGLEG-DECLINE (two-bend, would stub) B2=(${dl.B2[0].toFixed(1)},${dl.B2[1].toFixed(1)})`);
           }
+          // Corridor-aware clamp: the bend corner B2 sits ON the outbound line, so
+          // it must fall strictly BETWEEN this node and the outbound edge's FAR
+          // node — never past the far end. A B2 that overshoots the far node pins
+          // the outbound lane's start beyond where the lane can go, forcing the
+          // short outbound micro-edge to run AGAINST its own corridor direction to
+          // reach its far node; the next edge then returns, and the far-node
+          // connector closes an out-and-back self-loop (SEA route X at Pacific Av
+          // mn226: B2 x=651.8 overshot me204's far node mn224 x=662.8 across a 9px
+          // edge, an antiparallel-chord loop). Decline the dogleg in that case →
+          // fall through to the S connector, which draws the pair straight.
+          let doglegOvershoots = false;
           if (dl && dl.collinearIn) {
+            const farNodeId = eb.from === startB ? eb.to : eb.from;
+            const farPx = nodePx.get(farNodeId);
+            if (farPx) {
+              // project along the outbound direction from the shared node (qb)
+              const projB2 = (dl.B2[0] - qb[0]) * sdirB[0] + (dl.B2[1] - qb[1]) * sdirB[1];
+              const projFar = (farPx[0] - qb[0]) * sdirB[0] + (farPx[1] - qb[1]) * sdirB[1];
+              if (projB2 > projFar - spacing / 2) {
+                doglegOvershoots = true;
+                jlog(`  ${endA} DOGLEG-DECLINE (B2 overshoots outbound far node ${farNodeId}) projB2=${projB2.toFixed(1)} projFar=${projFar.toFixed(1)} B2=(${dl.B2[0].toFixed(1)},${dl.B2[1].toFixed(1)})`);
+              }
+            }
+          }
+          if (dl && dl.collinearIn && !doglegOvershoots) {
             const { B2, D } = dl;
             // Inbound side (collinear: D continues the inbound run straight into the
             // corner): move the node-end forward to B2, popping any inbound vertices
