@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
 import type { BoxGraph, DenseBox } from './densityBoxWarp';
+import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
 
@@ -204,6 +205,21 @@ test('buildDemandBoxWarp: deterministic; out reports boxes (output space) and pe
   // the cluster's box in OUTPUT space contains the warped cluster nodes
   const p = r1.warp([58, 54]);
   assert.ok(o1.boxes!.some((b) => p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1));
+  // out.boxes are EXACTLY the pre-warp boxes' corners mapped through the final
+  // warp. No density samples here, so the pre-warp boxes are contraction-only —
+  // recompute them the same way the builder does (both paths are deterministic).
+  const pre = mergeIntersectingBoxes(
+    findContractionBoxes(g, (DOPTS.cellFromMedLen(medianEdgeLenPx(g)) / 2) * DOPTS.safety),
+  );
+  assert.equal(o1.boxes!.length, pre.length, 'one out box per pre-warp box');
+  for (let i = 0; i < pre.length; i++) {
+    const a = r1.warp([pre[i].x0, pre[i].y0]); // top-left through the warp
+    const c = r1.warp([pre[i].x1, pre[i].y1]); // bottom-right through the warp
+    const ob = o1.boxes![i];
+    assert.ok(Math.abs(ob.x0 - a[0]) < 1e-9 && Math.abs(ob.y0 - a[1]) < 1e-9, `box ${i} top-left mapped through warp`);
+    assert.ok(Math.abs(ob.x1 - c[0]) < 1e-9 && Math.abs(ob.y1 - c[1]) < 1e-9, `box ${i} bottom-right mapped through warp`);
+    assert.ok(ob.x1 > ob.x0 && ob.y1 > ob.y0, 'stays axis-aligned + corner order preserved');
+  }
 });
 
 test('buildDemandBoxWarp: two clusters with different demands get different expands, both clear need', () => {
@@ -287,4 +303,33 @@ test('buildSepDemandBoxWarp: composes separable + demand warp; growth passes thr
   // deterministic (and independent of whether `out` was passed)
   const r2 = buildSepDemandBoxWarp(s, g, DBOX, { alpha: 0.8, minScale: 1 }, { ...DOPTS, maxGrowth: 8 });
   assert.deepEqual(r.warp([61, 47]), r2.warp([61, 47]));
+  // (a) the composition adds REAL effect beyond separable alone: the box layer
+  // expands the pinned cluster's span strictly more than the separable warp
+  // does by itself (same sepOpts, same samples).
+  const sep = buildDensityWarp(s, DBOX, { alpha: 0.8, minScale: 1 });
+  const span = (W: (p: Pixel) => Pixel) => {
+    const a = W(g.nodes[0]); // [50,50], cluster corner
+    const b = W(g.nodes[3]); // [58,58], opposite cluster corner
+    return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2);
+  };
+  assert.ok(span(r.warp) > span((p) => sep(p)), `composed expands cluster more than separable alone: ${span(r.warp).toFixed(2)} > ${span((p) => sep(p)).toFixed(2)}`);
+  // (b) fold-free: the composed warp is monotone per axis (x' strictly increases
+  // along +x at any fixed y, y' along +y at any fixed x) — equivalent to det>0
+  // for this separable-per-axis family, and cheaper than a Jacobian scan.
+  const N = 20;
+  const step = (DBOX.maxX - DBOX.minX) / N;
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i < N; i++) {
+      const y = DBOX.minY + j * step;
+      const x = DBOX.minX + i * step;
+      const wx0 = r.warp([x, y])[0];
+      const wx1 = r.warp([x + step, y])[0];
+      assert.ok(wx1 > wx0, `x-monotone at (${x},${y}): ${wx1} > ${wx0}`);
+      const x2 = DBOX.minX + j * step;
+      const y2 = DBOX.minY + i * step;
+      const wy0 = r.warp([x2, y2])[1];
+      const wy1 = r.warp([x2, y2 + step])[1];
+      assert.ok(wy1 > wy0, `y-monotone at (${x2},${y2}): ${wy1} > ${wy0}`);
+    }
+  }
 });
