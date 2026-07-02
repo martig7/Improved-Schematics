@@ -506,8 +506,70 @@ export function buildDemandBoxWarp(
 
   const gaps = nodeGaps(g);
   const need = (cell / 2) * slack;
-  const expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
-  const result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, out);
+  let expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
+  // Refinement needs the output-space boxes even when the caller passed no `out`.
+  const oref: { boxes?: DenseBox[] } = out ?? {};
+  let result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
+
+  // Refinement: expansion raises the global median edge length, so the real
+  // post-warp contraction threshold is HIGHER than the pre-warp estimate the
+  // first-pass demands targeted — and expanding further raises it again (edges
+  // that straddle a box boundary stretch with the box and can dominate the
+  // median), so a proportional bump chases a moving target and converges to the
+  // threshold FROM BELOW without ever clearing it. Instead solve for the fixed
+  // point: per box, both the inside-gap and the global need are affine in the
+  // box's expand while the growth cap is slack (node positions are affine in
+  // the push strengths), so a secant step through the last two (expand, gap,
+  // need) states lands where the gap clears the need — with a small margin for
+  // the model error — then rebuild and re-verify. Bounded passes; arithmetic is
+  // + − × ÷ √ min max only, fixed iteration order → deterministic.
+  {
+    // Median gap of edges with BOTH endpoints inside the box — the statistic
+    // octi contraction acts on (nodeGaps averages straddling edges into it,
+    // which would credit a box with room that lies outside it).
+    const gapInBox = (b: DenseBox, nodes: readonly Pixel[]): number => {
+      const ls: number[] = [];
+      for (const [a, c] of g.edges) {
+        const pa = nodes[a], pc = nodes[c];
+        if (pa[0] >= b.x0 && pa[0] <= b.x1 && pa[1] >= b.y0 && pa[1] <= b.y1 &&
+            pc[0] >= b.x0 && pc[0] <= b.x1 && pc[1] >= b.y0 && pc[1] <= b.y1) {
+          const dx = pa[0] - pc[0], dy = pa[1] - pc[1];
+          ls.push(Math.sqrt(dx * dx + dy * dy));
+        }
+      }
+      ls.sort((x, y) => x - y);
+      return ls.length ? ls[ls.length >> 1] : Infinity; // no inside edges → nothing to clear
+    };
+    // Previous secant point per box: the UNWARPED state (expand 1, input-space box).
+    let ePrev = boxes.map(() => 1);
+    let gapPrev = boxes.map((b) => gapInBox(b, g.nodes));
+    let needPrev = need;
+    for (let pass = 0; pass < 4; pass++) {
+      const advected = g.nodes.map((p) => result.warp([p[0], p[1]]) as Pixel);
+      const needAfter = (opts.cellFromMedLen(medianEdgeLenPx({ nodes: advected, edges: g.edges })) / 2) * slack;
+      const gapNow = boxes.map((_, i) => gapInBox(oref.boxes![i], advected));
+      let bumped = false;
+      const eNext = expands.map((e, i) => {
+        const gap = gapNow[i];
+        if (!Number.isFinite(gap) || gap >= needAfter) return e; // cleared
+        bumped = true;
+        const margin = needAfter * 0.05; // headroom for the affine-model error
+        const de = e - ePrev[i];
+        if (de <= 1e-9) return Math.min(expandMax, (e * (needAfter + margin)) / gap); // no slope yet: proportional seed
+        const denom = (gap - gapPrev[i]) - (needAfter - needPrev);
+        // denom <= 0: the need rises at least as fast as this box's gap — the
+        // target is out of reach of expansion alone; jump to the ceiling (the
+        // growth cap then freezes the median so the gap can catch up).
+        if (denom <= 1e-9) return expandMax;
+        const target = e + ((needAfter + margin - gap) * de) / denom;
+        return Math.min(expandMax, Math.max(e, target));
+      });
+      if (!bumped) break;
+      ePrev = expands; gapPrev = gapNow; needPrev = needAfter;
+      expands = eNext;
+      result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
+    }
+  }
   if (out) out.expands = expands;
 
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {

@@ -252,3 +252,30 @@ test('buildDemandBoxWarp: deterministic; out reports boxes (output space) and pe
   const p = r1.warp([58, 54]);
   assert.ok(o1.boxes!.some((b) => p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1));
 });
+
+test('buildDemandBoxWarp: refinement — post-warp gaps in every box clear the RE-DERIVED need', () => {
+  const g = pinnedGraph();
+  // Lock BOTH slack regimes: 1.3 (the default headroom) and 1.0 (bare survival,
+  // which exposes the moving target the refinement pass corrects).
+  for (const slack of [1.3, 1.0]) {
+    const opts = { ...DOPTS, maxGrowth: 8, slack };
+    const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+    const r = buildDemandBoxWarp([], g, DBOX, opts, o);
+    // Advect the graph through the FINAL warp and re-derive the threshold the way
+    // the builder does; every box's median inside-gap must clear it.
+    const warped: BoxGraph = { nodes: g.nodes.map((p) => r.warp([p[0], p[1]])), edges: g.edges };
+    const needAfter = (opts.cellFromMedLen(medianEdgeLenPx(warped)) / 2) * opts.slack;
+    for (const b of o.boxes!) {
+      const gapsIn: number[] = [];
+      for (const [a, c] of warped.edges) {
+        const pa = warped.nodes[a], pc = warped.nodes[c];
+        const inA = pa[0] >= b.x0 && pa[0] <= b.x1 && pa[1] >= b.y0 && pa[1] <= b.y1;
+        const inC = pc[0] >= b.x0 && pc[0] <= b.x1 && pc[1] >= b.y0 && pc[1] <= b.y1;
+        if (inA && inC) gapsIn.push(Math.sqrt((pa[0] - pc[0]) ** 2 + (pa[1] - pc[1]) ** 2));
+      }
+      if (!gapsIn.length) continue;
+      gapsIn.sort((x, y) => x - y);
+      assert.ok(gapsIn[gapsIn.length >> 1] >= needAfter, `slack ${slack}: box median gap ${gapsIn[gapsIn.length >> 1]} < ${needAfter}`);
+    }
+  }
+});
