@@ -53,10 +53,18 @@ export function projectGeoRings(
  *  Mirrors geographyBackdrop's structure (green under water, one path per
  *  category, nonzero fill). */
 export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: number }, style?: LandmassStyle): string {
+  // Parks claim importance far more weakly than water: a lake in the dense
+  // core is a landmark, a pocket park is clutter — full green protection was
+  // the main source of mid-map speckle in the diagram modes.
+  const GREEN_IMP = 0.5;
   const group = (rs: Pt[][], fill: string, cls: string): string => {
     let d = '';
     if (style) {
-      d = stylizeRingsPathD(rs, style, extent);
+      const imp = style.importance;
+      const catStyle = cls === 'green' && imp
+        ? { ...style, importance: (x: number, y: number) => GREEN_IMP * imp(x, y) }
+        : style;
+      d = stylizeRingsPathD(rs, catStyle, extent);
     } else {
       for (const ring of rs) {
         ring.forEach((p, i) => { d += (i === 0 ? 'M' : 'L') + p[0] + ' ' + p[1] + ' '; });

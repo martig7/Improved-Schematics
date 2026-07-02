@@ -1164,7 +1164,7 @@ const lmBackdropCache = new WeakMap<SmoothedPrecomputed, { key: string; svg: str
  *  dense core (a Lake-Union-class landmark) keeps its shape while the far
  *  periphery generalizes to blobs. Coarse grid lookup — built once per styled
  *  draw (memoized with the backdrop). */
-function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number) => number {
+export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number) => number {
   const scale = Math.min(pre.width, pre.height) / 2700;
   const cell = 48 * scale;
   const W = Math.max(1, Math.ceil(pre.width / cell));

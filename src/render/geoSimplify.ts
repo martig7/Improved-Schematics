@@ -47,12 +47,14 @@ export function landmassParams(mode: LandmassMode, strength: number): LandmassPa
   const s = Math.max(0, Math.min(1, strength));
   const octi = mode === 'diagram';
   // The octi snap reads clean only on very generalized outlines — the diagram
-  // mode simplifies ~1.7x harder and culls ~2.5x more at the same slider spot.
+  // mode simplifies ~1.7x harder at the same slider spot. (No extra cull
+  // multiplier: the morphological opening already erases peripheral slivers,
+  // and an inflated floor was what ate protected landmarks in diagram mode.)
   const tol = (6 + 44 * s) * (octi ? 1.7 : 1);
   return {
     simplify: tol,
     round: 12 + 58 * s,
-    minArea: (tol * 4) * (tol * 4) * (octi ? 2.5 : 1),
+    minArea: (tol * 4) * (tol * 4),
     octi,
   };
 }
@@ -75,15 +77,15 @@ export interface LandmassStyle {
   importance?: (x: number, y: number) => number;
 }
 
-/** Protection gain: importance scales thresholds down by (1+PROTECT·imp)²,
- *  CAPPED at PROTECT_MAX. The cap is load-bearing twice over: (a) the union
- *  raster's staircase triangles have area cell²/2 = simplifyPx²/8 (cell =
- *  simplifyPx/2), so any cap < 8 keeps the weighted VW threshold above them —
- *  protected regions keep their SHAPE but never expose raw raster stairs; and
- *  (b) it floors the cull rescue at minArea/6, so lake-sized landmarks survive
- *  without dragging every speck of protected pond/park along. */
+/** VW protection gain: importance scales the simplify threshold down by
+ *  (1+PROTECT·imp)², capped at PROTECT_MAX_VW. The cap is load-bearing: the
+ *  raster's staircase triangles have area cell²/2, and the weighted threshold
+ *  must stay above them or protected regions expose raw raster stairs
+ *  (cell <= tol/5 ⇒ stair area <= tol²/50; the cap keeps the threshold at
+ *  tol²/6, far above). The CULL doesn't use this gain at all — see cullOk:
+ *  protected regions trust the morphological opening instead of an area floor. */
 const PROTECT = 3;
-const PROTECT_MAX = 6;
+const PROTECT_MAX_VW = 6;
 
 /** Signed shoelace area (px²): >0 counter-clockwise in SVG's y-down space is
  *  negative — callers only use |area|, winding is preserved untouched. */
@@ -218,12 +220,31 @@ export function snapOcti(ring: readonly Pt[]): Pt[] {
  *  abut or overlap become ONE blob, so downstream simplification can't open
  *  cracks along their shared edges. Output winding is consistent (outers and
  *  holes opposite), so nonzero fill renders holes correctly. */
+export interface GeoRaster {
+  grid: Uint8Array;
+  W: number;
+  H: number;
+  gx0: number;
+  gy0: number;
+  cell: number;
+}
+
 export function unionRings(
   rings: readonly (readonly Pt[])[],
   extent: { w: number; h: number },
   cellPx: number,
 ): Pt[][] {
-  if (rings.length === 0) return [];
+  const r = rasterizeRings(rings, extent, cellPx);
+  return r ? traceRaster(r) : [];
+}
+
+/** Nonzero-winding scanline rasterization of a ring soup onto a cell grid. */
+export function rasterizeRings(
+  rings: readonly (readonly Pt[])[],
+  extent: { w: number; h: number },
+  cellPx: number,
+): GeoRaster | null {
+  if (rings.length === 0) return null;
   const cell = Math.max(2, cellPx);
   const PAD = 2; // cells beyond the canvas so edge-touching blobs keep their rim
   const gx0 = -PAD * cell;
@@ -283,10 +304,87 @@ export function unionRings(
       }
     }
   }
+  return { grid, W, H, gx0, gy0, cell };
+}
 
-  // 2) boundary walk: for every unvisited boundary edge, follow the contour
-  // keeping the filled region on the RIGHT, emitting a vertex at each turn.
-  // Directions: 0=+x, 1=+y, 2=-x, 3=-y (grid-corner space, y down).
+/** Spatially-varying morphological OPENING on the raster (in place): erode by
+ *  radius(x,y), then dilate the survivors back by the same local radius. This
+ *  is the feature-scale generalization step — anything thinner than 2·radius
+ *  vanishes, everything else keeps its footprint — and because the radius
+ *  shrinks where importance is high, a narrow-but-important channel (the Lake
+ *  Union class) survives while peripheral slivers are wiped. Chebyshev chamfer
+ *  distance (two passes each way), deterministic. */
+export function morphOpen(r: GeoRaster, radiusPx: (x: number, y: number) => number): void {
+  const { grid, W, H, gx0, gy0, cell } = r;
+  const N = W * H;
+  const INF = 1 << 20;
+  // distance (in cells, Chebyshev) to the nearest EMPTY cell
+  const d = new Int32Array(N);
+  for (let i = 0; i < N; i++) d[i] = grid[i] ? INF : 0;
+  const relax = () => {
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (d[i] === 0) continue;
+        let m = d[i];
+        if (x > 0 && d[i - 1] + 1 < m) m = d[i - 1] + 1;
+        if (y > 0) {
+          const j = i - W;
+          if (d[j] + 1 < m) m = d[j] + 1;
+          if (x > 0 && d[j - 1] + 1 < m) m = d[j - 1] + 1;
+          if (x < W - 1 && d[j + 1] + 1 < m) m = d[j + 1] + 1;
+        }
+        d[i] = m;
+      }
+    }
+    for (let y = H - 1; y >= 0; y--) {
+      for (let x = W - 1; x >= 0; x--) {
+        const i = y * W + x;
+        if (d[i] === 0) continue;
+        let m = d[i];
+        if (x < W - 1 && d[i + 1] + 1 < m) m = d[i + 1] + 1;
+        if (y < H - 1) {
+          const j = i + W;
+          if (d[j] + 1 < m) m = d[j] + 1;
+          if (x > 0 && d[j - 1] + 1 < m) m = d[j - 1] + 1;
+          if (x < W - 1 && d[j + 1] + 1 < m) m = d[j + 1] + 1;
+        }
+        d[i] = m;
+      }
+    }
+  };
+  relax();
+  // per-cell erosion radius in CELLS (evaluated at the cell centre)
+  const kAt = (x: number, y: number): number => {
+    const rad = radiusPx(gx0 + (x + 0.5) * cell, gy0 + (y + 0.5) * cell);
+    return rad > 0 ? Math.round(rad / cell) : 0;
+  };
+  // erode: survivors are cells strictly deeper than their local radius
+  const kept = new Uint8Array(N);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (grid[i] && d[i] > kAt(x, y)) kept[i] = 1;
+    }
+  }
+  // dilate back: distance to the nearest KEPT cell, refill within the radius
+  for (let i = 0; i < N; i++) d[i] = kept[i] ? 0 : INF;
+  relax();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      grid[i] = grid[i] && d[i] <= kAt(x, y) ? 1 : 0;
+    }
+  }
+}
+
+/** Boundary walk over a raster: for every unvisited boundary edge, follow the
+ *  contour keeping the filled region on the RIGHT, emitting a vertex at each
+ *  turn. Output winding is consistent (outers and holes opposite), so nonzero
+ *  fill renders holes correctly.
+ *  Directions: 0=+x, 1=+y, 2=-x, 3=-y (grid-corner space, y down). */
+export function traceRaster(r: GeoRaster): Pt[][] {
+  const { grid, W, H, gx0, gy0, cell } = r;
   const at = (cx: number, cy: number): number => (cx < 0 || cy < 0 || cx >= W || cy >= H ? 0 : grid[cy * W + cx]);
   const visited = new Set<number>();
   const ekey = (cx: number, cy: number, dir: number): number => (cy * (W + 1) + cx) * 4 + dir;
@@ -384,33 +482,59 @@ export function stylizeRingsPathD(
   extent: { w: number; h: number },
 ): string {
   const areaThresh = style.simplifyPx * style.simplifyPx;
-  // Raster resolution: with an importance field the protected regions keep
-  // detail down to simplifyPx/√PROTECT_MAX — the raster must resolve finer
-  // than that (cell ≈ tol/5) or protection just preserves stair noise.
-  const cell = Math.min(14, Math.max(3, style.simplifyPx / (style.importance ? 5 : 2)));
-  const unified = unionRings(rings, extent, cell);
   const imp = style.importance;
-  // Protection factor >= 1 multiplying a point's effective significance:
-  // (1 + PROTECT·imp)² — squared because both knobs it guards are AREAS.
+  // Raster resolution: fine enough that the morphological opening's SMALL radii
+  // (protected regions) are resolvable — cell ≈ tol/5, floor 3, cap 8.
+  const cell = Math.min(8, Math.max(3, style.simplifyPx / 5));
+  const raster = rasterizeRings(rings, extent, cell);
+  if (!raster) return '';
+  // Feature-scale generalization: opening with radius tol/2, scaled DOWN by
+  // importance to ZERO at full importance — thin peripheral slivers vanish,
+  // while inside the dense core the geography's true shape stands (the VW pass
+  // still smooths its outline). QUADRATIC falloff: station kernels peak on the
+  // shores, so the middle of an important lake only sees imp ~0.5-0.7 — a
+  // linear falloff still erodes its 40-60px arms at strong sliders, and losing
+  // the arms fragments (then loses) the lake. (1-imp)² keeps mid-importance
+  // water intact and concentrates the full radius on the true periphery. This
+  // (not the cull) is what preserves Lake-Union-class water through the
+  // diagram modes.
+  morphOpen(raster, (x, y) => {
+    const v = imp ? imp(x, y) : 0;
+    const u = 1 - (v > 1 ? 1 : v < 0 ? 0 : v);
+    return (style.simplifyPx / 2) * u * u;
+  });
+  const unified = traceRaster(raster);
+  // VW protection factor >= 1 multiplying a vertex's effective significance:
+  // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW).
   const protect = (x: number, y: number): number => {
     if (!imp) return 1;
     const v = imp(x, y);
     const g = 1 + PROTECT * (v > 1 ? 1 : v < 0 ? 0 : v);
-    return Math.min(PROTECT_MAX, g * g);
+    return Math.min(PROTECT_MAX_VW, g * g);
   };
-  // A ring survives the cull when its area, boosted by the BEST protection any
-  // of its vertices enjoys, clears the floor — a lake needs only one shore
-  // touching the dense core to be a landmark worth keeping.
+  // Cull floor, importance-aware: at imp 0 the full minArea floor (isolated
+  // small blobs are noise); as the BEST importance along the ring rises the
+  // floor falls off quadratically to a dust floor — whatever the opening kept
+  // in the dense core IS the landmark set, and a lake system the opening
+  // fragmented at its channels must not lose its pieces one by one to an area
+  // test. One shore in the core keeps the lake. The dust floor scales with the
+  // tolerance ((0.6·tol)², so sub-landmark specks don't ride along) but is
+  // CAPPED at a canvas-relative landmark size — full importance must keep a
+  // Lake-Union-scale feature at EVERY slider position, or the strength slider
+  // quietly erases the exact landmarks the field exists to protect.
+  const sf = Math.min(extent.w, extent.h) / 2700;
+  const dust = Math.max(9 * cell * cell, Math.min(0.36 * areaThresh, 2600 * sf * sf));
   const cullOk = (ring: readonly Pt[], areaAbs: number): boolean => {
     if (areaAbs >= style.minAreaPx2) return true;
     if (!imp) return false;
     let best = 0;
     for (const p of ring) {
-      const g = protect(p[0], p[1]);
-      if (g > best) best = g;
-      if (areaAbs * best >= style.minAreaPx2) return true;
+      const v = imp(p[0], p[1]);
+      if (v > best) best = v;
+      if (best >= 1) break;
     }
-    return false;
+    const u = 1 - (best > 1 ? 1 : best < 0 ? 0 : best);
+    return areaAbs >= Math.max(dust, style.minAreaPx2 * u * u);
   };
   let d = '';
   for (const ring of unified) {
