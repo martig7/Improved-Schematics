@@ -1,10 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes } from './densityBoxWarp';
+import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp } from './densityBoxWarp';
+import type { BoxGraph, DenseBox } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
+import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
 
 const BOX = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+// The demand-warp tests use coordinates up to 450 (pinnedGraph's sparse chain),
+// which do not fit inside BOX (100×100). The warp box is arbitrary, so use a
+// dedicated 600×600 canvas for those tests.
+const DBOX = { minX: 0, minY: 0, maxX: 600, maxY: 600 };
 
 // numeric area magnification J = det(Jacobian) at p, via finite differences
 function jacDet(W: (p: Pixel) => Pixel, p: Pixel, h = 0.5): number {
@@ -163,4 +169,86 @@ test('mergeIntersectingBoxes: overlapping chain collapses to one bbox; disjoint 
 test('mergeIntersectingBoxes: empty and singleton inputs pass through', () => {
   assert.deepEqual(mergeIntersectingBoxes([]), []);
   assert.deepEqual(mergeIntersectingBoxes([{ x0: 1, y0: 2, x1: 3, y1: 4 }]), [{ x0: 1, y0: 2, x1: 3, y1: 4 }]);
+});
+
+// Helper: a JFK-shaped pinned cluster (gaps ~8px) connected off to a sparse line.
+function pinnedGraph(): BoxGraph {
+  const nodes: Pixel[] = [
+    [50, 50], [58, 50], [66, 50], [58, 58], [50, 58], // cluster
+    [30, 30], [150, 150], [300, 300], [450, 450],     // sparse chain
+  ];
+  const edges: [number, number][] = [
+    [0, 1], [1, 2], [1, 3], [3, 4], // cluster edges (~8px)
+    [0, 5], [2, 6], [6, 7], [7, 8], // outbound + sparse (>100px)
+  ];
+  return { nodes, edges };
+}
+const DOPTS = {
+  bins: 48, frac: 0.4, marginFrac: 1,
+  cellFromMedLen: (m: number) => Math.max(12, m / 1.6),
+  safety: 1.3, slack: 1.3, userMult: 1, expandMax: 10, maxGrowth: 8,
+};
+
+test('buildDemandBoxWarp: demanded expansion lifts a pinned cluster past the contraction need', () => {
+  const g = pinnedGraph();
+  const r = buildDemandBoxWarp([], g, DBOX, DOPTS); // no density samples: contraction oracle only
+  const medLen = medianEdgeLenPx(g);
+  const need = (DOPTS.cellFromMedLen(medLen) / 2) * DOPTS.slack;
+  // every formerly-short cluster edge comes out >= need
+  for (const [a, b] of [[0, 1], [1, 2], [1, 3], [3, 4]] as [number, number][]) {
+    const pa = r.warp(g.nodes[a]);
+    const pb = r.warp(g.nodes[b]);
+    const d = Math.sqrt((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2);
+    assert.ok(d >= need, `edge ${a}-${b}: ${d.toFixed(1)} < need ${need.toFixed(1)}`);
+  }
+});
+
+test('buildDemandBoxWarp: growth is real (canvas grows, no claw-back) and capped by maxGrowth', () => {
+  const g = pinnedGraph();
+  const free = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, maxGrowth: 8 });
+  assert.ok(free.growthX >= 1 && free.growthY >= 1);
+  // warped canvas corners span growth × canvas exactly
+  const tl = free.warp([DBOX.minX, DBOX.minY]);
+  const br = free.warp([DBOX.maxX, DBOX.maxY]);
+  assert.ok(Math.abs((br[0] - tl[0]) - (DBOX.maxX - DBOX.minX) * free.growthX) < 1e-6);
+  assert.ok(Math.abs((br[1] - tl[1]) - (DBOX.maxY - DBOX.minY) * free.growthY) < 1e-6);
+  // capping: maxGrowth 1 → canvas-preserving, and the cap shrinks the result globally
+  const capped = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, maxGrowth: 1 });
+  assert.equal(capped.growthX, 1);
+  assert.equal(capped.growthY, 1);
+});
+
+test('buildDemandBoxWarp: no short edges + no density boxes → identity, growth 1', () => {
+  const g: BoxGraph = { nodes: [[10, 10], [500, 500]], edges: [[0, 1]] };
+  const r = buildDemandBoxWarp([], g, DBOX, DOPTS);
+  assert.deepEqual(r.warp([123, 456]), [123, 456]);
+  assert.equal(r.growthX, 1);
+  assert.equal(r.growthY, 1);
+});
+
+test('buildDemandBoxWarp: userMult magnifies an already-clear density box aesthetically', () => {
+  // dense SAMPLES cluster whose EDGES already clear the threshold: survival demand ~1.
+  const g: BoxGraph = { nodes: [[45, 45], [55, 55], [200, 200]], edges: [[0, 1], [1, 2]] };
+  const samples = clusterAt(50, 50, 200);
+  const base = buildDemandBoxWarp(samples, g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, userMult: 1 });
+  const boosted = buildDemandBoxWarp(samples, g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, userMult: 2 });
+  // userMult 2 grows the box's span more than userMult 1
+  const span = (r: { warp: WarpFn }) => r.warp([60, 60])[0] - r.warp([40, 40])[0];
+  assert.ok(span(boosted) > span(base));
+});
+
+test('buildDemandBoxWarp: deterministic; out reports boxes (output space) and per-box expands', () => {
+  const g = pinnedGraph();
+  const o1: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const o2: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const r1 = buildDemandBoxWarp([], g, DBOX, DOPTS, o1);
+  const r2 = buildDemandBoxWarp([], g, DBOX, DOPTS, o2);
+  assert.deepEqual(r1.warp([77, 88]), r2.warp([77, 88]));
+  assert.deepEqual(o1.boxes, o2.boxes);
+  assert.deepEqual(o1.expands, o2.expands);
+  assert.equal(o1.boxes!.length, o1.expands!.length);
+  assert.ok(o1.expands!.every((e) => e >= 1));
+  // the cluster's box in OUTPUT space contains the warped cluster nodes
+  const p = r1.warp([58, 54]);
+  assert.ok(o1.boxes!.some((b) => p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1));
 });

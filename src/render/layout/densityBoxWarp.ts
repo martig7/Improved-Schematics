@@ -21,7 +21,14 @@
 // single uniform scale) so the warped canvas FILLS the canvas instead of
 // letterboxing — a uniform scale leaves a bare-land margin that renders as
 // "black edges" round the map.
-// Determinism: + − × ÷ and min only → bit-identical cross-V8.
+//
+// buildDemandBoxWarp (the demand-driven builder) supersedes the two-stage
+// saturate/normalize scheme above: boxes come from density peaks ∪ predicted
+// octi contraction, each box is expanded by exactly what its OWN edges need to
+// survive contraction (per-box strengths, not one global `expand`), and the
+// resulting growth is KEPT by growing the output canvas (up to `maxGrowth`)
+// instead of normalizing it back to the input canvas.
+// Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
@@ -56,7 +63,7 @@ export function medianEdgeLenPx(g: BoxGraph): number {
 
 /** Mean incident-edge length per node (Infinity for isolated nodes) — the same
  *  "neighbour gap" statistic renderGeographic uses for warp weights. */
-// used by buildDemandBoxWarp (next task)
+// used by buildDemandBoxWarp
 function nodeGaps(g: BoxGraph): number[] {
   const sum = new Float64Array(g.nodes.length);
   const cnt = new Float64Array(g.nodes.length);
@@ -343,4 +350,172 @@ export function buildSepBoxWarp(
   // is correct for the full sep+box warp without further mapping.
   const bx = buildBoxExpandWarp(warpedSamples, box, boxOpts, out);
   return (p) => bx(sep(p));
+}
+
+export interface DemandOptions extends DensityWarp2DOptionsLike {
+  /** Density-oracle cutoff (fraction of peak), as findDenseBoxes. Default 0.4. */
+  frac?: number;
+  /** Saturation margin as a fraction of box half-extent (as before). Default 1. */
+  marginFrac?: number;
+  /** Derive the octi cellSize estimate ĉ from a median edge length — supplied by
+   *  the caller so the divisor regime matches the real layout. */
+  cellFromMedLen: (medLenPx: number) => number;
+  /** Safety factor on the contraction threshold ĉ/2 (ĉ is an estimate). Default 1.3. */
+  safety?: number;
+  /** Headroom above bare survival for the demand target. Default 1.3. */
+  slack?: number;
+  /** User aesthetic multiplier on every box's demand (Box warp slider). Default 1. */
+  userMult?: number;
+  /** Per-box expansion ceiling. Default 10. */
+  expandMax?: number;
+  /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2. */
+  maxGrowth?: number;
+}
+
+export interface DemandWarpResult {
+  warp: WarpFn;
+  /** Capped per-axis canvas growth (>= 1): the output canvas is growth × input canvas. */
+  growthX: number;
+  growthY: number;
+}
+
+/** Per-box demand: the expansion that lifts the box's median node gap to the
+ *  demand target `need` (= ĉ/2 · slack), times the user's aesthetic multiplier.
+ *  A box whose gaps already clear the target gets ~userMult (aesthetics only). */
+function boxDemand(
+  b: DenseBox,
+  nodes: readonly Pixel[],
+  gaps: readonly number[],
+  need: number,
+  userMult: number,
+  expandMax: number,
+): number {
+  const inside: number[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const p = nodes[i];
+    if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 && Number.isFinite(gaps[i]) && gaps[i] > 0)
+      inside.push(gaps[i]);
+  }
+  if (inside.length === 0) return Math.min(expandMax, Math.max(1, userMult));
+  inside.sort((x, y) => x - y);
+  const gMed = inside[inside.length >> 1];
+  return Math.min(expandMax, Math.max(1, userMult * Math.max(1, need / gMed)));
+}
+
+/** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths,
+ *  growing the canvas by min(raw growth, maxGrowth) per axis instead of
+ *  normalizing back to the input canvas. Top-left anchored: [minX..maxX] maps
+ *  to [minX .. minX + W·growthX] (the caller's content refit re-frames anyway). */
+function buildWarpFromBoxes(
+  boxes: DenseBox[],
+  strengths: readonly number[], // expand_b - 1, per box
+  box: WarpBox,
+  marginFrac: number,
+  maxGrowth: number,
+  out?: { boxes?: DenseBox[] },
+): DemandWarpResult {
+  const identity: WarpFn = (p) => [p[0], p[1]];
+  if (boxes.length === 0 || strengths.every((s) => s === 0)) {
+    if (out) out.boxes = boxes.map((b) => ({ ...b }));
+    return { warp: identity, growthX: 1, growthY: 1 };
+  }
+  const bs = boxes.map((b, i) => {
+    const cx = (b.x0 + b.x1) / 2;
+    const cy = (b.y0 + b.y1) / 2;
+    const hx = (b.x1 - b.x0) / 2;
+    const hy = (b.y1 - b.y0) / 2;
+    const m = Math.max(1, marginFrac * Math.max(hx, hy));
+    return { cx, cy, hx, hy, m, s: strengths[i] };
+  });
+  // Same smooth saturating odd-symmetric push as buildBoxExpandWarp (slope in
+  // [0,1] ⇒ each s·push term is monotone ⇒ the sum is monotone per axis ⇒
+  // fold-free, det >= 1).
+  const push = (t: number, h: number, m: number): number => {
+    const a = t < 0 ? -t : t;
+    let p: number;
+    if (a <= h) p = a;
+    else if (a <= h + m) { const u = a - h; p = a - (u * u) / (2 * m); }
+    else p = h + m / 2;
+    return t < 0 ? -p : p;
+  };
+  const raw = (px: number, py: number): Pixel => {
+    let ux = 0;
+    let uy = 0;
+    for (const b of bs) {
+      ux += b.s * push(px - b.cx, b.hx, b.m);
+      uy += b.s * push(py - b.cy, b.hy, b.m);
+    }
+    return [px + ux, py + uy];
+  };
+  // Growth instead of claw-back: the raw push only expands (monotone, det >= 1),
+  // so the warped canvas corners give the raw growth; cap per axis at maxGrowth.
+  // sx = 1 while demand fits (the room is REAL); < 1 only past the cap (global,
+  // even shrink — never a ring).
+  const xl = raw(box.minX, box.minY)[0];
+  const xr = raw(box.maxX, box.minY)[0];
+  const yt = raw(box.minX, box.minY)[1];
+  const yb = raw(box.minX, box.maxY)[1];
+  const W = box.maxX - box.minX;
+  const H = box.maxY - box.minY;
+  const rawGx = (xr - xl) / W;
+  const rawGy = (yb - yt) / H;
+  const growthX = Math.min(rawGx, maxGrowth);
+  const growthY = Math.min(rawGy, maxGrowth);
+  const sx = growthX / rawGx;
+  const sy = growthY / rawGy;
+  const warp: WarpFn = (p) => {
+    const q = raw(p[0], p[1]);
+    return [box.minX + (q[0] - xl) * sx, box.minY + (q[1] - yt) * sy];
+  };
+  if (out) {
+    out.boxes = boxes.map((b) => {
+      const a = warp([b.x0, b.y0]);
+      const c = warp([b.x1, b.y1]);
+      return { x0: a[0], y0: a[1], x1: c[0], y1: c[1] };
+    });
+  }
+  return { warp, growthX, growthY };
+}
+
+/** Demand-driven dense-box warp: boxes from density peaks ∪ predicted octi
+ *  contraction, each expanded by exactly what its edges need to survive
+ *  contraction (× userMult), growth absorbed by the canvas up to maxGrowth. */
+export function buildDemandBoxWarp(
+  samples: readonly Pixel[],
+  g: BoxGraph,
+  box: WarpBox,
+  opts: DemandOptions,
+  out?: { boxes?: DenseBox[]; expands?: number[] },
+): DemandWarpResult {
+  const safety = opts.safety ?? 1.3;
+  const slack = opts.slack ?? 1.3;
+  const userMult = opts.userMult ?? 1;
+  const expandMax = opts.expandMax ?? 10;
+  const maxGrowth = opts.maxGrowth ?? 2;
+  const marginFrac = opts.marginFrac ?? 1;
+
+  const medLen = medianEdgeLenPx(g);
+  const cell = opts.cellFromMedLen(medLen);
+  const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
+  const contraction = findContractionBoxes(g, (cell / 2) * safety);
+  const boxes = mergeIntersectingBoxes([...density, ...contraction]);
+  if (boxes.length === 0) {
+    if (out) { out.boxes = []; out.expands = []; }
+    return { warp: (p) => [p[0], p[1]], growthX: 1, growthY: 1 };
+  }
+
+  const gaps = nodeGaps(g);
+  const need = (cell / 2) * slack;
+  const expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
+  const result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, out);
+  if (out) out.expands = expands;
+
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+    const ex = expands.map((e) => e.toFixed(2)).join(',');
+    console.error(
+      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length}) ` +
+      `cell=${cell.toFixed(1)} need=${need.toFixed(1)} expands=[${ex}] growth=${result.growthX.toFixed(2)},${result.growthY.toFixed(2)} (cap=${maxGrowth})`,
+    );
+  }
+  return result;
 }
