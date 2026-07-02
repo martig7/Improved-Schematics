@@ -581,3 +581,23 @@ export function buildDemandBoxWarp(
   }
   return result;
 }
+
+/** Separable warp (global magnification) composed with the demand-driven box
+ *  warp (local rectilinear room). Boxes are found — and demands measured — in
+ *  SEPARABLE-WARPED space, so both the samples and the graph advect through
+ *  `sep` first. Composition of fold-free maps is fold-free; growth comes only
+ *  from the box layer (the separable CDF maps the canvas onto itself). */
+export function buildSepDemandBoxWarp(
+  samples: readonly Pixel[],
+  g: BoxGraph,
+  box: WarpBox,
+  sepOpts: DensityWarpOptions,
+  boxOpts: DemandOptions,
+  out?: { boxes?: DenseBox[]; expands?: number[] },
+): DemandWarpResult {
+  const sep = buildDensityWarp(samples, box, sepOpts);
+  const warpedSamples = samples.map((s) => sep([s[0], s[1]]) as Pixel);
+  const warpedGraph: BoxGraph = { nodes: g.nodes.map((p) => sep([p[0], p[1]]) as Pixel), edges: g.edges };
+  const bx = buildDemandBoxWarp(warpedSamples, warpedGraph, box, boxOpts, out);
+  return { warp: (p) => bx.warp(sep(p)), growthX: bx.growthX, growthY: bx.growthY };
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp } from './densityBoxWarp';
+import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
 import type { BoxGraph, DenseBox } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
@@ -318,4 +318,16 @@ test('buildDemandBoxWarp: refinement — post-warp gaps in every box clear the R
       assert.ok(gapsIn[gapsIn.length >> 1] >= needAfter, `slack ${slack}: box median gap ${gapsIn[gapsIn.length >> 1]} < ${needAfter}`);
     }
   }
+});
+
+test('buildSepDemandBoxWarp: composes separable + demand warp; growth passes through', () => {
+  const g = pinnedGraph();
+  const s = clusterAt(58, 54, 200);
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const r = buildSepDemandBoxWarp(s, g, DBOX, { alpha: 0.8, minScale: 1 }, { ...DOPTS, maxGrowth: 8 }, o);
+  assert.ok(r.growthX >= 1 && r.growthY >= 1);
+  assert.ok(o.boxes!.length >= 1);
+  // deterministic (and independent of whether `out` was passed)
+  const r2 = buildSepDemandBoxWarp(s, g, DBOX, { alpha: 0.8, minScale: 1 }, { ...DOPTS, maxGrowth: 8 });
+  assert.deepEqual(r.warp([61, 47]), r2.warp([61, 47]));
 });
