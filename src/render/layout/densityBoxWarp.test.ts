@@ -454,18 +454,19 @@ test('buildDemandBoxWarp: capsule box nested in a density box compounds fold-fre
   const samples = clusterAt(100, 100, 400);
   const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts: [6, 6, 1, 1], margin: 4, casing: 8 } };
   const rr = buildDemandBoxWarp(samples, g, DBOX, opts);
-  // fold-free: strict per-axis monotonicity over a coarse grid
-  for (let y = 0; y <= 600; y += 30) {
+  // fold-free: strict per-axis monotonicity, step 15 so the grid samples THROUGH
+  // the capsule push zone (pair at x 90..115), not just the wider density box
+  for (let y = 0; y <= 600; y += 15) {
     let px = -Infinity;
-    for (let x = 0; x <= 600; x += 30) {
+    for (let x = 0; x <= 600; x += 15) {
       const q = rr.warp([x, y])[0];
       assert.ok(q > px, `x-monotonicity broke at ${x},${y}`);
       px = q;
     }
   }
-  for (let x = 0; x <= 600; x += 30) {
+  for (let x = 0; x <= 600; x += 15) {
     let py = -Infinity;
-    for (let y = 0; y <= 600; y += 30) {
+    for (let y = 0; y <= 600; y += 15) {
       const q = rr.warp([x, y])[1];
       assert.ok(q > py, `y-monotonicity broke at ${x},${y}`);
       py = q;

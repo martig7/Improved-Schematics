@@ -532,13 +532,13 @@ export function buildDemandBoxWarp(
   // Capsule pair targets seed on top of the contraction-floor demand: the
   // expansion that lifts each pair to its required separation (× userMult).
   expands = expands.map((e, i) => {
-    let out = e;
+    let seed = e; // (not `out` — that's the output-sink parameter used below)
     for (const t of boxes[i].pairs) {
       const pa = g.nodes[t.a], pb = g.nodes[t.b];
       const d = Math.sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]));
-      if (d > 0) out = Math.max(out, Math.min(expandMax, Math.max(1, userMult * Math.max(1, t.required / d))));
+      if (d > 0) seed = Math.max(seed, Math.min(expandMax, Math.max(1, userMult * Math.max(1, t.required / d))));
     }
-    return out;
+    return seed;
   });
   // Refinement needs the output-space boxes even when the caller passed no `out`.
   const oref: { boxes?: DenseBox[] } = out ?? {};
