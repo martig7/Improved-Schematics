@@ -1960,8 +1960,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
           }
         }
-        // EXPERIMENT guard: decline a slide whose resulting hull would cross
-        // another drawn capsule (the clone already carries the slid corners).
+        // Hull guard (OCTI_CAPSULE_GUARD=0 disables): decline a slide whose
+        // resulting hull would cross another drawn capsule (the clone already
+        // carries the slid corners).
         if (capGuardOn && st.marks.length >= 2) {
           const clash = capsHullClash(st, capsHullOf(clone));
           if (clash) {
@@ -2269,8 +2270,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined,
           }));
           if (!spineOctilinear(clone)) return false;
-          // EXPERIMENT guard: a corridor-spread shift must not drag this capsule
-          // across another drawn capsule's hull (same veto as applySlide's).
+          // Hull guard (OCTI_CAPSULE_GUARD=0 disables): a corridor-spread shift
+          // must not drag this capsule across another drawn capsule's hull
+          // (same veto as applySlide's).
           if (capGuardOn && st.marks.length >= 2 && capsHullClash(st, capsHullOf(clone))) return false;
           for (const mk of st.marks) {
             mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
