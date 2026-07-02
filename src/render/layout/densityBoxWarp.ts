@@ -35,6 +35,83 @@ export interface DenseBox {
   y1: number;
 }
 
+/** The projected transit graph, for the contraction oracle: node positions in
+ *  the warp's INPUT pixel space plus edges as index pairs into `nodes`. */
+export interface BoxGraph {
+  nodes: readonly Pixel[];
+  edges: readonly [number, number][];
+}
+
+const edgeLen = (g: BoxGraph, a: number, b: number): number => {
+  const dx = g.nodes[a][0] - g.nodes[b][0];
+  const dy = g.nodes[a][1] - g.nodes[b][1];
+  return Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded (cross-V8 safe)
+};
+
+/** Median projected edge length (0 when the graph has no edges). */
+export function medianEdgeLenPx(g: BoxGraph): number {
+  const ls = g.edges.map(([a, b]) => edgeLen(g, a, b)).sort((x, y) => x - y);
+  return ls.length ? ls[ls.length >> 1] : 0;
+}
+
+/** Mean incident-edge length per node (Infinity for isolated nodes) — the same
+ *  "neighbour gap" statistic renderGeographic uses for warp weights. */
+// used by buildDemandBoxWarp (next task)
+function nodeGaps(g: BoxGraph): number[] {
+  const sum = new Float64Array(g.nodes.length);
+  const cnt = new Float64Array(g.nodes.length);
+  for (const [a, b] of g.edges) {
+    const l = edgeLen(g, a, b);
+    sum[a] += l; cnt[a]++;
+    sum[b] += l; cnt[b]++;
+  }
+  return [...sum].map((s, i) => (cnt[i] ? s / cnt[i] : Infinity));
+}
+
+/** Contraction oracle: cluster nodes joined by edges shorter than `threshold`
+ *  (the predicted octi contraction length ĉ/2 × safety) via union-find, and
+ *  bound each cluster of >= 2 nodes, padded by threshold/2 per side so the
+ *  expansion push has extent even for collinear pairs. Catches small pinned
+ *  clusters (JFK's 8px terminals) that are invisible to fraction-of-peak
+ *  density. Deterministic: plain array iteration + arithmetic. */
+export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[] {
+  const parent = g.nodes.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+  };
+  const touched = new Uint8Array(g.nodes.length);
+  for (const [a, b] of g.edges) {
+    if (edgeLen(g, a, b) >= threshold) continue;
+    touched[a] = 1;
+    touched[b] = 1;
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  }
+  const byRoot = new Map<number, DenseBox & { n: number }>();
+  for (let i = 0; i < g.nodes.length; i++) {
+    if (!touched[i]) continue;
+    const r = find(i);
+    const p = g.nodes[i];
+    const cur = byRoot.get(r);
+    if (!cur) byRoot.set(r, { x0: p[0], y0: p[1], x1: p[0], y1: p[1], n: 1 });
+    else {
+      if (p[0] < cur.x0) cur.x0 = p[0];
+      if (p[0] > cur.x1) cur.x1 = p[0];
+      if (p[1] < cur.y0) cur.y0 = p[1];
+      if (p[1] > cur.y1) cur.y1 = p[1];
+      cur.n++;
+    }
+  }
+  const pad = threshold / 2;
+  const boxes: DenseBox[] = [];
+  for (const b of byRoot.values()) {
+    if (b.n < 2) continue;
+    boxes.push({ x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad });
+  }
+  return boxes;
+}
+
 export interface BoxWarpOptions extends DensityWarp2DOptionsLike {
   /** Cutoff as a fraction of the PEAK excess density (0–1): cells above
    *  frac·max are "dense". Threshold on the peak, NOT a percentile over all

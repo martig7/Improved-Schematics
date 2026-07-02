@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp } from './densityBoxWarp';
+import { findDenseBoxes, buildBoxExpandWarp, buildSepBoxWarp, findContractionBoxes } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { Pixel } from './types';
 
@@ -123,4 +123,27 @@ test('out.boxes: empty with no cluster; populated (and ordered) for sep+box', ()
   buildSepBoxWarp(clusterAt(50, 50, 200), BOX, { alpha: 0.8 }, { bins: 48, frac: 0.4, expand: 3, marginFrac: 2 }, sepOut);
   assert.ok(sepOut.boxes && sepOut.boxes.length >= 1, 'sep+box surfaces the dense box');
   for (const b of sepOut.boxes!) assert.ok(b.x1 > b.x0 && b.y1 > b.y0, 'axis-aligned + ordered');
+});
+
+test('findContractionBoxes: pinned sub-threshold cluster gets a box, spread nodes do not', () => {
+  // 5 nodes 8px apart (JFK-shaped) + 3 well-spread nodes.
+  const nodes: Pixel[] = [[50, 50], [58, 50], [66, 50], [58, 58], [50, 58], [200, 200], [400, 200], [400, 400]];
+  const edges: [number, number][] = [[0, 1], [1, 2], [1, 3], [3, 4], [5, 6], [6, 7]];
+  const boxes = findContractionBoxes({ nodes, edges }, 20);
+  assert.equal(boxes.length, 1);
+  const b = boxes[0];
+  // covers the cluster, padded by threshold/2 = 10px per side
+  assert.ok(b.x0 <= 40 && b.x1 >= 76 && b.y0 <= 40 && b.y1 >= 68);
+});
+
+test('findContractionBoxes: no short edges → no boxes; isolated close nodes without an edge → no boxes', () => {
+  const nodes: Pixel[] = [[0, 0], [100, 0], [5, 5]]; // node 2 is near node 0 but NOT connected
+  const edges: [number, number][] = [[0, 1]];
+  assert.deepEqual(findContractionBoxes({ nodes, edges }, 20), []);
+});
+
+test('findContractionBoxes: two separate clusters → two boxes', () => {
+  const nodes: Pixel[] = [[10, 10], [15, 10], [300, 300], [305, 300]];
+  const edges: [number, number][] = [[0, 1], [2, 3]];
+  assert.equal(findContractionBoxes({ nodes, edges }, 20).length, 2);
 });
