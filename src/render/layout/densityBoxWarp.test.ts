@@ -417,3 +417,58 @@ test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through'
   assert.equal(mergeDemandBoxes([DB(0, 0, 10, 10, 'density'), DB(50, 50, 60, 60, 'contraction')]).length, 2);
   assert.deepEqual(mergeDemandBoxes([]), []);
 });
+
+test('buildDemandBoxWarp: capsule oracle lifts a close interchange pair to its required separation', () => {
+  // two interchanges 30px apart needing ~48px, on an otherwise sparse graph
+  const g: BoxGraph = {
+    nodes: [[200, 200], [230, 200], [30, 30], [560, 560], [560, 30], [30, 560]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const lineCounts = [7, 6, 1, 1, 1, 1];
+  // Small fixed cell so the CONTRACTION oracle boxes nothing here (30px pair is
+  // above its ~8px threshold) — the capsule oracle is the sole driver, so the
+  // assertion actually exercises the capsule path (not the contraction path).
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts, margin: 4, casing: 8 } };
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const rr = buildDemandBoxWarp([], g, DBOX, opts, o);
+  const required = ((7 - 1) * 5.5) / 2 + 4 + (((6 - 1) * 5.5) / 2 + 4) + 8;
+  const pa = rr.warp(g.nodes[0]);
+  const pb = rr.warp(g.nodes[1]);
+  const d = Math.sqrt((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2);
+  assert.ok(d >= required, `pair separation ${d.toFixed(1)} < required ${required.toFixed(1)}`);
+});
+
+test('buildDemandBoxWarp: no capsule opts → behavior unchanged (existing demand path)', () => {
+  const g = pinnedGraph();
+  const withOpt = buildDemandBoxWarp([], g, DBOX, DOPTS);
+  const noCaps = buildDemandBoxWarp([], g, DBOX, { ...DOPTS });
+  assert.deepEqual(withOpt.warp([123, 234]), noCaps.warp([123, 234]));
+});
+
+test('buildDemandBoxWarp: capsule box nested in a density box compounds fold-free', () => {
+  // dense sample cluster spanning ~(40..160)² CONTAINING an interchange pair
+  const g: BoxGraph = {
+    nodes: [[90, 100], [115, 100], [30, 30], [560, 560]],
+    edges: [[0, 1], [0, 2], [1, 3]],
+  };
+  const samples = clusterAt(100, 100, 400);
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts: [6, 6, 1, 1], margin: 4, casing: 8 } };
+  const rr = buildDemandBoxWarp(samples, g, DBOX, opts);
+  // fold-free: strict per-axis monotonicity over a coarse grid
+  for (let y = 0; y <= 600; y += 30) {
+    let px = -Infinity;
+    for (let x = 0; x <= 600; x += 30) {
+      const q = rr.warp([x, y])[0];
+      assert.ok(q > px, `x-monotonicity broke at ${x},${y}`);
+      px = q;
+    }
+  }
+  for (let x = 0; x <= 600; x += 30) {
+    let py = -Infinity;
+    for (let y = 0; y <= 600; y += 30) {
+      const q = rr.warp([x, y])[1];
+      assert.ok(q > py, `y-monotonicity broke at ${x},${y}`);
+      py = q;
+    }
+  }
+});

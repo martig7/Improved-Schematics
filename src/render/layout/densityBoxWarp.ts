@@ -187,8 +187,10 @@ export function findCapsuleBoxes(
 ): DemandBox[] {
   const margin = o.margin ?? 4;
   const casing = o.casing ?? 8;
-  const need = (i: number): number =>
-    (lineCounts[i] ?? 1) >= 2 ? (((lineCounts[i] ?? 1) - 1) * o.spacing) / 2 + margin : 0;
+  const need = (i: number): number => {
+    const lc = lineCounts[i] ?? 1;
+    return lc >= 2 ? ((lc - 1) * o.spacing) / 2 + margin : 0;
+  };
   const idx: number[] = [];
   let maxNeed = 0;
   for (let i = 0; i < g.nodes.length; i++) {
@@ -378,6 +380,13 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   expandMax?: number;
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2. */
   maxGrowth?: number;
+  /** Capsule-demand oracle inputs (optional — omitted by unit-level callers
+   *  and dev tools that have no marker model; the oracle then doesn't run). */
+  capsule?: CapsuleOracleOptions & {
+    /** Per-g.nodes-index stopping-line estimate (lines through the node —
+     *  an upper bound on stop marks; slack-friendly). */
+    lineCounts: readonly number[];
+  };
 }
 
 export interface DemandWarpResult {
@@ -506,7 +515,12 @@ export function buildDemandBoxWarp(
   const cell = opts.cellFromMedLen(medLen);
   const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
   const contraction = findContractionBoxes(g, (cell / 2) * safety);
-  const boxes = mergeIntersectingBoxes([...density, ...contraction]);
+  const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
+  const boxes = mergeDemandBoxes([
+    ...density.map((b) => ({ ...b, kind: 'density' as const, pairs: [] })),
+    ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
+    ...capsule,
+  ]);
   if (boxes.length === 0) {
     if (out) { out.boxes = []; out.expands = []; }
     return { warp: (p) => [p[0], p[1]], growthX: 1, growthY: 1 };
@@ -515,6 +529,17 @@ export function buildDemandBoxWarp(
   const gaps = nodeGaps(g);
   const need = (cell / 2) * slack;
   let expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
+  // Capsule pair targets seed on top of the contraction-floor demand: the
+  // expansion that lifts each pair to its required separation (× userMult).
+  expands = expands.map((e, i) => {
+    let out = e;
+    for (const t of boxes[i].pairs) {
+      const pa = g.nodes[t.a], pb = g.nodes[t.b];
+      const d = Math.sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]));
+      if (d > 0) out = Math.max(out, Math.min(expandMax, Math.max(1, userMult * Math.max(1, t.required / d))));
+    }
+    return out;
+  });
   // Refinement needs the output-space boxes even when the caller passed no `out`.
   const oref: { boxes?: DenseBox[] } = out ?? {};
   let result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
@@ -548,35 +573,53 @@ export function buildDemandBoxWarp(
       ls.sort((x, y) => x - y);
       return ls.length ? ls[ls.length >> 1] : Infinity; // no inside edges → nothing to clear
     };
+    // Worst-of evaluation: every box carries the contraction floor (inside-
+    // edge median vs the CURRENT global threshold), and capsule boxes add
+    // pair-separation targets (CONSTANT need — capsule size doesn't move with
+    // the warp). The secant solves each box against its worst violator; the
+    // per-box `need` is now part of the secant state because pair needs and
+    // the contraction threshold evolve differently.
+    const evalBox = (i: number, bbox: DenseBox, nodes: readonly Pixel[], needFloor: number): { gap: number; need: number } => {
+      let gap = gapInBox(bbox, nodes);
+      let needV = needFloor;
+      let worst = Number.isFinite(gap) && gap > 0 ? needV / gap : 0;
+      for (const t of boxes[i].pairs) {
+        const pa = nodes[t.a], pb = nodes[t.b];
+        const dx = pa[0] - pb[0], dy = pa[1] - pb[1];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const ratio = d > 0 ? t.required / d : Infinity;
+        if (ratio > worst) { worst = ratio; gap = d; needV = t.required; }
+      }
+      return { gap, need: needV };
+    };
     // Previous secant point per box: the UNWARPED state (expand 1, input-space box).
+    let prev = boxes.map((b, i) => evalBox(i, b, g.nodes, need));
     let ePrev = boxes.map(() => 1);
-    let gapPrev = boxes.map((b) => gapInBox(b, g.nodes));
-    let needPrev = need;
     for (let pass = 0; pass < 4; pass++) {
       const advected = g.nodes.map((p) => result.warp([p[0], p[1]]) as Pixel);
       const needAfter = (opts.cellFromMedLen(medianEdgeLenPx({ nodes: advected, edges: g.edges })) / 2) * slack;
-      const gapNow = boxes.map((_, i) => gapInBox(oref.boxes![i], advected));
+      const now = boxes.map((_, i) => evalBox(i, oref.boxes![i], advected, needAfter));
       const eNext = expands.map((e, i) => {
-        const gap = gapNow[i];
-        if (!Number.isFinite(gap) || gap >= needAfter) return e; // cleared
-        const margin = needAfter * 0.05; // headroom for the affine-model error
+        const { gap, need: needV } = now[i];
+        if (!Number.isFinite(gap) || gap >= needV) return e; // cleared
+        const margin = needV * 0.05; // headroom for the affine-model error
         // (the two 1e-9 guards below are just "<= 0 with an fp cushion";
         // scale-independent — the guarded deltas are far above 1e-9 whenever
         // a real step happened.)
         const de = e - ePrev[i];
-        if (de <= 1e-9) return Math.min(expandMax, (e * (needAfter + margin)) / gap); // no slope yet: proportional seed
-        const denom = (gap - gapPrev[i]) - (needAfter - needPrev);
+        if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
+        const denom = (gap - prev[i].gap) - (needV - prev[i].need);
         // denom <= 0: the need rises at least as fast as this box's gap — the
         // target is out of reach of expansion alone; jump to the ceiling (the
         // growth cap then freezes the median so the gap can catch up).
         if (denom <= 1e-9) return expandMax;
-        const target = e + ((needAfter + margin - gap) * de) / denom;
+        const target = e + ((needV + margin - gap) * de) / denom;
         return Math.min(expandMax, Math.max(e, target));
       });
       // No progress — every box either cleared or sits saturated at the
       // ceiling: another pass would rebuild bit-identically, so stop.
       if (eNext.every((e, i) => e === expands[i])) break;
-      ePrev = expands; gapPrev = gapNow; needPrev = needAfter;
+      ePrev = expands; prev = now;
       expands = eNext;
       result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
     }
@@ -586,7 +629,7 @@ export function buildDemandBoxWarp(
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
     const ex = expands.map((e) => e.toFixed(2)).join(',');
     console.error(
-      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length}) ` +
+      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length} capsule=${capsule.length}) ` +
       `cell=${cell.toFixed(1)} need=${need.toFixed(1)} expands=[${ex}] growth=${result.growthX.toFixed(2)},${result.growthY.toFixed(2)} (cap=${maxGrowth})`,
     );
   }
