@@ -86,15 +86,21 @@ export interface SchematicOptions {
    *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher = more
    *  realistic courses; 0 = freely octilinear. Default 0.05. */
   geographicAffinity?: number;
-  /** Smoothed mode only: box-warp strength — the LOCAL dense-core expansion
-   *  factor (densityBoxWarp `expand`, ≥1). Higher gives crowded interchanges more
-   *  rectilinear room (declutters dense hubs) at the cost of geographic
-   *  faithfulness near them. Default 4. Pairs with boxGrowth (below) so the
-   *  expanded cores grow the map rather than compress the surround. */
+  /** Smoothed mode only: box-warp strength — the demand MULTIPLIER on top of
+   *  each dense box's survival need (densityBoxWarp `userMult`, ≥0). 1 = expand
+   *  each box by exactly what its edges need to clear the octi contraction
+   *  threshold, no more; higher adds aesthetic magnification (more rectilinear
+   *  room, decluttering dense hubs) at the cost of geographic faithfulness near
+   *  them; the demand formula clamps at >= 1 internally, so values below 1 only
+   *  soften the aesthetic headroom, never revoke survival room. Default 1.
+   *  Pairs with boxGrowth (below) so the expanded cores grow the map rather
+   *  than compress the surround. */
   boxExpand?: number;
-  /** Smoothed mode only: how much the box warp may grow the overall map (≥1; the
-   *  densityBoxWarp `growthCap`). Raised alongside boxExpand so stronger core
-   *  expansion adds room instead of crushing the far field. Default 1.2. */
+  /** Smoothed mode only: the MAX per-axis canvas growth the box warp may use to
+   *  absorb its demanded expansion (≥1; densityBoxWarp `maxGrowth`). Demand
+   *  beyond this cap shrinks back globally instead of growing the canvas
+   *  further. Raised alongside boxExpand so stronger core expansion adds room
+   *  instead of crushing the far field. Default 2. */
   boxGrowth?: number;
   /** Smoothed mode only: the box-warp density CUTOFF (densityBoxWarp `frac`, 0–1) —
    *  a cell counts as "dense" (and joins a warp box) when its smoothed density is at

@@ -82,14 +82,16 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // Geographic-course affinity: realistic (left) = stronger course-keeping (up to
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
-// Box-warp strength: the LOCAL dense-core expansion (densityBoxWarp). 0 (center)
-// = the tuned default (expand 6 / growth 1.5). MULTIPLICATIVE in the slider
-// position (each step scales by a constant), so the control is symmetric and
-// uses its full range: right (stylized) magnifies crowded hubs up to expand 36 /
-// growth 4.5 (box-rescue + the box density cutoff keep that strength usable);
-// left (realistic) eases the box warp toward off (expand → 1). [-1, +1].
-const boxExpandFromPos = (p: number) => Math.max(1, 6 * Math.pow(6, p));
-const boxGrowthFromPos = (p: number) => Math.max(1, 1.5 * Math.pow(3, p));
+// Box-warp strength → the demand MULTIPLIER (densityBoxWarp userMult). 0 (center)
+// = 1: every dense box expands by exactly what its edges need to survive octi
+// contraction, no more. Right (stylized) adds aesthetic magnification on top
+// (up to 4x the demand); left (realistic) eases the granted room back toward
+// bare survival and below (the demand formula clamps at >= 1 internally, so the
+// far left softens aesthetics only — survival room is never fully revoked).
+// boxGrowth → the MAX per-axis canvas growth that absorbs the demand (2x at
+// center, up to 4x at the right; 1 = canvas-preserving at the far left). [-1, +1].
+const boxExpandFromPos = (p: number) => Math.max(0.25, Math.pow(4, p));
+const boxGrowthFromPos = (p: number) => Math.max(1, 2 * Math.pow(2, p));
 // Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
 // smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
 // boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It
