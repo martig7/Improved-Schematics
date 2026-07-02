@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes } from './densityBoxWarp';
-import type { BoxGraph, DenseBox, PairTarget } from './densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, mergeDemandBoxes } from './densityBoxWarp';
+import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
@@ -379,4 +379,41 @@ test('findCapsuleBoxes: deterministic', () => {
   const a = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
   const b = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
   assert.deepEqual(a, b);
+});
+
+const DB = (x0: number, y0: number, x1: number, y1: number, kind: BoxKind, pairs: PairTarget[] = []): DemandBox =>
+  ({ x0, y0, x1, y1, kind, pairs });
+
+test('mergeDemandBoxes: same-kind overlap unions (old behavior); pairs concatenate', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
+    DB(8, 8, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]),
+  ]);
+  assert.equal(m.length, 1);
+  assert.deepEqual({ x0: m[0].x0, y0: m[0].y0, x1: m[0].x1, y1: m[0].y1 }, { x0: 0, y0: 0, x1: 20, y1: 20 });
+  assert.equal(m[0].pairs.length, 2);
+});
+
+test('mergeDemandBoxes: cross-kind CONTAINMENT nests — both boxes survive', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 100, 100, 'density'),
+    DB(40, 40, 60, 60, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 2);
+});
+
+test('mergeDemandBoxes: cross-kind PARTIAL overlap unions; capsule kind and pairs win', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 50, 50, 'contraction'),
+    DB(40, 40, 90, 90, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 1);
+  assert.equal(m[0].kind, 'capsule');
+  assert.equal(m[0].pairs.length, 1);
+  assert.deepEqual({ x0: m[0].x0, x1: m[0].x1 }, { x0: 0, x1: 90 });
+});
+
+test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through', () => {
+  assert.equal(mergeDemandBoxes([DB(0, 0, 10, 10, 'density'), DB(50, 50, 60, 60, 'contraction')]).length, 2);
+  assert.deepEqual(mergeDemandBoxes([]), []);
 });

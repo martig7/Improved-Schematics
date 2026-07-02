@@ -258,6 +258,41 @@ export function findCapsuleBoxes(
   return out;
 }
 
+/** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox (as
+ *  the old mergeIntersectingBoxes). A box fully CONTAINED in a different-kind
+ *  box NESTS — both survive; the summed per-axis pushes stay monotone, so
+ *  compounding is fold-free, and the inner push only adds a rigid translation
+ *  to the outer far field. Cross-kind PARTIAL overlap unions conservatively
+ *  (kind precedence capsule > contraction > density; pairs concatenate) so
+ *  partial pushes never double-stack. Deterministic fixpoint scan. */
+export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
+  const out = boxes.map((b) => ({ ...b, pairs: [...b.pairs] }));
+  const contains = (a: DemandBox, b: DemandBox): boolean =>
+    b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
+  const rank: Record<BoxKind, number> = { density: 0, contraction: 1, capsule: 2 };
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < out.length; i++)
+      for (let j = i + 1; j < out.length; j++) {
+        const a = out[i], b = out[j];
+        const overlap = a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
+        if (!overlap) continue;
+        if (a.kind !== b.kind && (contains(a, b) || contains(b, a))) continue; // nest
+        out[i] = {
+          x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+          x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+          kind: rank[a.kind] >= rank[b.kind] ? a.kind : b.kind,
+          pairs: [...a.pairs, ...b.pairs],
+        };
+        out.splice(j, 1);
+        merged = true;
+        break outer;
+      }
+  }
+  return out;
+}
+
 // (DemandOptions, below, extends the same option bag densityGrid2D reads.)
 type DensityWarp2DOptionsLike = DensityWarpOptions & { sigmaPx?: number };
 
