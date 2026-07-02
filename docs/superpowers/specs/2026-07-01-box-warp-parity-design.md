@@ -109,13 +109,21 @@ Today the normalize step scales the warped bbox to `growthCap × canvas`
   dHat, line width, labels) become relatively smaller — the popout's third
   advantage, recovered.
 
-### 4. One refinement iteration
+### 4. Bounded refinement against the moving threshold
 
 Expansion raises the global median edge length → the real post-warp
-cellSize rises → the demand target moves. After building the warp once,
-advect node positions through it, recompute the predicted threshold, and
-bump any still-short box in a single second pass. Bounded at 2 iterations,
-deterministic; the slack factor absorbs residual error.
+cellSize rises → the demand target moves. *(Amended during implementation:
+the originally-specified proportional one-pass bump provably cannot
+converge when an edge that straddles the box boundary is itself the global
+median — the target then rises nearly as fast as the gap, and the bump
+chases it asymptotically from below; verified numerically.)* The shipped
+refinement is a bounded (≤4 passes, early-exit on no progress) secant
+fixpoint solve per box: gap and need are ~affine in the box's expand while
+the growth cap is slack, so a secant step through the last two states lands
+where the box's inside-edge median clears the re-derived need with a 5%
+margin; a proportional seed covers the first step and unreachable targets
+(need rising at least as fast as gap, e.g. under a pinned growth cap) jump
+to expandMax. Deterministic; converges in 1-2 rebuilds in practice.
 
 ### 5. Consistency
 
