@@ -790,7 +790,31 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (dl && !dl.collinearIn) {
             jlog(`  ${endA} DOGLEG-DECLINE (two-bend, would stub) B2=(${dl.B2[0].toFixed(1)},${dl.B2[1].toFixed(1)})`);
           }
+          // Corridor-aware clamp: the bend corner B2 sits ON the outbound line, so
+          // it must fall strictly BETWEEN this node and the outbound edge's FAR
+          // node — never past the far end. A B2 that overshoots the far node pins
+          // the outbound lane's start beyond where the lane can go, forcing the
+          // short outbound micro-edge to run AGAINST its own corridor direction to
+          // reach its far node; the next edge then returns, and the far-node
+          // connector closes an out-and-back self-loop (SEA route X at Pacific Av
+          // mn226: B2 x=651.8 overshot me204's far node mn224 x=662.8 across a 9px
+          // edge, an antiparallel-chord loop). Decline the dogleg in that case →
+          // fall through to the S connector, which draws the pair straight.
+          let doglegOvershoots = false;
           if (dl && dl.collinearIn) {
+            const farNodeId = eb.from === startB ? eb.to : eb.from;
+            const farPx = nodePx.get(farNodeId);
+            if (farPx) {
+              // project along the outbound direction from the shared node (qb)
+              const projB2 = (dl.B2[0] - qb[0]) * sdirB[0] + (dl.B2[1] - qb[1]) * sdirB[1];
+              const projFar = (farPx[0] - qb[0]) * sdirB[0] + (farPx[1] - qb[1]) * sdirB[1];
+              if (projB2 > projFar - spacing / 2) {
+                doglegOvershoots = true;
+                jlog(`  ${endA} DOGLEG-DECLINE (B2 overshoots outbound far node ${farNodeId}) projB2=${projB2.toFixed(1)} projFar=${projFar.toFixed(1)} B2=(${dl.B2[0].toFixed(1)},${dl.B2[1].toFixed(1)})`);
+              }
+            }
+          }
+          if (dl && dl.collinearIn && !doglegOvershoots) {
             const { B2, D } = dl;
             // Inbound side (collinear: D continues the inbound run straight into the
             // corner): move the node-end forward to B2, popping any inbound vertices
@@ -1602,6 +1626,24 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} retried=${capOvlStats.retried} retriedOk=${capOvlStats.retriedOk} rejected=${capOvlStats.rejected} (guard=${capGuardOn ? 'on' : 'off'} noovl=${capNoOvlOn ? 'on' : 'off'})`,
       );
     const megas = gathered.filter((s) => boxOf(s).mega);
+    // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
+    // image-merge stations (ms3/ms4) carries stop flags for BOTH — e.g. the
+    // W-only me365_a4 (~13px) and the V-only me251_b3 anchor at the same node.
+    // applySlide's incident<=1 trim (d≈12) would erase the WHOLE short lane and
+    // orphan the OTHER station's marker (Burke Court's capsule floated 12px off
+    // ink). Map each (lineId|flagNode) lane end to the set of station nodeIds
+    // whose marks anchor there; a slid mark whose lane end is ALSO anchored by a
+    // foreign station's mark skips the trim (leave the lane drawn to its tip —
+    // the short overhang hides under the markers).
+    const anchorStations = new Map<string, Set<string>>();
+    for (const s of gathered) {
+      for (const m of s.marks) {
+        const k = m.lineId + '|' + m.flagNode;
+        let set = anchorStations.get(k);
+        if (!set) anchorStations.set(k, (set = new Set()));
+        set.add(s.nodeId);
+      }
+    }
     // Shared spine-hull builder — chain-ordered marks INCLUDING corner vertices
     // (the drawn outline), slide-pass half-width.
     const capsHullOf = (marks: StMarks['marks']): Hull => {
@@ -1763,7 +1805,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
                 if (!drawsOn(mk.lineId, e.id)) continue;
                 incident++;
               }
-              if (incident <= 1) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
+              // Shared-anchor guard (Burke Court): another split station's mark
+              // may anchor this same lane end — trimming would strand its marker.
+              const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
+              const sharedWithOther = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(s.nodeId));
+              if (incident <= 1 && !sharedWithOther) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
             applyCorners(cap); // recompute corners on the slid dots (spec R1)
             if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; console.error(`[stops TEMP] SLIDE-BOXED ${s.nodeId}: mega-escape slide bent the spine off-octilinear -> boxed`); }
@@ -2025,7 +2071,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             if (!drawsOn(mk.lineId, e.id)) continue;
             incident++;
           }
-          if (incident <= 1 && moved[i].edgeId) trimLaneAt(moved[i].edgeId, mk.lineId, mk.flagNode, moved[i].arc ?? d);
+          // Shared-anchor guard (Burke Court): if ANOTHER station's mark also
+          // anchors this exact (lineId, flagNode) lane end, trimming it back to
+          // THIS station's slid marker would strand the foreign station's marker
+          // off the (now-shortened) ink. Leave the lane drawn to its tip instead.
+          const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
+          const sharedWithOther = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(st.nodeId));
+          if (incident <= 1 && moved[i].edgeId && !sharedWithOther) trimLaneAt(moved[i].edgeId, mk.lineId, mk.flagNode, moved[i].arc ?? d);
         }
         applyCorners(cap); // recompute corners on the slid dots (spec R1)
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -2669,7 +2721,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // termini flush to the stop. A lone terminal dot has no pill, so a small
         // overhang past it reads as a normal line end — keep the looser threshold.
         const isCapsule = s.marks.length >= 2 || (membersByNode?.get(s.nodeId) ?? 0) > 1;
-        if (d > (isCapsule ? 0.5 : r + 2)) trimLaneAt(incEdge, mk.lineId, mk.flagNode, d);
+        // Shared-anchor guard (Burke Court): a terminus sliver shared by two split
+        // stations anchors both their marks; trimming it flush to THIS station's
+        // dot would cut the lane back past the foreign station's dot and orphan
+        // that marker off the ink. Leave the shared lane at its tip.
+        const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
+        const sharedWithOther = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(s.nodeId));
+        if (d > (isCapsule ? 0.5 : r + 2) && !sharedWithOther) trimLaneAt(incEdge, mk.lineId, mk.flagNode, d);
       }
     }
 
