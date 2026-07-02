@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 10; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 11; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -54,6 +54,16 @@ const SCHEMA = 10; // bump to bust all fingerprints when the renderer's inputs c
 // neighbour capsule's grouping axis, and cascaded into a megabox — LON
 // Coombe Gardens; also fixes the Audric Close 2.4px drawn gap). Draw change,
 // unchanged raw inputs; bust main + detail-inset caches.
+// v11: two renderOctilinear draw fixes. (a) Corridor-aware dogleg clamp — the
+// forward-turn dogleg's bend corner B2 may no longer overshoot the outbound
+// edge's FAR node along the outbound axis (declines to the S connector when it
+// would), killing the out-and-back self-loop where a short micro-edge was
+// forced against its corridor direction (SEA route X at Pacific Av). (b)
+// Shared-anchor trim guard — a terminating lane whose (lineId, flagNode) end is
+// also anchored by another split station's mark is never trimmed back to one
+// station's slid marker, so the foreign marker stays on ink (SEA Burke Court,
+// 12px→0px). Both change drawn geometry, unchanged raw inputs; bust main +
+// detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
