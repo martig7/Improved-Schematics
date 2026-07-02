@@ -10,7 +10,7 @@ import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
-import { chooseMutualSlide, penBetween, type Hull } from './layout/capsuleSlide';
+import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -1245,6 +1245,23 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // by construction (R1/R2) — the only fallback is the per-station mega
     // box (R4), never a partially-degraded chain.
     const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
+    // Capsule overlap enforcement (spec 2026-07-02) — ON BY DEFAULT.
+    // Seat-time: a solution whose spine hull crosses a placed capsule gets ONE
+    // hull-masked re-solve (blocked = dot-ring-inside-hull veto, proximity =
+    // comfort ramp); a still-crossing retry — and any SELF-crossing chain
+    // (per-dot masks can't express "don't cross yourself") — falls to the
+    // mega box. The upstream capsule-demand oracle (densityBoxWarp) buys the
+    // room that makes violations rare; this pass makes them impossible.
+    // OCTI_CAPSULE_NOOVL=0 disables the seat-time check+retry (legacy);
+    // OCTI_CAPSULE_GUARD=0 disables the move-commit hull guard (diagnostic).
+    // Counters/audits print under OCTI_PLACE_DEBUG=1.
+    const capEnv = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
+    const capNoOvlOn = capEnv?.OCTI_CAPSULE_NOOVL !== '0';
+    const capGuardOn = capEnv?.OCTI_CAPSULE_GUARD !== '0';
+    const capPlaceDebug = capEnv?.OCTI_PLACE_DEBUG === '1';
+    const capOvlOn = capNoOvlOn || capPlaceDebug;
+    const placedHulls: Array<{ nodeId: string; hull: Hull }> = [];
+    const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0, retried: 0, retriedOk: 0 };
     let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
     // Placement order (spec §6): an earlier station's dots mask a later one's
     // row states, so a station boxed ONLY because a flexible neighbor claimed
@@ -1398,6 +1415,118 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             });
           }
         }
+        // Seat-time hull overlap check (spec 2026-07-02; on by default, see
+        // capNoOvlOn above). Runs AFTER all escalations so it judges the
+        // solution that would actually be committed. A cross-violating solution
+        // gets ONE re-solve with the placed hulls baked into the blocked/
+        // proximity masks (the "heavily punished in scoring" variant) — the DP
+        // hunts for a non-crossing seat; only a still-crossing retry falls to
+        // the mega branch. NOTE the masks are per-DOT, so a retried row can
+        // still CROSS a hull mid-segment between clear dots — the re-check
+        // catches that.
+        if (sol && capOvlOn && s.marks.length >= 2) {
+          const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
+          const evalSol = (so: NonNullable<typeof sol>): { hull: Hull; verts: Pixel[]; selfOvl: boolean; crossOvl: string | null } => {
+            const verts: Pixel[] = [];
+            for (let k = 0; k < so.order.length; k++) {
+              verts.push(so.pos[so.order[k]]);
+              const c = so.cornerAfter.get(k);
+              if (c) verts.push(c);
+            }
+            const hull: Hull = [];
+            for (let k = 1; k < verts.length; k++) hull.push({ a: verts[k - 1], b: verts[k], half: r + 3 });
+            if (hull.length === 0) hull.push({ a: verts[0], b: verts[0], half: r + 3 });
+            let selfOvl = false;
+            for (let i = 0; i < hull.length && !selfOvl; i++) {
+              for (let j = i + 2; j < hull.length; j++) {
+                // non-adjacent legs only; skip pairs meeting at a shared vertex
+                // (zero-length corner stubs make i+2 segments touch legitimately)
+                if (near(hull[i].b, hull[j].a) || near(hull[i].a, hull[j].b) || near(hull[i].a, hull[j].a) || near(hull[i].b, hull[j].b)) continue;
+                // TRUE centerline crossing only (the Z-fold). Hull-width proximity
+                // between non-adjacent legs is NORMAL at an elbow — legs joined
+                // through a short bridge segment pass within capsule width of each
+                // other at every corner — so a width-based test flags every bent
+                // capsule (17/63 on SEA) and is useless as a feasibility predicate.
+                if (segSegDist(hull[i].a, hull[i].b, hull[j].a, hull[j].b) < 0.5) { selfOvl = true; break; }
+              }
+            }
+            let crossOvl: string | null = null;
+            for (const ph of placedHulls) {
+              if (penBetween(hull, ph.hull) > 0.5) { crossOvl = ph.nodeId; break; }
+            }
+            return { hull, verts, selfOvl, crossOvl };
+          };
+          let ev = evalSol(sol);
+          capOvlStats.capsules++;
+          if (ev.selfOvl) capOvlStats.self++;
+          if (ev.crossOvl) capOvlStats.cross++;
+          const wantSelf = capNoOvlOn;
+          const wantCross = capNoOvlOn;
+          let reject = (wantSelf && ev.selfOvl) || (wantCross && ev.crossOvl !== null);
+          let retried = '';
+          // Retry: only for pure cross violations (a per-dot mask cannot express
+          // "don't cross yourself"). Hulls prefiltered to this station's vicinity
+          // so the DP's per-dot mask stays cheap on dense maps.
+          if (reject && capNoOvlOn && ev.crossOvl !== null && !ev.selfOvl) {
+            capOvlStats.retried++;
+            let cx = 0, cy = 0;
+            for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
+            cx /= s.marks.length; cy /= s.marks.length;
+            const nearHulls: Hull = [];
+            for (const ph of placedHulls)
+              for (const sg of ph.hull)
+                if (segSegDist([cx, cy], [cx, cy], sg.a, sg.b) < 400) nearHulls.push(sg);
+            // block a dot whose RING would sit inside a placed hull; penalize a
+            // comfort band outside that, mirroring the dot-mask ramp above.
+            const hullClearance = (p: Pixel): number => {
+              let md = Infinity;
+              for (const sg of nearHulls) {
+                const d = segSegDist(p, p, sg.a, sg.b) - (sg.half + r);
+                if (d < md) md = d;
+              }
+              return md;
+            };
+            const ropts2 = {
+              ...ropts,
+              blocked: (p: Pixel) => ropts.blocked(p) || hullClearance(p) < 0,
+              proximity: (p: Pixel) => {
+                let pen = ropts.proximity(p);
+                const d = hullClearance(p);
+                if (d >= 0 && d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort;
+                return pen;
+              },
+            };
+            let sol2 = solveRows(curves, groups, ropts2);
+            if (!sol2) {
+              if (!wide) wide = s.marks.map((mk) => buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC));
+              sol2 = solveRows(wide, groups, { ...ropts2, arcLimit: WIDE_ARC });
+            }
+            if (!sol2 && boxRescueMax > 0 && wide) {
+              for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol2; sl += 0.25) {
+                sol2 = solveRows(wide, groups, { ...ropts2, minGap: Math.max(2, intraGap - sl), arcLimit: WIDE_ARC });
+              }
+            }
+            if (sol2) {
+              const ev2 = evalSol(sol2);
+              if (!ev2.selfOvl && ev2.crossOvl === null) {
+                sol = sol2;
+                ev = ev2;
+                reject = false;
+                capOvlStats.retriedOk++;
+                retried = ' RETRY-OK';
+              } else retried = ' retry-still-crosses';
+            } else retried = ' retry-unseatable';
+          }
+          if ((ev.selfOvl || ev.crossOvl || retried) && capPlaceDebug) {
+            let cx = 0, cy = 0;
+            for (const v of ev.verts) { cx += v[0]; cy += v[1]; }
+            console.error(
+              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${retried}${reject ? ' → mega' : ''}`,
+            );
+          }
+          if (reject) { capOvlStats.rejected++; sol = null; }
+          else placedHulls.push({ nodeId: s.nodeId, hull: ev.hull });
+        }
         if (sol) {
           for (let k = 0; k < sol.order.length; k++) {
             const i = sol.order[k];
@@ -1437,7 +1566,74 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       for (const mk of s.marks) placedDots.push(mk.pos);
     }
     if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
+    if (capPlaceDebug || capOvlStats.rejected > 0)
+      console.error(
+        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} retried=${capOvlStats.retried} retriedOk=${capOvlStats.retriedOk} rejected=${capOvlStats.rejected} (guard=${capGuardOn ? 'on' : 'off'} noovl=${capNoOvlOn ? 'on' : 'off'})`,
+      );
     const megas = gathered.filter((s) => boxOf(s).mega);
+    // Shared spine-hull builder — chain-ordered marks INCLUDING corner vertices
+    // (the drawn outline), slide-pass half-width.
+    const capsHullOf = (marks: StMarks['marks']): Hull => {
+      const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
+      const verts: Pixel[] = [];
+      for (const mk of ordered) { verts.push(mk.pos); if (mk.cornerAfter) verts.push(mk.cornerAfter); }
+      const hull: Hull = [];
+      for (let k = 1; k < verts.length; k++) hull.push({ a: verts[k - 1], b: verts[k], half: r + 3 });
+      return hull;
+    };
+    // Move-commit hull guard (on by default, OCTI_CAPSULE_GUARD=0 disables):
+    // would `marks-as-moved` penetrate any OTHER drawn capsule's hull? The
+    // post-placement passes fix dot distances but were hull-blind to third
+    // parties — the SEA audit shows them CREATING spine crossings (4 seat-time
+    // → 6 final). Same veto style as applySlide's octilinearity + dot-floor
+    // guards.
+    const capsHullClash = (self: StMarks, hull: Hull): string | null => {
+      for (const T of gathered) {
+        if (T === self || T.marks.length < 2 || boxOf(T).mega || T.marks.some((m) => m.mega)) continue;
+        if (penBetween(hull, capsHullOf(T.marks)) > 0.5) return T.nodeId;
+      }
+      return null;
+    };
+    // TRUE centerline self-crossing of one capsule's hull (the Z-fold) — the
+    // same non-adjacent-leg intersection test the seat check applies to a
+    // fresh solution. The move guards below also run it on the SLID clone:
+    // a slide can bend a clean chain into a self-cross (NYC mn216 — seat
+    // clean, folded by a later pass), which capsHullClash cannot see because
+    // it only measures against OTHER capsules.
+    const capsHullSelfCrosses = (hull: Hull): boolean => {
+      const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
+      for (let i = 0; i < hull.length; i++)
+        for (let j = i + 2; j < hull.length; j++) {
+          // non-adjacent legs only; skip pairs meeting at a shared vertex
+          // (zero-length corner stubs make i+2 segments touch legitimately)
+          if (near(hull[i].b, hull[j].a) || near(hull[i].a, hull[j].b) || near(hull[i].a, hull[j].a) || near(hull[i].b, hull[j].b)) continue;
+          if (segSegDist(hull[i].a, hull[i].b, hull[j].a, hull[j].b) < 0.5) return true;
+        }
+      return false;
+    };
+    // Diagnostic audit (OCTI_PLACE_DEBUG=1): hull cross/self counts over the
+    // CURRENT mark positions of drawn (non-boxed) capsules, called after each
+    // post-placement pass — so overlap BORN by a pass (not just at seat time)
+    // is attributable. Pure diagnostics; the enforcement no longer needs it.
+    const capsAudit = (label: string): void => {
+      if (!capPlaceDebug) return;
+      const items: Array<{ nodeId: string; hull: Hull }> = [];
+      for (const s of gathered) {
+        if (s.marks.length < 2 || boxOf(s).mega || s.marks.some((m) => m.mega)) continue;
+        const hull = capsHullOf(s.marks);
+        if (hull.length) items.push({ nodeId: s.nodeId, hull });
+      }
+      const crossPairs: string[] = [];
+      for (let i = 0; i < items.length; i++)
+        for (let j = i + 1; j < items.length; j++)
+          if (penBetween(items[i].hull, items[j].hull) > 0.5) crossPairs.push(items[i].nodeId + '×' + items[j].nodeId);
+      const selfs: string[] = [];
+      for (const it of items) if (capsHullSelfCrosses(it.hull)) selfs.push(it.nodeId);
+      console.error(
+        `[capsaudit:${label}] cross=${crossPairs.length}${crossPairs.length ? ' [' + crossPairs.join(',') + ']' : ''} self=${selfs.length}${selfs.length ? ' [' + selfs.join(',') + ']' : ''}`,
+      );
+    };
+    capsAudit('post-place');
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
     let slideBoxed = 0; // stations a collision-slide bent past octilinearity
     // When a collision-slide moves a station, its derived corners (spec R1)
@@ -1548,6 +1744,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
     }
 
+    capsAudit('post-mega-slide');
     // Small-vs-small collisions: neighbouring stations' markers must not
     // overlap (user rule). Penetration is measured between the markers' actual
     // SPINE HULLS (chain-pair stadium segments — bbox tests miss/false-flag
@@ -1771,6 +1968,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
           }
         }
+        // Hull guard (OCTI_CAPSULE_GUARD=0 disables): decline a slide whose
+        // resulting hull would cross another drawn capsule OR ITSELF (the
+        // clone already carries the slid corners).
+        if (capGuardOn && st.marks.length >= 2) {
+          const slidHull = capsHullOf(clone);
+          if (capsHullSelfCrosses(slidHull)) {
+            if (capPlaceDebug) console.error(`[capsovl] slide declined (would self-cross) ${st.nodeId}`);
+            return false;
+          }
+          const clash = capsHullClash(st, slidHull);
+          if (clash) {
+            if (capPlaceDebug) console.error(`[capsovl] slide declined (would cross ${clash}) ${st.nodeId}`);
+            return false;
+          }
+        }
         const cap = captureCorners(st.marks); // old leg dirs before the slide
         for (let i = 0; i < st.marks.length; i++) {
           const mk = st.marks[i];
@@ -1880,6 +2092,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         }
         if (!movedAny) break;
       }
+      capsAudit('post-mutual-slide');
       // ---- POST-SLIDE NO-OVERLAP FLOOR (marker-level GUARANTEE) -------------
       // The mutual-slide pass above thresholds on SPINE-HULL penetration, not on
       // the drawn casing rings: a capsule whose spine clears can still have an
@@ -2070,6 +2283,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined,
           }));
           if (!spineOctilinear(clone)) return false;
+          // Hull guard (OCTI_CAPSULE_GUARD=0 disables): a corridor-spread shift
+          // must not drag this capsule across another drawn capsule's hull —
+          // or fold it across itself (same vetoes as applySlide's).
+          if (capGuardOn && st.marks.length >= 2) {
+            const shiftedHull = capsHullOf(clone);
+            if (capsHullSelfCrosses(shiftedHull) || capsHullClash(st, shiftedHull)) return false;
+          }
           for (const mk of st.marks) {
             mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
             if (mk.cornerAfter) mk.cornerAfter = [mk.cornerAfter[0] + dx, mk.cornerAfter[1] + dy];
@@ -2309,6 +2529,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         }
         if (floorBoxed > 0) console.error('[stops] no-overlap-floor boxed: ' + floorBoxed);
       }
+      capsAudit('final');
       // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps — bullet rings
       // (radius r+0.75, diameter 2r+1.5) crossing where they shouldn't. XSTN =
       // two DIFFERENT stations' bullets overlap; INSTN = two bullets of ONE

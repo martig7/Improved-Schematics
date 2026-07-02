@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp } from './densityBoxWarp';
-import type { BoxGraph, DenseBox } from './densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, mergeDemandBoxes } from './densityBoxWarp';
+import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
 import type { Pixel } from './types';
@@ -330,6 +330,146 @@ test('buildSepDemandBoxWarp: composes separable + demand warp; growth passes thr
       const wy0 = r.warp([x2, y2])[1];
       const wy1 = r.warp([x2, y2 + step])[1];
       assert.ok(wy1 > wy0, `y-monotone at (${x2},${y2}): ${wy1} > ${wy0}`);
+    }
+  }
+});
+
+test('findCapsuleBoxes: a close big-interchange pair gets a box with the pair target; spaced pairs do not', () => {
+  // nodes 0,1: 7-line and 6-line interchanges 30px apart (capsules need far more);
+  // node 2: 5-line interchange 400px away (clear); nodes 3,4: single-line (excluded).
+  const g: BoxGraph = {
+    nodes: [[100, 100], [130, 100], [500, 100], [110, 130], [90, 80]],
+    edges: [[0, 1], [1, 2], [0, 3], [0, 4]],
+  };
+  const lineCounts = [7, 6, 5, 1, 1];
+  const spacing = 5.5;
+  const boxes = findCapsuleBoxes(g, lineCounts, { spacing, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  const b = boxes[0];
+  assert.equal(b.kind, 'capsule');
+  assert.equal(b.pairs.length, 1);
+  assert.deepEqual([b.pairs[0].a, b.pairs[0].b], [0, 1]);
+  // required = needA + needB + casing = ((7-1)*5.5/2 + 4) + ((6-1)*5.5/2 + 4) + 8
+  const needA = ((7 - 1) * spacing) / 2 + 4;
+  const needB = ((6 - 1) * spacing) / 2 + 4;
+  assert.ok(Math.abs(b.pairs[0].required - (needA + needB + 8)) < 1e-9);
+  // box covers both nodes, padded
+  assert.ok(b.x0 < 100 && b.x1 > 130 && b.y0 < 100 && b.y1 > 100);
+});
+
+test('findCapsuleBoxes: chains of close interchanges cluster into one box with all violating pairs', () => {
+  // three 4-line stations in a 25px-spaced row: pairs (0,1),(1,2) violate; (0,2) may too.
+  const g: BoxGraph = { nodes: [[100, 100], [125, 100], [150, 100]], edges: [[0, 1], [1, 2]] };
+  const boxes = findCapsuleBoxes(g, [4, 4, 4], { spacing: 5.5, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  assert.ok(boxes[0].pairs.length >= 2);
+  for (const t of boxes[0].pairs) assert.ok(t.required > 0 && t.a < t.b);
+});
+
+test('findCapsuleBoxes: proximity does not require a shared edge', () => {
+  // two 5-line interchanges 20px apart with NO connecting edge still flag.
+  const g: BoxGraph = { nodes: [[100, 100], [120, 100]], edges: [] };
+  const boxes = findCapsuleBoxes(g, [5, 5], { spacing: 5.5, margin: 4, casing: 8 });
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].pairs.length, 1);
+});
+
+test('findCapsuleBoxes: deterministic', () => {
+  const g: BoxGraph = { nodes: [[100, 100], [130, 100], [110, 130]], edges: [[0, 1]] };
+  const a = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
+  const b = findCapsuleBoxes(g, [6, 6, 6], { spacing: 5.5 });
+  assert.deepEqual(a, b);
+});
+
+const DB = (x0: number, y0: number, x1: number, y1: number, kind: BoxKind, pairs: PairTarget[] = []): DemandBox =>
+  ({ x0, y0, x1, y1, kind, pairs });
+
+test('mergeDemandBoxes: same-kind overlap unions (old behavior); pairs concatenate', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
+    DB(8, 8, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]),
+  ]);
+  assert.equal(m.length, 1);
+  assert.deepEqual({ x0: m[0].x0, y0: m[0].y0, x1: m[0].x1, y1: m[0].y1 }, { x0: 0, y0: 0, x1: 20, y1: 20 });
+  assert.equal(m[0].pairs.length, 2);
+});
+
+test('mergeDemandBoxes: cross-kind CONTAINMENT nests — both boxes survive', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 100, 100, 'density'),
+    DB(40, 40, 60, 60, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 2);
+});
+
+test('mergeDemandBoxes: cross-kind PARTIAL overlap unions; capsule kind and pairs win', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 50, 50, 'contraction'),
+    DB(40, 40, 90, 90, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 1);
+  assert.equal(m[0].kind, 'capsule');
+  assert.equal(m[0].pairs.length, 1);
+  assert.deepEqual({ x0: m[0].x0, x1: m[0].x1 }, { x0: 0, x1: 90 });
+});
+
+test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through', () => {
+  assert.equal(mergeDemandBoxes([DB(0, 0, 10, 10, 'density'), DB(50, 50, 60, 60, 'contraction')]).length, 2);
+  assert.deepEqual(mergeDemandBoxes([]), []);
+});
+
+test('buildDemandBoxWarp: capsule oracle lifts a close interchange pair to its required separation', () => {
+  // two interchanges 30px apart needing ~48px, on an otherwise sparse graph
+  const g: BoxGraph = {
+    nodes: [[200, 200], [230, 200], [30, 30], [560, 560], [560, 30], [30, 560]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const lineCounts = [7, 6, 1, 1, 1, 1];
+  // Small fixed cell so the CONTRACTION oracle boxes nothing here (30px pair is
+  // above its ~8px threshold) — the capsule oracle is the sole driver, so the
+  // assertion actually exercises the capsule path (not the contraction path).
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts, margin: 4, casing: 8 } };
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const rr = buildDemandBoxWarp([], g, DBOX, opts, o);
+  const required = ((7 - 1) * 5.5) / 2 + 4 + (((6 - 1) * 5.5) / 2 + 4) + 8;
+  const pa = rr.warp(g.nodes[0]);
+  const pb = rr.warp(g.nodes[1]);
+  const d = Math.sqrt((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2);
+  assert.ok(d >= required, `pair separation ${d.toFixed(1)} < required ${required.toFixed(1)}`);
+});
+
+test('buildDemandBoxWarp: no capsule opts → behavior unchanged (existing demand path)', () => {
+  const g = pinnedGraph();
+  const withOpt = buildDemandBoxWarp([], g, DBOX, DOPTS);
+  const noCaps = buildDemandBoxWarp([], g, DBOX, { ...DOPTS });
+  assert.deepEqual(withOpt.warp([123, 234]), noCaps.warp([123, 234]));
+});
+
+test('buildDemandBoxWarp: capsule box nested in a density box compounds fold-free', () => {
+  // dense sample cluster spanning ~(40..160)² CONTAINING an interchange pair
+  const g: BoxGraph = {
+    nodes: [[90, 100], [115, 100], [30, 30], [560, 560]],
+    edges: [[0, 1], [0, 2], [1, 3]],
+  };
+  const samples = clusterAt(100, 100, 400);
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts: [6, 6, 1, 1], margin: 4, casing: 8 } };
+  const rr = buildDemandBoxWarp(samples, g, DBOX, opts);
+  // fold-free: strict per-axis monotonicity, step 15 so the grid samples THROUGH
+  // the capsule push zone (pair at x 90..115), not just the wider density box
+  for (let y = 0; y <= 600; y += 15) {
+    let px = -Infinity;
+    for (let x = 0; x <= 600; x += 15) {
+      const q = rr.warp([x, y])[0];
+      assert.ok(q > px, `x-monotonicity broke at ${x},${y}`);
+      px = q;
+    }
+  }
+  for (let x = 0; x <= 600; x += 15) {
+    let py = -Infinity;
+    for (let y = 0; y <= 600; y += 15) {
+      const q = rr.warp([x, y])[1];
+      assert.ok(q > py, `y-monotonicity broke at ${x},${y}`);
+      py = q;
     }
   }
 });
