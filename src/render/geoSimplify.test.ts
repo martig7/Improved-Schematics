@@ -114,6 +114,23 @@ test('stylizeRingsPathD: empty when everything is culled', () => {
   assert.equal(stylizeRingsPathD([SQUARE], { simplifyPx: 0, roundPx: 0, minAreaPx2: 1e9 }, EXT), '');
 });
 
+test('simplifyVW: weighted vertices resist removal', () => {
+  // same 2px notch as the unweighted test — protect its apex 16x and it survives
+  const ring: Pt[] = [[0, 0], [48, 0], [50, 2], [52, 0], [100, 0], [100, 100], [0, 100]];
+  const unprotected = simplifyVW(ring, 100);
+  assert.equal(unprotected.length, 4);
+  const protectedOut = simplifyVW(ring, 100, 4, (p) => (p[0] >= 48 && p[0] <= 52 ? 100 : 1));
+  assert.ok(protectedOut.some((p) => p[0] === 50 && p[1] === 2), 'protected notch apex must survive');
+});
+
+test('stylizeRingsPathD: importance rescues a small ring from the cull', () => {
+  const pond: Pt[] = [[100, 100], [180, 100], [180, 180], [100, 180]]; // 6400 px²
+  const style = { simplifyPx: 4, roundPx: 0, minAreaPx2: 20000 };
+  assert.equal(stylizeRingsPathD([pond], style, EXT), '', 'unprotected pond dies');
+  const rescued = stylizeRingsPathD([pond], { ...style, importance: () => 1 }, EXT);
+  assert.ok(rescued.length > 0, 'fully-important pond survives (6400·16 >= 20000)');
+});
+
 test('stylizeRingsPathD: deterministic (same input, same output)', () => {
   const rings: Pt[][] = [SQUARE, [[200, 200], [340, 205], [335, 350], [198, 344]]];
   const s = { simplifyPx: 12, roundPx: 20, minAreaPx2: 400, octi: true };

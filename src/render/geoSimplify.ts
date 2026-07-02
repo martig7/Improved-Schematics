@@ -67,7 +67,23 @@ export interface LandmassStyle {
   minAreaPx2: number;
   /** Snap edges to octilinear directions before rounding. */
   octi?: boolean;
+  /** Local importance 0..1 at a render-px point. Where it's high (the warp's
+   *  dense boxes, station clusters) the simplify/cull thresholds are divided by
+   *  (1 + PROTECT·imp)² — heavily-used areas keep their geography (Lake-Union
+   *  class landmarks) while the periphery generalizes to blobs. Absent = the
+   *  uniform thresholds everywhere. */
+  importance?: (x: number, y: number) => number;
 }
+
+/** Protection gain: importance scales thresholds down by (1+PROTECT·imp)²,
+ *  CAPPED at PROTECT_MAX. The cap is load-bearing twice over: (a) the union
+ *  raster's staircase triangles have area cell²/2 = simplifyPx²/8 (cell =
+ *  simplifyPx/2), so any cap < 8 keeps the weighted VW threshold above them —
+ *  protected regions keep their SHAPE but never expose raw raster stairs; and
+ *  (b) it floors the cull rescue at minArea/6, so lake-sized landmarks survive
+ *  without dragging every speck of protected pond/park along. */
+const PROTECT = 3;
+const PROTECT_MAX = 6;
 
 /** Signed shoelace area (px²): >0 counter-clockwise in SVG's y-down space is
  *  negative — callers only use |area|, winding is preserved untouched. */
@@ -89,19 +105,27 @@ const triArea = (a: Pt, b: Pt, c: Pt): number => {
 /** Visvalingam–Whyatt on a CLOSED ring: drop the globally-least-significant
  *  vertex until every survivor's effective area >= areaThresh, or `minVerts`
  *  remain. Linked-list + full min-scan per removal — O(k·n) for k removals,
- *  fine after decimate(). */
-export function simplifyVW(ring: readonly Pt[], areaThresh: number, minVerts = 4): Pt[] {
+ *  fine on union-traced rings. `weight` (>= 1) multiplies a vertex's effective
+ *  area — protected (important-area) vertices resist removal proportionally. */
+export function simplifyVW(
+  ring: readonly Pt[],
+  areaThresh: number,
+  minVerts = 4,
+  weight?: (p: Pt) => number,
+): Pt[] {
   const n = ring.length;
   if (n <= minVerts || areaThresh <= 0) return ring.slice();
   const prev = new Array<number>(n);
   const next = new Array<number>(n);
   const area = new Array<number>(n);
   const alive = new Array<boolean>(n).fill(true);
+  const w = new Array<number>(n);
   for (let i = 0; i < n; i++) {
     prev[i] = (i + n - 1) % n;
     next[i] = (i + 1) % n;
+    w[i] = weight ? weight(ring[i]) : 1;
   }
-  const recompute = (i: number) => { area[i] = triArea(ring2[prev[i]], ring2[i], ring2[next[i]]); };
+  const recompute = (i: number) => { area[i] = triArea(ring2[prev[i]], ring2[i], ring2[next[i]]) * w[i]; };
   const ring2 = ring as readonly Pt[];
   for (let i = 0; i < n; i++) recompute(i);
   let count = n;
@@ -360,17 +384,44 @@ export function stylizeRingsPathD(
   extent: { w: number; h: number },
 ): string {
   const areaThresh = style.simplifyPx * style.simplifyPx;
-  const cell = Math.min(14, Math.max(3, style.simplifyPx / 2));
+  // Raster resolution: with an importance field the protected regions keep
+  // detail down to simplifyPx/√PROTECT_MAX — the raster must resolve finer
+  // than that (cell ≈ tol/5) or protection just preserves stair noise.
+  const cell = Math.min(14, Math.max(3, style.simplifyPx / (style.importance ? 5 : 2)));
   const unified = unionRings(rings, extent, cell);
+  const imp = style.importance;
+  // Protection factor >= 1 multiplying a point's effective significance:
+  // (1 + PROTECT·imp)² — squared because both knobs it guards are AREAS.
+  const protect = (x: number, y: number): number => {
+    if (!imp) return 1;
+    const v = imp(x, y);
+    const g = 1 + PROTECT * (v > 1 ? 1 : v < 0 ? 0 : v);
+    return Math.min(PROTECT_MAX, g * g);
+  };
+  // A ring survives the cull when its area, boosted by the BEST protection any
+  // of its vertices enjoys, clears the floor — a lake needs only one shore
+  // touching the dense core to be a landmark worth keeping.
+  const cullOk = (ring: readonly Pt[], areaAbs: number): boolean => {
+    if (areaAbs >= style.minAreaPx2) return true;
+    if (!imp) return false;
+    let best = 0;
+    for (const p of ring) {
+      const g = protect(p[0], p[1]);
+      if (g > best) best = g;
+      if (areaAbs * best >= style.minAreaPx2) return true;
+    }
+    return false;
+  };
   let d = '';
   for (const ring of unified) {
     const a = ringArea(ring);
-    if ((a < 0 ? -a : a) < style.minAreaPx2) continue;
-    let r = simplifyVW(ring, areaThresh);
+    const aAbs = a < 0 ? -a : a;
+    if (!cullOk(ring, aAbs)) continue;
+    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined);
     if (r.length < 3) continue;
     // a ring can shrivel below the cull floor once its wiggles are gone
     const a2 = ringArea(r);
-    if ((a2 < 0 ? -a2 : a2) < style.minAreaPx2) continue;
+    if (!cullOk(r, a2 < 0 ? -a2 : a2)) continue;
     if (style.octi) r = snapOcti(r);
     if (r.length < 3) continue;
     d += filletPathD(r, style.roundPx);

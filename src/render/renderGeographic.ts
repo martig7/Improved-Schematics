@@ -1156,6 +1156,60 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
  *  serialized, dies with the pre. */
 const lmBackdropCache = new WeakMap<SmoothedPrecomputed, { key: string; svg: string }>();
 
+/** Local-importance field for the landmass stylizer: 1 inside the warp's own
+ *  demand boxes (density ∪ contraction ∪ capsule — the regions the warp judged
+ *  heavily used and magnified), plus a station-density kernel so clusters of
+ *  stops protect their surroundings even when no box fired there. The stylizer
+ *  divides its simplify/cull thresholds by (1+3·imp)², so geography inside the
+ *  dense core (a Lake-Union-class landmark) keeps its shape while the far
+ *  periphery generalizes to blobs. Coarse grid lookup — built once per styled
+ *  draw (memoized with the backdrop). */
+function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number) => number {
+  const scale = Math.min(pre.width, pre.height) / 2700;
+  const cell = 48 * scale;
+  const W = Math.max(1, Math.ceil(pre.width / cell));
+  const H = Math.max(1, Math.ceil(pre.height / cell));
+  const g = new Float32Array(W * H);
+  // Station kernel: cone of radius R; ~4 overlapping stations = full importance.
+  const R = 220 * scale;
+  const rc = Math.ceil(R / cell);
+  for (const p of pre.stationPx.values()) {
+    const cx = Math.floor(p[0] / cell);
+    const cy = Math.floor(p[1] / cell);
+    for (let y = cy - rc; y <= cy + rc; y++) {
+      if (y < 0 || y >= H) continue;
+      for (let x = cx - rc; x <= cx + rc; x++) {
+        if (x < 0 || x >= W) continue;
+        const dx = (x + 0.5) * cell - p[0];
+        const dy = (y + 0.5) * cell - p[1];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < R) g[y * W + x] += (1 - d / R) / 4;
+      }
+    }
+  }
+  // The warp's demand boxes (padded): full importance inside.
+  const PAD = 60 * scale;
+  for (const b of pre.denseBoxesPx ?? []) {
+    const x0 = Math.max(0, Math.floor((b.x0 - PAD) / cell));
+    const x1 = Math.min(W - 1, Math.floor((b.x1 + PAD) / cell));
+    const y0 = Math.max(0, Math.floor((b.y0 - PAD) / cell));
+    const y1 = Math.min(H - 1, Math.floor((b.y1 + PAD) / cell));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = y * W + x;
+        if (g[i] < 1) g[i] = 1;
+      }
+    }
+  }
+  return (x, y) => {
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    if (cx < 0 || cy < 0 || cx >= W || cy >= H) return 0;
+    const v = g[cy * W + cx];
+    return v > 1 ? 1 : v;
+  };
+}
+
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
  *  precomputeSmoothed — this is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
@@ -1170,7 +1224,13 @@ export function drawSmoothed(
   const lm = opts.landmass;
   const scale = Math.min(pre.width, pre.height) / 2700;
   const style = lm
-    ? { simplifyPx: lm.simplify * scale, roundPx: lm.round * scale, minAreaPx2: lm.minArea * scale * scale, octi: lm.octi }
+    ? {
+        simplifyPx: lm.simplify * scale,
+        roundPx: lm.round * scale,
+        minAreaPx2: lm.minArea * scale * scale,
+        octi: lm.octi,
+        importance: buildImportance(pre),
+      }
     : undefined;
   // The styled build unions + retraces the whole geography (~100ms on a big
   // city) — memoize per (pre, style) so label/station toggles just repaint.
