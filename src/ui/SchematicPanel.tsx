@@ -34,6 +34,7 @@ import { peekGeography } from '../geography/geography';
 import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
+import { rotateSchematicInput } from '../render/rotateInput';
 import { MOD_VERSION } from '../version';
 
 const api = window.SubwayBuilderAPI;
@@ -233,6 +234,20 @@ export function SchematicPanel() {
     return { city, shared, geoVis };
   }, []);
   const mountCity = mountSeed.city; // the city these restored settings belong to
+  // The game's own map orientation for this city (initialViewState.bearing —
+  // e.g. NYC is rotated so Manhattan runs vertically). The schematic adopts it:
+  // buildInput rotates every input coordinate into the game's frame, so "up"
+  // on our map matches "up" in the game. Rotated coordinates flow into the
+  // layout fingerprint automatically (they ARE the fingerprinted content).
+  const mapBearing = useMemo(() => {
+    try {
+      const c = api.utils.getCities?.()?.find((x) => x.code === mountCity);
+      const b = c?.initialViewState?.bearing;
+      return typeof b === 'number' && Number.isFinite(b) ? b : 0;
+    } catch {
+      return 0;
+    }
+  }, [mountCity]);
   // The city whose settings are CURRENTLY displayed. Starts as the mount city; a file load
   // (applyBundle) repoints it at the loaded file's city. The per-mode settings-persist effect
   // gates on this so loading a file for a DIFFERENT city than the live game can't clobber the
@@ -562,7 +577,7 @@ export function SchematicPanel() {
   // inset can build the SAME input to crop + re-simulate a sub-network.
   const buildInput = useCallback(() => {
     const dark = api.ui.getResolvedTheme() === 'dark';
-    return {
+    return rotateSchematicInput({
       routes: api.gameState.getRoutes(),
       tracks: api.gameState.getTracks(),
       stations: api.gameState.getStations(),
@@ -587,8 +602,8 @@ export function SchematicPanel() {
           stationRadius: applied.stationRadius,
         },
       },
-    };
-  }, [geography, mode, showStations, showLabels, applied]);
+    }, mapBearing);
+  }, [geography, mode, showStations, showLabels, applied, mapBearing]);
 
   // The exact live render inputs, captured for offline repro (geojson reconstructions
   // drift from the live save and the game's station grouping). Formerly downloaded via a
@@ -642,10 +657,13 @@ export function SchematicPanel() {
       options: full.options,
       // Export-time controls — not render inputs, but captured so scripts can match the file.
       exportOptions: { format: exportFormat, rasterScale, jpegQuality },
+      // Provenance: the game bearing the captured coordinates were rotated into
+      // (the coords above are ALREADY in the rotated frame — do not re-rotate).
+      mapBearing,
       // Per-area cropped sub-inputs (see above) for debugging any area in isolation.
       areas,
     };
-  }, [buildInput, geography, exportFormat, rasterScale, jpegQuality]);
+  }, [buildInput, geography, exportFormat, rasterScale, jpegQuality, mapBearing]);
 
   const svg = useMemo(() => {
     if (mode === 'smoothed') {
