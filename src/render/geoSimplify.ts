@@ -239,7 +239,7 @@ function cleanRing(pts: readonly Pt[]): Pt[] {
  *  `anchor` adds per-vertex anchor weight on top of the base 1 (importance:
  *  dense-core shorelines barely move at all). Deterministic: fixed rounds of
  *  direction assignment, fixed Gauss–Seidel sweeps in index order. */
-export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number): Pt[] {
+export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number, maxShift?: number): Pt[] {
   const n = ring.length;
   if (n < 3) return ring.slice();
   const SQ = Math.sqrt(0.5);
@@ -302,6 +302,23 @@ export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number): Pt[] 
           p[i][0] = (b1 * a22 - b2 * a12) / det;
           p[i][1] = (b2 * a11 - b1 * a12) / det;
         }
+      }
+    }
+  }
+  // Hard displacement bound: the anchored solve keeps vertices NEAR their true
+  // positions on average, but a chain of same-direction edges can still shift
+  // laterally as a unit (the direction penalty grows with length², the anchors
+  // only linearly) — at large tolerances that swept water across whole
+  // neighbourhoods. Clamp every vertex to `maxShift` of its source position;
+  // the fillet pass hides the slightly-off-axis kinks the clamp introduces.
+  if (maxShift !== undefined && maxShift > 0) {
+    for (let i = 0; i < n; i++) {
+      const dx = p[i][0] - ring[i][0];
+      const dy = p[i][1] - ring[i][1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxShift) {
+        p[i][0] = ring[i][0] + (dx * maxShift) / d;
+        p[i][1] = ring[i][1] + (dy * maxShift) / d;
       }
     }
   }
@@ -633,6 +650,23 @@ function repairOne(rings: Pt[][], s: Pt, margin: number, round: number): void {
   }
 }
 
+/** Insert evenly-spaced midpoints so no edge exceeds `maxLen` px. */
+export function subdivideRing(ring: readonly Pt[], maxLen: number): Pt[] {
+  const out: Pt[] = [];
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    out.push([a[0], a[1]]);
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const k = maxLen > 0 ? Math.floor(len / maxLen) : 0;
+    for (let s = 1; s <= k; s++) out.push([a[0] + (dx * s) / (k + 1), a[1] + (dy * s) / (k + 1)]);
+  }
+  return out;
+}
+
 const fmt = (v: number): number => Math.round(v * 10) / 10;
 
 /** SVG path for a closed ring with every corner rounded by a quadratic fillet
@@ -944,9 +978,16 @@ export function stylizeRingsPathD(
     // sit near the water) get an 8x pull to their true position, so the
     // octilinear solve reshapes them without MOVING them. Rim vertices (the
     // harvest-boundary cutoff) are pinned outright — see `pinned` above.
+    // Long edges are SUBDIVIDED first: the solve's direction penalty grows
+    // with edge length², so a single long off-axis edge rotates wholesale and
+    // sweeps water across hundreds of px of land (or vice versa). Sub-vertices
+    // anchor to the simplified line, so a long coast becomes an octilinear
+    // STAIRCASE with deviation bounded by ~half the subdivision length.
     if (style.octi) {
-      r = snapOcti(r, (p) =>
-        pinned(p[0], p[1]) ? 1e9 : imp ? 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : 0,
+      r = snapOcti(
+        subdivideRing(r, 2.2 * style.simplifyPx),
+        (p) => (pinned(p[0], p[1]) ? 1e9 : imp ? 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : 0),
+        0.9 * style.simplifyPx,
       );
     }
     if (r.length < 3) continue;
