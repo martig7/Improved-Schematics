@@ -700,7 +700,7 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   userMult?: number;
   /** Per-box expansion ceiling. Default 10. */
   expandMax?: number;
-  /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2. */
+  /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2.5. */
   maxGrowth?: number;
   /** Direction-intelligence amount, 0–1: how far each box's expansion is
    *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = legacy
@@ -845,7 +845,7 @@ export function buildDemandBoxWarp(
   const slack = opts.slack ?? 1.3;
   const userMult = opts.userMult ?? 1;
   const expandMax = opts.expandMax ?? 10;
-  const maxGrowth = opts.maxGrowth ?? 2;
+  const maxGrowth = opts.maxGrowth ?? 2.5;
   const marginFrac = opts.marginFrac ?? 1;
   const anisoAmt = (() => {
     const env = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_ANISO) : NaN;

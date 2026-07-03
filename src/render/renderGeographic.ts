@@ -600,8 +600,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // exactly its survival need, >1 magnifies aesthetically, default 1),
   // OCTI_BOX_MARGIN (saturation margin as fraction of box half-extent, default
   // 3), OCTI_BOX_GROWTH (MAX per-axis canvas growth; 1 = canvas-preserving like
-  // separable, 2 = up to 2× bigger; demand past the cap shrinks globally,
-  // default 2).
+  // separable, 2.5 = up to 2.5× bigger; demand past the cap shrinks globally,
+  // default 2.5).
   const warpMode =
     typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
   const envNum = (k: string): number =>
@@ -629,13 +629,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   })();
   const boxMargin = Number.isFinite(envNum('OCTI_BOX_MARGIN')) && envNum('OCTI_BOX_MARGIN') > 0 ? envNum('OCTI_BOX_MARGIN') : 3;
   // boxGrowth is now the MAX per-axis canvas growth that absorbs the demanded
-  // expansion (2 = output canvas may be up to 2x the base canvas; demand past
-  // the cap shrinks globally). (Was: growthCap with claw-back, default 1.2.)
+  // expansion (2.5 = output canvas may be up to 2.5x the base canvas; demand
+  // past the cap shrinks globally). (Was: growthCap with claw-back, default
+  // 1.2.) Default 2.5: with the direction-split per-borough boxes the summed
+  // demand routinely exceeds the old 2x budget, and the shortfall shows as
+  // crushed far-field bands at the canvas edges (difficult-nyc @ bearing 29).
   const boxMaxGrowth = (() => {
     const gv = envNum('OCTI_BOX_GROWTH');
     if (Number.isFinite(gv) && gv >= 1) return gv; // dev sweep override wins
     if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
-    return 2;
+    return 2.5;
   })();
   const warpSigmaPx = (() => {
     const env =

@@ -89,10 +89,13 @@ const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p)
 // (up to 4x the demand); left (realistic) eases the granted room back toward
 // bare survival and below (the demand formula clamps at >= 1 internally, so the
 // far left softens aesthetics only — survival room is never fully revoked).
-// boxGrowth → the MAX per-axis canvas growth that absorbs the demand (2x at
-// center, up to 4x at the right; 1 = canvas-preserving at the far left). [-1, +1].
+// boxGrowth → the MAX per-axis canvas growth that absorbs the demand (2.5x at
+// center — the direction-split per-borough boxes sum to more demand than the
+// old single-box 2x budget, and the shortfall crushes the far field into
+// bands at the canvas edges — up to 5x at the right; canvas-preserving 1 at
+// the far left). [-1, +1].
 const boxExpandFromPos = (p: number) => Math.max(0.25, Math.pow(4, p));
-const boxGrowthFromPos = (p: number) => Math.max(1, 2 * Math.pow(2, p));
+const boxGrowthFromPos = (p: number) => Math.max(1, 2.5 * Math.pow(2, p));
 // Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
 // smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
 // boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It
