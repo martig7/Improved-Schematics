@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 11; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 12; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -64,6 +64,10 @@ const SCHEMA = 11; // bump to bust all fingerprints when the renderer's inputs c
 // station's slid marker, so the foreign marker stays on ink (SEA Burke Court,
 // 12px→0px). Both change drawn geometry, unchanged raw inputs; bust main +
 // detail-inset caches.
+// v12: direction-intelligent box warp — each warp box's scalar expansion is
+// split per axis along its crowd anisotropy (nearest-neighbour displacements:
+// Manhattan's parallel vertical trunks now take their room horizontally).
+// Layout change, unchanged raw inputs; bust main + detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {

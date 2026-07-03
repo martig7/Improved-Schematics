@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, mergeDemandBoxes } from './densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from './densityBoxWarp';
 import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from './densityBoxWarp';
 import { buildDensityWarp } from './densityWarp';
 import type { WarpFn } from './densityWarp';
@@ -472,4 +472,177 @@ test('buildDemandBoxWarp: capsule box nested in a density box compounds fold-fre
       py = q;
     }
   }
+});
+
+// ————— direction-aware expansion (crowd anisotropy) —————
+
+// Parallel vertical "avenue" lines: inter-line spacing 8px in x, station
+// spacing 25px in y — the Manhattan shape. Nearest neighbours lie ACROSS the
+// lines (8 < 25), so the crowding is horizontal and the box should stretch in x.
+function verticalLinesGraph(transpose = false): { g: BoxGraph; samples: Pixel[] } {
+  const nodes: Pixel[] = [];
+  const edges: [number, number][] = [];
+  const LINES = 5, STOPS = 12;
+  for (let l = 0; l < LINES; l++)
+    for (let s = 0; s < STOPS; s++) {
+      const i = nodes.length;
+      const x = 280 + l * 8, y = 150 + s * 25;
+      nodes.push(transpose ? [y, x] : [x, y]);
+      if (s > 0) edges.push([i - 1, i]);
+    }
+  return { g: { nodes, edges }, samples: nodes.map((n) => [n[0], n[1]] as Pixel) };
+}
+
+test('boxCrowdAnisotropy: vertical lines → x-crowded, transpose → y-crowded, sparse → neutral', () => {
+  const all = { x0: 0, y0: 0, x1: 600, y1: 600 };
+  const v = boxCrowdAnisotropy(all, verticalLinesGraph().g);
+  const h = boxCrowdAnisotropy(all, verticalLinesGraph(true).g);
+  assert.ok(v > 0.75, `vertical lines read x-crowded, r=${v.toFixed(3)}`);
+  assert.ok(h < 0.25, `horizontal lines read y-crowded, r=${h.toFixed(3)}`);
+  // fewer than 2 inside nodes → no direction signal → neutral
+  assert.equal(boxCrowdAnisotropy(all, { nodes: [[300, 300]], edges: [] }), 0.5);
+  assert.equal(boxCrowdAnisotropy({ x0: 0, y0: 0, x1: 10, y1: 10 }, verticalLinesGraph().g), 0.5);
+});
+
+test('buildDemandBoxWarp: a vertically-lined box stretches horizontally, dramatically more than vertically', () => {
+  const { g, samples } = verticalLinesGraph();
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8 };
+  const o: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
+  const r = buildDemandBoxWarp(samples, g, DBOX, opts, o);
+  assert.ok(o.boxes!.length >= 1);
+  assert.ok(o.aniso!.length === o.boxes!.length);
+  // realized stretch on the node field: across the lines vs along a line
+  // (boxes are tightened to their nodes, so box-vs-density-box growth would
+  // measure the smear, not the push)
+  const w = (i: number) => r.warp([g.nodes[i][0], g.nodes[i][1]]);
+  const acrossX = Math.abs(w(48)[0] - w(0)[0]) / 32; // line 0 stop 0 → line 4 stop 0
+  const alongY = Math.abs(w(2)[1] - w(0)[1]) / 50; // line 0, stop 0 → stop 2
+  assert.ok(acrossX > alongY * 1.5, `across-lines x-stretch dominates: x=${acrossX.toFixed(2)} y=${alongY.toFixed(2)}`);
+  assert.ok(alongY >= 1 - 1e-9, `along-line never shrinks locally, y=${alongY.toFixed(2)}`);
+});
+
+test('buildDemandBoxWarp: aniso 0 → isotropic (both axes of a box grow equally, legacy behavior)', () => {
+  const { g, samples } = verticalLinesGraph();
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8, aniso: 0 };
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  buildDemandBoxWarp(samples, g, DBOX, opts, o);
+  const pre = mergeIntersectingBoxes(findDenseBoxes(samples, DBOX, opts));
+  for (let i = 0; i < pre.length; i++) {
+    const gx = (o.boxes![i].x1 - o.boxes![i].x0) / (pre[i].x1 - pre[i].x0);
+    const gy = (o.boxes![i].y1 - o.boxes![i].y0) / (pre[i].y1 - pre[i].y0);
+    assert.ok(Math.abs(gx - gy) < 1e-6, `isotropic growth: gx=${gx.toFixed(3)} gy=${gy.toFixed(3)}`);
+  }
+});
+
+test('buildDemandBoxWarp: pinned pair expands along its displacement axis and still clears need', () => {
+  // Horizontal 8px pair + a 60px chain: median edge 60 → need ≈ 24, well
+  // within the pair's reachable expansion (the chain must not be so long that
+  // need outruns expandMax — that regime can't clear regardless of direction).
+  const g: BoxGraph = {
+    nodes: [[100, 100], [108, 100], [100, 160], [100, 220], [160, 220]],
+    edges: [[0, 1], [0, 2], [2, 3], [3, 4]],
+  };
+  const r = buildDemandBoxWarp([], g, DBOX, DOPTS);
+  const need = (DOPTS.cellFromMedLen(medianEdgeLenPx(g)) / 2) * DOPTS.slack;
+  const pa = r.warp(g.nodes[0]);
+  const pb = r.warp(g.nodes[1]);
+  const dx = Math.abs(pa[0] - pb[0]);
+  const dy = Math.abs(pa[1] - pb[1]);
+  assert.ok(Math.sqrt(dx * dx + dy * dy) >= need, `pair clears need ${need.toFixed(1)}`);
+  // the separation came from the x axis (the pair is horizontal)
+  assert.ok(dx >= need * 0.95, `separation is along x: dx=${dx.toFixed(1)}`);
+});
+
+test('buildDemandBoxWarp: anisotropy is deterministic and reported via out.aniso in [0.1, 0.9]', () => {
+  const { g, samples } = verticalLinesGraph();
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8 };
+  const o1: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
+  const o2: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
+  const r1 = buildDemandBoxWarp(samples, g, DBOX, opts, o1);
+  const r2 = buildDemandBoxWarp(samples, g, DBOX, opts, o2);
+  assert.deepEqual(r1.warp([301, 234]), r2.warp([301, 234]));
+  assert.deepEqual(o1.aniso, o2.aniso);
+  assert.ok(o1.aniso!.every((a) => a >= 0.1 && a <= 0.9));
+});
+
+// ————— direction-coherent box splitting —————
+
+// A direction-MIXED region: vertical "Manhattan" trunks on the west, horizontal
+// "Queens" trunks on the east, inside one covering box. No single r serves both.
+function mixedRegion(): { g: BoxGraph; parent: DemandBox } {
+  const nodes: Pixel[] = [];
+  const edges: [number, number][] = [];
+  for (let l = 0; l < 5; l++)
+    for (let s = 0; s < 12; s++) {
+      const i = nodes.length;
+      nodes.push([120 + l * 8, 120 + s * 25]); // west: vertical lines, 8px apart in x
+      if (s > 0) edges.push([i - 1, i]);
+    }
+  for (let l = 0; l < 5; l++)
+    for (let s = 0; s < 12; s++) {
+      const i = nodes.length;
+      nodes.push([260 + s * 25, 200 + l * 8]); // east: horizontal lines, 8px apart in y
+      if (s > 0) edges.push([i - 1, i]);
+    }
+  const parent: DemandBox = { x0: 100, y0: 100, x1: 580, y1: 460, kind: 'density', pairs: [] };
+  return { g: { nodes, edges }, parent };
+}
+
+test('splitMixedBoxes: a direction-mixed box splits into direction-coherent halves; a coherent box stays whole', () => {
+  const { g, parent } = mixedRegion();
+  assert.ok(Math.abs(boxCrowdAnisotropy(parent, g) - 0.5) < 0.15, 'parent reads near-neutral (mixed)');
+  const split = splitMixedBoxes([parent], g, 5);
+  assert.ok(split.length >= 2, `mixed box splits, got ${split.length}`);
+  const rs = split.map((b) => boxCrowdAnisotropy(b, g));
+  assert.ok(rs.some((r) => r > 0.7), `some half reads x-crowded: [${rs.map((r) => r.toFixed(2))}]`);
+  assert.ok(rs.some((r) => r < 0.3), `some half reads y-crowded: [${rs.map((r) => r.toFixed(2))}]`);
+  // sub-boxes stay inside the parent and keep its kind
+  for (const b of split) {
+    assert.ok(b.x0 >= parent.x0 - 1e-9 && b.x1 <= parent.x1 + 1e-9 && b.y0 >= parent.y0 - 1e-9 && b.y1 <= parent.y1 + 1e-9);
+    assert.equal(b.kind, 'density');
+  }
+  // a coherent (all-vertical) box does not split
+  const coherent = verticalLinesGraph();
+  const whole: DemandBox = { x0: 260, y0: 130, x1: 340, y1: 450, kind: 'density', pairs: [] };
+  assert.equal(splitMixedBoxes([whole], coherent.g, 5).length, 1);
+});
+
+test('splitMixedBoxes: pairs survive splitting — every pair lands in a half holding one of its endpoints', () => {
+  const { g, parent } = mixedRegion();
+  // a capsule pair bridging the two regions — a cut between them puts it in BOTH halves
+  const pairs: PairTarget[] = [{ a: 11, b: 60, required: 40 }];
+  const split = splitMixedBoxes([{ ...parent, pairs }], g, 5);
+  const holders = split.filter((b) => b.pairs.some((t) => t.a === 11 && t.b === 60));
+  assert.ok(holders.length >= 1, 'pair preserved somewhere');
+  for (const owner of holders) {
+    const holdsEndpoint = [g.nodes[11], g.nodes[60]].some(
+      (n) => n[0] >= owner.x0 && n[0] <= owner.x1 && n[1] >= owner.y0 && n[1] <= owner.y1,
+    );
+    assert.ok(holdsEndpoint, 'each holding box contains at least one endpoint');
+  }
+  // deterministic
+  assert.deepEqual(splitMixedBoxes([{ ...parent, pairs }], g, 5), split);
+});
+
+test('buildDemandBoxWarp: mixed region — west stretches horizontally, east vertically (per-region direction)', () => {
+  const { g } = mixedRegion();
+  const samples = g.nodes.map((n) => [n[0], n[1]] as Pixel);
+  const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8 };
+  const o: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
+  const r = buildDemandBoxWarp(samples, g, DBOX, opts, o);
+  // measure realized stretch on each region's node field
+  const span = (lo: number, hi: number, axis: 0 | 1) => {
+    const w = [g.nodes[lo], g.nodes[hi]].map((p) => r.warp([p[0], p[1]]));
+    return Math.abs(w[1][axis] - w[0][axis]);
+  };
+  // west trunks: nodes 0 and 48 are the extreme lines' first stops (x 120 vs 152).
+  // Along-line measures stay OUTSIDE the other region's push band (separable
+  // pushes act on whole rows/columns, so measuring through the east box's
+  // y-band would pick up ITS stretch, not the west box's).
+  const westX = span(0, 48, 0) / 32; // per-px stretch across the lines
+  const westY = span(0, 2, 1) / 50; // along a line, above the east y-band
+  const eastY = span(60, 108, 1) / 32; // across the horizontal lines (y 200 vs 232)
+  const eastX = span(60, 62, 0) / 50; // along a line, east of the west x-band
+  assert.ok(westX > westY * 2, `west spreads across its lines: x=${westX.toFixed(2)} y=${westY.toFixed(2)}`);
+  assert.ok(eastY > eastX * 2, `east spreads across its lines: y=${eastY.toFixed(2)} x=${eastX.toFixed(2)}`);
 });

@@ -16,7 +16,11 @@
 // nesting-aware fixpoint (mergeDemandBoxes: same-kind unions, cross-kind
 // containment nests and compounds) so pushes never double-stack. Each box is
 // then expanded by exactly what its OWN targets need — contraction survival
-// plus any capsule pair separations — via a smooth
+// plus any capsule pair separations — DIRECTION-INTELLIGENTLY: the scalar
+// demand is split per axis along the box's crowd anisotropy
+// (boxCrowdAnisotropy — nearest-neighbour displacements say WHICH axis lacks
+// room, so Manhattan's parallel vertical trunks get their room horizontally
+// instead of half-wasting it on the axis the lines already span) — via a smooth
 // saturating per-axis push: inside the box half-extent the map ramps at unit
 // slope, eases the slope to 0 across the margin, then HOLDS constant — so the
 // surround is carried outward rather than crammed back to identity. Tapering
@@ -264,6 +268,112 @@ export function findCapsuleBoxes(
   return out;
 }
 
+/** Crowd anisotropy of a box: WHICH AXIS is actually crowded, read off the
+ *  nearest-neighbour displacement of every node inside the box. If your
+ *  nearest neighbour sits BESIDE you (horizontal displacement), horizontal
+ *  room is what separates you — so Manhattan's parallel vertical trunks read
+ *  x-crowded (avenue pitch < stop pitch), a pinned JFK-style pair reads
+ *  crowded along its own displacement, and a mixed cluster reads neutral.
+ *  One statistic serves all three demand kinds because growth must always
+ *  happen ALONG the displacement of the pairs that lack room. Contributions
+ *  are weighted by inverse distance — floored at 1px so a coincident-ish pair
+ *  can't hijack the whole box — so the tightest pairs steer the direction the
+ *  same way they dominate the demand. Returns r ∈ [0,1]: the fraction of the
+ *  box's expansion that belongs on the X axis (0.5 = isotropic).
+ *  Deterministic: fixed index order, + − × ÷ √ min max only. O(n²) per box,
+ *  run once per build — boxes hold at most a few hundred nodes. */
+export function boxCrowdAnisotropy(b: DenseBox, g: BoxGraph): number {
+  const idx: number[] = [];
+  for (let i = 0; i < g.nodes.length; i++) {
+    const p = g.nodes[i];
+    if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) idx.push(i);
+  }
+  const { wx, wy } = nnDirWeights(idx, g, dirContext(g));
+  let sx = 0;
+  let sy = 0;
+  for (let k = 0; k < idx.length; k++) { sx += wx[k]; sy += wy[k]; }
+  const tot = sx + sy;
+  return tot > 0 ? sx / tot : 0.5;
+}
+
+/** Whole-graph context for the crowding-direction search: edge adjacency as
+ *  integer keys (a·N+b both ways) plus each node's CORRIDOR direction — the
+ *  length-weighted, sign-normalized mean of its incident edge directions
+ *  (unit vector; hasDir=0 for isolated nodes). */
+interface DirContext { N: number; adj: Set<number>; cx: Float64Array; cy: Float64Array; hasDir: Uint8Array }
+function dirContext(g: BoxGraph): DirContext {
+  const N = g.nodes.length;
+  const adj = new Set<number>();
+  const cx = new Float64Array(N);
+  const cy = new Float64Array(N);
+  const hasDir = new Uint8Array(N);
+  for (const [a, b] of g.edges) {
+    adj.add(a * N + b);
+    adj.add(b * N + a);
+    let dx = g.nodes[b][0] - g.nodes[a][0];
+    let dy = g.nodes[b][1] - g.nodes[a][1];
+    // sign-normalize to the upper half-plane so opposite-direction incident
+    // edges (the usual straight-through corridor) reinforce instead of cancel
+    if (dy < 0 || (dy === 0 && dx < 0)) { dx = -dx; dy = -dy; }
+    cx[a] += dx; cy[a] += dy;
+    cx[b] += dx; cy[b] += dy;
+  }
+  for (let i = 0; i < N; i++) {
+    const l = Math.sqrt(cx[i] * cx[i] + cy[i] * cy[i]);
+    if (l > 0) { cx[i] /= l; cy[i] /= l; hasDir[i] = 1; }
+  }
+  return { N, adj, cx, cy, hasDir };
+}
+
+/** How parallel a displacement may be to the node's corridor before it stops
+ *  counting as crowding: |cos| above this (≈ ±32°) = "down my own corridor". */
+const CORRIDOR_COS = 0.85;
+
+/** Per-node crowding-direction weights over the node set `idx`: each node's
+ *  nearest OFF-CORRIDOR neighbour (within `idx`) displacement, decomposed per
+ *  axis and inverse-distance weighted (floored at 1px). Two exclusions define
+ *  "off-corridor": graph-adjacent neighbours (an edge owns its own gap —
+ *  octi's contraction machinery manages consecutive stations), and neighbours
+ *  whose displacement lies along the node's corridor direction (any-hop
+ *  same-line nodes: a trunk's 2-hop stop is nearer than the parallel avenue
+ *  and would mask it — along-corridor room is octi's job, not the warp's).
+ *  What remains is exactly the crowding only ROOM can fix: parallel trunk
+ *  lines an avenue apart (Manhattan reads x-crowded even though its
+ *  along-line stops are tighter), colliding interchange rows, brushing
+ *  corridors. Shared by boxCrowdAnisotropy (sum → one r) and splitMixedBoxes
+ *  (per-node, so a candidate cut is scored in the PARENT's context —
+ *  re-measuring a half in isolation lets the cut amputate a node's true
+ *  neighbours and flip its direction reading). */
+function nnDirWeights(idx: readonly number[], g: BoxGraph, ctx: DirContext): { wx: Float64Array; wy: Float64Array } {
+  const { N, adj, cx, cy, hasDir } = ctx;
+  const wx = new Float64Array(idx.length);
+  const wy = new Float64Array(idx.length);
+  for (let k = 0; k < idx.length; k++) {
+    const i = idx[k];
+    const pi = g.nodes[i];
+    let best = Infinity;
+    let bx = 0;
+    let by = 0;
+    for (const j of idx) {
+      if (j === i || adj.has(i * N + j)) continue;
+      const dx = g.nodes[j][0] - pi[0];
+      const dy = g.nodes[j][1] - pi[1];
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= best || !(d2 > 0)) continue;
+      if (hasDir[i]) {
+        const dot = dx * cx[i] + dy * cy[i];
+        if (dot * dot > CORRIDOR_COS * CORRIDOR_COS * d2) continue; // down my own corridor
+      }
+      best = d2; bx = dx; by = dy;
+    }
+    if (!Number.isFinite(best)) continue; // no off-corridor neighbour
+    const w = 1 / Math.max(1, Math.sqrt(best));
+    wx[k] = (w * bx * bx) / best; // neighbour beside me → x is the crowded axis
+    wy[k] = (w * by * by) / best;
+  }
+  return { wx, wy };
+}
+
 /** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox (as
  *  the old mergeIntersectingBoxes). A box fully CONTAINED in a different-kind
  *  box NESTS — both survive; the summed per-axis pushes stay monotone, so
@@ -296,6 +406,123 @@ export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
         break outer;
       }
   }
+  return out;
+}
+
+/** Split direction-MIXED boxes into direction-coherent sub-boxes, recursively.
+ *  A single per-box direction cannot serve the NYC mega-box: it covers
+ *  Manhattan's vertical trunks AND Queens' horizontal ones, and their crowd
+ *  anisotropies cancel to neutral (~0.5) under any pair weighting — measured,
+ *  not hypothetical. So: try cutting the box at the median inside-node
+ *  coordinate on each axis; keep the cut whose halves DISAGREE most in
+ *  anisotropy (a variance-reduction split), tighten each half to its own
+ *  nodes (padded, clipped to its side of the cut so halves stay disjoint —
+ *  summed pushes never double-stack), and recurse. A direction-coherent box
+ *  never splits (gain below MIN_GAIN), so maps without mixed regions are
+ *  untouched. Splitting also localizes the DEMAND solve: a borough-spanning
+ *  box holds most of the graph, so expanding it drags the global median (and
+ *  with it the contraction threshold) up nearly 1:1 and the secant rightly
+ *  jumps to the ceiling — sub-boxes each hold a small share and converge.
+ *  A cut that would separate a capsule pair's endpoints is vetoed (the pair's
+ *  separation push must come from ONE box); surviving pairs land in the half
+ *  that contains both endpoints. Deterministic: median cuts, fixed axis order,
+ *  fixed thresholds. */
+export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): DemandBox[] {
+  const adj = dirContext(g);
+  const MIN_NODES = 24; // don't split small clusters — their direction is already coherent-ish
+  const MIN_HALF = 8;   // each half must keep a meaningful direction sample
+  const MIN_GAIN = 0.2; // halves must disagree by at least this much in r
+  const MAX_DEPTH = 3;  // ≤ 8 sub-boxes per parent
+  const inside = (b: DenseBox): number[] => {
+    const idx: number[] = [];
+    for (let i = 0; i < g.nodes.length; i++) {
+      const p = g.nodes[i];
+      if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) idx.push(i);
+    }
+    return idx;
+  };
+  // bbox of `idx` + pad, clipped to `clip` — the tightened half-box
+  const tighten = (idx: number[], clip: DenseBox): DenseBox => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const i of idx) {
+      const p = g.nodes[i];
+      if (p[0] < x0) x0 = p[0];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[1] > y1) y1 = p[1];
+    }
+    return {
+      x0: Math.max(clip.x0, x0 - pad), y0: Math.max(clip.y0, y0 - pad),
+      x1: Math.min(clip.x1, x1 + pad), y1: Math.min(clip.y1, y1 + pad),
+    };
+  };
+  const out: DemandBox[] = [];
+  const rec = (b: DemandBox, depth: number): void => {
+    let idx = inside(b);
+    // Tighten every box to its own nodes first (density boxes come smeared by
+    // the grid smoothing): a directional push must hug the nodes that voted
+    // for its direction, or its band overhangs a neighbouring region and
+    // stretches it on the wrong axis. Shrinking never creates overlap.
+    if (depth === 0 && idx.length >= 2) {
+      const t = tighten(idx, b);
+      if (t.x0 !== b.x0 || t.y0 !== b.y0 || t.x1 !== b.x1 || t.y1 !== b.y1) {
+        b = { ...b, ...t };
+        idx = inside(b);
+      }
+    }
+    if (depth >= MAX_DEPTH || idx.length < MIN_NODES) { out.push(b); return; }
+    // Per-node direction weights in the PARENT context, fixed across all
+    // candidate cuts: a half is scored by aggregating its members' weights,
+    // never by re-measuring the half in isolation (a cut that slices off one
+    // trunk line would amputate its across-line neighbours and flip its
+    // reading to along-line — a huge but bogus gain).
+    const { wx, wy } = nnDirWeights(idx, g, adj);
+    const rOf = (member: (i: number) => boolean): number => {
+      let sx = 0;
+      let sy = 0;
+      for (let k = 0; k < idx.length; k++) if (member(idx[k])) { sx += wx[k]; sy += wy[k]; }
+      const tot = sx + sy;
+      return tot > 0 ? sx / tot : 0.5;
+    };
+    let bestGain = MIN_GAIN;
+    let best: { a: DemandBox; c: DemandBox } | null = null;
+    for (const axis of [0, 1] as const) {
+      const coords = idx.map((i) => g.nodes[i][axis]).sort((x, y) => x - y);
+      // Candidate cuts at every 5% node-count quantile — direction blocks can
+      // be small (NYC's x-crowded Manhattan trunk band is ~18% of the mega
+      // box's nodes) and a coarse grid never lands a cut on their boundary;
+      // any half containing the block plus its neighbouring opposite-direction
+      // band reads neutral and the gain vanishes. Scoring a cut is O(n) over
+      // precomputed weights, so the dense scan is cheap.
+      for (let q = 1; q <= 19; q++) {
+        const f = q / 20;
+        const cut = coords[Math.floor(f * coords.length)];
+        const A = idx.filter((i) => g.nodes[i][axis] < cut);
+        const C = idx.filter((i) => g.nodes[i][axis] >= cut);
+        if (A.length < MIN_HALF || C.length < MIN_HALF) continue;
+        const gain = Math.abs(rOf((i) => g.nodes[i][axis] < cut) - rOf((i) => g.nodes[i][axis] >= cut));
+        if (gain > bestGain) {
+          bestGain = gain;
+          const clipA: DenseBox = axis === 0 ? { ...b, x1: cut } : { ...b, y1: cut };
+          const clipC: DenseBox = axis === 0 ? { ...b, x0: cut } : { ...b, y0: cut };
+          // A pair follows any half holding one of its endpoints — a straddling
+          // pair lands in BOTH (each box's push still stretches the interval
+          // between the endpoints; the secant re-measures the true distance
+          // each pass, so double-serving converges, it doesn't double-count).
+          const aSide = (t: PairTarget): boolean => g.nodes[t.a][axis] < cut || g.nodes[t.b][axis] < cut;
+          const cSide = (t: PairTarget): boolean => g.nodes[t.a][axis] >= cut || g.nodes[t.b][axis] >= cut;
+          best = {
+            a: { ...tighten(A, clipA), kind: b.kind, pairs: b.pairs.filter(aSide) },
+            c: { ...tighten(C, clipC), kind: b.kind, pairs: b.pairs.filter(cSide) },
+          };
+        }
+      }
+    }
+    if (!best) { out.push(b); return; }
+    rec(best.a, depth + 1);
+    rec(best.c, depth + 1);
+  };
+  for (const b of boxes) rec(b, 0);
   return out;
 }
 
@@ -384,6 +611,11 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   expandMax?: number;
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2. */
   maxGrowth?: number;
+  /** Direction-intelligence amount, 0–1: how far each box's expansion is
+   *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = legacy
+   *  isotropic split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
+   *  overrides for dev sweeps. */
+  aniso?: number;
   /** Capsule-demand oracle inputs (optional — omitted by unit-level callers
    *  and dev tools that have no marker model; the oracle then doesn't run). */
   capsule?: CapsuleOracleOptions & {
@@ -429,14 +661,15 @@ function boxDemand(
  *  to [minX .. minX + W·growthX] (the caller's content refit re-frames anyway). */
 function buildWarpFromBoxes(
   boxes: DenseBox[],
-  strengths: readonly number[], // expand_b - 1, per box
+  strengths: readonly [number, number][], // per box: [sx, sy] = per-axis expand - 1
   box: WarpBox,
   marginFrac: number,
   maxGrowth: number,
   out?: { boxes?: DenseBox[] },
+  perAxisMargin = false, // aniso path: each axis's ramp scales with ITS half-extent
 ): DemandWarpResult {
   const identity: WarpFn = (p) => [p[0], p[1]];
-  if (boxes.length === 0 || strengths.every((s) => s === 0)) {
+  if (boxes.length === 0 || strengths.every(([sx, sy]) => sx === 0 && sy === 0)) {
     if (out) out.boxes = boxes.map((b) => ({ ...b }));
     return { warp: identity, growthX: 1, growthY: 1 };
   }
@@ -445,8 +678,15 @@ function buildWarpFromBoxes(
     const cy = (b.y0 + b.y1) / 2;
     const hx = (b.x1 - b.x0) / 2;
     const hy = (b.y1 - b.y0) / 2;
+    // Legacy: one margin from the LONGER half-extent for both axes. With
+    // direction-split boxes that lets an elongated box's push in its THIN axis
+    // ramp across its long extent — bleeding its stretch far into the
+    // neighbouring sub-box and washing the directions back out. Per-axis
+    // margins keep each axis's ramp proportional to that axis's own extent.
     const m = Math.max(1, marginFrac * Math.max(hx, hy));
-    return { cx, cy, hx, hy, m, s: strengths[i] };
+    const mx = perAxisMargin ? Math.max(1, marginFrac * hx) : m;
+    const my = perAxisMargin ? Math.max(1, marginFrac * hy) : m;
+    return { cx, cy, hx, hy, mx, my, sx: strengths[i][0], sy: strengths[i][1] };
   });
   // Smooth saturating odd-symmetric push, per-box strength s (slope in [0,1]
   // ⇒ each s·push term is monotone ⇒ the sum is monotone per axis ⇒
@@ -463,8 +703,8 @@ function buildWarpFromBoxes(
     let ux = 0;
     let uy = 0;
     for (const b of bs) {
-      ux += b.s * push(px - b.cx, b.hx, b.m);
-      uy += b.s * push(py - b.cy, b.hy, b.m);
+      ux += b.sx * push(px - b.cx, b.hx, b.mx);
+      uy += b.sy * push(py - b.cy, b.hy, b.my);
     }
     return [px + ux, py + uy];
   };
@@ -508,7 +748,7 @@ export function buildDemandBoxWarp(
   g: BoxGraph,
   box: WarpBox,
   opts: DemandOptions,
-  out?: { boxes?: DenseBox[]; expands?: number[] },
+  out?: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] },
 ): DemandWarpResult {
   const safety = opts.safety ?? 1.3;
   const slack = opts.slack ?? 1.3;
@@ -516,24 +756,33 @@ export function buildDemandBoxWarp(
   const expandMax = opts.expandMax ?? 10;
   const maxGrowth = opts.maxGrowth ?? 2;
   const marginFrac = opts.marginFrac ?? 1;
+  const anisoAmt = (() => {
+    const env = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_ANISO) : NaN;
+    const a = Number.isFinite(env) ? env : (opts.aniso ?? 1);
+    return Math.min(1, Math.max(0, a));
+  })();
 
   const medLen = medianEdgeLenPx(g);
   const cell = opts.cellFromMedLen(medLen);
   const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
   const contraction = findContractionBoxes(g, (cell / 2) * safety);
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
-  const boxes = mergeDemandBoxes([
+  const merged = mergeDemandBoxes([
     ...density.map((b) => ({ ...b, kind: 'density' as const, pairs: [] })),
     ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
     ...capsule,
   ]);
+  const need = (cell / 2) * slack;
+  // Direction intelligence step 1: break direction-mixed boxes (the NYC
+  // borough-spanning mega-box) into coherent sub-boxes so each can take its
+  // room on its OWN crowded axis. anisoAmt 0 = legacy single-box behavior.
+  const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
   if (boxes.length === 0) {
     if (out) { out.boxes = []; out.expands = []; }
     return { warp: (p) => [p[0], p[1]], growthX: 1, growthY: 1 };
   }
 
   const gaps = nodeGaps(g);
-  const need = (cell / 2) * slack;
   let expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
   // Capsule pair targets seed on top of the contraction-floor demand: the
   // expansion that lifts each pair to its required separation (× userMult).
@@ -546,9 +795,39 @@ export function buildDemandBoxWarp(
     }
     return seed;
   });
+  // Direction intelligence: each box's scalar expand is split into per-axis
+  // strengths along its crowd anisotropy — sx = 2r·(e−1), sy = 2(1−r)·(e−1) —
+  // a LINEAR split (no pow: determinism, and node positions stay affine in e,
+  // which the secant refinement's model requires). r is measured once on the
+  // input-space graph (stable under the warp to first order) and softened by
+  // anisoAmt; the [0.1, 0.9] clamp keeps BOTH axes responsive so the secant
+  // always has a positive slope on whichever axis the contraction floor
+  // measures. Total strength 2(e−1) is conserved, so an isotropic box (r=0.5)
+  // reproduces the legacy split exactly. Per-axis strength is still capped at
+  // expandMax−1 (the scalar cap's intent, per axis).
+  const rs = boxes.map((b) => {
+    const r = 0.5 + (boxCrowdAnisotropy(b, g) - 0.5) * anisoAmt;
+    return Math.min(0.9, Math.max(0.1, r));
+  });
+  // Anisotropy is a REALLOCATION luxury, not a survival budget: as a box's
+  // demand e approaches the expandMax ceiling, interpolate the split back to
+  // isotropic (t → 1) so both axes can still reach the full ceiling factor —
+  // a starved weak axis must never make an extreme contraction demand
+  // unreachable that the isotropic warp could clear. (Mix weights sum to 2 at
+  // every t, so total strength is conserved throughout.)
+  const axisStrengths = (es: readonly number[]): [number, number][] =>
+    es.map((e, i) => {
+      const t = Math.min(1, Math.max(0, (e - 1) / (expandMax - 1)));
+      const mixX = 2 * rs[i] * (1 - t) + t;
+      const mixY = 2 * (1 - rs[i]) * (1 - t) + t;
+      return [
+        Math.min(expandMax - 1, mixX * (e - 1)),
+        Math.min(expandMax - 1, mixY * (e - 1)),
+      ];
+    });
   // Refinement needs the output-space boxes even when the caller passed no `out`.
   const oref: { boxes?: DenseBox[] } = out ?? {};
-  let result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
+  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
 
   // Refinement: expansion raises the global median edge length, so the real
   // post-warp contraction threshold is HIGHER than the pre-warp estimate the
@@ -627,16 +906,17 @@ export function buildDemandBoxWarp(
       if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; prev = now;
       expands = eNext;
-      result = buildWarpFromBoxes(boxes, expands.map((e) => e - 1), box, marginFrac, maxGrowth, oref);
+      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
     }
   }
-  if (out) out.expands = expands;
+  if (out) { out.expands = expands; out.aniso = rs; }
 
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
     const ex = expands.map((e) => e.toFixed(2)).join(',');
+    const an = rs.map((r) => r.toFixed(2)).join(',');
     console.error(
-      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length} capsule=${capsule.length}) ` +
-      `cell=${cell.toFixed(1)} need=${need.toFixed(1)} expands=[${ex}] growth=${result.growthX.toFixed(2)},${result.growthY.toFixed(2)} (cap=${maxGrowth})`,
+      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length} capsule=${capsule.length} merged=${merged.length}) ` +
+      `cell=${cell.toFixed(1)} need=${need.toFixed(1)} expands=[${ex}] aniso=[${an}] (amt=${anisoAmt}) growth=${result.growthX.toFixed(2)},${result.growthY.toFixed(2)} (cap=${maxGrowth})`,
     );
   }
   return result;
@@ -653,7 +933,7 @@ export function buildSepDemandBoxWarp(
   box: WarpBox,
   sepOpts: DensityWarpOptions,
   boxOpts: DemandOptions,
-  out?: { boxes?: DenseBox[]; expands?: number[] },
+  out?: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] },
 ): DemandWarpResult {
   const sep = buildDensityWarp(samples, box, sepOpts);
   const warpedSamples = samples.map((s) => sep([s[0], s[1]]) as Pixel);
