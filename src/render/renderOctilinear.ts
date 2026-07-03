@@ -3159,7 +3159,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // tiny STATIC backdrop/grid fragment reuses the proven parser (negligible).
   if (sceneOut) {
     const prims: Prim[] = [];
-    // land background
+    // base canvas (void when a data hull bounds the land) + land
     prims.push({ kind: 'rect', x: 0, y: 0, w: width, h: height, rx: 0, fill: bg, stroke: 'none', strokeWidth: 0, layer: 'background', worldScale: false });
     // static water/green backdrop + optional grid overlay (small + static)
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');

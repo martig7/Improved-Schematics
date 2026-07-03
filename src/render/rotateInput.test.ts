@@ -80,6 +80,37 @@ test('rotateSchematicInput: rotates every coordinate carrier + rebuilds the bbox
   }
 });
 
+test('rotateSchematicInput: stamps the data-region hull, crops nothing', () => {
+  // ocean covers the WHOLE harvest bbox: after rotation the geography carries
+  // the rotated harvest outline as `hull` (the renderer draws land only inside
+  // it), while the polygons themselves are NOT clipped — no data loss.
+  const gbb: [number, number, number, number] = [-74.4, 40.4, -73.4, 41.2];
+  const ocean = [[[gbb[0], gbb[1]], [gbb[2], gbb[1]], [gbb[2], gbb[3]], [gbb[0], gbb[3]]]] as never;
+  const i = {
+    stations: [{ id: 'a', coords: [-74.0, 40.7] as Coordinate }, { id: 'b', coords: [-73.9, 40.9] as Coordinate }],
+    tracks: [],
+    routes: [],
+    stationGroups: [],
+    geography: { bbox: gbb, water: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: ocean } }] as never, green: [] as never },
+  };
+  const out = rotateSchematicInput(i, 29);
+  const geo = out.geography! as unknown as { hull?: Coordinate[]; water: { geometry: { coordinates: Coordinate[][] } }[]; bbox: number[] };
+  const hull = geo.hull!;
+  const ring = geo.water[0].geometry.coordinates[0];
+  assert.equal(hull.length, 4, 'hull = the 4 rotated harvest corners');
+  // nothing clipped: the ocean ring keeps all 4 vertices, and they coincide
+  // with the hull (the ocean WAS the harvest rect)
+  assert.equal(ring.length, 4);
+  for (let k = 0; k < 4; k++) {
+    assert.ok(Math.abs(ring[k][0] - hull[k][0]) < 1e-9 && Math.abs(ring[k][1] - hull[k][1]) < 1e-9);
+  }
+  // the stamped bbox is the tight AABB of the rotated vertices (covers the hull)
+  const bb = geo.bbox;
+  for (const c of hull) {
+    assert.ok(c[0] >= bb[0] - 1e-9 && c[0] <= bb[2] + 1e-9 && c[1] >= bb[1] - 1e-9 && c[1] <= bb[3] + 1e-9);
+  }
+});
+
 test('rotateSchematicInput: deterministic', () => {
   assert.equal(JSON.stringify(rotateSchematicInput(input(), 29)), JSON.stringify(rotateSchematicInput(input(), 29)));
 });

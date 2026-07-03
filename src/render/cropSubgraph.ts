@@ -32,7 +32,7 @@ type GroupLike = { stationIds?: string[]; stations?: unknown[] };
 /** Sutherland-Hodgman clip of one polygon ring against an axis-aligned rect
  *  (in geographic lng/lat space). Returns the clipped vertex list (open, no
  *  repeated closing point); empty when the ring lies wholly outside. */
-function clipRingToRect(ring: Coordinate[], minX: number, minY: number, maxX: number, maxY: number): Coordinate[] {
+export function clipRingToRect(ring: Coordinate[], minX: number, minY: number, maxX: number, maxY: number): Coordinate[] {
   const edges: { inside: (p: Coordinate) => boolean; isect: (a: Coordinate, b: Coordinate) => Coordinate }[] = [
     { inside: (p) => p[0] >= minX, isect: (a, b) => { const t = (minX - a[0]) / (b[0] - a[0]); return [minX, a[1] + t * (b[1] - a[1])]; } },
     { inside: (p) => p[0] <= maxX, isect: (a, b) => { const t = (maxX - a[0]) / (b[0] - a[0]); return [maxX, a[1] + t * (b[1] - a[1])]; } },

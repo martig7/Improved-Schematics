@@ -131,19 +131,24 @@ export function rotateSchematicInput<T extends {
       });
     const water = rotFeats(geography.water);
     const green = rotFeats(geography.green);
+    // The rotated harvest rect is a DIAMOND in the new frame; the square canvas
+    // fitted to its extremes has data-void triangles at the corners. NOTHING is
+    // cropped (cropping cut real network + backdrop) — instead the region
+    // outline is stamped as `hull`, and the renderer draws LAND only inside it:
+    // the void paints as background, never as fake land mid-ocean.
+    const [b0, b1, b2, b3] = geography.bbox;
+    const hull: Coordinate[] = [rot([b0, b1], f), rot([b2, b1], f), rot([b2, b3], f), rot([b0, b3], f)];
     let bbox: [number, number, number, number];
     if (mnX < mxX && mnY < mxY) bbox = [mnX, mnY, mxX, mxY];
     else {
-      const [b0, b1, b2, b3] = geography.bbox;
-      const corners = [rot([b0, b1], f), rot([b2, b1], f), rot([b2, b3], f), rot([b0, b3], f)];
       bbox = [
-        Math.min(corners[0][0], corners[1][0], corners[2][0], corners[3][0]),
-        Math.min(corners[0][1], corners[1][1], corners[2][1], corners[3][1]),
-        Math.max(corners[0][0], corners[1][0], corners[2][0], corners[3][0]),
-        Math.max(corners[0][1], corners[1][1], corners[2][1], corners[3][1]),
+        Math.min(hull[0][0], hull[1][0], hull[2][0], hull[3][0]),
+        Math.min(hull[0][1], hull[1][1], hull[2][1], hull[3][1]),
+        Math.max(hull[0][0], hull[1][0], hull[2][0], hull[3][0]),
+        Math.max(hull[0][1], hull[1][1], hull[2][1], hull[3][1]),
       ];
     }
-    geography = { bbox, water, green };
+    geography = { bbox, water, green, hull };
   }
   return { ...input, stations, tracks, routes, stationGroups, geography } as T;
 }

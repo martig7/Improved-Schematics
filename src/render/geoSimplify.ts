@@ -84,6 +84,11 @@ export interface LandmassStyle {
    *  either survives connected (severed channels are reconnected by geodesic
    *  corridors along the real course) or is swallowed entirely. */
   keepConnected?: boolean;
+  /** The harvested data region's outline in render px (rotated cities). Ring
+   *  vertices near it are the DATA CUTOFF, not shapes to stylize — they get
+   *  pinned exactly like the canvas rim, so the styled water always meets the
+   *  drawn land hull instead of swinging across it. */
+  hullPx?: readonly Pt[];
   /** Clearance around a repaired dry point, px (default 14). */
   dryMarginPx?: number;
 }
@@ -234,7 +239,7 @@ function cleanRing(pts: readonly Pt[]): Pt[] {
  *  `anchor` adds per-vertex anchor weight on top of the base 1 (importance:
  *  dense-core shorelines barely move at all). Deterministic: fixed rounds of
  *  direction assignment, fixed Gauss–Seidel sweeps in index order. */
-export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number): Pt[] {
+export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number, maxShift?: number): Pt[] {
   const n = ring.length;
   if (n < 3) return ring.slice();
   const SQ = Math.sqrt(0.5);
@@ -297,6 +302,23 @@ export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number): Pt[] 
           p[i][0] = (b1 * a22 - b2 * a12) / det;
           p[i][1] = (b2 * a11 - b1 * a12) / det;
         }
+      }
+    }
+  }
+  // Hard displacement bound: the anchored solve keeps vertices NEAR their true
+  // positions on average, but a chain of same-direction edges can still shift
+  // laterally as a unit (the direction penalty grows with length², the anchors
+  // only linearly) — at large tolerances that swept water across whole
+  // neighbourhoods. Clamp every vertex to `maxShift` of its source position;
+  // the fillet pass hides the slightly-off-axis kinks the clamp introduces.
+  if (maxShift !== undefined && maxShift > 0) {
+    for (let i = 0; i < n; i++) {
+      const dx = p[i][0] - ring[i][0];
+      const dy = p[i][1] - ring[i][1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxShift) {
+        p[i][0] = ring[i][0] + (dx * maxShift) / d;
+        p[i][1] = ring[i][1] + (dy * maxShift) / d;
       }
     }
   }
@@ -628,6 +650,23 @@ function repairOne(rings: Pt[][], s: Pt, margin: number, round: number): void {
   }
 }
 
+/** Insert evenly-spaced midpoints so no edge exceeds `maxLen` px. */
+export function subdivideRing(ring: readonly Pt[], maxLen: number): Pt[] {
+  const out: Pt[] = [];
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    out.push([a[0], a[1]]);
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const k = maxLen > 0 ? Math.floor(len / maxLen) : 0;
+    for (let s = 1; s <= k; s++) out.push([a[0] + (dx * s) / (k + 1), a[1] + (dy * s) / (k + 1)]);
+  }
+  return out;
+}
+
 const fmt = (v: number): number => Math.round(v * 10) / 10;
 
 /** SVG path for a closed ring with every corner rounded by a quadratic fillet
@@ -858,9 +897,41 @@ export function stylizeRingsPathD(
   // Corridor midpoints join the VW veto so simplification can't pinch them.
   const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];
   const unified = traceRaster(raster);
+  // Canvas-edge pin: the geography's outer boundary at the canvas rim is the
+  // DATA cutoff (the harvest region's edge), not a shape to stylize. With the
+  // map rotated into the game's bearing that cutoff crosses the canvas as an
+  // off-axis diagonal — the octi snap quantizing it to 45° (and VW cutting its
+  // corners) swung the ocean's edge across the canvas (fake land wedges in
+  // the water, paint past the canvas). Vertices in the rim band are pinned
+  // hard in both passes; the band is invisible (the viewBox ends at the
+  // canvas), so nothing octilinear is lost.
+  const edgeM = cell * 2;
+  const hullPts = style.hullPx;
+  const hullNear = (x: number, y: number): boolean => {
+    if (!hullPts || hullPts.length < 3) return false;
+    const m2 = 6.25 * cell * cell; // within 2.5 cells of a hull edge
+    const n = hullPts.length;
+    for (let i = 0; i < n; i++) {
+      const a = hullPts[i];
+      const b = hullPts[(i + 1) % n];
+      const ex = b[0] - a[0];
+      const ey = b[1] - a[1];
+      const ll = ex * ex + ey * ey;
+      let t = ll > 1e-12 ? ((x - a[0]) * ex + (y - a[1]) * ey) / ll : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dx = x - (a[0] + t * ex);
+      const dy = y - (a[1] + t * ey);
+      if (dx * dx + dy * dy < m2) return true;
+    }
+    return false;
+  };
+  const pinned = (x: number, y: number): boolean =>
+    x < edgeM || y < edgeM || x > extent.w - edgeM || y > extent.h - edgeM || hullNear(x, y);
   // VW protection factor >= 1 multiplying a vertex's effective significance:
-  // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW).
+  // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW). Pinned rim vertices are
+  // effectively unremovable (straight-run vertices still merge: zero area).
   const protect = (x: number, y: number): number => {
+    if (pinned(x, y)) return 1e9;
     if (!imp) return 1;
     const v = imp(x, y);
     const g = 1 + PROTECT * (v > 1 ? 1 : v < 0 ? 0 : v);
@@ -898,15 +969,27 @@ export function stylizeRingsPathD(
     const a = ringArea(ring);
     const aAbs = a < 0 ? -a : a;
     if (!cullOk(ring, aAbs)) continue;
-    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined, avoid);
+    let r = simplifyVW(ring, areaThresh, 4, (p) => protect(p[0], p[1]), avoid);
     if (r.length < 3) continue;
     // a ring can shrivel below the cull floor once its wiggles are gone
     const a2 = ringArea(r);
     if (!cullOk(r, a2 < 0 ? -a2 : a2)) continue;
     // Anchor weight rides importance: dense-core shorelines (where stations
     // sit near the water) get an 8x pull to their true position, so the
-    // octilinear solve reshapes them without MOVING them.
-    if (style.octi) r = snapOcti(r, imp ? (p) => 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : undefined);
+    // octilinear solve reshapes them without MOVING them. Rim vertices (the
+    // harvest-boundary cutoff) are pinned outright — see `pinned` above.
+    // Long edges are SUBDIVIDED first: the solve's direction penalty grows
+    // with edge length², so a single long off-axis edge rotates wholesale and
+    // sweeps water across hundreds of px of land (or vice versa). Sub-vertices
+    // anchor to the simplified line, so a long coast becomes an octilinear
+    // STAIRCASE with deviation bounded by ~half the subdivision length.
+    if (style.octi) {
+      r = snapOcti(
+        subdivideRing(r, 2.2 * style.simplifyPx),
+        (p) => (pinned(p[0], p[1]) ? 1e9 : imp ? 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : 0),
+        0.9 * style.simplifyPx,
+      );
+    }
     if (r.length < 3) continue;
     finals.push(r);
   }
