@@ -80,6 +80,10 @@ export interface LandmassStyle {
    *  these caught inside gets a notch carved around it — simplification may
    *  reshape a shoreline but may never move a station into the water. */
   dryPoints?: readonly Pt[];
+  /** Water only: never CREATE lakes — each originally-connected water body
+   *  either survives connected (severed channels are reconnected by geodesic
+   *  corridors along the real course) or is swallowed entirely. */
+  keepConnected?: boolean;
   /** Clearance around a repaired dry point, px (default 14). */
   dryMarginPx?: number;
 }
@@ -665,6 +669,151 @@ export function filletPathD(ring: readonly Pt[], r: number): string {
   return d + 'Z ';
 }
 
+/** Continuity constraint (water): the stylizer must not CREATE lakes — a
+ *  connected body of water either survives CONNECTED or vanishes entirely.
+ *  The morphological opening severs channels narrower than its local radius,
+ *  which would leave a river as a chain of disconnected "lakes". After the
+ *  opening (mutates `post` in place):
+ *    1. label the connected components of the ORIGINAL raster and of the
+ *       survivor (4-connectivity);
+ *    2. survivor pieces that couldn't justify themselves alone (pieceOk —
+ *       mirrors the ring cull) are dropped;
+ *    3. per original component, if >= 2 worthy pieces remain they are
+ *       RECONNECTED by geodesic corridors: BFS shortest paths INSIDE the
+ *       original water mask (so a corridor can never invent water where
+ *       there was none), filled 3 cells wide.
+ *  Zero worthy pieces = the whole component is swallowed; one = already
+ *  continuous. Returns corridor midpoints for the downstream VW veto so
+ *  simplification can't pinch a corridor shut. Deterministic: scan-order
+ *  labelling, fixed BFS neighbour order. */
+export function enforceContinuity(
+  post: GeoRaster,
+  origGrid: Uint8Array,
+  pieceOk: (areaPx2: number, bestImp: number) => number | boolean,
+  imp?: (x: number, y: number) => number,
+): Pt[] {
+  const { grid, W, H, gx0, gy0, cell } = post;
+  const N = W * H;
+  const label = (g: Uint8Array): { lab: Int32Array; count: number } => {
+    const lab = new Int32Array(N).fill(-1);
+    let count = 0;
+    const stack: number[] = [];
+    for (let i0 = 0; i0 < N; i0++) {
+      if (!g[i0] || lab[i0] >= 0) continue;
+      const id = count++;
+      lab[i0] = id;
+      stack.push(i0);
+      while (stack.length) {
+        const i = stack.pop()!;
+        const x = i % W;
+        const nb = [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W];
+        for (const j of nb) {
+          if (j < 0 || j >= N || !g[j] || lab[j] >= 0) continue;
+          lab[j] = id;
+          stack.push(j);
+        }
+      }
+    }
+    return { lab, count };
+  };
+  const orig = label(origGrid);
+  const surv = label(grid);
+  if (surv.count === 0) return [];
+  // per survivor piece: cell count, best importance, parent original component
+  const cells = new Int32Array(surv.count);
+  const best = new Float32Array(surv.count);
+  const parent = new Int32Array(surv.count).fill(-1);
+  for (let i = 0; i < N; i++) {
+    const s = surv.lab[i];
+    if (s < 0) continue;
+    cells[s]++;
+    if (parent[s] < 0) parent[s] = orig.lab[i];
+    if (imp) {
+      const v = imp(gx0 + ((i % W) + 0.5) * cell, gy0 + (Math.floor(i / W) + 0.5) * cell);
+      const c = v > 1 ? 1 : v < 0 ? 0 : v;
+      if (c > best[s]) best[s] = c;
+    }
+  }
+  // drop pieces that can't stand alone; group the keepers by original component
+  const keep = new Array<boolean>(surv.count);
+  const groups = new Map<number, number[]>();
+  for (let s = 0; s < surv.count; s++) {
+    keep[s] = !!pieceOk(cells[s] * cell * cell, best[s]);
+    if (keep[s]) {
+      const g = groups.get(parent[s]) ?? [];
+      g.push(s);
+      groups.set(parent[s], g);
+    }
+  }
+  for (let i = 0; i < N; i++) if (surv.lab[i] >= 0 && !keep[surv.lab[i]]) grid[i] = 0;
+  // reconnect: per original component with >= 2 kept pieces, BFS through the
+  // ORIGINAL mask from the union of connected-so-far to the nearest other piece
+  const corridorPts: Pt[] = [];
+  const bfsParent = new Int32Array(N);
+  const dist = new Int32Array(N);
+  for (const [og, pieces] of groups) {
+    if (pieces.length < 2) continue;
+    const connected = new Set<number>([pieces[0]]);
+    for (let round = 0; round < pieces.length - 1; round++) {
+      bfsParent.fill(-1);
+      dist.fill(-1);
+      const queue: number[] = [];
+      for (let i = 0; i < N; i++) {
+        const s = surv.lab[i];
+        if (s >= 0 && connected.has(s) && grid[i]) { dist[i] = 0; bfsParent[i] = i; queue.push(i); }
+      }
+      let hit = -1;
+      let hitPiece = -1;
+      for (let qi = 0; qi < queue.length && hit < 0; qi++) {
+        const i = queue[qi];
+        const x = i % W;
+        const nb = [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W];
+        for (const j of nb) {
+          if (j < 0 || j >= N || dist[j] >= 0 || orig.lab[j] !== og) continue;
+          dist[j] = dist[i] + 1;
+          bfsParent[j] = i;
+          const sj = surv.lab[j];
+          if (sj >= 0 && keep[sj] && !connected.has(sj) && grid[j]) { hit = j; hitPiece = sj; break; }
+          queue.push(j);
+        }
+      }
+      if (hit < 0) break; // unreachable (shouldn't happen: all pieces ⊆ one orig component)
+      connected.add(hitPiece);
+      // backtrack: fill a 3-wide corridor along the path, CLAMPED to the
+      // original water so reconnection never floods faithful land. Veto
+      // keep-points are emitted ONLY for genuinely re-filled (throat) cells:
+      // most of a path runs through wide surviving water, and blanketing it
+      // with veto points would freeze VW along every river system.
+      const path: number[] = [];
+      const wasEmpty: boolean[] = [];
+      for (let i = hit; bfsParent[i] !== i; i = bfsParent[i]) {
+        path.push(i);
+        wasEmpty.push(grid[i] === 0); // pristine state, BEFORE any corridor fill
+      }
+      let step = 0;
+      for (let k = 0; k < path.length; k++) {
+        const i = path[k];
+        const x = i % W;
+        const y = Math.floor(i / W);
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            const yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+            const j = yy * W + xx;
+            if (origGrid[j]) grid[j] = 1;
+          }
+        }
+        if (wasEmpty[k]) {
+          if (step % 3 === 0) corridorPts.push([gx0 + (x + 0.5) * cell, gy0 + (y + 0.5) * cell]);
+          step++;
+        }
+      }
+    }
+  }
+  return corridorPts;
+}
+
 /** Full stylize pass over a category's rings: UNION (tile fragments → clean
  *  unified outlines; prevents cracks along shared tile edges) → cull → VW →
  *  (octi) → fillet. Returns one combined SVG path `d` ('' when nothing
@@ -691,11 +840,23 @@ export function stylizeRingsPathD(
   // water intact and concentrates the full radius on the true periphery. This
   // (not the cull) is what preserves Lake-Union-class water through the
   // diagram modes.
+  const sf0 = Math.min(extent.w, extent.h) / 2700;
+  const dust0 = Math.max(9 * cell * cell, Math.min(0.36 * areaThresh, 2600 * sf0 * sf0));
+  const pieceOk = (areaPx2: number, bestImp: number): boolean => {
+    if (areaPx2 >= style.minAreaPx2) return true;
+    if (!imp) return false;
+    const u = 1 - (bestImp > 1 ? 1 : bestImp < 0 ? 0 : bestImp);
+    return areaPx2 >= Math.max(dust0, style.minAreaPx2 * u * u);
+  };
+  const origGrid = style.keepConnected ? raster.grid.slice() : null;
   morphOpen(raster, (x, y) => {
     const v = imp ? imp(x, y) : 0;
     const u = 1 - (v > 1 ? 1 : v < 0 ? 0 : v);
     return (style.simplifyPx / 2) * u * u;
   });
+  // No created lakes: reconnect severed channels (or swallow whole bodies).
+  // Corridor midpoints join the VW veto so simplification can't pinch them.
+  const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];
   const unified = traceRaster(raster);
   // VW protection factor >= 1 multiplying a vertex's effective significance:
   // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW).
@@ -729,12 +890,15 @@ export function stylizeRingsPathD(
     const u = 1 - (best > 1 ? 1 : best < 0 ? 0 : best);
     return areaAbs >= Math.max(dust, style.minAreaPx2 * u * u);
   };
+  const avoid = corridorPts.length
+    ? [...(style.dryPoints ?? []), ...corridorPts]
+    : style.dryPoints;
   const finals: Pt[][] = [];
   for (const ring of unified) {
     const a = ringArea(ring);
     const aAbs = a < 0 ? -a : a;
     if (!cullOk(ring, aAbs)) continue;
-    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined, style.dryPoints);
+    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined, avoid);
     if (r.length < 3) continue;
     // a ring can shrivel below the cull floor once its wiggles are gone
     const a2 = ringArea(r);

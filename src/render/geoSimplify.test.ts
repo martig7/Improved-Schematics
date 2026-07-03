@@ -191,6 +191,37 @@ test('stylizeRingsPathD: dryPoints are never inside the styled output', () => {
   assert.equal(w, 0, 'dry point ended up inside the styled water');
 });
 
+test('enforceContinuity: a severed river is reconnected along its course', async () => {
+  const { rasterizeRings, morphOpen, enforceContinuity, traceRaster } = await import('./geoSimplify');
+  // dumbbell: two 100px lakes joined by a 12px channel — an opening at r=20 severs it
+  const dumbbell: Pt[][] = [[
+    [20, 20], [120, 20], [120, 94], [280, 94], [280, 20], [380, 20],
+    [380, 120], [280, 120], [280, 106], [120, 106], [120, 120], [20, 120],
+  ]];
+  const r = rasterizeRings(dumbbell, EXT, 4)!;
+  const orig = r.grid.slice();
+  morphOpen(r, () => 20);
+  const cut = traceRaster({ ...r, grid: r.grid.slice() });
+  assert.ok(cut.length >= 2, `opening should sever the channel (got ${cut.length} rings)`);
+  const pts = enforceContinuity(r, orig, () => true);
+  const rejoined = traceRaster(r);
+  assert.equal(rejoined.length, 1, `expected ONE connected outline after reconnection, got ${rejoined.length}`);
+  assert.ok(pts.length > 0, 'corridor keep-points reported for the VW veto');
+});
+
+test('enforceContinuity: a component with no worthy piece is swallowed entirely', async () => {
+  const { rasterizeRings, morphOpen, enforceContinuity, traceRaster } = await import('./geoSimplify');
+  const dumbbell: Pt[][] = [[
+    [20, 20], [120, 20], [120, 94], [280, 94], [280, 20], [380, 20],
+    [380, 120], [280, 120], [280, 106], [120, 106], [120, 120], [20, 120],
+  ]];
+  const r = rasterizeRings(dumbbell, EXT, 4)!;
+  const orig = r.grid.slice();
+  morphOpen(r, () => 20);
+  enforceContinuity(r, orig, () => false); // nothing can stand alone
+  assert.equal(traceRaster(r).length, 0, 'all pieces dropped → the whole river swallowed');
+});
+
 test('stylizeRingsPathD: deterministic (same input, same output)', () => {
   const rings: Pt[][] = [SQUARE, [[200, 200], [340, 205], [335, 350], [198, 344]]];
   const s = { simplifyPx: 12, roundPx: 20, minAreaPx2: 400, octi: true };
