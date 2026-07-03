@@ -75,6 +75,13 @@ export interface LandmassStyle {
    *  class landmarks) while the periphery generalizes to blobs. Absent = the
    *  uniform thresholds everywhere. */
   importance?: (x: number, y: number) => number;
+  /** Points that must stay OUTSIDE the styled polygons (station markers that
+   *  are on land in the faithful geography). After the full pipeline, any of
+   *  these caught inside gets a notch carved around it — simplification may
+   *  reshape a shoreline but may never move a station into the water. */
+  dryPoints?: readonly Pt[];
+  /** Clearance around a repaired dry point, px (default 14). */
+  dryMarginPx?: number;
 }
 
 /** VW protection gain: importance scales the simplify threshold down by
@@ -114,6 +121,12 @@ export function simplifyVW(
   areaThresh: number,
   minVerts = 4,
   weight?: (p: Pt) => number,
+  /** Points that must never change sides: removing a vertex flips EXACTLY the
+   *  triangle (prev, i, next) between inside and outside, so a removal whose
+   *  triangle contains one of these is vetoed. This is what keeps a styled
+   *  shoreline from flooding a land station — a peninsula narrower than the
+   *  tolerance is one removal away from becoming water. */
+  avoidPoints?: readonly Pt[],
 ): Pt[] {
   const n = ring.length;
   if (n <= minVerts || areaThresh <= 0) return ring.slice();
@@ -121,21 +134,48 @@ export function simplifyVW(
   const next = new Array<number>(n);
   const area = new Array<number>(n);
   const alive = new Array<boolean>(n).fill(true);
+  const locked = new Array<boolean>(n).fill(false);
   const w = new Array<number>(n);
   for (let i = 0; i < n; i++) {
     prev[i] = (i + n - 1) % n;
     next[i] = (i + 1) % n;
     w[i] = weight ? weight(ring[i]) : 1;
   }
-  const recompute = (i: number) => { area[i] = triArea(ring2[prev[i]], ring2[i], ring2[next[i]]) * w[i]; };
   const ring2 = ring as readonly Pt[];
+  const recompute = (i: number) => {
+    area[i] = triArea(ring2[prev[i]], ring2[i], ring2[next[i]]) * w[i];
+    locked[i] = false; // the triangle changed — re-evaluate the veto
+  };
   for (let i = 0; i < n; i++) recompute(i);
+  const triHasAvoid = (i: number): boolean => {
+    if (!avoidPoints || avoidPoints.length === 0) return false;
+    const a = ring2[prev[i]];
+    const b = ring2[i];
+    const c = ring2[next[i]];
+    const mnX = Math.min(a[0], b[0], c[0]);
+    const mxX = Math.max(a[0], b[0], c[0]);
+    const mnY = Math.min(a[1], b[1], c[1]);
+    const mxY = Math.max(a[1], b[1], c[1]);
+    for (const s of avoidPoints) {
+      if (s[0] < mnX || s[0] > mxX || s[1] < mnY || s[1] > mxY) continue;
+      // sign tests with an on-edge cushion: boundary cases count as inside
+      const d1 = (b[0] - a[0]) * (s[1] - a[1]) - (b[1] - a[1]) * (s[0] - a[0]);
+      const d2 = (c[0] - b[0]) * (s[1] - b[1]) - (c[1] - b[1]) * (s[0] - b[0]);
+      const d3 = (a[0] - c[0]) * (s[1] - c[1]) - (a[1] - c[1]) * (s[0] - c[0]);
+      const EPS = 1e-6;
+      const neg = d1 < EPS && d2 < EPS && d3 < EPS;
+      const pos = d1 > -EPS && d2 > -EPS && d3 > -EPS;
+      if (neg || pos) return true;
+    }
+    return false;
+  };
   let count = n;
   while (count > minVerts) {
     let mi = -1;
     let ma = Infinity;
-    for (let i = 0; i < n; i++) if (alive[i] && area[i] < ma) { ma = area[i]; mi = i; }
+    for (let i = 0; i < n; i++) if (alive[i] && !locked[i] && area[i] < ma) { ma = area[i]; mi = i; }
     if (mi < 0 || ma >= areaThresh) break;
+    if (triHasAvoid(mi)) { locked[mi] = true; continue; }
     alive[mi] = false;
     count--;
     const p = prev[mi];
@@ -150,44 +190,11 @@ export function simplifyVW(
   return out;
 }
 
-/** Snap a closed ring's edges to the 8 octilinear directions: each edge keeps
- *  its length projected onto the nearest 45° direction, then the accumulated
- *  closure error is spread linearly across the vertices so the ring closes.
- *  Near-degenerate edges (< 1px after snapping) merge into their successor. */
-export function snapOcti(ring: readonly Pt[]): Pt[] {
-  const n = ring.length;
-  if (n < 3) return ring.slice();
-  const SQ = Math.sqrt(0.5);
-  const DIRS: Pt[] = [[1, 0], [SQ, SQ], [0, 1], [-SQ, SQ], [-1, 0], [-SQ, -SQ], [0, -1], [SQ, -SQ]];
-  const pts: Pt[] = [ring[0]];
-  for (let i = 0; i < n; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    const ex = b[0] - a[0];
-    const ey = b[1] - a[1];
-    // nearest direction by max dot product (fully tiebroken: first wins)
-    let best = 0;
-    let bd = -Infinity;
-    for (let k = 0; k < 8; k++) {
-      const d = ex * DIRS[k][0] + ey * DIRS[k][1];
-      if (d > bd) { bd = d; best = k; }
-    }
-    const len = bd < 0 ? 0 : bd; // projection of the edge onto the snapped dir
-    const q = pts[pts.length - 1];
-    pts.push([q[0] + DIRS[best][0] * len, q[1] + DIRS[best][1] * len]);
-  }
-  // pts has n+1 points; the last SHOULD equal the first. Spread the closure
-  // error linearly (vertex i gets i/n of it) and drop the duplicate end.
-  const last = pts[pts.length - 1];
-  const errX = last[0] - pts[0][0];
-  const errY = last[1] - pts[0][1];
-  const out: Pt[] = [];
-  for (let i = 0; i < n; i++) {
-    out.push([pts[i][0] - (errX * i) / n, pts[i][1] - (errY * i) / n]);
-  }
-  // merge near-degenerate edges left by zero-projection snaps
+/** Drop near-degenerate edges and straight-through vertices (incoming and
+ *  outgoing edges colinear, same direction) — fewer corners for the fillets. */
+function cleanRing(pts: readonly Pt[]): Pt[] {
   const merged: Pt[] = [];
-  for (const p of out) {
+  for (const p of pts) {
     const q = merged[merged.length - 1];
     if (q) {
       const dx = p[0] - q[0];
@@ -196,9 +203,7 @@ export function snapOcti(ring: readonly Pt[]): Pt[] {
     }
     merged.push(p);
   }
-  if (merged.length < 3) return out;
-  // drop vertices whose incoming and outgoing edges run the same direction
-  // (consecutive same-snap edges) — fewer corners for the fillet pass
+  if (merged.length < 3) return pts.slice();
   const clean: Pt[] = [];
   const m = merged.length;
   for (let i = 0; i < m; i++) {
@@ -211,6 +216,87 @@ export function snapOcti(ring: readonly Pt[]): Pt[] {
     clean.push(b);
   }
   return clean.length >= 3 ? clean : merged;
+}
+
+/** Octilinearize a closed ring by ANCHORED LEAST SQUARES (curve
+ *  schematization): each edge is assigned its nearest 45° direction, then
+ *  vertex positions solve
+ *      min Σ w_i·|p_i − v_i|²  +  λ Σ_edges ((p_{i+1} − p_i)·n_e)²
+ *  where n_e is the assigned direction's normal — edges become octilinear
+ *  (their off-axis component is crushed) while every vertex stays pulled to
+ *  its TRUE position. Unlike a walk-and-snap (dead reckoning), positional
+ *  error CANNOT accumulate along the ring — the previous snap drifted
+ *  coastlines by hundreds of px mid-ring and put stations in the water.
+ *  `anchor` adds per-vertex anchor weight on top of the base 1 (importance:
+ *  dense-core shorelines barely move at all). Deterministic: fixed rounds of
+ *  direction assignment, fixed Gauss–Seidel sweeps in index order. */
+export function snapOcti(ring: readonly Pt[], anchor?: (p: Pt) => number): Pt[] {
+  const n = ring.length;
+  if (n < 3) return ring.slice();
+  const SQ = Math.sqrt(0.5);
+  const DIRS: Pt[] = [[1, 0], [SQ, SQ], [0, 1], [-SQ, SQ], [-1, 0], [-SQ, -SQ], [0, -1], [SQ, -SQ]];
+  const LAMBDA = 25; // octilinearity stiffness vs the unit position anchor
+  const p: Pt[] = ring.map((v) => [v[0], v[1]]);
+  const w = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    const a = anchor ? anchor(ring[i]) : 0;
+    w[i] = 1 + (a > 0 ? a : 0);
+  }
+  const nx = new Array<number>(n);
+  const ny = new Array<number>(n);
+  const ex = new Array<number>(n);
+  const ey = new Array<number>(n);
+  for (let round = 0; round < 3; round++) {
+    // (re)assign each edge's direction from the CURRENT geometry, with
+    // NEIGHBOR SMOOTHING: each edge votes together with its neighbours
+    // (1-2-1 window), so a gently curving chain — which per-edge assignment
+    // would quantize into a fine 0°/45° zigzag — snaps to ONE consistent
+    // direction and the solve fits a long straight run through the anchors.
+    // Real corners (large direction changes) out-vote the window and stay.
+    for (let i = 0; i < n; i++) {
+      const a = p[i];
+      const b = p[(i + 1) % n];
+      ex[i] = b[0] - a[0];
+      ey[i] = b[1] - a[1];
+    }
+    for (let i = 0; i < n; i++) {
+      const ip = (i + n - 1) % n;
+      const iq = (i + 1) % n;
+      const vx = ex[ip] + 2 * ex[i] + ex[iq];
+      const vy = ey[ip] + 2 * ey[i] + ey[iq];
+      let best = 0;
+      let bd = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        const d = vx * DIRS[k][0] + vy * DIRS[k][1];
+        if (d > bd) { bd = d; best = k; }
+      }
+      nx[i] = -DIRS[best][1];
+      ny[i] = DIRS[best][0];
+    }
+    // Gauss–Seidel: each vertex minimizes its local quadratic (2x2 solve)
+    for (let it = 0; it < 40; it++) {
+      for (let i = 0; i < n; i++) {
+        const v = ring[i];
+        const ip = (i + n - 1) % n;
+        const iq = (i + 1) % n;
+        const px = nx[ip], py = ny[ip]; // normal of the incoming edge
+        const qx = nx[i], qy = ny[i]; // normal of the outgoing edge
+        const a11 = w[i] + LAMBDA * (px * px + qx * qx);
+        const a12 = LAMBDA * (px * py + qx * qy);
+        const a22 = w[i] + LAMBDA * (py * py + qy * qy);
+        const dp = px * p[ip][0] + py * p[ip][1];
+        const dq = qx * p[iq][0] + qy * p[iq][1];
+        const b1 = w[i] * v[0] + LAMBDA * (px * dp + qx * dq);
+        const b2 = w[i] * v[1] + LAMBDA * (py * dp + qy * dq);
+        const det = a11 * a22 - a12 * a12;
+        if (det > 1e-12) {
+          p[i][0] = (b1 * a22 - b2 * a12) / det;
+          p[i][1] = (b2 * a11 - b1 * a12) / det;
+        }
+      }
+    }
+  }
+  return cleanRing(p);
 }
 
 /** Union a category's (overlapping, per-tile) rings into clean unified
@@ -431,6 +517,113 @@ export function traceRaster(r: GeoRaster): Pt[][] {
   return out;
 }
 
+/** Nonzero winding of point (x,y) over a set of rings. */
+export function windingAt(rings: readonly (readonly Pt[])[], x: number, y: number): number {
+  let w = 0;
+  for (const ring of rings) {
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % n];
+      if (a[1] <= y) {
+        if (b[1] > y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) > 0) w++;
+      } else if (b[1] <= y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) < 0) w--;
+    }
+  }
+  return w;
+}
+
+/** Final dry-point guarantee (mutates `rings`): for every dry point the styled
+ *  polygons swallowed, carve a triangular notch around it in the nearest ring
+ *  edge — with the fillet pass after, it reads as a small bay. Simplification
+ *  and the octilinear solve keep positions CLOSE, but a long straight edge can
+ *  still cut across a curving shore between anchored vertices; this pass turns
+ *  "stations stay on land" from likely into guaranteed. Deterministic: points
+ *  in input order, retry-bounded. */
+export function repairDryPoints(rings: Pt[][], dryPoints: readonly Pt[], margin: number): void {
+  // Global rounds: notches for NEARBY dry points can interact (a later carve
+  // crossing an earlier one re-wets it), so re-verify every point until a
+  // full pass is clean. Bounded; empirically converges in 1-2 rounds.
+  for (let round = 0; round < 3; round++) {
+    let dirty = false;
+    for (const s of dryPoints) {
+      if (windingAt(rings, s[0], s[1]) === 0) continue;
+      dirty = true;
+      repairOne(rings, s, margin, round);
+    }
+    if (!dirty) break;
+  }
+}
+
+function repairOne(rings: Pt[][], s: Pt, margin: number, round: number): void {
+  {
+    for (let attempt = round; attempt < round + 3; attempt++) {
+      if (windingAt(rings, s[0], s[1]) === 0) break;
+      // nearest edge over all rings (foot of perpendicular, clamped to segment)
+      let bRing = -1;
+      let bEdge = -1;
+      let bD2 = Infinity;
+      let bFoot: Pt = [0, 0];
+      for (let ri = 0; ri < rings.length; ri++) {
+        const ring = rings[ri];
+        const n = ring.length;
+        for (let i = 0; i < n; i++) {
+          const a = ring[i];
+          const b = ring[(i + 1) % n];
+          const ex = b[0] - a[0];
+          const ey = b[1] - a[1];
+          const ll = ex * ex + ey * ey;
+          let t = ll > 1e-12 ? ((s[0] - a[0]) * ex + (s[1] - a[1]) * ey) / ll : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const fx = a[0] + t * ex;
+          const fy = a[1] + t * ey;
+          const dx = s[0] - fx;
+          const dy = s[1] - fy;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bD2) { bD2 = d2; bRing = ri; bEdge = i; bFoot = [fx, fy]; }
+        }
+      }
+      if (bRing < 0) break;
+      const ring = rings[bRing];
+      const a = ring[bEdge];
+      const b = ring[(bEdge + 1) % ring.length];
+      const d = Math.sqrt(bD2);
+      // direction from the boundary toward (and past) the point; when the
+      // point sits ON the boundary, fall back to the edge normal — the retry
+      // flips it via the winding re-test if the first side was wrong
+      let ux: number;
+      let uy: number;
+      if (d > 0.5) {
+        ux = (s[0] - bFoot[0]) / d;
+        uy = (s[1] - bFoot[1]) / d;
+      } else {
+        const ex = b[0] - a[0];
+        const ey = b[1] - a[1];
+        const el = Math.sqrt(ex * ex + ey * ey) || 1;
+        ux = attempt % 2 === 0 ? -ey / el : ey / el;
+        uy = attempt % 2 === 0 ? ex / el : -ex / el;
+      }
+      const h = d + margin;
+      const ex = b[0] - a[0];
+      const ey = b[1] - a[1];
+      const el = Math.sqrt(ex * ex + ey * ey) || 1;
+      const tx = ex / el;
+      const ty = ey / el;
+      // Shoulders CLAMPED to the segment: overshooting past its endpoints
+      // makes the ring self-intersect (a bowtie), which corrupts the winding
+      // instead of carving. Clamped-to-endpoint shoulders degenerate cleanly
+      // (the whole edge detours via the apex).
+      const tFoot = (bFoot[0] - a[0]) * tx + (bFoot[1] - a[1]) * ty;
+      const s1 = Math.max(0, tFoot - h);
+      const s2 = Math.min(el, tFoot + h);
+      const p1: Pt = [a[0] + tx * s1, a[1] + ty * s1];
+      const apex: Pt = [s[0] + ux * margin, s[1] + uy * margin];
+      const p2: Pt = [a[0] + tx * s2, a[1] + ty * s2];
+      ring.splice(bEdge + 1, 0, p1, apex, p2);
+    }
+  }
+}
+
 const fmt = (v: number): number => Math.round(v * 10) / 10;
 
 /** SVG path for a closed ring with every corner rounded by a quadratic fillet
@@ -536,19 +729,30 @@ export function stylizeRingsPathD(
     const u = 1 - (best > 1 ? 1 : best < 0 ? 0 : best);
     return areaAbs >= Math.max(dust, style.minAreaPx2 * u * u);
   };
-  let d = '';
+  const finals: Pt[][] = [];
   for (const ring of unified) {
     const a = ringArea(ring);
     const aAbs = a < 0 ? -a : a;
     if (!cullOk(ring, aAbs)) continue;
-    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined);
+    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined, style.dryPoints);
     if (r.length < 3) continue;
     // a ring can shrivel below the cull floor once its wiggles are gone
     const a2 = ringArea(r);
     if (!cullOk(r, a2 < 0 ? -a2 : a2)) continue;
-    if (style.octi) r = snapOcti(r);
+    // Anchor weight rides importance: dense-core shorelines (where stations
+    // sit near the water) get an 8x pull to their true position, so the
+    // octilinear solve reshapes them without MOVING them.
+    if (style.octi) r = snapOcti(r, imp ? (p) => 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : undefined);
     if (r.length < 3) continue;
-    d += filletPathD(r, style.roundPx);
+    finals.push(r);
   }
+  // LAST, so nothing downstream can undo it: no dry point may end up inside.
+  // The fillet pass still runs after and rounds a notch apex back toward the
+  // water by ~0.35·radius — bake that into the clearance.
+  if (style.dryPoints && style.dryPoints.length > 0) {
+    repairDryPoints(finals, style.dryPoints, (style.dryMarginPx ?? 14) + style.roundPx * 0.35);
+  }
+  let d = '';
+  for (const r of finals) d += filletPathD(r, style.roundPx);
   return d.trim();
 }

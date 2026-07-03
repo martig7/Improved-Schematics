@@ -61,8 +61,13 @@ export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: num
     let d = '';
     if (style) {
       const imp = style.importance;
-      const catStyle = cls === 'green' && imp
-        ? { ...style, importance: (x: number, y: number) => GREEN_IMP * imp(x, y) }
+      // dryPoints is a WATER constraint — a station sitting on a park is fine.
+      const catStyle = cls === 'green'
+        ? {
+            ...style,
+            importance: imp ? (x: number, y: number) => GREEN_IMP * imp(x, y) : undefined,
+            dryPoints: undefined,
+          }
         : style;
       d = stylizeRingsPathD(rs, catStyle, extent);
     } else {

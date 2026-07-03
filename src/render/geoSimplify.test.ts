@@ -50,7 +50,7 @@ test('snapOcti: near-axis edges snap to the axis and the ring closes', () => {
   const ring: Pt[] = [[0, 0], [100, 10], [90, 110], [-10, 100]];
   const out = snapOcti(ring);
   assert.ok(out.length >= 3);
-  // every edge direction is a 45° multiple within the closure-shear tolerance
+  // every edge direction is a 45° multiple within the solver's residual
   for (let i = 0; i < out.length; i++) {
     const a = out[i];
     const b = out[(i + 1) % out.length];
@@ -58,6 +58,37 @@ test('snapOcti: near-axis edges snap to the axis and the ring closes', () => {
     const m = ((ang % 45) + 45) % 45;
     const off = Math.min(m, 45 - m);
     assert.ok(off < 8, `edge ${i} is ${off.toFixed(1)}° off the octilinear grid`);
+  }
+});
+
+test('snapOcti: NO positional drift on a long wiggly ring (anchored solve)', () => {
+  // a long near-rectangular coastline with per-edge wiggle — the old
+  // walk-and-snap accumulated error along the ring (dead reckoning) and
+  // drifted mid-ring vertices arbitrarily far; the anchored solve must keep
+  // every vertex near its true position.
+  const ring: Pt[] = [];
+  for (let i = 0; i < 60; i++) ring.push([i * 20, (i * 7) % 3 === 0 ? 4 : -4]);
+  for (let i = 0; i < 10; i++) ring.push([1200, 20 + i * 20]);
+  for (let i = 60; i > 0; i--) ring.push([i * 20, 220 + ((i * 5) % 3 === 0 ? 4 : -4)]);
+  for (let i = 0; i < 10; i++) ring.push([0, 220 - i * 20]);
+  const out = snapOcti(ring);
+  // nearest-original distance for every output vertex
+  let worst = 0;
+  for (const p of out) {
+    let d = Infinity;
+    for (const v of ring) d = Math.min(d, Math.hypot(p[0] - v[0], p[1] - v[1]));
+    worst = Math.max(worst, d);
+  }
+  assert.ok(worst < 25, `octilinearized ring drifted ${worst.toFixed(1)}px from the source`);
+});
+
+test('snapOcti: anchored vertices barely move', () => {
+  const ring: Pt[] = [[0, 0], [100, 12], [88, 108], [-8, 96]];
+  const out = snapOcti(ring, () => 1e6);
+  assert.equal(out.length, 4);
+  for (let i = 0; i < 4; i++) {
+    const d = Math.hypot(out[i][0] - ring[i][0], out[i][1] - ring[i][1]);
+    assert.ok(d < 0.5, `anchored vertex ${i} moved ${d.toFixed(2)}px`);
   }
 });
 
@@ -129,6 +160,35 @@ test('stylizeRingsPathD: importance rescues a small ring from the cull', () => {
   assert.equal(stylizeRingsPathD([pond], style, EXT), '', 'unprotected pond dies');
   const rescued = stylizeRingsPathD([pond], { ...style, importance: () => 1 }, EXT);
   assert.ok(rescued.length > 0, 'fully-important pond survives (6400·16 >= 20000)');
+});
+
+test('repairDryPoints: a swallowed dry point gets carved out', async () => {
+  const { repairDryPoints, windingAt } = await import('./geoSimplify');
+  const water: Pt[][] = [[[0, 0], [400, 0], [400, 300], [0, 300]]];
+  const dry: Pt[] = [[50, 150], [500, 150]]; // one inside, one already outside
+  assert.notEqual(windingAt(water, 50, 150), 0);
+  repairDryPoints(water, dry, 14);
+  assert.equal(windingAt(water, 50, 150), 0, 'inside point must be carved dry');
+  assert.equal(windingAt(water, 500, 150), 0, 'outside point stays outside');
+  assert.notEqual(windingAt(water, 200, 150), 0, 'the water body itself survives');
+});
+
+test('stylizeRingsPathD: dryPoints are never inside the styled output', () => {
+  const water: Pt[][] = [[[20, 20], [380, 20], [380, 280], [20, 280]]];
+  const dry: Pt[] = [[40, 150]];
+  const d = stylizeRingsPathD(water, { simplifyPx: 30, roundPx: 0, minAreaPx2: 100, octi: true, dryPoints: dry }, EXT);
+  const pts = pathPts(d);
+  assert.ok(pts.length >= 4);
+  // reconstruct the emitted ring (roundPx 0 → plain polygon) and winding-test
+  const ring: Pt[] = pts;
+  let w = 0;
+  const [x, y] = dry[0];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length];
+    if (a[1] <= y) { if (b[1] > y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) > 0) w++; }
+    else if (b[1] <= y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) < 0) w--;
+  }
+  assert.equal(w, 0, 'dry point ended up inside the styled water');
 });
 
 test('stylizeRingsPathD: deterministic (same input, same output)', () => {

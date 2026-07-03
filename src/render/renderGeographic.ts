@@ -32,7 +32,7 @@ import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
 import { untangleLineOrder } from './layout/untangle';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
-import type { LandmassParams } from './geoSimplify';
+import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
 // Diagnostic stash (set only when OCTI_WARP_DEBUG is in the env, so the game
@@ -1156,6 +1156,47 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
  *  serialized, dies with the pre. */
 const lmBackdropCache = new WeakMap<SmoothedPrecomputed, { key: string; svg: string }>();
 
+/** Station markers that sit on LAND in the faithful geography (checked against
+ *  a fine raster of the raw water rings) — the landmass stylizer must never
+ *  move a shoreline over one of these (LandmassStyle.dryPoints). Stations
+ *  already on water in the faithful render are the network's own doing and are
+ *  left alone. Memoized per pre. */
+const dryStationsCache = new WeakMap<SmoothedPrecomputed, Pixel[]>();
+function dryStations(pre: SmoothedPrecomputed): Pixel[] {
+  const cached = dryStationsCache.get(pre);
+  if (cached) return cached;
+  const out: Pixel[] = [];
+  const water = pre.geoRingsPx?.water;
+  if (water && water.length > 0) {
+    const r = rasterizeRings(water, { w: pre.width, h: pre.height }, 4);
+    if (r) {
+      for (const p of pre.stationPx.values()) {
+        const cx = Math.floor((p[0] - r.gx0) / r.cell);
+        const cy = Math.floor((p[1] - r.gy0) / r.cell);
+        // Protection-biased: a station is WET only when its whole 3x3 cell
+        // neighbourhood is water — markers a few px inside a faithful shore
+        // still count dry, so the raster quantization can't leak one into the
+        // styled water. Genuinely mid-water stations stay wet (untouched).
+        let wet = true;
+        for (let dy = -1; dy <= 1 && wet; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = cx + dx;
+            const y = cy + dy;
+            if (x < 0 || y < 0 || x >= r.W || y >= r.H || r.grid[y * r.W + x] !== 1) { wet = false; break; }
+          }
+        }
+        // The raster fills over sub-cell islands — a station on a tiny island
+        // reads wet here but is really on land. The wet set is small, so
+        // confirm each with an exact winding test over the raw rings.
+        if (wet && windingAt(water, p[0], p[1]) === 0) wet = false;
+        if (!wet) out.push([p[0], p[1]]);
+      }
+    }
+  }
+  dryStationsCache.set(pre, out);
+  return out;
+}
+
 /** Local-importance field for the landmass stylizer: 1 inside the warp's own
  *  demand boxes (density ∪ contraction ∪ capsule — the regions the warp judged
  *  heavily used and magnified), plus a station-density kernel so clusters of
@@ -1230,6 +1271,8 @@ export function drawSmoothed(
         minAreaPx2: lm.minArea * scale * scale,
         octi: lm.octi,
         importance: buildImportance(pre),
+        dryPoints: dryStations(pre),
+        dryMarginPx: 14 * scale,
       }
     : undefined;
   // The styled build unions + retraces the whole geography (~100ms on a big
