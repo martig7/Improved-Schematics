@@ -650,8 +650,11 @@ export function SchematicPanel() {
       stations: full.stations,
       // geography sets the projection BOUNDS (geoFramePts → computeBounds), so it must be
       // captured or an offline repro projects the network into different bounds → a
-      // different octi layout than the game produces.
-      geography,
+      // different octi layout than the game produces. MUST be full.geography (the
+      // ROTATED backdrop, same frame as the stations/tracks above) — capturing the
+      // raw state variable here shipped dumps with a rotated network over an
+      // unrotated backdrop, and every offline replay drew lines offset from land.
+      geography: full.geography,
       // The live render options (mirrors buildInput().options, with derived warp/affinity/
       // theme baked in) so a script can pass `options` straight through.
       options: full.options,
