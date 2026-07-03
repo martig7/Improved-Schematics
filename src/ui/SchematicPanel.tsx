@@ -1683,34 +1683,6 @@ export function SchematicPanel() {
         )}
         {mode === 'smoothed' && smoothedReady && (
           <button
-            onClick={() =>
-              requestToggle(() =>
-                setLandmass((v) => (v === 'faithful' ? 'rounded' : v === 'rounded' ? 'diagram' : 'faithful')),
-              )
-            }
-            style={toggleStyle(landmass !== 'faithful')}
-            title="Landmass style: Faithful (real coastlines) → Rounded (simplified soft blobs, MTA-style) → Diagram (octilinear blobs, TfL-style). Tune the strength with the slider that appears."
-          >
-            {landmass === 'faithful' ? 'Land: Faithful' : landmass === 'rounded' ? 'Land: Rounded' : 'Land: Diagram'}
-          </button>
-        )}
-        {mode === 'smoothed' && smoothedReady && landmass !== 'faithful' && (
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={landmassDetail}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              requestToggle(() => setLandmassDetail(v));
-            }}
-            style={{ width: 70 }}
-            title={`Landmass simplification strength: ${landmassDetail.toFixed(2)} (left = subtle, right = full diagram blobs)`}
-          />
-        )}
-        {mode === 'smoothed' && smoothedReady && (
-          <button
             onClick={() => setShowWarpBoxes((v) => !v)}
             style={toggleStyle(showWarpBoxes)}
             title="Outline the dense-core regions the box-warp magnified (overlay only; Regenerate to populate on maps cached before this)"
@@ -2019,6 +1991,47 @@ export function SchematicPanel() {
                     display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`}
                     onChange={setBoxFrac}
                   />
+
+                  {/* Map shape: the landmass backdrop style. Draw-time (like
+                      Label size) — the dropdown + slider apply instantly with a
+                      repaint, no Save/regenerate. */}
+                  <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55, marginTop: 2 }}>
+                    Map shape
+                  </span>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                    Landmass
+                    <select
+                      value={landmass}
+                      onChange={(e) => {
+                        const v = e.target.value as 'faithful' | 'rounded' | 'diagram';
+                        requestToggle(() => setLandmass(v));
+                      }}
+                      title="Faithful = real coastlines · Rounded = simplified soft blobs (MTA-style) · Diagram = octilinear blobs (TfL-style)"
+                      style={{
+                        flex: '0 0 auto',
+                        padding: '3px 6px',
+                        borderRadius: 5,
+                        fontSize: 12,
+                        background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5',
+                        color: 'inherit',
+                        border: '1px solid rgba(136,136,136,0.35)',
+                      }}
+                    >
+                      <option value="faithful">Faithful</option>
+                      <option value="rounded">Rounded</option>
+                      <option value="diagram">Diagram</option>
+                    </select>
+                  </label>
+                  <Slider
+                    label="Simplification"
+                    value={landmassDetail}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    display={landmassDetail <= 0.1 ? 'Subtle' : landmassDetail >= 0.9 ? 'Bold' : landmassDetail.toFixed(2)}
+                    onChange={(v) => requestToggle(() => setLandmassDetail(v))}
+                    disabled={landmass === 'faithful'}
+                  />
                 </>
               )}
 
@@ -2034,6 +2047,8 @@ export function SchematicPanel() {
                     setLinePos(DEFAULT_REALISM_POS);
                     setBoxWarpPos(DEFAULT_REALISM_POS);
                     setBoxFrac(DEFAULT_BOX_FRAC);
+                    setLandmass('faithful');
+                    setLandmassDetail(0.5);
                     setApplied({
                       lineWidth: DEFAULT_LINE_WIDTH,
                       stationRadius: DEFAULT_STATION_RADIUS,
