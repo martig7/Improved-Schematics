@@ -430,16 +430,11 @@ export interface SmoothedPrecomputed {
   geoRingsPx?: GeoRingsPx;
   /** The harvested data region's outline in render px (closed polygon, edge-
    *  sampled through the warped projection). Present when the input geography
-   *  carries a hull (rotated cities): LAND is drawn only inside it — the
-   *  canvas outside is data void and paints as background — and the landmass
-   *  stylizer pins shoreline vertices near it so the data cutoff is never
-   *  reshaped. Absent = the whole canvas is land (unrotated cities). */
+   *  carries a hull (rotated cities). Consumed ONLY by the landmass stylizer,
+   *  which pins shoreline vertices near it so the data cutoff is never
+   *  reshaped — it is NOT drawn (a hull-bounded land fill and boundary bleed
+   *  were tried and reverted: in-game they painted giant false land). */
   geoHullPx?: Pixel[];
-  /** Boundary bleed: quads extending each hull segment outward to the canvas
-   *  edge, colored by the category touching the segment INSIDE (ocean bleeds
-   *  ocean, land bleeds land) — the data void reads as a continuation of the
-   *  map instead of dead canvas. Fills resolved at build time. */
-  geoBleedPx?: { d: string; fill: string }[];
   width: number;
   height: number;
   dark: boolean;
@@ -1165,62 +1160,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       }
     }
   }
-  // Boundary bleed: for each hull segment, probe just INSIDE for the touching
-  // category and extend that category's color outward past the canvas — the
-  // void beyond the data cutoff continues the map (an ocean edge stays ocean,
-  // a land edge stays land) instead of reading as dead canvas.
-  let geoBleedPx: { d: string; fill: string }[] | undefined;
-  if (geoHullPx && geoHullPx.length >= 3 && geoRingsPx) {
-    let cx = 0;
-    let cy = 0;
-    for (const p of geoHullPx) { cx += p[0]; cy += p[1]; }
-    cx /= geoHullPx.length;
-    cy /= geoHullPx.length;
-    const L = Math.max(outW, outH) * 0.75; // long enough to cross any corner
-    const landFill = dark ? DARK_THEME.land : '#ffffff';
-    const byFill = new Map<string, string>();
-    const n = geoHullPx.length;
-    const r1 = Math.round;
-    // Per-VERTEX outward directions (away from the centroid), so adjacent
-    // quads share their outer points EXACTLY — per-segment normals diverge on
-    // the hull's warped curve and left radial hairline gaps between quads.
-    const outer: Pixel[] = geoHullPx.map((v) => {
-      const dx = v[0] - cx;
-      const dy = v[1] - cy;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      return [r1(v[0] + (dx / d) * L), r1(v[1] + (dy / d) * L)];
-    });
-    for (let i = 0; i < n; i++) {
-      const a = geoHullPx[i];
-      const b = geoHullPx[(i + 1) % n];
-      const ex = b[0] - a[0];
-      const ey = b[1] - a[1];
-      const el = Math.sqrt(ex * ex + ey * ey);
-      if (el < 1e-6) continue;
-      // probe just INSIDE the segment midpoint for the touching category
-      let nx = -ey / el;
-      let ny = ex / el;
-      const mx = (a[0] + b[0]) / 2;
-      const my = (a[1] + b[1]) / 2;
-      if (nx * (mx - cx) + ny * (my - cy) < 0) { nx = -nx; ny = -ny; }
-      const probe: Pixel = [mx - nx * 14, my - ny * 14];
-      const fill = windingAt(geoRingsPx.water as never, probe[0], probe[1]) !== 0
-        ? geoRingsPx.waterFill
-        : windingAt(geoRingsPx.green as never, probe[0], probe[1]) !== 0
-          ? geoRingsPx.greenFill
-          : landFill;
-      const oa = outer[i];
-      const ob = outer[(i + 1) % n];
-      const quad = `M${r1(a[0])} ${r1(a[1])}L${r1(b[0])} ${r1(b[1])}L${ob[0]} ${ob[1]}L${oa[0]} ${oa[1]}Z`;
-      byFill.set(fill, (byFill.get(fill) ?? '') + quad);
-    }
-    // land first, then green, then water — matches the backdrop's layering
-    geoBleedPx = [];
-    for (const fill of [landFill, geoRingsPx.greenFill, geoRingsPx.waterFill]) {
-      const d = byFill.get(fill);
-      if (d) geoBleedPx.push({ d, fill });
-    }
-  }
   const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
   const stations = [...supportM.stations.values()].map((st) => ({
     nodeId: st.nodeId,
@@ -1233,7 +1172,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, geoBleedPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
@@ -1386,8 +1325,6 @@ export function drawSmoothed(
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,
-    landHull: pre.geoHullPx,
-    bleedParts: pre.geoBleedPx,
   };
   // The expensive marker-placement geometry is toggle-independent: compute it once
   // and memoize on `pre`, so label/station toggles — and cache reads that restore a
