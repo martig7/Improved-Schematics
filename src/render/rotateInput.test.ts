@@ -80,10 +80,10 @@ test('rotateSchematicInput: rotates every coordinate carrier + rebuilds the bbox
   }
 });
 
-test('rotateSchematicInput: geography crops to the inscribed rect — data backs every corner', () => {
-  // ocean covers the WHOLE harvest bbox: after rotation + inscribed-rect crop,
-  // the stamped bbox must be fully inside the rotated ocean (no data-void
-  // corners on the canvas), and every vertex stays inside the stamped bbox.
+test('rotateSchematicInput: stamps the data-region hull, crops nothing', () => {
+  // ocean covers the WHOLE harvest bbox: after rotation the geography carries
+  // the rotated harvest outline as `hull` (the renderer draws land only inside
+  // it), while the polygons themselves are NOT clipped — no data loss.
   const gbb: [number, number, number, number] = [-74.4, 40.4, -73.4, 41.2];
   const ocean = [[[gbb[0], gbb[1]], [gbb[2], gbb[1]], [gbb[2], gbb[3]], [gbb[0], gbb[3]]]] as never;
   const i = {
@@ -94,27 +94,20 @@ test('rotateSchematicInput: geography crops to the inscribed rect — data backs
     geography: { bbox: gbb, water: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: ocean } }] as never, green: [] as never },
   };
   const out = rotateSchematicInput(i, 29);
-  const bb = out.geography!.bbox;
-  const ring = (out.geography!.water as unknown as { geometry: { coordinates: Coordinate[][] } }[])[0].geometry.coordinates[0];
-  // the inscribed rect is strictly smaller than the harvest bbox spans
-  assert.ok(bb[2] - bb[0] < gbb[2] - gbb[0]);
-  assert.ok(bb[3] - bb[1] < gbb[3] - gbb[1]);
-  for (const c of ring) {
-    assert.ok(c[0] >= bb[0] - 1e-9 && c[0] <= bb[2] + 1e-9 && c[1] >= bb[1] - 1e-9 && c[1] <= bb[3] + 1e-9);
+  const geo = out.geography! as unknown as { hull?: Coordinate[]; water: { geometry: { coordinates: Coordinate[][] } }[]; bbox: number[] };
+  const hull = geo.hull!;
+  const ring = geo.water[0].geometry.coordinates[0];
+  assert.equal(hull.length, 4, 'hull = the 4 rotated harvest corners');
+  // nothing clipped: the ocean ring keeps all 4 vertices, and they coincide
+  // with the hull (the ocean WAS the harvest rect)
+  assert.equal(ring.length, 4);
+  for (let k = 0; k < 4; k++) {
+    assert.ok(Math.abs(ring[k][0] - hull[k][0]) < 1e-9 && Math.abs(ring[k][1] - hull[k][1]) < 1e-9);
   }
-  // all four stamped-bbox corners are covered by the clipped ocean (winding != 0)
-  const inside = (x: number, y: number): boolean => {
-    let w = 0;
-    for (let k = 0; k < ring.length; k++) {
-      const a = ring[k], b = ring[(k + 1) % ring.length];
-      if (a[1] <= y) { if (b[1] > y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) > 0) w++; }
-      else if (b[1] <= y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) < 0) w--;
-    }
-    return w !== 0;
-  };
-  const e = 1e-6;
-  for (const [x, y] of [[bb[0] + e, bb[1] + e], [bb[2] - e, bb[1] + e], [bb[0] + e, bb[3] - e], [bb[2] - e, bb[3] - e]]) {
-    assert.ok(inside(x, y), `stamped-bbox corner ${x},${y} has no ocean data`);
+  // the stamped bbox is the tight AABB of the rotated vertices (covers the hull)
+  const bb = geo.bbox;
+  for (const c of hull) {
+    assert.ok(c[0] >= bb[0] - 1e-9 && c[0] <= bb[2] + 1e-9 && c[1] >= bb[1] - 1e-9 && c[1] <= bb[3] + 1e-9);
   }
 });
 

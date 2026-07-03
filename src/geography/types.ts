@@ -19,6 +19,12 @@ export interface GeographyData {
   bbox: BoundingBox;
   water: GeoPolyFeature[];
   green: GeoPolyFeature[];
+  /** Outline of the harvested DATA REGION in the current coordinate frame
+   *  (closed polygon, no repeated end point). Absent = the bbox rect. Set by
+   *  rotateSchematicInput: the rotated harvest rect is a diamond in the render
+   *  frame, and the renderer draws LAND only inside this hull — the canvas
+   *  outside it is data void and paints as background, never as fake land. */
+  hull?: Coordinate[];
 }
 
 /** A raw harvested feature tagged with the source-layer it came from. */

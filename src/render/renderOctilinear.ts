@@ -137,6 +137,11 @@ export interface RenderRibbonsArgs {
    *  simplified landmass blobs, per the landmass style. Drawn under
    *  gridOverlay. */
   backdrop?: string;
+  /** The harvested data region's outline in render px. When present, LAND is
+   *  painted only inside this polygon — the canvas outside it is data void
+   *  (a rotated city's harvest diamond doesn't cover the square canvas) and
+   *  paints as the page background, never as fake land. */
+  landHull?: Pixel[];
   /** Optional pre-rendered SVG snippet (a single `<g>...</g>`) drawn between
    *  the water layer and the route ribbons. Used to overlay the Hanan grid
    *  for diagnostic purposes (showGrid option). On legacy pres this also
@@ -3054,6 +3059,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
 export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
+  // With a data-region hull, the base canvas is VOID (page background) and land
+  // is painted only inside the hull polygon. Casings/labels keep using the land
+  // color (`bg`) — lines run over land/water, never meaningfully over the void.
+  const voidBg = dark ? '#18181b' : '#ffffff';
+  const landHullD = args.landHull && args.landHull.length >= 3
+    ? args.landHull.map((p, i) => (i === 0 ? 'M' : 'L') + p[0] + ' ' + p[1]).join('') + 'Z'
+    : null;
+  const canvasFill = landHullD ? voidBg : bg;
+  const landPart = landHullD ? `<path d="${landHullD}" fill="${bg}" stroke="none"/>` : '';
   const casingWidth = LINE_WIDTH + 3;
   const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
 
@@ -3159,8 +3173,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // tiny STATIC backdrop/grid fragment reuses the proven parser (negligible).
   if (sceneOut) {
     const prims: Prim[] = [];
-    // land background
-    prims.push({ kind: 'rect', x: 0, y: 0, w: width, h: height, rx: 0, fill: bg, stroke: 'none', strokeWidth: 0, layer: 'background', worldScale: false });
+    // base canvas (void when a data hull bounds the land) + land
+    prims.push({ kind: 'rect', x: 0, y: 0, w: width, h: height, rx: 0, fill: canvasFill, stroke: 'none', strokeWidth: 0, layer: 'background', worldScale: false });
+    if (landHullD) prims.push({ kind: 'path', d: landHullD, fill: bg, stroke: 'none', strokeWidth: 0, lineCap: 'butt', lineJoin: 'miter', layer: 'background', worldScale: true });
     // static water/green backdrop + optional grid overlay (small + static)
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
@@ -3193,7 +3208,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width +
-    '" height="' + height + '"' + frameAttr + '>\n<rect width="' + width + '" height="' + height + '" fill="' + bg + '"/>\n' +
+    '" height="' + height + '"' + frameAttr + '>\n<rect width="' + width + '" height="' + height + '" fill="' + canvasFill + '"/>\n' +
+    (landPart ? landPart + '\n' : '') +
     (waterPart ? waterPart + '\n' : '') +
     (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +

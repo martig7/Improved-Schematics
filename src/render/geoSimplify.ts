@@ -84,6 +84,11 @@ export interface LandmassStyle {
    *  either survives connected (severed channels are reconnected by geodesic
    *  corridors along the real course) or is swallowed entirely. */
   keepConnected?: boolean;
+  /** The harvested data region's outline in render px (rotated cities). Ring
+   *  vertices near it are the DATA CUTOFF, not shapes to stylize — they get
+   *  pinned exactly like the canvas rim, so the styled water always meets the
+   *  drawn land hull instead of swinging across it. */
+  hullPx?: readonly Pt[];
   /** Clearance around a repaired dry point, px (default 14). */
   dryMarginPx?: number;
 }
@@ -867,8 +872,27 @@ export function stylizeRingsPathD(
   // hard in both passes; the band is invisible (the viewBox ends at the
   // canvas), so nothing octilinear is lost.
   const edgeM = cell * 2;
+  const hullPts = style.hullPx;
+  const hullNear = (x: number, y: number): boolean => {
+    if (!hullPts || hullPts.length < 3) return false;
+    const m2 = 6.25 * cell * cell; // within 2.5 cells of a hull edge
+    const n = hullPts.length;
+    for (let i = 0; i < n; i++) {
+      const a = hullPts[i];
+      const b = hullPts[(i + 1) % n];
+      const ex = b[0] - a[0];
+      const ey = b[1] - a[1];
+      const ll = ex * ex + ey * ey;
+      let t = ll > 1e-12 ? ((x - a[0]) * ex + (y - a[1]) * ey) / ll : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dx = x - (a[0] + t * ex);
+      const dy = y - (a[1] + t * ey);
+      if (dx * dx + dy * dy < m2) return true;
+    }
+    return false;
+  };
   const pinned = (x: number, y: number): boolean =>
-    x < edgeM || y < edgeM || x > extent.w - edgeM || y > extent.h - edgeM;
+    x < edgeM || y < edgeM || x > extent.w - edgeM || y > extent.h - edgeM || hullNear(x, y);
   // VW protection factor >= 1 multiplying a vertex's effective significance:
   // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW). Pinned rim vertices are
   // effectively unremovable (straight-run vertices still merge: zero area).

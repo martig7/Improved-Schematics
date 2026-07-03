@@ -428,6 +428,13 @@ export interface SmoothedPrecomputed {
    *  style is on. Absent on legacy pres (their gridOverlay bakes the water in)
    *  and when there's no geography. */
   geoRingsPx?: GeoRingsPx;
+  /** The harvested data region's outline in render px (closed polygon, edge-
+   *  sampled through the warped projection). Present when the input geography
+   *  carries a hull (rotated cities): LAND is drawn only inside it — the
+   *  canvas outside is data void and paints as background — and the landmass
+   *  stylizer pins shoreline vertices near it so the data cutoff is never
+   *  reshaped. Absent = the whole canvas is land (unrotated cities). */
+  geoHullPx?: Pixel[];
   width: number;
   height: number;
   dark: boolean;
@@ -1136,6 +1143,23 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // BACKDROP is built from them at draw time (drawSmoothed), which is what lets
   // the landmass style re-render as a cheap repaint instead of a re-sim.
   const geoRingsPx = projectGeoRings(input.geography, proj, theme, dark);
+  // Data-region hull → render px: sample each hull edge densely (the warp bends
+  // straight edges into curves) through the final projection.
+  let geoHullPx: Pixel[] | undefined;
+  const hull = input.geography?.hull;
+  if (hull && hull.length >= 3) {
+    const SAMPLES = 24;
+    geoHullPx = [];
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i];
+      const b = hull[(i + 1) % hull.length];
+      for (let s = 0; s < SAMPLES; s++) {
+        const t = s / SAMPLES;
+        const p = proj.toSVG([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        geoHullPx.push([Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]);
+      }
+    }
+  }
   const gridSvg = opts.showGrid ? buildOctiGridSvg(buildOctiGrid(pixelBounds(nodePx), image.cellSize), dark) : '';
   const stations = [...supportM.stations.values()].map((st) => ({
     nodeId: st.nodeId,
@@ -1148,7 +1172,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // → renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
@@ -1273,6 +1297,7 @@ export function drawSmoothed(
         importance: buildImportance(pre),
         dryPoints: dryStations(pre),
         dryMarginPx: 14 * scale,
+        hullPx: pre.geoHullPx,
       }
     : undefined;
   // The styled build unions + retraces the whole geography (~100ms on a big
@@ -1300,6 +1325,7 @@ export function drawSmoothed(
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,
+    landHull: pre.geoHullPx,
   };
   // The expensive marker-placement geometry is toggle-independent: compute it once
   // and memoize on `pre`, so label/station toggles — and cache reads that restore a
