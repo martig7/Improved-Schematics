@@ -30,18 +30,23 @@
 // monotone (slope in [0,1], so p + s·push is monotone for s >= 0), so the
 // expansion is fold-free at any strength and has NO localized thinning.
 //
-// GROWTH, not claw-back: the saturating push only grows the overall bbox, and
-// that growth is KEPT — the output canvas grows to min(raw growth, maxGrowth)
-// × the input canvas PER AXIS, instead of being rescaled back to the input
-// canvas size the way a fixed-expand scheme would. Per axis (not a single
-// uniform scale) so the warped canvas FILLS the grown canvas instead of
-// letterboxing — a uniform scale would leave a bare-land margin that renders
-// as "black edges" round the map. A bounded secant refinement pass then
-// re-solves each box's demand against the POST-warp contraction threshold
-// (the median edge length — and so the threshold — rises as boxes expand),
-// and buildSepDemandBoxWarp composes the separable warp (global
-// magnification) under the demand warp (local room), finding boxes and
-// measuring demand in separable-warped space.
+// GROWTH, not claw-back — and SPACE ∝ WARP: the saturating push only grows
+// the overall bbox, and that growth is KEPT — the output canvas grows PER
+// AXIS to exactly what the granted warp produces, so the far field always
+// keeps unit scale (a saturated push is a rigid translation out there).
+// maxGrowth THROTTLES the push strengths when the raw growth would exceed it
+// (growth is affine in the strengths, so the throttle is exact) — it never
+// squeezes the warped map back into a capped canvas: the old global-shrink
+// cap made the outskirts pay for the core's room (Staten Island crushed into
+// bands at the canvas edges). Per axis (not a single uniform scale) so the
+// warped canvas FILLS the grown canvas instead of letterboxing. A bounded
+// secant refinement pass re-solves each box's demand against the POST-warp
+// contraction threshold (the median edge length — and so the threshold —
+// rises as boxes expand) with the cap SLACK (throttling inside the loop
+// would jam every box to the ceiling chasing an unreachable target); the
+// throttle is applied once, on the final build. buildSepDemandBoxWarp
+// composes the separable warp (global magnification) under the demand warp
+// (local room), finding boxes and measuring demand in separable-warped space.
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
 import type { Pixel } from './types';
@@ -746,10 +751,12 @@ function boxDemand(
   return Math.min(expandMax, Math.max(1, userMult * Math.max(1, need / gMed)));
 }
 
-/** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths,
- *  growing the canvas by min(raw growth, maxGrowth) per axis instead of
- *  normalizing back to the input canvas. Top-left anchored: [minX..maxX] maps
- *  to [minX .. minX + W·growthX] (the caller's content refit re-frames anyway). */
+/** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths.
+ *  The canvas grows by exactly the (possibly throttled) warp's raw growth per
+ *  axis — space stays proportional to the warp granted; past maxGrowth the
+ *  strengths are throttled, never the map squeezed. Top-left anchored:
+ *  [minX..maxX] maps to [minX .. minX + W·growthX] (the caller's content
+ *  refit re-frames anyway). */
 function buildWarpFromBoxes(
   boxes: DenseBox[],
   strengths: readonly [number, number][], // per box: [sx, sy] = per-axis expand - 1
@@ -799,25 +806,42 @@ function buildWarpFromBoxes(
     }
     return [px + ux, py + uy];
   };
-  // Growth instead of claw-back: the raw push only expands (monotone, det >= 1),
-  // so the warped canvas corners give the raw growth; cap per axis at maxGrowth.
-  // sx = 1 while demand fits (the room is REAL); < 1 only past the cap (global,
-  // even shrink — never a ring).
-  const xl = raw(box.minX, box.minY)[0];
-  const xr = raw(box.maxX, box.minY)[0];
-  const yt = raw(box.minX, box.minY)[1];
-  const yb = raw(box.minX, box.maxY)[1];
+  // SPACE ∝ WARP: the canvas always grows to exactly what the granted warp
+  // produces, and the far field ALWAYS keeps unit scale (a saturated push is
+  // a rigid translation out there). When the raw growth would exceed
+  // maxGrowth, the cap THROTTLES the push strengths — proportionally, per
+  // axis — instead of squeezing the whole warped map back into the capped
+  // canvas the way the old global sx<1 rescale did. The squeeze made the
+  // outskirts pay for the core's room (Staten Island crushed into edge
+  // bands); the throttle grants less room instead and leaves the far field
+  // geographically true. Growth is AFFINE in the strengths (corner images
+  // are sums of s·push terms), so the throttle factor is exact:
+  // λ = (cap−1)/(raw−1) lands growth on the cap in one step.
   const W = box.maxX - box.minX;
   const H = box.maxY - box.minY;
+  const corners = () => ({
+    xl: raw(box.minX, box.minY)[0],
+    xr: raw(box.maxX, box.minY)[0],
+    yt: raw(box.minX, box.minY)[1],
+    yb: raw(box.minX, box.maxY)[1],
+  });
+  let { xl, xr, yt, yb } = corners();
   const rawGx = (xr - xl) / W;
   const rawGy = (yb - yt) / H;
-  const growthX = Math.min(rawGx, maxGrowth);
-  const growthY = Math.min(rawGy, maxGrowth);
-  const sx = growthX / rawGx;
-  const sy = growthY / rawGy;
+  if (rawGx > maxGrowth && rawGx > 1) {
+    const lx = (maxGrowth - 1) / (rawGx - 1);
+    for (const b of bs) b.sx *= lx;
+  }
+  if (rawGy > maxGrowth && rawGy > 1) {
+    const ly = (maxGrowth - 1) / (rawGy - 1);
+    for (const b of bs) b.sy *= ly;
+  }
+  if (rawGx > maxGrowth || rawGy > maxGrowth) ({ xl, xr, yt, yb } = corners());
+  const growthX = (xr - xl) / W;
+  const growthY = (yb - yt) / H;
   const warp: WarpFn = (p) => {
     const q = raw(p[0], p[1]);
-    return [box.minX + (q[0] - xl) * sx, box.minY + (q[1] - yt) * sy];
+    return [box.minX + (q[0] - xl), box.minY + (q[1] - yt)];
   };
   if (out) {
     out.boxes = boxes.map((b) => {
@@ -929,8 +953,14 @@ export function buildDemandBoxWarp(
       ];
     });
   // Refinement needs the output-space boxes even when the caller passed no `out`.
+  // It solves against the UNTHROTTLED warp (cap = ∞): the secant's affine model
+  // assumes the room it asks for is granted — throttling inside the loop would
+  // undo each raise and jam every box to the ceiling chasing an unreachable
+  // target (and the ceiling forces isotropy). The cap is applied ONCE, on the
+  // final build: demands = the warp we'd like, throttle = the warp we allow,
+  // canvas = exactly the space the allowed warp produces.
   const oref: { boxes?: DenseBox[] } = out ?? {};
-  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
 
   // Refinement: expansion raises the global median edge length, so the real
   // post-warp contraction threshold is HIGHER than the pre-warp estimate the
@@ -997,9 +1027,12 @@ export function buildDemandBoxWarp(
         const de = e - ePrev[i];
         if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - prev[i].gap) - (needV - prev[i].need);
-        // denom <= 0: the need rises at least as fast as this box's gap — the
-        // target is out of reach of expansion alone; jump to the ceiling (the
-        // growth cap then freezes the median so the gap can catch up).
+        // denom <= 0: the secant's LOCAL affine model says the need rises at
+        // least as fast as this box's gap — but the push saturates: as e
+        // rises, straddling/outside edges stop stretching, the median stops
+        // climbing, and the gap catches up. Jump to the ceiling to exploit
+        // that saturation (measured: keeping e instead leaves pinned clusters
+        // under-need, and the raw-growth saving is negligible).
         if (denom <= 1e-9) return expandMax;
         const target = e + ((needV + margin - gap) * de) / denom;
         return Math.min(expandMax, Math.max(e, target));
@@ -1009,9 +1042,13 @@ export function buildDemandBoxWarp(
       if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; prev = now;
       expands = eNext;
-      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
     }
   }
+  // The one and only capped build: throttle the solved demands to the allowed
+  // growth budget (see buildWarpFromBoxes — strengths scale, far field stays
+  // unit-scale, canvas = exactly the allowed warp's growth).
+  result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
   if (out) { out.expands = expands; out.aniso = rs; }
 
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {

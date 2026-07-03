@@ -714,3 +714,34 @@ test('splitMixedBoxes: small boxes never density-decompose (below the size gate)
   const parent: DemandBox = { x0: 80, y0: 180, x1: 400, y1: 400, kind: 'density', pairs: [] };
   assert.equal(splitMixedBoxes([parent], { nodes, edges }, 5).length, 1);
 });
+
+// ————— growth = space proportional to warp (throttle, never squeeze) —————
+
+test('buildDemandBoxWarp: the growth cap THROTTLES the warp — far field keeps unit scale, never squeezed', () => {
+  const g = pinnedGraph();
+  // force a big aesthetic demand against a tight cap
+  const opts = { ...DOPTS, userMult: 6, maxGrowth: 1.3 };
+  const r = buildDemandBoxWarp([], g, DBOX, opts);
+  assert.ok(r.growthX <= 1.3 + 1e-9 && r.growthY <= 1.3 + 1e-9, 'cap respected');
+  // far field (away from the cluster) is a rigid translation: unit jacobian,
+  // NOT the old global shrink — Staten-Island-style outskirts keep true scale
+  const J = jacDet(r.warp, [520, 520]);
+  assert.ok(Math.abs(J - 1) < 0.02, `far-field J=1, got ${J.toFixed(3)}`);
+  // and the canvas is exactly what the (throttled) warp produced
+  const tl = r.warp([DBOX.minX, DBOX.minY]);
+  const br = r.warp([DBOX.maxX, DBOX.maxY]);
+  assert.ok(Math.abs((br[0] - tl[0]) - (DBOX.maxX - DBOX.minX) * r.growthX) < 1e-6);
+  assert.ok(Math.abs((br[1] - tl[1]) - (DBOX.maxY - DBOX.minY) * r.growthY) < 1e-6);
+});
+
+test('buildDemandBoxWarp: under the cap, growth equals the raw warp growth (space ∝ warp)', () => {
+  const g = pinnedGraph();
+  const loose = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, maxGrowth: 8 });
+  const looser = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, maxGrowth: 20 });
+  // cap slack in both → identical growth (raw), identical warp
+  assert.ok(Math.abs(loose.growthX - looser.growthX) < 1e-9);
+  assert.ok(Math.abs(loose.growthY - looser.growthY) < 1e-9);
+  assert.deepEqual(loose.warp([123, 456]), looser.warp([123, 456]));
+  // far field at unit scale here too
+  assert.ok(Math.abs(jacDet(loose.warp, [520, 520]) - 1) < 0.02);
+});
