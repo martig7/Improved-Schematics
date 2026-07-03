@@ -222,6 +222,50 @@ test('enforceContinuity: a component with no worthy piece is swallowed entirely'
   assert.equal(traceRaster(r).length, 0, 'all pieces dropped → the whole river swallowed');
 });
 
+test('stylizeRingsPathD: the data-boundary rim is pinned — no land wedges at canvas edges', () => {
+  // ocean = a 30°-tilted square (the rotated harvest region) whose off-axis
+  // boundary crosses INSIDE the canvas near the corners — exactly the SF case.
+  // Pre-pin, the octi snap rotated that boundary toward 45° and swung it
+  // across the canvas, painting fake land wedges in the ocean.
+  const cx = 200, cy = 200, R = 250;
+  const rad = (30 * Math.PI) / 180;
+  const cs = Math.cos(rad), sn = Math.sin(rad);
+  const tilted: Pt[] = ([[-R, -R], [R, -R], [R, R], [-R, R]] as Pt[]).map(
+    ([x, y]) => [cx + x * cs - y * sn, cy + x * sn + y * cs],
+  );
+  const faithfulInside = (x: number, y: number, margin: number): boolean => {
+    // inside the tilted square with `margin` px to spare (rotate back, box test)
+    const e = (x - cx) * cs + (y - cy) * sn;
+    const n = -(x - cx) * sn + (y - cy) * cs;
+    return Math.abs(e) < R - margin && Math.abs(n) < R - margin;
+  };
+  const d = stylizeRingsPathD([tilted], { simplifyPx: 40, roundPx: 0, minAreaPx2: 100, octi: true }, EXT);
+  const ring = pathPts(d);
+  assert.ok(ring.length >= 3);
+  const styledInside = (x: number, y: number): boolean => {
+    let w = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      if (a[1] <= y) { if (b[1] > y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) > 0) w++; }
+      else if (b[1] <= y && (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]) < 0) w--;
+    }
+    return w !== 0;
+  };
+  // every rim-band probe that is COMFORTABLY inside the faithful ocean (40px
+  // to spare) must still be water after styling
+  let checked = 0;
+  for (let x = 10; x <= 390; x += 20) {
+    for (const y of [10, 30, 370, 390]) {
+      for (const [px, py] of [[x, y], [y, x]]) {
+        if (!faithfulInside(px, py, 40)) continue;
+        checked++;
+        assert.ok(styledInside(px, py), `rim point ${px},${py} lost its water (data boundary moved inward)`);
+      }
+    }
+  }
+  assert.ok(checked > 10, `probe set too small (${checked}) — test geometry is off`);
+});
+
 test('stylizeRingsPathD: deterministic (same input, same output)', () => {
   const rings: Pt[][] = [SQUARE, [[200, 200], [340, 205], [335, 350], [198, 344]]];
   const s = { simplifyPx: 12, roundPx: 20, minAreaPx2: 400, octi: true };

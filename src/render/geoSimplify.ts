@@ -858,9 +858,22 @@ export function stylizeRingsPathD(
   // Corridor midpoints join the VW veto so simplification can't pinch them.
   const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];
   const unified = traceRaster(raster);
+  // Canvas-edge pin: the geography's outer boundary at the canvas rim is the
+  // DATA cutoff (the harvest region's edge), not a shape to stylize. With the
+  // map rotated into the game's bearing that cutoff crosses the canvas as an
+  // off-axis diagonal — the octi snap quantizing it to 45° (and VW cutting its
+  // corners) swung the ocean's edge across the canvas (fake land wedges in
+  // the water, paint past the canvas). Vertices in the rim band are pinned
+  // hard in both passes; the band is invisible (the viewBox ends at the
+  // canvas), so nothing octilinear is lost.
+  const edgeM = cell * 2;
+  const pinned = (x: number, y: number): boolean =>
+    x < edgeM || y < edgeM || x > extent.w - edgeM || y > extent.h - edgeM;
   // VW protection factor >= 1 multiplying a vertex's effective significance:
-  // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW).
+  // (1 + PROTECT·imp)², capped (see PROTECT_MAX_VW). Pinned rim vertices are
+  // effectively unremovable (straight-run vertices still merge: zero area).
   const protect = (x: number, y: number): number => {
+    if (pinned(x, y)) return 1e9;
     if (!imp) return 1;
     const v = imp(x, y);
     const g = 1 + PROTECT * (v > 1 ? 1 : v < 0 ? 0 : v);
@@ -898,15 +911,20 @@ export function stylizeRingsPathD(
     const a = ringArea(ring);
     const aAbs = a < 0 ? -a : a;
     if (!cullOk(ring, aAbs)) continue;
-    let r = simplifyVW(ring, areaThresh, 4, imp ? (p) => protect(p[0], p[1]) : undefined, avoid);
+    let r = simplifyVW(ring, areaThresh, 4, (p) => protect(p[0], p[1]), avoid);
     if (r.length < 3) continue;
     // a ring can shrivel below the cull floor once its wiggles are gone
     const a2 = ringArea(r);
     if (!cullOk(r, a2 < 0 ? -a2 : a2)) continue;
     // Anchor weight rides importance: dense-core shorelines (where stations
     // sit near the water) get an 8x pull to their true position, so the
-    // octilinear solve reshapes them without MOVING them.
-    if (style.octi) r = snapOcti(r, imp ? (p) => 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : undefined);
+    // octilinear solve reshapes them without MOVING them. Rim vertices (the
+    // harvest-boundary cutoff) are pinned outright — see `pinned` above.
+    if (style.octi) {
+      r = snapOcti(r, (p) =>
+        pinned(p[0], p[1]) ? 1e9 : imp ? 8 * Math.min(1, Math.max(0, imp(p[0], p[1]))) : 0,
+      );
+    }
     if (r.length < 3) continue;
     finals.push(r);
   }
