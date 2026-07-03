@@ -518,7 +518,78 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
         }
       }
     }
-    if (!best) { out.push(b); return; }
+    if (!best) {
+      // Hierarchical density decomposition — the fallback for BIG boxes where
+      // no straight cut clears the direction bar. The NYC midtown+Brooklyn+
+      // Queens remainder is radially interleaved (vertical, diagonal and
+      // horizontal trunks all fan out from the East River crossings), so
+      // every quantile cut leaves both halves neutral — but the density
+      // surface still separates it: the rivers are valleys. Re-threshold the
+      // box's own nodes at a rising cutoff ladder until the region falls
+      // apart into ≥ 2 cores, box each core, and recurse (direction cuts get
+      // a second chance INSIDE each core). Halo nodes between cores (bridge
+      // spans over water) stay unboxed — long crossing edges carry no
+      // contraction demand. Gated on node count so small clusters and other
+      // cities' modest boxes never shatter. Deterministic: fixed ladder,
+      // fixed grid, component scan order.
+      // Only rescue direction-MIXED boxes (r near neutral): a coherent box
+      // that found no internal cut is already well-served whole — shattering
+      // it into cores just weakens its push and multiplies secant states.
+      const DECOMP_MIN = 96;
+      const rWhole = rOf(() => true);
+      if (idx.length >= DECOMP_MIN && depth < MAX_DEPTH && Math.abs(rWhole - 0.5) < 0.15) {
+        const pts = idx.map((i) => g.nodes[i]);
+        const wb = { minX: b.x0, minY: b.y0, maxX: b.x1, maxY: b.y1 };
+        for (const f of [0.45, 0.55, 0.65]) {
+          // Components of a radial fan can have INTERLOCKING bounding boxes
+          // even when their cell sets are disjoint — and a box regrown over a
+          // neighbour's nodes double-stacks pushes. Pad, merge overlaps back
+          // together, THEN tighten; accept only ≥ 2 disjoint cores that are
+          // each strictly smaller than the parent (real progress).
+          const padded = findDenseBoxes(pts, wb, { bins: 48, frac: f }).map((cb) => ({
+            x0: Math.max(b.x0, cb.x0 - pad), y0: Math.max(b.y0, cb.y0 - pad),
+            x1: Math.min(b.x1, cb.x1 + pad), y1: Math.min(b.y1, cb.y1 + pad),
+          }));
+          const cores = mergeIntersectingBoxes(padded)
+            .map((cb) => tighten(inside(cb), cb))
+            .filter((cb) => {
+              const n = inside(cb).length;
+              return n >= MIN_HALF && n < idx.length;
+            });
+          if (cores.length < 2) continue;
+          // pairs: a core holding an endpoint takes the pair (its push
+          // stretches the interval even when the other endpoint sits outside
+          // — same argument as straddling cut-pairs). A pair NO core touches
+          // gets its own small dedicated box — recreating the capsule box the
+          // bbox-union merge swallowed — rather than expanding a core over
+          // the halo (expansion regrows cores over each other, and recursion
+          // then re-decomposes the overlap into a pile of double-stacked
+          // near-copies; measured on NYC before this rule).
+          const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [] }));
+          const orphans: DemandBox[] = [];
+          for (const t of b.pairs) {
+            const pa = g.nodes[t.a], pb = g.nodes[t.b];
+            const holds = children.filter((c) =>
+              (pa[0] >= c.x0 && pa[0] <= c.x1 && pa[1] >= c.y0 && pa[1] <= c.y1) ||
+              (pb[0] >= c.x0 && pb[0] <= c.x1 && pb[1] >= c.y0 && pb[1] <= c.y1));
+            if (holds.length) for (const c of holds) c.pairs.push(t);
+            else orphans.push({
+              x0: Math.max(b.x0, Math.min(pa[0], pb[0]) - pad),
+              y0: Math.max(b.y0, Math.min(pa[1], pb[1]) - pad),
+              x1: Math.min(b.x1, Math.max(pa[0], pb[0]) + pad),
+              y1: Math.min(b.y1, Math.max(pa[1], pb[1]) + pad),
+              kind: 'capsule', pairs: [t],
+            });
+          }
+          // overlapping orphan boxes would double-stack — union them
+          for (const ob of mergeDemandBoxes(orphans)) out.push(ob);
+          for (const c of children) rec(c, depth + 1);
+          return;
+        }
+      }
+      out.push(b);
+      return;
+    }
     rec(best.a, depth + 1);
     rec(best.c, depth + 1);
   };
@@ -561,6 +632,26 @@ export function findDenseBoxes(
   let emax = 0;
   for (let i = 0; i < B * B; i++) if (e[i] > emax) emax = e[i];
   const cutoff = frac * emax;
+
+  // OCTI_BOX_PROBE diagnostics: density surface + cutoff (tuning aid)
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BOX_PROBE) {
+    let above = 0;
+    let pos = 0;
+    for (let i = 0; i < B * B; i++) { if (e[i] > 0) pos++; if (e[i] >= cutoff && e[i] > 0) above++; }
+    console.error(`[densprobe] bins=${B} cells+=${pos} emax=${emax.toFixed(2)} cutoff=${cutoff.toFixed(2)} above=${above} samples=${samples.length}`);
+    const D = 32; // downsampled ASCII heatmap, log scale, X = above cutoff
+    for (let dy = 0; dy < D; dy++) {
+      let row = '';
+      for (let dx = 0; dx < D; dx++) {
+        let m = 0;
+        for (let yy = (dy * B / D) | 0; yy < Math.max((dy * B / D | 0) + 1, ((dy + 1) * B / D) | 0); yy++)
+          for (let xx = (dx * B / D) | 0; xx < Math.max((dx * B / D | 0) + 1, ((dx + 1) * B / D) | 0); xx++)
+            if (e[yy * B + xx] > m) m = e[yy * B + xx];
+        row += m >= cutoff ? 'X' : m <= 0 ? '.' : String(Math.min(9, Math.max(0, Math.round((9 * Math.log(1 + m)) / Math.log(1 + emax)))));
+      }
+      console.error('[densprobe] ' + row);
+    }
+  }
 
   const dense = new Uint8Array(B * B);
   for (let i = 0; i < B * B; i++) dense[i] = e[i] >= cutoff && e[i] > 0 ? 1 : 0;
@@ -777,6 +868,18 @@ export function buildDemandBoxWarp(
   // borough-spanning mega-box) into coherent sub-boxes so each can take its
   // room on its OWN crowded axis. anisoAmt 0 = legacy single-box behavior.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
+  // OCTI_BOX_PROBE diagnostics: box provenance — discovery, merge, split
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BOX_PROBE) {
+    const nIn = (b: DenseBox): number => {
+      let n = 0;
+      for (const p of g.nodes) if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) n++;
+      return n;
+    };
+    const fmt = (b: DenseBox): string => `[${b.x0.toFixed(0)},${b.y0.toFixed(0)}..${b.x1.toFixed(0)},${b.y1.toFixed(0)} ${(b.x1 - b.x0).toFixed(0)}x${(b.y1 - b.y0).toFixed(0)} n=${nIn(b)}]`;
+    console.error(`[boxprobe] density boxes: ${density.map(fmt).join(' ')}`);
+    console.error(`[boxprobe] merged: ${merged.map((b) => b.kind[0] + fmt(b)).join(' ')}`);
+    console.error(`[boxprobe] split:  ${boxes.map((b) => `${b.kind[0]}${fmt(b)} r=${boxCrowdAnisotropy(b, g).toFixed(2)}`).join(' ')}`);
+  }
   if (boxes.length === 0) {
     if (out) { out.boxes = []; out.expands = []; }
     return { warp: (p) => [p[0], p[1]], growthX: 1, growthY: 1 };

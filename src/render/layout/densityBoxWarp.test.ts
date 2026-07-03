@@ -646,3 +646,71 @@ test('buildDemandBoxWarp: mixed region — west stretches horizontally, east ver
   assert.ok(westX > westY * 2, `west spreads across its lines: x=${westX.toFixed(2)} y=${westY.toFixed(2)}`);
   assert.ok(eastY > eastX * 2, `east spreads across its lines: y=${eastY.toFixed(2)} x=${eastX.toFixed(2)}`);
 });
+
+// ————— hierarchical density decomposition (big boxes with no direction cut) —————
+
+// Two dense, internally-isotropic cores separated by an empty 120px channel,
+// all inside one covering box. Both cores read r≈0.5 (grids), so NO straight
+// quantile cut clears the direction-gain bar — only the density valley
+// between them can split the box.
+function twoCoreRegion(): { g: BoxGraph; parent: DemandBox } {
+  const nodes: Pixel[] = [];
+  const edges: [number, number][] = [];
+  const core = (ox: number, oy: number) => {
+    for (let r = 0; r < 8; r++)
+      for (let c = 0; c < 8; c++) {
+        const i = nodes.length;
+        nodes.push([ox + c * 14, oy + r * 14]);
+        if (c > 0) edges.push([i - 1, i]);
+        if (r > 0) edges.push([i - 8, i]);
+      }
+  };
+  core(100, 200); // west core: x 100..198
+  core(420, 240); // east core: x 420..518
+  const parent: DemandBox = { x0: 80, y0: 180, x1: 540, y1: 380, kind: 'density', pairs: [] };
+  return { g: { nodes, edges }, parent };
+}
+
+test('splitMixedBoxes: a big no-direction-cut box decomposes at density valleys into per-core boxes', () => {
+  const { g, parent } = twoCoreRegion();
+  const split = splitMixedBoxes([parent], g, 5);
+  assert.ok(split.length >= 2, `decomposes, got ${split.length}`);
+  // each core is covered by some box, and no box spans the channel (x 200..420)
+  const covers = (x: number, y: number) => split.some((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1);
+  assert.ok(covers(150, 250), 'west core covered');
+  assert.ok(covers(470, 290), 'east core covered');
+  for (const b of split) assert.ok(!(b.x0 < 220 && b.x1 > 400), `no box spans the empty channel: ${JSON.stringify(b)}`);
+  // deterministic
+  assert.deepEqual(splitMixedBoxes([parent], g, 5), split);
+});
+
+test('splitMixedBoxes: decomposition keeps pairs — an orphan channel pair pulls its nearest child over it', () => {
+  const { g, parent } = twoCoreRegion();
+  const n = g.nodes.length;
+  const gg: BoxGraph = { nodes: [...g.nodes, [300, 290], [310, 290]], edges: g.edges };
+  const pairs: PairTarget[] = [{ a: n, b: n + 1, required: 40 }];
+  const split = splitMixedBoxes([{ ...parent, pairs }], gg, 5);
+  const holders = split.filter((b) => b.pairs.length > 0);
+  assert.ok(holders.length >= 1, 'orphan pair still owned by some box');
+  for (const h of holders)
+    for (const t of h.pairs)
+      for (const i of [t.a, t.b]) {
+        const p = gg.nodes[i];
+        assert.ok(p[0] >= h.x0 && p[0] <= h.x1 && p[1] >= h.y0 && p[1] <= h.y1, 'holder covers both pair endpoints');
+      }
+});
+
+test('splitMixedBoxes: small boxes never density-decompose (below the size gate)', () => {
+  // one 8x8 isotropic core (64 nodes < gate) in a roomy box: stays whole
+  const nodes: Pixel[] = [];
+  const edges: [number, number][] = [];
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++) {
+      const i = nodes.length;
+      nodes.push([100 + c * 14, 200 + r * 14]);
+      if (c > 0) edges.push([i - 1, i]);
+      if (r > 0) edges.push([i - 8, i]);
+    }
+  const parent: DemandBox = { x0: 80, y0: 180, x1: 400, y1: 400, kind: 'density', pairs: [] };
+  assert.equal(splitMixedBoxes([parent], { nodes, edges }, 5).length, 1);
+});
