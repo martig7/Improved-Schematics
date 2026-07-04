@@ -1076,6 +1076,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     interface StMarks {
       nodeId: string;
       members: number;
+      /** set on platform-split units (and the shrunken primary): the original
+       *  group nodeId — enables best-effort seating and taxicab connectors */
+      splitBase?: string;
       marks: Array<{
         lineId: string;
         color: string;
@@ -1564,6 +1567,36 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             );
           }
         }
+        // BEST-EFFORT (split units only): a re-queued platform unit that
+        // still has no seat is almost always OVERLAP-vetoed — every candidate
+        // row sits inside a placed capsule hull or stacked on placed dots.
+        // Take the least-bad seat: the hull veto becomes a heavy proximity
+        // penalty (least penetration wins), the true-stacking veto stays
+        // hard, and the verify stage below records instead of rejecting.
+        // Structural failures (coincident interlined lanes → pinch, or
+        // no-crossing) still return null here and fall to the mega box.
+        let bestEffort = false;
+        if (!sol && s.splitBase) {
+          bestEffort = true;
+          sol = solveRows(solveCurves, groups, {
+            ...ropts,
+            blocked: (p: Pixel) => {
+              for (const q of placedDots) {
+                if (hyp(p[0] - q[0], p[1] - q[1]) < xMaskStack) return true;
+              }
+              return false; // hull veto lifted — priced below instead
+            },
+            proximity: (p: Pixel) => {
+              let pen = ropts.proximity(p);
+              const hd = hullClearance(p);
+              if (hd < 0) pen += 1000 * -hd; // inside a placed hull: heavy, not fatal
+              return pen;
+            },
+          });
+          if (capPlaceDebug) {
+            console.error(`[split-fit] ${s.nodeId} best-effort -> ${sol ? 'seated' : 'still null (structural)'}`);
+          }
+        }
         // Seat-time hull overlap check (spec 2026-07-02; on by default, see
         // capNoOvlOn above). Runs AFTER both solve stages so it judges the
         // solution that would actually be committed. The placed-hull masks are
@@ -1605,12 +1638,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           capOvlStats.capsules++;
           if (ev.selfOvl) capOvlStats.self++;
           if (ev.crossOvl) capOvlStats.cross++;
-          const reject = capNoOvlOn && (ev.selfOvl || ev.crossOvl !== null);
+          const reject = capNoOvlOn && !bestEffort && (ev.selfOvl || ev.crossOvl !== null);
           if ((ev.selfOvl || ev.crossOvl) && capPlaceDebug) {
             let cx = 0, cy = 0;
             for (const v of ev.verts) { cx += v[0]; cy += v[1]; }
             console.error(
-              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${reject ? ' → split/mega' : ''}`,
+              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length}${bestEffort ? ' best-effort' : ''} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${reject ? ' → split/mega' : ''}`,
             );
           }
           if (reject) { capOvlStats.rejected++; sol = null; }
@@ -1649,6 +1682,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               const unit: StMarks = {
                 nodeId: s.nodeId + '::plat' + platSeq++,
                 members: s.members,
+                splitBase: s.nodeId,
                 marks: clusters[c].map((i) => s.marks[i]),
               };
               gathered.push(unit);
@@ -1656,6 +1690,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               membersByNode!.set(unit.nodeId, unit.members);
             }
             s.marks = clusters[keep].map((i) => s.marks[i]);
+            s.splitBase = s.nodeId;
             placeQueue.push(s); // re-solve the shrunken primary cluster
             if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
               console.error(
