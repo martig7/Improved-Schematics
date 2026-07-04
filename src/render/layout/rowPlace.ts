@@ -39,9 +39,13 @@ export interface RowOpts {
   /** Soft sub-floor gap band (px, default 0 = hard floor everywhere). Dot
    *  gaps in [minGap − softBand, minGap) are feasible but charged softW per
    *  px of deficit — replaces the caller's box-rescue slack WALK with one
-   *  solve. softW (default 5000/px) dominates every other cost scale, so a
-   *  fully-clear chain always outbids an overlapping one and the least
-   *  deficit wins among overlaps (the walk's minimum-slack semantics). */
+   *  solve. softW (default 5000/px) dominates the other cost scales AT THE
+   *  DEFAULT BOUNDS (extCap ≤ ~132, slides ≤ ±48): a fully-clear chain then
+   *  always outbids an overlapping one, and the least deficit wins among
+   *  overlaps (the walk's minimum-slack semantics). With a spread-scaled
+   *  extCap (the far-attach tier) dominance is only vs LOCAL costs — a clear
+   *  chain paying a very long bridge may lose to a compact chain carrying a
+   *  small in-band deficit, which is the intended trade there. */
   softBand?: number;
   softW?: number;
 }
