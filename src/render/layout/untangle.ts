@@ -83,8 +83,33 @@ const EXHAUSTIVE_SOL_SPACE = 500; // LOOM CombNoILPOptimizer threshold
  *  (dot -> -1, heavily punished); a 45° bend halves the base price; a 90°+
  *  corner makes the swap nearly free (the turn's own rotation absorbs the
  *  crossing, like the 2/3 cross on the real NYC map). */
-export const cornerTurnFactor = (dot: number): number =>
-  dot < -0.92 ? 6 : dot < -0.38 ? 0.5 : 0.15;
+// Straight-lock (2026-07-04): "impossible to reorder within a bundle while
+// the line runs straight" — the near-collinear tier returns LOCK_W instead of
+// the soft 6, making a straight in-bundle swap LEXICOGRAPHICALLY dominant:
+// with sameSegCrossPen 4 one locked swap costs ~1e6, while every legitimate
+// objective sum stays orders of magnitude below (crossings + separations are
+// bounded by pairs·nodes at pens ≤ 12, colorFrag ≤ 2.5·boundaries — a few
+// 1e3 on the densest map). Any ordering that avoids a locked swap therefore
+// ALWAYS wins, and when junction pins make one structurally unavoidable the
+// optimizer minimizes the COUNT (ties broken by the ordinary objective) —
+// the crossing migrates to the nearest bend or junction instead.
+// OCTI_STRAIGHT_LOCK=0 reverts to the soft 6× tier; OCTI_STRAIGHT_LOCK_W
+// tunes the lock weight.
+const straightLockW = (): number => {
+  const env =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
+  if (env?.OCTI_STRAIGHT_LOCK === '0') return 0; // 0 = lock off (soft tiers)
+  const v = Number(env?.OCTI_STRAIGHT_LOCK_W);
+  return Number.isFinite(v) && v > 0 ? v : 2.5e5;
+};
+
+export const cornerTurnFactor = (dot: number): number => {
+  if (dot < -0.92) {
+    const w = straightLockW();
+    return w > 0 ? w : 6;
+  }
+  return dot < -0.38 ? 0.5 : 0.15;
+};
 
 // Angle-aware crossing cost (experimental, OCTI_XANGLE=1). dot = cos(angle
 // between the two corridors' tangents at the node). A crossing reads BEST at
@@ -105,7 +130,17 @@ const xAngleK = (() => {
   const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XANGLE_K) : NaN;
   return Number.isFinite(v) && v > 0 ? v : 6;
 })();
-export const xCornerTurnFactor = (dot: number): number => 0.15 + (xAngleK - 0.15) * dot * dot;
+// The straight-lock applies at BOTH near-collinear ends here (|dot| ≥ 0.92):
+// a straight pass-through swap and a hairpin/parallel swap are the same
+// shallow braid drawn in opposite directions, and the U-shape already treats
+// them as equals — the lock keeps that symmetry.
+export const xCornerTurnFactor = (dot: number): number => {
+  if (dot * dot >= 0.92 * 0.92) {
+    const w = straightLockW();
+    if (w > 0) return w;
+  }
+  return 0.15 + (xAngleK - 0.15) * dot * dot;
+};
 
 function inversions(a: number[]): number {
   let inv = 0;
@@ -284,22 +319,28 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
   // from nd (taken from the underlying layout edge of the chain that
   // touches nd).
   const tangentAt = (oe: OptEdge, nd: string): [number, number] | null => {
+    // Expand past degenerate near-coincident vertices (same guard as
+    // chainPlace.curveTangent): seam bridging / arc clipping can leave
+    // sub-pixel micro-segments at a node whose normalized direction is pure
+    // noise — a straight corridor then reads as a random-angle corner, the
+    // swap prices at the cheap bend tier, and the straight-lock never fires
+    // there (the "visually straight but technically bent" braid class).
     for (const cand of [oe.parts[0], oe.parts[oe.parts.length - 1]]) {
       const e = cand.edge;
       const path = e.path as unknown as Array<[number, number]>;
       if (!path || path.length < 2) continue;
-      if (e.from === nd) {
-        const dx = path[1][0] - path[0][0];
-        const dy = path[1][1] - path[0][1];
-        const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8
-        return [dx / len, dy / len];
+      const pts = e.from === nd ? path : e.to === nd ? [...path].reverse() : null;
+      if (!pts) continue;
+      let hi = 1;
+      let dx = pts[1][0] - pts[0][0];
+      let dy = pts[1][1] - pts[0][1];
+      while (dx * dx + dy * dy < 0.25 && hi < pts.length - 1) {
+        hi++;
+        dx = pts[hi][0] - pts[0][0];
+        dy = pts[hi][1] - pts[0][1];
       }
-      if (e.to === nd) {
-        const dx = path[path.length - 2][0] - path[path.length - 1][0];
-        const dy = path[path.length - 2][1] - path[path.length - 1][1];
-        const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8
-        return [dx / len, dy / len];
-      }
+      const len = Math.sqrt(dx * dx + dy * dy) || 1; // correctly-rounded cross-V8
+      return [dx / len, dy / len];
     }
     return null;
   };
@@ -1086,6 +1127,84 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     console.error(
       `[untangle] comps=${nComps} (${nExhaustive} exhaustive, ${nHillClimb} hill) ` +
       `partners=${partnerBlock.size} blockSelfCross=${blockSelfX} final: sameSegCross=${t.same} diffSegCross=${t.diff} seps=${t.seps} colorFrag=${t.frag}`,
+    );
+    // Straight-lock metric: same-segment pair FLIPS on the final written-back
+    // orders at nodes where the two edges continue near-collinear — the braids
+    // the straight-lock forbids. Reads the COMPOSED e.lineOrder (what draws),
+    // so partner/stack write-back effects count too. Expected 0 with the lock
+    // on, except structurally-pinned residuals (conflicting junction pins on
+    // an end-to-end straight corridor).
+    const awayTangent = (e: LayoutEdge, nd: string): [number, number] | null => {
+      const pts = e.from === nd ? e.path : [...e.path].reverse();
+      let dx = 0;
+      let dy = 0;
+      for (let i = 1; i < pts.length && dx * dx + dy * dy < 0.25; i++) {
+        dx = pts[i][0] - pts[0][0];
+        dy = pts[i][1] - pts[0][1];
+      }
+      const len = Math.sqrt(dx * dx + dy * dy);
+      return len < 1e-9 ? null : [dx / len, dy / len];
+    };
+    // Breakdown: `free` flips sit at freeCrossNodes (mega-box covers them —
+    // deliberately unpriced), `interior` flips are INSIDE one contracted opt
+    // edge (write-back composition introduced them — the scorer holds one
+    // order there and cannot express a flip), `boundary` flips are at real
+    // opt boundaries — the only class the lock's scoring can govern.
+    let flipsFree = 0;
+    let flipsInterior = 0;
+    let flipsBoundary = 0;
+    let flipsDiverge = 0;
+    const incAll = new Map<string, LayoutEdge[]>();
+    for (const e of edges) {
+      for (const n of [e.from, e.to]) {
+        let arr = incAll.get(n);
+        if (!arr) incAll.set(n, (arr = []));
+        arr.push(e);
+      }
+    }
+    for (const [nd, es] of incAll) {
+      for (let i = 0; i < es.length; i++) {
+        for (let j = i + 1; j < es.length; j++) {
+          const e1 = es[i];
+          const e2 = es[j];
+          const t1 = awayTangent(e1, nd);
+          const t2 = awayTangent(e2, nd);
+          if (!t1 || !t2 || t1[0] * t2[0] + t1[1] * t2[1] >= -0.92) continue; // not a straight continue
+          const shared = e1.lineOrder.filter((l) => e2.lineOrder.includes(l));
+          const rev = (e1.from !== nd) === (e2.from !== nd);
+          const o1 = optByLayout.get(e1.id) ?? [];
+          const o2 = optByLayout.get(e2.id) ?? [];
+          const sameOpt = o1.some((oe) => o2.includes(oe));
+          for (let x = 0; x < shared.length; x++) {
+            for (let y = x + 1; y < shared.length; y++) {
+              const ia = e1.lineOrder.indexOf(shared[x]);
+              const ib = e1.lineOrder.indexOf(shared[y]);
+              const ra = rev ? e1.lineOrder.length - 1 - ia : ia;
+              const rb = rev ? e1.lineOrder.length - 1 - ib : ib;
+              if ((ra - rb) * (e2.lineOrder.indexOf(shared[x]) - e2.lineOrder.indexOf(shared[y])) < 0) {
+                if (freeCross.has(nd)) flipsFree++;
+                else if (sameOpt) flipsInterior++;
+                else {
+                  // scorer-visible only when BOTH lines' traversals connect
+                  // through nd between these two edges (a diverging line's
+                  // inversion draws no braid on this corridor)
+                  const oe1 = o1[0];
+                  const oe2 = o2[0];
+                  const conn =
+                    oe1 !== undefined && oe2 !== undefined &&
+                    connOccurs(shared[x], nd, oe1, oe2) && connOccurs(shared[y], nd, oe1, oe2);
+                  if (conn) flipsBoundary++;
+                  else flipsDiverge++;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    console.error(
+      `[untangle] straight-node same-seg flips: total=${flipsFree + flipsInterior + flipsBoundary + flipsDiverge} ` +
+      `free=${flipsFree} interior=${flipsInterior} scored=${flipsBoundary} diverge=${flipsDiverge}`,
     );
   }
 

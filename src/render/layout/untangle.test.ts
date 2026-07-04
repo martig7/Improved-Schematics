@@ -141,12 +141,83 @@ test('untangle: partner lines stay adjacent as a block', () => {
   assert.equal(t.lineOrder.length, 3, 'all lines present after block expansion');
 });
 
-test('cornerTurnFactor: straight punished, 45deg half, 90deg+ nearly free', async () => {
-  const { cornerTurnFactor } = await import('./untangle');
-  assert.equal(cornerTurnFactor(-1), 6); // straight through: all but disallowed
+test('cornerTurnFactor: straight LOCKED, 45deg half, 90deg+ nearly free', async () => {
+  const { cornerTurnFactor, xCornerTurnFactor } = await import('./untangle');
+  assert.equal(cornerTurnFactor(-1), 2.5e5); // straight through: LOCKED (lexicographic)
   assert.equal(cornerTurnFactor(-0.71), 0.5); // 45 degree bend
   assert.equal(cornerTurnFactor(0), 0.15); // 90 degree corner
   assert.equal(cornerTurnFactor(0.7), 0.15); // 135 degree hook
+  // U-shaped variant: BOTH near-collinear ends lock (straight braid + hairpin
+  // braid); the 90deg valley keeps its ordinary price
+  assert.equal(xCornerTurnFactor(-1), 2.5e5);
+  assert.equal(xCornerTurnFactor(1), 2.5e5);
+  assert.ok(xCornerTurnFactor(0) < 1, `90deg stays cheap: ${xCornerTurnFactor(0)}`);
+});
+
+test('cornerTurnFactor: OCTI_STRAIGHT_LOCK=0 restores the soft 6x tiers', async () => {
+  const { cornerTurnFactor, xCornerTurnFactor } = await import('./untangle');
+  const prev = process.env.OCTI_STRAIGHT_LOCK;
+  process.env.OCTI_STRAIGHT_LOCK = '0';
+  try {
+    assert.equal(cornerTurnFactor(-1), 6); // legacy soft tier
+    assert.equal(xCornerTurnFactor(-1), 6); // U-shape peak (xAngleK default 6)
+    assert.equal(xCornerTurnFactor(1), 6);
+  } finally {
+    if (prev === undefined) delete process.env.OCTI_STRAIGHT_LOCK;
+    else process.env.OCTI_STRAIGHT_LOCK = prev;
+  }
+});
+
+test('straight-lock: a pinned crossing migrates to the bend, never the straight run', () => {
+  // Corridor r -> m -> n carrying {A,B}: r->m->n runs straight east, then
+  // BENDS 90 degrees at n toward s. Branch tips at m's north/south force
+  // nothing; the order is pinned at r as [A,B] (by branch fan at r... instead
+  // we pin by construction: give the two ends conflicting preferred orders
+  // via single-line branches). Setup:
+  //   ra (north) feeds A, rb (south) feeds B into r  -> trunk wants [A,B] at r
+  //   past the bend at n, sa (south) takes A, sb (north) takes B -> the swap
+  //   MUST happen somewhere between r and s.
+  // With the straight-lock, the flip may not sit at m (straight deg-2 node,
+  // line sets differ so m stays an opt boundary via the branch stub) — it
+  // must land at n, the 90-degree bend.
+  const layout = makeLayout(
+    [
+      ['ra', -10, -10], ['rb', -10, 10], ['r', 0, 0],
+      ['m', 20, 0], ['mstub', 20, -10],
+      ['n', 40, 0],
+      ['sa', 50, 10], ['sb', 30, 20], // south leg after the bend: n -> (40,20)ish
+      ['s', 40, 20],
+    ],
+    [
+      { id: 'ea', from: 'ra', to: 'r', lines: ['A'] },
+      { id: 'eb', from: 'rb', to: 'r', lines: ['B'] },
+      { id: 't1', from: 'r', to: 'm', lines: ['A', 'B'] },
+      { id: 'stub', from: 'm', to: 'mstub', lines: ['S'] }, // breaks t1/t2 contraction at m
+      { id: 't2', from: 'm', to: 'n', lines: ['A', 'B'] },
+      { id: 't3', from: 'n', to: 's', lines: ['A', 'B'] }, // 90-degree bend at n
+      { id: 'fa', from: 's', to: 'sa', lines: ['A'] },
+      { id: 'fb', from: 's', to: 'sb', lines: ['B'] },
+    ],
+    {
+      A: [
+        { edgeId: 'ea', reversed: false }, { edgeId: 't1', reversed: false },
+        { edgeId: 't2', reversed: false }, { edgeId: 't3', reversed: false },
+        { edgeId: 'fa', reversed: false },
+      ],
+      B: [
+        { edgeId: 'eb', reversed: false }, { edgeId: 't1', reversed: false },
+        { edgeId: 't2', reversed: false }, { edgeId: 't3', reversed: false },
+        { edgeId: 'fb', reversed: false },
+      ],
+      S: [{ edgeId: 'stub', reversed: false }],
+    },
+  );
+  untangleLineOrder(layout);
+  const t1 = layout.edges.find((e) => e.id === 't1')!;
+  const t2 = layout.edges.find((e) => e.id === 't2')!;
+  // the straight m boundary must NOT flip the pair: t1 and t2 agree
+  assert.deepEqual(t1.lineOrder, t2.lineOrder,
+    `no reorder across the straight node m (t1=${t1.lineOrder} t2=${t2.lineOrder})`);
 });
 
 test('untangle: Y rewrite locks the trunk side by branch geometry', () => {
