@@ -234,3 +234,41 @@ test('walkRouteVisits keeps symmetric long legs (express)', () => {
   const graph = buildTransitGraph(stations, routes, buildStationGroups(stations));
   assert.equal(graph.edges.length, 1); // g1<->g2 survives: symmetric legs
 });
+
+test('perStationNodes: multi-member group splits into platform nodes labelled as the group', () => {
+  const mk = (id: string, name: string, tg: string, node: string, track: string, lng: number, lat: number) =>
+    ({ id, name, coords: [lng, lat], trackIds: [track], trackGroupId: tg, buildType: 'constructed',
+       stNodeIds: [node], routeIds: [], createdAt: 0, nearbyStations: [] });
+  // A two-platform complex (Hub) crossed by two parallel lines, each serving
+  // its own platform, plus four singleton outer stations.
+  const st = [
+    mk('sP1', 'Hub', 'hubTG', 'nP1', 'tP1', -122.0, 47.0),
+    mk('sP2', 'Hub', 'hubTG', 'nP2', 'tP2', -122.0, 47.002),
+    mk('sW1', 'W1', 'gW1', 'nW1', 'tW1', -122.01, 47.0),
+    mk('sE1', 'E1', 'gE1', 'nE1', 'tE1', -121.99, 47.0),
+    mk('sW2', 'W2', 'gW2', 'nW2', 'tW2', -122.01, 47.002),
+    mk('sE2', 'E2', 'gE2', 'nE2', 'tE2', -121.99, 47.002),
+  ] as unknown as Station[];
+  const combo = (a: string, b: string) => ({ startStNodeId: a, endStNodeId: b, path: [], distance: 0 });
+  const red = { id: 'red', bullet: '1', color: '#ff0000', stCombos: [combo('nW1', 'nP1'), combo('nP1', 'nE1')], stComboTimings: [] };
+  const blue = { id: 'blue', bullet: '2', color: '#0000ff', stCombos: [combo('nW2', 'nP2'), combo('nP2', 'nE2')], stComboTimings: [] };
+  const groups = buildStationGroups(st);
+
+  const classic = buildTransitGraph(st, [red, blue] as unknown as Route[], groups);
+  assert.ok(classic.nodes.has('hubTG'), 'classic build keeps the single group node');
+  assert.equal(classic.nodes.size, 5);
+
+  const split = buildTransitGraph(st, [red, blue] as unknown as Route[], groups, undefined, { perStationNodes: true });
+  assert.ok(!split.nodes.has('hubTG'), 'no group-point node in per-station mode');
+  assert.ok(split.nodes.has('sP1') && split.nodes.has('sP2'), 'each platform gets its own node');
+  assert.equal(split.nodes.size, 6);
+  assert.equal(split.nodes.get('sP1')!.label, 'Hub', 'platform nodes carry the group label');
+  assert.equal(split.nodes.get('sP2')!.label, 'Hub');
+  assert.ok(split.nodes.has('gW1'), 'singleton groups keep their group node id');
+  assert.equal(split.edges.length, 4);
+  const touches = (nid: string) => split.edges.filter((e) => e.from === nid || e.to === nid);
+  assert.deepEqual(touches('sP1').flatMap((e) => e.lines.map((l) => l.id)), ['red', 'red'],
+    'red rides platform 1 only');
+  assert.deepEqual(touches('sP2').flatMap((e) => e.lines.map((l) => l.id)), ['blue', 'blue'],
+    'blue rides platform 2 only');
+});

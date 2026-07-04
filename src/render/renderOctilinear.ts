@@ -1343,7 +1343,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     if (placeOrderKey !== 'input') {
       placeSeq.sort((a, b) => (gathered[b].marks.length - gathered[a].marks.length) || byId(a, b));
     }
-    for (const s of placeSeq.map((i) => gathered[i])) {
+    // Placement runs off a QUEUE: a station whose row solve fails and whose
+    // bundles form DISTANT spatial clusters (per-station graph nodes put one
+    // group's platforms on corridors far apart — Fulton St) is split into one
+    // placement unit per cluster and re-queued, instead of mega-boxing the
+    // whole neighbourhood under a single giant rect.
+    let platSeq = 0;
+    const placeQueue: StMarks[] = placeSeq.map((i) => gathered[i]);
+    for (let qi = 0; qi < placeQueue.length; qi++) {
+      const s = placeQueue[qi];
       if (s.marks.length === 1) {
         s.marks[0].chain = 0;
       } else if (s.marks.length > 1) {
@@ -1597,6 +1605,46 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             if (corner) s.marks[i].cornerAfter = corner;
           }
         } else {
+          // Per-bundle capsule split: per-station graph nodes let ONE station
+          // group legitimately stop on several distinct corridors (Fulton St's
+          // four platforms, Times Sq's de-welded trunks). A multi-bundle
+          // NO-PAIRING failure means no single capsule chain can connect those
+          // corridors — so give each corridor BUNDLE its own placement unit
+          // (one small row-capsule per platform) instead of mega-boxing the
+          // whole neighbourhood. Only reached AFTER every solve attempt
+          // failed, so any station that seats today is untouched.
+          const clusters = groups;
+          if (clusters.length >= 2) {
+            const anchor = nodePx.get(s.nodeId) ?? s.marks[0].pos;
+            let keep = 0;
+            let keepD = Infinity;
+            for (let c = 0; c < clusters.length; c++) {
+              for (const i of clusters[c]) {
+                const d = hyp(s.marks[i].pos[0] - anchor[0], s.marks[i].pos[1] - anchor[1]);
+                if (d < keepD) { keepD = d; keep = c; }
+              }
+            }
+            for (let c = 0; c < clusters.length; c++) {
+              if (c === keep) continue;
+              const unit: StMarks = {
+                nodeId: s.nodeId + '::plat' + platSeq++,
+                members: s.members,
+                marks: clusters[c].map((i) => s.marks[i]),
+              };
+              gathered.push(unit);
+              placeQueue.push(unit);
+              membersByNode!.set(unit.nodeId, unit.members);
+            }
+            s.marks = clusters[keep].map((i) => s.marks[i]);
+            placeQueue.push(s); // re-solve the shrunken primary cluster
+            if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
+              console.error(
+                `[stops] platform-split "${layout.nodes.get(s.nodeId)?.label ?? s.nodeId}" ` +
+                `-> ${clusters.length} bundle units [${clusters.map((c) => c.length).join(',')}]`,
+              );
+            }
+            continue; // marks re-place per cluster; no dots committed yet
+          }
           // spec v2 §3: total fallback — the mega box covers all bundles.
           // Structural residual: a bundle whose member lanes are coincident
           // (interlined on one drawn line) or pinch below minGap inside the

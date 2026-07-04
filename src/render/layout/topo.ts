@@ -129,7 +129,11 @@ export class NodeIndex {
     this.pos.delete(id);
   }
 
-  nearest(p: Pixel, radius: number, exclude?: ReadonlySet<string>): string | null {
+  nearest(
+    p: Pixel,
+    radius: number,
+    exclude?: ReadonlySet<string>,
+  ): string | null {
     const cx = Math.floor(p[0] / this.cell);
     const cy = Math.floor(p[1] / this.cell);
     let best: string | null = null;
@@ -198,7 +202,11 @@ export class HBuilder {
     return this.nodes.get(id)!;
   }
 
-  nearestNode(p: Pixel, radius: number, exclude?: ReadonlySet<string>): string | null {
+  nearestNode(
+    p: Pixel,
+    radius: number,
+    exclude?: ReadonlySet<string>,
+  ): string | null {
     return this.index.nearest(p, radius, exclude);
   }
 
@@ -793,6 +801,20 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
 function groupPixel(group: StationGroup, g: TransitGraph): Pixel {
   const n = g.nodes.get(group.id);
   if (n) return n.pos;
+  // Per-station-node mode: the group has no node of its own — average its
+  // member platform nodes (already projected/warped like every graph node).
+  let sx = 0;
+  let sy = 0;
+  let c = 0;
+  for (const sid of group.stationIds ?? []) {
+    const m = g.nodes.get(sid);
+    if (m) {
+      sx += m.pos[0];
+      sy += m.pos[1];
+      c++;
+    }
+  }
+  if (c > 0) return [sx / c, sy / c];
   return [group.center[0] * 1e5, group.center[1] * 1e5];
 }
 
@@ -1457,9 +1479,23 @@ export function buildSupportGraph(
 
   const stopAt = new Set<string>();
 
-  // One schematic station marker per station group (single support node).
+  // One schematic station marker per station group. In per-station-node mode
+  // a group spans several platform nodes; the SupportStation stays singular
+  // (one label, one capsule) and its per-line stopNodes land on the platform
+  // nodes — the capsule placer joins them via stopNodes.
   const stations = new Map<string, SupportStation>();
   const groupSupportNode = new Map<string, string>();
+  const nodeToGroup = new Map<string, string>();
+  const groupMemberNodes = new Map<string, string[]>();
+  for (const group of groups) {
+    const members: string[] = [];
+    if (g.nodes.has(group.id)) members.push(group.id);
+    for (const sid of group.stationIds ?? []) {
+      if (g.nodes.has(sid)) members.push(sid);
+    }
+    groupMemberNodes.set(group.id, members);
+    for (const m of members) nodeToGroup.set(m, group.id);
+  }
   const origIncident = new Map<string, GraphEdge[]>();
   for (const e of g.edges) {
     for (const nid of [e.from, e.to]) {
@@ -1470,8 +1506,11 @@ export function buildSupportGraph(
   }
 
   for (const group of groups) {
-    const incident = origIncident.get(group.id);
-    if (!incident || incident.length === 0) continue;
+    const incident: GraphEdge[] = [];
+    for (const m of groupMemberNodes.get(group.id) ?? []) {
+      incident.push(...(origIncident.get(m) ?? []));
+    }
+    if (incident.length === 0) continue;
     const wantLines = new Set<string>();
     for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
 
@@ -1505,13 +1544,17 @@ export function buildSupportGraph(
       for (const [nid, node] of nodes) consider(nid, node, mapRadius);
     }
     if (!best) {
-      const sn = mapToSupport(group.id);
-      if (sn) {
+      for (const m of groupMemberNodes.get(group.id) ?? []) {
+        const sn = mapToSupport(m);
+        if (!sn) continue;
         let served = 0;
         for (const eid of adj.get(sn) ?? []) {
           for (const l of edges.get(eid)!.lineIds) if (wantLines.has(l)) served++;
         }
-        if (served > 0) best = { id: sn, served, d: dist(nodes.get(sn)!.pos, centroid) };
+        if (served > 0) {
+          best = { id: sn, served, d: dist(nodes.get(sn)!.pos, centroid) };
+          break;
+        }
       }
     }
     if (!best) continue;
@@ -1532,9 +1575,16 @@ export function buildSupportGraph(
     (adj.get(nid) ?? []).some((eid) => edges.get(eid)?.lineIds.has(lineId));
   for (const e of g.edges) {
     for (const [lineId, flags] of e.stops) {
-      const place = (groupId: string, isStop: boolean) => {
+      const place = (nodeId: string, isStop: boolean) => {
         if (!isStop) return;
-        let sn = groupSupportNode.get(groupId) ?? mapToSupport(groupId);
+        const groupId = nodeToGroup.get(nodeId) ?? nodeId;
+        // Per-station-node mode: a platform node anchors its own stop, so
+        // the flag lands on the platform's support node, not the group's —
+        // the SupportStation still gathers all platforms via stopNodes.
+        let sn =
+          nodeId !== groupId
+            ? mapToSupport(nodeId) ?? groupSupportNode.get(groupId)
+            : groupSupportNode.get(groupId) ?? mapToSupport(groupId);
         if (!sn) return;
         // Lines through one station can ride DIVERGED corridors: the group's
         // node may sit on a segment this line never reaches (307 Pl: the
@@ -1542,7 +1592,7 @@ export function buildSupportGraph(
         // junction next to it). A flag on a line-less node can never render —
         // re-home it to the nearest node the line actually serves.
         if (!nodeServesLine(sn, lineId)) {
-          const gp = g.nodes.get(groupId)?.pos ?? nodes.get(sn)?.pos;
+          const gp = g.nodes.get(nodeId)?.pos ?? nodes.get(sn)?.pos;
           if (gp) {
             let bestN: string | null = null;
             let bestD = params.stationCandidateRadius * 2;

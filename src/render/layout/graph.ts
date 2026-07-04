@@ -415,20 +415,61 @@ export function buildTransitGraph(
   routes: Route[],
   groups: StationGroup[],
   tracks?: Track[],
+  opts?: {
+    /** One graph node per member STATION of multi-station groups (platform
+     *  nodes at their real coordinates) instead of one node per group. The
+     *  group survives as capsule/label metadata: insertStations aggregates
+     *  the platform nodes back into ONE SupportStation whose per-line
+     *  stopNodes land on the platforms, so parallel trunks through a complex
+     *  (Times Sq) enter the pipeline as genuinely distinct points and never
+     *  get warped into one artificial hairball point. */
+    perStationNodes?: boolean;
+  },
 ): TransitGraph {
   if (groups.length === 0) {
     return { nodes: new Map(), edges: [], adj: new Map(), lineTraversals: new Map() };
   }
 
-  const { stNodeToGroup, trackToGroup } = buildGroupMaps(stations, groups);
+  let { stNodeToGroup, trackToGroup } = buildGroupMaps(stations, groups);
 
   const meanLat = groups.reduce((acc, g) => acc + g.center[1], 0) / groups.length;
   const project = projectFactory(meanLat);
 
   const nodes = new Map<string, GraphNode>();
-  for (const g of groups) {
-    const [lng, lat] = g.center;
-    nodes.set(g.id, { id: g.id, label: g.name, pos: project(lng, lat), lngLat: [lng, lat] as Coordinate });
+  if (opts?.perStationNodes) {
+    // Node id = station id for multi-member groups (platforms keep their own
+    // coordinates); single-member groups keep the group id and center, so the
+    // common case is byte-identical to the classic build.
+    const stationById = new Map(stations.map((s) => [s.id, s]));
+    const stNodeToNode = new Map<string, string>();
+    const trackToNode = new Map<string, string>();
+    for (const g of groups) {
+      const members = [...g.stationIds]
+        .sort()
+        .map((sid) => stationById.get(sid))
+        .filter((s): s is Station => !!s && s.buildType === 'constructed');
+      if (members.length <= 1) {
+        const [lng, lat] = g.center;
+        nodes.set(g.id, { id: g.id, label: g.name, pos: project(lng, lat), lngLat: [lng, lat] as Coordinate });
+        continue;
+      }
+      for (const s of members) {
+        const [lng, lat] = s.coords;
+        nodes.set(s.id, { id: s.id, label: g.name, pos: project(lng, lat), lngLat: [lng, lat] as Coordinate });
+        for (const n of s.stNodeIds) stNodeToNode.set(n, s.id);
+        for (const t of s.trackIds) trackToNode.set(t, s.id);
+      }
+    }
+    // stNodes/tracks of single-member groups keep their group mapping.
+    for (const [k, v] of stNodeToGroup) if (!stNodeToNode.has(k)) stNodeToNode.set(k, v);
+    for (const [k, v] of trackToGroup) if (!trackToNode.has(k)) trackToNode.set(k, v);
+    stNodeToGroup = stNodeToNode;
+    trackToGroup = trackToNode;
+  } else {
+    for (const g of groups) {
+      const [lng, lat] = g.center;
+      nodes.set(g.id, { id: g.id, label: g.name, pos: project(lng, lat), lngLat: [lng, lat] as Coordinate });
+    }
   }
 
   // Routes that share a (non-empty) bullet AND colour MIGHT be one logical line the game

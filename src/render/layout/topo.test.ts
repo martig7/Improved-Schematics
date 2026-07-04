@@ -396,6 +396,42 @@ test('insertStations places one station when all incident edges share a node', (
   assert.equal(h.stations.size, 1);
 });
 
+test('insertStations joins per-station platform nodes into ONE SupportStation with per-line stopNodes', () => {
+  // Per-station-node mode: the 'hub' group has NO node of its own; platforms
+  // p1/p2 (40px apart, > dHat) each carry one line. Expect a single station
+  // keyed by the group id whose stopNodes land on DIFFERENT support nodes.
+  const g = graphFrom(
+    { p1: [0, 0], p2: [0, 40], w1: [-100, 0], e1: [100, 0], w2: [-100, 40], e2: [100, 40] },
+    [
+      { id: 'wp1', from: 'w1', to: 'p1', lines: ['L1'] },
+      { id: 'pe1', from: 'p1', to: 'e1', lines: ['L1'] },
+      { id: 'wp2', from: 'w2', to: 'p2', lines: ['L2'] },
+      { id: 'pe2', from: 'p2', to: 'e2', lines: ['L2'] },
+    ],
+  );
+  for (const e of g.edges) {
+    const line = e.lines[0].id;
+    e.stops.set(line, { atFrom: true, atTo: true });
+  }
+  const groups: StationGroup[] = [
+    { id: 'hub', name: 'Hub', center: [0, 20 / 1e5], stationIds: ['p1', 'p2'] },
+    { id: 'w1', name: 'W1', center: [-100 / 1e5, 0], stationIds: [] },
+    { id: 'e1', name: 'E1', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'w2', name: 'W2', center: [-100 / 1e5, 40 / 1e5], stationIds: [] },
+    { id: 'e2', name: 'E2', center: [100 / 1e5, 40 / 1e5], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  assert.equal(h.stations.size, 5, 'one station per group — platforms do not multiply markers');
+  const hub = h.stations.get('hub')!;
+  assert.ok(hub, 'the hub group produces a SupportStation despite having no graph node');
+  assert.equal(hub.label, 'Hub');
+  const n1 = hub.stopNodes!.get('L1')!;
+  const n2 = hub.stopNodes!.get('L2')!;
+  assert.ok(n1 && n2, 'both lines flagged a stop at the hub');
+  assert.notEqual(n1, n2, 'each line stops on its own platform support node');
+  assert.ok(h.stopAt.has('L1|' + n1) && h.stopAt.has('L2|' + n2));
+});
+
 test('topo derives d̂ from line width and corridor capacity', () => {
   const g = graphFrom(
     { a0: [0, 0], a1: [100, 0], b0: [0, 8], b1: [100, 8] },

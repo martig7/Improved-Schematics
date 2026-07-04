@@ -34,7 +34,11 @@ type Pixel = [number, number];
  * route should never participate in transfer connectors.
  */
 export function routedGroupsOnly(groups: StationGroup[], graph: TransitGraph): StationGroup[] {
-  return groups.filter((g) => graph.nodes.has(g.id));
+  // Per-station-node graphs have no group-id node; a group is routed when any
+  // member platform node made it into the graph.
+  return groups.filter(
+    (g) => graph.nodes.has(g.id) || (g.stationIds ?? []).some((sid) => graph.nodes.has(sid)),
+  );
 }
 
 /** Approximate metres between two lng/lat points (cosine-corrected). */
