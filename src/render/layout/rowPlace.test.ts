@@ -273,3 +273,37 @@ test('latTol: far parallel-corridor bundles attach into one aligned chain', () =
   assert.ok(Math.max(...ys) - Math.min(...ys) <= 1.5, `rows not aligned: ${ys}`);
   assert.equal(sol.cornerAfter.size, 1, 'one parallel-join corner between the rows');
 });
+
+test('softBand: an in-band pinch seats with the deficit priced into cost', () => {
+  // two horizontal lanes 3.6px apart (< minGap 4.85, above hard floor 3.35).
+  // blocked() confines dots to |x| <= 1 so the 45° escape row (gap 5.09) is
+  // vetoed and the solver must take the sub-floor perpendicular seat.
+  const curves = [lane(0, 0), lane(3.6, 0)];
+  const blocked = (p: Pixel) => Math.abs(p[0]) > 1;
+  assert.equal(
+    solveRows(curves, [[0, 1]], { ...OPTS, blocked }),
+    null,
+    'hard floor boxes the 3.6px pinch',
+  );
+  const sol = solveRows(curves, [[0, 1]], { ...OPTS, blocked, softBand: 1.5 });
+  assert.ok(sol, '3.6px gap is inside the soft band');
+  const d = Math.hypot(sol.pos[0][0] - sol.pos[1][0], sol.pos[0][1] - sol.pos[1][1]);
+  assert.ok(d < MINGAP, `seat should be sub-floor: ${d}`);
+  assert.ok(sol.cost >= 5000 * (MINGAP - 3.6) - 50, `deficit not priced: ${sol.cost}`);
+});
+
+test('softBand: a clear seat still beats any sub-floor seat', () => {
+  // same 3.6px lanes but UNBLOCKED: the 45° row crosses at 3.6/sin45 ≈ 5.09
+  // ≥ minGap — a clear seat exists, so the solver must never pay the band
+  const curves = [lane(0, 0), lane(3.6, 0)];
+  const sol = solveRows(curves, [[0, 1]], { ...OPTS, softBand: 1.5 });
+  assert.ok(sol);
+  const d = Math.hypot(sol.pos[0][0] - sol.pos[1][0], sol.pos[0][1] - sol.pos[1][1]);
+  assert.ok(d >= MINGAP - 1e-6, `clear seat expected, got gap ${d}`);
+});
+
+test('softBand: a true pinch below the hard floor still boxes', () => {
+  // 2px < hardFloor 3.35 — the band must not unbox genuine coincidence
+  const curves = [lane(0, 0), lane(2, 0)];
+  assert.equal(solveRows(curves, [[0, 1]], { ...OPTS, softBand: 1.5 }), null);
+});

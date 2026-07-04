@@ -36,6 +36,14 @@ export interface RowOpts {
    *  coarse pass relaxes this to ~0.75·step so grid-quantized rows can pair;
    *  the fine polish pass restores the strict default. */
   latTol?: number;
+  /** Soft sub-floor gap band (px, default 0 = hard floor everywhere). Dot
+   *  gaps in [minGap − softBand, minGap) are feasible but charged softW per
+   *  px of deficit — replaces the caller's box-rescue slack WALK with one
+   *  solve. softW (default 5000/px) dominates every other cost scale, so a
+   *  fully-clear chain always outbids an overlapping one and the least
+   *  deficit wins among overlaps (the walk's minimum-slack semantics). */
+  softBand?: number;
+  softW?: number;
 }
 
 export interface RowSolution {
@@ -145,6 +153,9 @@ export function solveRows(
   })();
   const { minGap, arcLimit, extCap, blocked, proximity } = opts;
   const latTol = opts.latTol ?? 0.75;
+  const softBand = opts.softBand ?? 0;
+  const softW = opts.softW ?? 5000;
+  const hardFloor = minGap - softBand;
   const n = curves.length;
   const g = groups.length;
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
@@ -203,17 +214,17 @@ export function solveRows(
         // the projected gap IS the pair distance.
         const pr = dots.map((p) => p[0] * u[0] + p[1] * u[1]);
         let feas = true;
+        let mg = Infinity;
         if (dots.length > 1) {
           const sgn = pr[1] - pr[0] > 0 ? 1 : -1;
           // min consecutive gap (equiv. to the original first-violation break:
           // feasible iff every gap ≥ minGap iff the min gap ≥ minGap)
-          let mg = Infinity;
           for (let gi = 1; gi < dots.length; gi++) {
             const gap = (pr[gi] - pr[gi - 1]) * sgn;
             if (gap < mg) mg = gap;
           }
           if (stats && mg > stats.bestMinGap) stats.bestMinGap = mg; // this state crossed all lanes
-          if (mg < minGap) { feas = false; if (stats) stats.pinch++; }
+          if (mg < hardFloor) { feas = false; if (stats) stats.pinch++; }
         }
         if (feas && blocked) {
           for (const p of dots) {
@@ -238,7 +249,7 @@ export function solveRows(
           asc,
           a: dots[asc[0]],
           b: dots[asc[asc.length - 1]],
-          cost: slideW * Math.abs(s) + rotW * rot + proxPen,
+          cost: slideW * Math.abs(s) + rotW * rot + proxPen + softW * Math.max(0, minGap - mg),
         });
       }
     }
@@ -326,9 +337,12 @@ export function solveRows(
     // ext-minimizing argmin can pull facing dots of a 45° pair to ~0.77*minGap
     // (corner still clears both), and the station post-check then nulls the
     // whole solve to mega even though feasible configurations exist.
+    let softPen = 0;
     for (const p of P.dots) {
       for (const q of Q.dots) {
-        if (hyp(p[0] - q[0], p[1] - q[1]) < minGap) return null;
+        const d = hyp(p[0] - q[0], p[1] - q[1]);
+        if (d < hardFloor) return null;
+        if (d < minGap) softPen += softW * (minGap - d);
       }
     }
     const e1 = op ? P.a : P.b;
@@ -377,13 +391,17 @@ export function solveRows(
     // the gap closes, which the spec's blanket clearance clause forbids —
     // this also keeps degenerate slid-together joins out of the DP.
     for (const d of P.dots) {
-      if (hyp(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
+      const dd = hyp(corner[0] - d[0], corner[1] - d[1]);
+      if (dd < hardFloor) return null;
+      if (dd < minGap) softPen += softW * (minGap - dd);
     }
     for (const d of Q.dots) {
-      if (hyp(corner[0] - d[0], corner[1] - d[1]) < minGap) return null;
+      const dd = hyp(corner[0] - d[0], corner[1] - d[1]);
+      if (dd < hardFloor) return null;
+      if (dd < minGap) softPen += softW * (minGap - dd);
     }
     const turnPen = turnW * (1 + (o1x * o2x + o1y * o2y)); // ≥0; 0 = straight join
-    return { cost: ext1 + ext2 + turnPen, corner };
+    return { cost: ext1 + ext2 + turnPen + softPen, corner };
   };
 
   // ---- step 3: pairing enumeration + chain DP over bundles -----------------
@@ -399,6 +417,12 @@ export function solveRows(
   // (seq,mask) inside runDP (idea ③) so a colliding pairing is rejected and the
   // search keeps going, instead of nulling the whole station after the global
   // min-cost pairing was chosen (the mn199 / "7 St" box class).
+  // softBand approximation: this check only lowers its reject threshold to the
+  // HARD floor — station-level (non-adjacent) gaps inside the soft band are
+  // accepted UNPRICED. Deliberate: the DP already prices adjacent-pair/corner
+  // deficits (which dominate in practice); pricing the full all-pairs set here
+  // would require plumbing softPen through stationFloorsOk's boolean return,
+  // for a case the band was not designed to police (see spec 2026-07-04 §2.1).
   let dbgMinNonAdj = Infinity; // OCTI_PLACE_DEBUG: closest non-adjacent gap seen
   const stationFloorsOk = (states: RowState[], corners: Pixel[]): boolean => {
     for (let i = 0; i < states.length; i++) {
@@ -406,7 +430,7 @@ export function solveRows(
         for (const p of states[i].dots) {
           for (const q of states[j].dots) {
             const dd = hyp(p[0] - q[0], p[1] - q[1]);
-            if (dd < minGap - 1e-9) {
+            if (dd < hardFloor - 1e-9) {
               if (dbg) dbgMinNonAdj = Math.min(dbgMinNonAdj, dd);
               return false;
             }
@@ -416,11 +440,11 @@ export function solveRows(
     }
     for (let i = 0; i < corners.length; i++) {
       for (let j = i + 1; j < corners.length; j++) {
-        if (hyp(corners[i][0] - corners[j][0], corners[i][1] - corners[j][1]) < minGap - 1e-9) return false;
+        if (hyp(corners[i][0] - corners[j][0], corners[i][1] - corners[j][1]) < hardFloor - 1e-9) return false;
       }
       for (const st of states) {
         for (const d of st.dots) {
-          if (hyp(corners[i][0] - d[0], corners[i][1] - d[1]) < minGap - 1e-9) return false;
+          if (hyp(corners[i][0] - d[0], corners[i][1] - d[1]) < hardFloor - 1e-9) return false;
         }
       }
     }
