@@ -10,6 +10,8 @@
 
 **Base:** branch `cursor/c4b3d42d` (per-station platform nodes + platform-split fallback) merged into the working branch. All line numbers below are for the MERGED tree; use the quoted code as the search anchor, not the line number.
 
+**Typecheck caveat (discovered in Task 0):** the base branch has 31 PRE-EXISTING `npm run typecheck` errors (all in `imageMerge.ts`, `topo.ts`, `renderGeographic.ts`). Wherever a step says `npm run typecheck && npm test`, read it as: run `npm run typecheck`, confirm the error count is still ≤31 and none of the errors touch files you changed, then run `npm test` (which must be 0 failures). Do NOT fix the pre-existing errors.
+
 ---
 
 ### Task 0: Merge base branch, commit spec, capture baseline
@@ -35,14 +37,19 @@ npm run typecheck && npm test
 
 Expected: PASS (0 failures).
 
-- [ ] **Step 3: Capture placement baseline from both live dumps**
+- [ ] **Step 3: Capture placement baseline from the three city dumps**
+
+The canonical dumps are v2 map bundles in the MAIN checkout root (`C:\Users\darkd\Downloads\Improved Schematics\improvedschematics-map-{NYC-EXTRA-DIFFICULT,LON-3,SEA-2}.json`); the render input lives under their `inputDump` key. Extract once, then render:
 
 ```bash
-OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts "$APPDATA/metro-maker4/mod-data/induced-demand.json" dev/_base-id 2> dev/_base-id.log
-OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts "$APPDATA/metro-maker4/mod-data/tod.json" dev/_base-tod 2> dev/_base-tod.log
-grep -c "platform-split" dev/_base-id.log dev/_base-tod.log || true
-grep "mega-box fallbacks" dev/_base-id.log dev/_base-tod.log || true
-grep -c "capsovl" dev/_base-id.log dev/_base-tod.log || true
+for c in "nyc:improvedschematics-map-NYC-EXTRA-DIFFICULT.json" "lon:improvedschematics-map-LON-3.json" "sea:improvedschematics-map-SEA-2.json"; do
+  n=${c%%:*}; f=${c#*:}
+  node -e "const j=JSON.parse(require('fs').readFileSync('C:/Users/darkd/Downloads/Improved Schematics/$f','utf8')); require('fs').writeFileSync('dev/_in-$n.json', JSON.stringify(j.inputDump));"
+  OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts dev/_in-$n.json dev/_base-$n 2> dev/_base-$n.log
+done
+grep -c "platform-split" dev/_base-nyc.log dev/_base-lon.log dev/_base-sea.log || true
+grep "mega-box fallbacks" dev/_base-*.log || true
+grep -c "capsovl" dev/_base-*.log || true
 ```
 
 Record the counts in the task notes (they are the comparison target for Task 6). Keep the `dev/_base-*` PNG/SVG outputs for the visual diff.
@@ -1039,22 +1046,25 @@ git commit -m "chore(render): schema 19 — escalation ladder rewrite changes pl
 **Files:**
 - Create (not committed): `dev/_new-id.log`, `dev/_new-tod.log`, `dev/_new-id*.png`, `dev/_new-tod*.png`
 
-- [ ] **Step 1: Render both dumps with diagnostics**
+- [ ] **Step 1: Render the three city dumps with diagnostics**
+
+(`dev/_in-{nyc,lon,sea}.json` were extracted in Task 0 Step 3.)
 
 ```bash
-OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts "$APPDATA/metro-maker4/mod-data/induced-demand.json" dev/_new-id 2> dev/_new-id.log
-OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts "$APPDATA/metro-maker4/mod-data/tod.json" dev/_new-tod 2> dev/_new-tod.log
+for n in nyc lon sea; do
+  OCTI_PLACE_DEBUG=1 npx tsx dev/render-from-dump.ts dev/_in-$n.json dev/_new-$n 2> dev/_new-$n.log
+done
 ```
 
-Expected: both complete without exceptions.
+Expected: all three complete without exceptions.
 
 - [ ] **Step 2: Compare against the Task 0 baseline**
 
 ```bash
-for f in id tod; do
+for f in nyc lon sea; do
   echo "== $f =="
-  echo "-- baseline --"; grep -E "mega-box fallbacks|platform-split|far-attach|capsovl REJECT" dev/_base-$f.log | sort | uniq -c
-  echo "-- new --";      grep -E "mega-box fallbacks|platform-split|far-attach|capsovl REJECT" dev/_new-$f.log  | sort | uniq -c
+  echo "-- baseline --"; grep -E "mega-box fallbacks|platform-split|far-attach|split-fit|capsovl REJECT" dev/_base-$f.log | sort | uniq -c
+  echo "-- new --";      grep -E "mega-box fallbacks|platform-split|far-attach|split-fit|capsovl REJECT" dev/_new-$f.log  | sort | uniq -c
 done
 ```
 
@@ -1062,9 +1072,10 @@ Gates (all must hold):
 - `[far-attach] … ATTACHED` count > 0 on at least one dump IF the baseline had platform-splits with spread bundles (otherwise note "no far-apart groups in these saves" and verify via the Task 6a synthetic check below).
 - platform-split count ≤ baseline; **mega-box fallbacks < baseline** (best-effort seating should convert every overlap-only mega on split units; remaining megas must classify as PINCHED/NO-CROSSING under `OCTI_PLACE_DEBUG` — spot-check one).
 - `[split-fit] … seated` present wherever a split unit previously mega-boxed for overlap reasons.
-- `data-split-connector` paths present in the SVG for every group with ≥2 placed split units (`grep -c "data-split-connector" dev/_new-id.svg` etc. — compare against the platform-split log lines).
+- `data-split-connector` paths present in the SVG for every group with ≥2 placed split units (`grep -c "data-split-connector" dev/_new-nyc.svg` etc. — compare against the platform-split log lines).
 - `[capsovl] REJECT` and overlap counts ≤ baseline for NON-best-effort stations (best-effort seats may log overlaps by design — they are recorded, not rejected).
-- Contiguity: `npx tsx dev/contig.ts "$APPDATA/metro-maker4/mod-data/induced-demand.json"` and the tod dump — 0 broken routes, matching baseline.
+- Contiguity: `npx tsx dev/contig.ts "C:/Users/darkd/Downloads/Improved Schematics/improvedschematics-map-NYC-EXTRA-DIFFICULT.json"` (contig reads the v2 map bundle directly) and likewise LON-3/SEA-2 — 0 broken routes, matching a baseline contig run captured before Task 1 lands (run it now if Task 0 didn't).
+- Typecheck gate: `npm run typecheck` has 31 PRE-EXISTING errors on the base branch (imageMerge.ts/topo.ts/renderGeographic.ts) — the gate is "no NEW errors beyond those 31", not zero.
 
 - [ ] **Step 3 (6a, only if neither dump exercises far-attach): synthetic exercise**
 
