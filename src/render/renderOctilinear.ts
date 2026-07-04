@@ -2831,7 +2831,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         let nInc = 0;
         for (const e of layout.edges) {
           if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
-          if (segPath.has(e.id + '|' + mk.lineId)) { nInc++; incEdge = e.id; }
+          const k = e.id + '|' + mk.lineId;
+          if (segPath.has(k)) { nInc++; incEdge = e.id; }
+          // A jog-sliver-SUPPRESSED incident lane still carries the line
+          // onward (the connector pass bridges across it), so the line does
+          // NOT terminate here — counting only drawn lanes misread the E as
+          // a 7 Av terminus (NYC: me397_b7 suppressed) and trimmed 48px of
+          // through corridor back to its wide-window seat.
+          else if (suppressed.has(k)) nInc++;
         }
         if (nInc !== 1 || !incEdge) continue; // terminus = one drawn incident lane
         const poly = segPath.get(incEdge + '|' + mk.lineId);
