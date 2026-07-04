@@ -247,6 +247,25 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     return Number.isFinite(v) && v >= 1 ? v : 2;
   })();
   const WIDE_ARC = CHAIN_ARC_LIMIT * WIDE_MULT;
+  // Far-attach corridor tier (escalation stage 2 of the rewritten ladder):
+  // when the PRIMARY solve fails and a multi-bundle station's bundles spread
+  // beyond the primary window (far-apart platforms of one station group,
+  // possible since per-station graph nodes), each bundle's row may slide
+  // along its own corridor — coarse grid, half-corridor bounds — and the
+  // chain DP joins the aligned rows into ONE capsule. OCTI_FAR_SLIDE=0
+  // disables the tier (A/B: platform-split fallback only). OCTI_FAR_STEP =
+  // coarse slide grid px (default 4); OCTI_FAR_CAP = lane-curve window cap px
+  // (default 400) — bounds both the search and its cost.
+  const farSlideOn =
+    (typeof process === 'undefined' ? undefined : (process as { env?: Record<string, string> }).env?.OCTI_FAR_SLIDE) !== '0';
+  const FAR_STEP = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_FAR_STEP) : NaN;
+    return Number.isFinite(v) && v >= 1 ? v : 4;
+  })();
+  const FAR_CAP = (() => {
+    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_FAR_CAP) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : 400;
+  })();
   // Max lateral lane-jog (in slot-widths) the node join pass will bridge with a
   // taper before giving up and leaving a raw diagonal. 8 = legacy; raised to 16
   // so a line sweeping most of the bundle (B's out-and-back at Montgomery) draws
@@ -1176,15 +1195,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       return Number.isFinite(env) && env >= 0 ? env : 0;
     })();
     const intraGap = Math.max(2, 2 * r * MARKER_SCALE - minGapSlack);
-    // Box-rescue: rather than fall back to the ugly mega box when a bundle can't
-    // seat at the touching floor, retry with a RELAXED intra-dot floor (dots
-    // overlap by up to this many px). SURGICAL — only would-be-boxed bundles are
-    // retried, so every successfully-seated station stays byte-identical; and the
-    // retry walks the slack UP from 0.25px so each rescued capsule takes the
-    // MINIMUM overlap that seats. Cross-station separation (the §6 blocked mask)
-    // stays strict at the full 2r. A bundle still too tight past the cap stays an
-    // honest mega box. OCTI_BOX_RESCUE = cap in px; default 1.5 (the shipped
-    // declutter); OCTI_BOX_RESCUE=0 disables (legacy mega-box fallback).
+    // Soft sub-floor band width (px) fed to solveRows.softBand — see the ladder
+    // comment at the placement loop. OCTI_BOX_RESCUE keeps its historic name;
+    // 0 = hard floor.
     const boxRescueMax = (() => {
       const env =
         typeof process !== 'undefined'
@@ -1322,7 +1335,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const capPlaceDebug = capEnv?.OCTI_PLACE_DEBUG === '1';
     const capOvlOn = capNoOvlOn || capPlaceDebug;
     const placedHulls: Array<{ nodeId: string; hull: Hull }> = [];
-    const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0, retried: 0, retriedOk: 0 };
+    const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0 };
     let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
     // Placement order (spec §6): an earlier station's dots mask a later one's
     // row states, so a station boxed ONLY because a flexible neighbor claimed
@@ -1425,74 +1438,137 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             return la < lb ? -1 : la > lb ? 1 : 0;
           });
         });
+        // ---- escalation ladder (rewritten 2026-07-04, spec: escalation-
+        // ladder-rewrite): TWO solve stages instead of four.
+        //  1. PRIMARY — one wide-window solve with the placed-hull masks baked
+        //     in (was: separate overlap retry) and a soft sub-floor gap band
+        //     (was: the box-rescue slack walk of up to 6 re-solves).
+        //  2. FAR-ATTACH — corridor-bounded coarse solve + fine polish, only
+        //     when PRIMARY fails and the bundles spread beyond the window:
+        //     slides each platform's row along its own corridor until the
+        //     rows align, then joins them into ONE capsule (long parallel
+        //     bridges are paid for in cost, not vetoed).
+        //  3. VERIFY — seat-time hull-overlap check (masked retry deleted;
+        //     the masks are in the solve now).  Then: platform split → mega.
+        let cx0 = 0, cy0 = 0;
+        for (const mk of s.marks) { cx0 += mk.pos[0]; cy0 += mk.pos[1]; }
+        cx0 /= s.marks.length; cy0 /= s.marks.length;
+        // max cross-bundle anchor spread: far-tier trigger + mask/ext radius
+        let spread = 0;
+        for (let bi = 0; bi < groups.length; bi++) {
+          for (let bj = bi + 1; bj < groups.length; bj++) {
+            for (const i of groups[bi]) {
+              for (const j of groups[bj]) {
+                const d = hyp(s.marks[i].pos[0] - s.marks[j].pos[0], s.marks[i].pos[1] - s.marks[j].pos[1]);
+                if (d > spread) spread = d;
+              }
+            }
+          }
+        }
+        // placed-hull masks (hoisted from the deleted overlap retry): veto a
+        // dot whose ring would sit inside a placed capsule hull; comfort ramp
+        // outside. Prefiltered to the station's vicinity + spread.
+        const nearHulls: Hull = [];
+        for (const ph of placedHulls) {
+          for (const sg of ph.hull) {
+            if (segSegDist([cx0, cy0], [cx0, cy0], sg.a, sg.b) < 400 + spread) nearHulls.push(sg);
+          }
+        }
+        const hullClearance = (p: Pixel): number => {
+          let md = Infinity;
+          for (const sg of nearHulls) {
+            const d = segSegDist(p, p, sg.a, sg.b) - (sg.half + r);
+            if (d < md) md = d;
+          }
+          return md;
+        };
         const ropts = {
           minGap: intraGap,
-          arcLimit: CHAIN_ARC_LIMIT,
-          // Max corner extension per row (how far the capsule's elbow may reach
-          // to pair two diverging bundles). OCTI_EXTCAP_MULT probes whether the
-          // divergent-lane NO-PAIRING boxes (lanes leave the node too far apart
-          // to pair within the cap) recover with a longer connector. Default 6.
+          arcLimit: WIDE_ARC,
           extCap: extCapMult * spacing,
+          // soft sub-floor band: gaps down to (minGap − boxRescueMax) seat
+          // with a heavy per-px deficit penalty instead of re-solving at
+          // walked-down floors. OCTI_BOX_RESCUE keeps its name/default (1.5;
+          // 0 restores the hard floor everywhere).
+          softBand: boxRescueMax,
           dbgLabel: s.nodeId, // OCTI_PLACE_DEBUG: per-box root-cause classifier
-          // SOFT spec §6 mask: a candidate dot is no longer VETOED for sitting
-          // near an already-placed station — instead it pays a proximity PENALTY
-          // that ramps from 0 (at/beyond a comfort radius) up to xMaskWeight (at
-          // contact). This biases placement toward clear seats but lets a crowded
-          // hub (Ferry, Howard, Powel & Post) seat close rather than mega-box.
-          // The hard veto survives ONLY at true dot-stacking (comfortR floor) so
-          // two distinct stations' dots never coincide — the post-slide marker
-          // de-overlap pass then guarantees the casing-touch separation.
           blocked: (p: Pixel) => {
             for (const q of placedDots) {
-              if (hyp(p[0] - q[0], p[1] - q[1]) < xMaskStack) return true; // true-stacking veto only
+              if (hyp(p[0] - q[0], p[1] - q[1]) < xMaskStack) return true; // true-stacking veto
             }
-            return false;
+            return hullClearance(p) < 0; // ring inside a placed capsule hull
           },
           proximity: (p: Pixel) => {
             let pen = 0;
             for (const q of placedDots) {
               const d = hyp(p[0] - q[0], p[1] - q[1]);
-              if (d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort; // linear ramp toward contact
+              if (d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort;
             }
+            const hd = hullClearance(p);
+            if (hd >= 0 && hd < xMaskComfort) pen += xMaskWeight * (xMaskComfort - hd) / xMaskComfort;
             return pen;
           },
         };
-        let sol = solveRows(curves, groups, ropts);
-        let wide: typeof curves | null = null;
-        if (!sol) {
-          // window escalation: rebuild curves at twice the arc window
-          wide = s.marks.map((mk) =>
-            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
+        // PRIMARY: one wide-window fine-grid solve
+        const solveCurves = s.marks.map((mk) =>
+          buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
+        );
+        let sol = solveRows(solveCurves, groups, ropts);
+        // FAR-ATTACH: corridor-bounded align + join (one coarse + one polish)
+        if (!sol && farSlideOn && groups.length >= 2 && spread > WIDE_ARC) {
+          const farCurves = s.marks.map((mk) =>
+            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, FAR_CAP),
           );
-          sol = solveRows(wide, groups, { ...ropts, arcLimit: WIDE_ARC });
-        }
-        if (!sol && boxRescueMax > 0) {
-          // box-rescue: walk the intra-dot floor DOWN (slack up, in 0.25px steps)
-          // to the smallest overlap that seats, trading the ugly mega box for a
-          // faint dot overlap. Only reached for a would-be box, so seated stations
-          // are untouched; blocked() (cross-station) stays strict.
-          if (!wide) {
-            wide = s.marks.map((mk) =>
-              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
+          // each bundle may slide to the MIDPOINT of its incident corridor on
+          // either side (half the windowed carrier extent, floored at the
+          // primary window), never off the lane geometry
+          const slideRange = groups.map((grp) => {
+            const carrier = farCurves[grp[0]];
+            const total = carrier.cum[carrier.cum.length - 1];
+            const lo = Math.max(-carrier.anchorT, -Math.max(WIDE_ARC, carrier.anchorT / 2));
+            const hi = Math.min(total - carrier.anchorT, Math.max(WIDE_ARC, (total - carrier.anchorT) / 2));
+            return [lo, hi] as [number, number];
+          });
+          const farOpts = {
+            ...ropts,
+            arcLimit: FAR_CAP,
+            step: FAR_STEP,
+            slideRange,
+            // coarse grid can't hit the strict 0.75px collinearity — relax to
+            // ~3/4 step (≥ the grid's worst-case residual); polish restores it
+            latTol: Math.max(0.75, FAR_STEP * 0.75),
+            // long bridges are payable: extension bound covers the spread
+            extCap: Math.max(extCapMult * spacing, spread + 2 * spacing),
+          };
+          sol = solveRows(farCurves, groups, farOpts);
+          if (sol) {
+            // fine polish: re-anchor every lane curve at its coarse dot and
+            // re-solve locally at the strict tolerances — drives parallel
+            // joins to sub-pixel collinearity (lat moves ≤1px per px of
+            // slide, so the ±2·FAR_STEP window brackets exact alignment).
+            const coarse = sol;
+            const fineCurves = s.marks.map((mk, i) =>
+              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), coarse.pos[i], 2 * FAR_STEP),
             );
-          }
-          for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol; sl += 0.25) {
-            sol = solveRows(wide, groups, {
-              ...ropts,
-              minGap: Math.max(2, intraGap - sl),
-              arcLimit: WIDE_ARC,
+            const { slideRange: _sr, latTol: _lt, ...fineBase } = farOpts;
+            sol = solveRows(fineCurves, groups, {
+              ...fineBase,
+              arcLimit: 2 * FAR_STEP,
+              step: 0.5,
             });
+          }
+          if (capPlaceDebug) {
+            console.error(
+              `[far-attach] ${s.nodeId} spread=${spread.toFixed(0)} bundles=${groups.length}` +
+              ` -> ${sol ? 'ATTACHED' : 'failed'}`,
+            );
           }
         }
         // Seat-time hull overlap check (spec 2026-07-02; on by default, see
-        // capNoOvlOn above). Runs AFTER all escalations so it judges the
-        // solution that would actually be committed. A cross-violating solution
-        // gets ONE re-solve with the placed hulls baked into the blocked/
-        // proximity masks (the "heavily punished in scoring" variant) — the DP
-        // hunts for a non-crossing seat; only a still-crossing retry falls to
-        // the mega branch. NOTE the masks are per-DOT, so a retried row can
-        // still CROSS a hull mid-segment between clear dots — the re-check
-        // catches that.
+        // capNoOvlOn above). Runs AFTER both solve stages so it judges the
+        // solution that would actually be committed. The placed-hull masks are
+        // already baked into the solve above, so a violation here falls
+        // straight to the platform-split / mega branch (no masked retry).
         if (sol && capOvlOn && s.marks.length >= 2) {
           const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
           const evalSol = (so: NonNullable<typeof sol>): { hull: Hull; verts: Pixel[]; selfOvl: boolean; crossOvl: string | null } => {
@@ -1525,72 +1601,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
             return { hull, verts, selfOvl, crossOvl };
           };
-          let ev = evalSol(sol);
+          const ev = evalSol(sol);
           capOvlStats.capsules++;
           if (ev.selfOvl) capOvlStats.self++;
           if (ev.crossOvl) capOvlStats.cross++;
-          const wantSelf = capNoOvlOn;
-          const wantCross = capNoOvlOn;
-          let reject = (wantSelf && ev.selfOvl) || (wantCross && ev.crossOvl !== null);
-          let retried = '';
-          // Retry: only for pure cross violations (a per-dot mask cannot express
-          // "don't cross yourself"). Hulls prefiltered to this station's vicinity
-          // so the DP's per-dot mask stays cheap on dense maps.
-          if (reject && capNoOvlOn && ev.crossOvl !== null && !ev.selfOvl) {
-            capOvlStats.retried++;
-            let cx = 0, cy = 0;
-            for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
-            cx /= s.marks.length; cy /= s.marks.length;
-            const nearHulls: Hull = [];
-            for (const ph of placedHulls)
-              for (const sg of ph.hull)
-                if (segSegDist([cx, cy], [cx, cy], sg.a, sg.b) < 400) nearHulls.push(sg);
-            // block a dot whose RING would sit inside a placed hull; penalize a
-            // comfort band outside that, mirroring the dot-mask ramp above.
-            const hullClearance = (p: Pixel): number => {
-              let md = Infinity;
-              for (const sg of nearHulls) {
-                const d = segSegDist(p, p, sg.a, sg.b) - (sg.half + r);
-                if (d < md) md = d;
-              }
-              return md;
-            };
-            const ropts2 = {
-              ...ropts,
-              blocked: (p: Pixel) => ropts.blocked(p) || hullClearance(p) < 0,
-              proximity: (p: Pixel) => {
-                let pen = ropts.proximity(p);
-                const d = hullClearance(p);
-                if (d >= 0 && d < xMaskComfort) pen += xMaskWeight * (xMaskComfort - d) / xMaskComfort;
-                return pen;
-              },
-            };
-            let sol2 = solveRows(curves, groups, ropts2);
-            if (!sol2) {
-              if (!wide) wide = s.marks.map((mk) => buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC));
-              sol2 = solveRows(wide, groups, { ...ropts2, arcLimit: WIDE_ARC });
-            }
-            if (!sol2 && boxRescueMax > 0 && wide) {
-              for (let sl = 0.25; sl <= boxRescueMax + 1e-9 && !sol2; sl += 0.25) {
-                sol2 = solveRows(wide, groups, { ...ropts2, minGap: Math.max(2, intraGap - sl), arcLimit: WIDE_ARC });
-              }
-            }
-            if (sol2) {
-              const ev2 = evalSol(sol2);
-              if (!ev2.selfOvl && ev2.crossOvl === null) {
-                sol = sol2;
-                ev = ev2;
-                reject = false;
-                capOvlStats.retriedOk++;
-                retried = ' RETRY-OK';
-              } else retried = ' retry-still-crosses';
-            } else retried = ' retry-unseatable';
-          }
-          if ((ev.selfOvl || ev.crossOvl || retried) && capPlaceDebug) {
+          const reject = capNoOvlOn && (ev.selfOvl || ev.crossOvl !== null);
+          if ((ev.selfOvl || ev.crossOvl) && capPlaceDebug) {
             let cx = 0, cy = 0;
             for (const v of ev.verts) { cx += v[0]; cy += v[1]; }
             console.error(
-              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${retried}${reject ? ' → mega' : ''}`,
+              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${reject ? ' → split/mega' : ''}`,
             );
           }
           if (reject) { capOvlStats.rejected++; sol = null; }
@@ -1677,7 +1697,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
     if (capPlaceDebug || capOvlStats.rejected > 0)
       console.error(
-        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} retried=${capOvlStats.retried} retriedOk=${capOvlStats.retriedOk} rejected=${capOvlStats.rejected} (guard=${capGuardOn ? 'on' : 'off'} noovl=${capNoOvlOn ? 'on' : 'off'})`,
+        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} rejected=${capOvlStats.rejected} (guard=${capGuardOn ? 'on' : 'off'} noovl=${capNoOvlOn ? 'on' : 'off'})`,
       );
     const megas = gathered.filter((s) => boxOf(s).mega);
     // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
