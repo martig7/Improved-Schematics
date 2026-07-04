@@ -12,6 +12,7 @@ import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
+import { planSplitConnectors } from './layout/splitConnect';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -205,6 +206,12 @@ export interface RibbonGeometry {
   segments: Segment[];
   lineById: Map<string, { id: string; label?: string; color: string }>;
   orderOf: Map<string, string[]>;
+  /** Platform-split groups (spec 2026-07-04 §2.4): base station nodeId ->
+   *  every placement-unit nodeId (in stopsByNode) that split off from it,
+   *  INCLUDING the shrunken primary. Only entries with >=2 units are kept.
+   *  Positions in stopsByNode are final by the time this map is built, so
+   *  taxicab connectors planned from it read the same dots the markers draw. */
+  splitGroups: Map<string, string[]>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
@@ -220,6 +227,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const { layout, nodePx, edgePolyline } = args;
 
   const stopsByNode = new Map<string, StopMark[]>();
+  // Platform-split groups: base nodeId -> its placement-unit nodeIds (the
+  // shrunken primary keeps s.nodeId itself; each spun-off bundle carries
+  // `s.nodeId + '::plat' + N`). Populated below, AFTER every slide/eviction
+  // pass has finished mutating gathered[*].marks[*].pos — so the connectors
+  // wired in paintRibbons read final dot positions, never pre-slide ones.
+  const splitGroups = new Map<string, string[]>();
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
@@ -2959,6 +2972,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const s of gathered) {
       for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega);
     }
+
+    for (const s of gathered) {
+      if (!s.splitBase) continue;
+      let arr = splitGroups.get(s.splitBase);
+      if (!arr) splitGroups.set(s.splitBase, (arr = []));
+      arr.push(s.nodeId);
+    }
+    for (const [base, arr] of splitGroups) {
+      if (arr.length < 2) splitGroups.delete(base);
+    }
   } else {
     for (const edge of layout.edges) {
       for (const [lineId, stop] of edge.stops) {
@@ -3148,7 +3171,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     );
   }
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3158,7 +3181,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
-  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
+  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups } = geom;
 
   const casingParts: string[] = [];
   const strokeParts: string[] = [];
@@ -3192,6 +3215,46 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
   }
   const stopsPrims: Prim[] = [];
+
+  // ---- taxicab connectors between split platform units -------------------
+  // Computed from FINAL mark positions (all slide/de-overlap passes done, per
+  // splitGroups' doc comment). Drawn under the capsules in the capsule border
+  // color: thin transfer bars that reunite a platform-split station group
+  // visually (spec 2026-07-04 escalation-ladder-rewrite §2.4).
+  const connectorParts: string[] = [];
+  if (args.showStations !== false) {
+    const connStroke = dark ? '#e4e4e7' : '#111111'; // capsule border colors (stops.ts)
+    const connW = +(LINE_WIDTH * 0.9).toFixed(1);
+    const f = (n: number) => n.toFixed(1);
+    for (const [base, unitIds] of splitGroups) {
+      const memberSet = new Set(unitIds);
+      const foreign: Pixel[] = [];
+      for (const [nid, marks] of stopsByNode) {
+        if (memberSet.has(nid)) continue;
+        for (const m of marks) foreign.push(m.pos);
+      }
+      const units = unitIds
+        .map((id) => ({ id, dots: (stopsByNode.get(id) ?? []).map((m) => m.pos) }))
+        .filter((u) => u.dots.length > 0);
+      const conns = planSplitConnectors(units, foreign);
+      for (const c of conns) {
+        const d = c.corner
+          ? 'M ' + f(c.a[0]) + ' ' + f(c.a[1]) + ' L ' + f(c.corner[0]) + ' ' + f(c.corner[1]) + ' L ' + f(c.b[0]) + ' ' + f(c.b[1])
+          : 'M ' + f(c.a[0]) + ' ' + f(c.a[1]) + ' L ' + f(c.b[0]) + ' ' + f(c.b[1]);
+        connectorParts.push(
+          '<path d="' + d + '" fill="none" stroke="' + connStroke + '" stroke-width="' + connW +
+          '" stroke-linecap="round" stroke-linejoin="round" data-split-connector="' + escapeXml(base) + '"/>',
+        );
+        if (sceneOut) {
+          stopsPrims.push({
+            kind: 'path', d, fill: 'none', stroke: connStroke, strokeWidth: connW,
+            lineCap: 'round', lineJoin: 'round', layer: 'stops', worldScale: true,
+          });
+        }
+      }
+    }
+  }
+
   const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'box');
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
@@ -3302,7 +3365,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     (transferPart ? transferPart + '\n' : '') +
-    '<g class="stops">\n' + stopParts.join('\n') +
+    '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
   );
 }
