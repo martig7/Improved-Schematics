@@ -27,6 +27,11 @@ export interface RowOpts {
                                      // search toward spacing without vetoing a
                                      // crowded-but-feasible seat (MASKED hubs)
   dbgLabel?: string; // OCTI_PLACE_DEBUG: station id, for the per-box diagnosis log
+  /** Per-bundle asymmetric slide bounds [minS, maxS] along the carrier curve
+   *  (indexed like `groups`), overriding ±arcLimit for that bundle. The far
+   *  corridor tier bounds each bundle at half its incident corridor so a
+   *  sliding row never invades the neighbouring stop's territory. */
+  slideRange?: Array<[number, number]>;
 }
 
 export interface RowSolution {
@@ -140,7 +145,7 @@ export function solveRows(
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
 
   // ---- step 1: row states per bundle --------------------------------------
-  const buildStates = (group: number[], stats?: BundleStat): RowState[] => {
+  const buildStates = (group: number[], bi: number, stats?: BundleStat): RowState[] => {
     const carrier = curves[group[0]];
     // rest axis: octilinear snap of the bundle perpendicular — perp of the
     // mean SIGN-NORMALIZED member tangent at the anchors (same normalization
@@ -159,9 +164,13 @@ export function solveRows(
     // engine ULP diff while preserving the rest-axis snap (round below).
     const perpAng = Math.round(Math.atan2(mx, -my) * 1e6) / 1e6; // angle of the perp vector (-my, mx)
     const restIdx = ((Math.round(perpAng / QUARTER) % 4) + 4) % 4;
-    const m = Math.max(0, Math.round(arcLimit / step));
+    const range = opts.slideRange?.[bi];
+    const lo = range ? range[0] : -arcLimit;
+    const hi = range ? range[1] : arcLimit;
+    const jLo = Math.ceil(lo / step - 1e-9);
+    const jHi = Math.floor(hi / step + 1e-9);
     const states: RowState[] = [];
-    for (let j = -m; j <= m; j++) {
+    for (let j = jLo; j <= jHi; j++) {
       const s = j * step;
       const A = curvePoint(carrier, carrier.anchorT + s);
       for (let axis = 0; axis < 4; axis++) {
@@ -239,7 +248,7 @@ export function solveRows(
       ? { tried: 0, noCross: 0, pinch: 0, blocked: 0, bestMinGap: -Infinity }
       : undefined;
     if (st) statsArr[i] = st;
-    return buildStates(grp, st);
+    return buildStates(grp, i, st);
   });
   // a bundle with no feasible row anywhere dooms every pairing → mega box
   if (bundleStates.some((st) => st.length === 0)) {

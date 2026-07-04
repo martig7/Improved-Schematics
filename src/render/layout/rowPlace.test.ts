@@ -15,6 +15,15 @@ const through = (pts: Pixel[], anchor: Pixel) =>
 // horizontal lane at height y, stop anchor at (anchorX, y)
 const lane = (y: number, anchorX: number) => through([[-60, y], [60, y]], [anchorX, y]);
 
+// vertical through-lane at x, spanning ±300px of the anchor (window 400 —
+// far larger than the legacy ±24/±48 solve windows)
+const laneVFar = (x: number, ay = 0) =>
+  buildLaneCurve(
+    [[[x, ay - 300], [x, ay + 300]] as Pixel[], [[x, ay + 300], [x, ay - 300]] as Pixel[]],
+    [x, ay],
+    400,
+  );
+
 test('perpendicular rest: parallel lanes give a zero-slide, zero-rotation row', () => {
   // three horizontal lanes at pitch, anchors staggered ±3px: the rest axis is
   // vertical (perpendicular snap) and s=0 is feasible, so the optimum is the
@@ -210,4 +219,27 @@ test('deterministic: identical runs give identical output', () => {
   const s1 = solveRows(mk(), [[0, 1], [2, 3]], OPTS);
   const s2 = solveRows(mk(), [[0, 1], [2, 3]], OPTS);
   assert.deepEqual(s1, s2);
+});
+
+test('slideRange: corridor states beyond arcLimit are reachable', () => {
+  // two vertical lanes 5.5px apart; every dot within |y| < 79.5 is vetoed, so
+  // the only feasible rows sit far beyond the ±24 arcLimit window — reachable
+  // only through the per-bundle slideRange override
+  const curves = [laneVFar(0), laneVFar(PITCH)];
+  const blocked = (p: Pixel) => Math.abs(p[1]) < 79.5;
+  assert.equal(
+    solveRows(curves, [[0, 1]], { ...OPTS, blocked }),
+    null,
+    'everything inside the arcLimit window is vetoed',
+  );
+  const sol = solveRows(curves, [[0, 1]], {
+    ...OPTS,
+    blocked,
+    step: 4,
+    slideRange: [[-150, 150]],
+  });
+  assert.ok(sol, 'slideRange must reach the far seat');
+  for (const p of sol.pos) {
+    assert.ok(Math.abs(p[1]) >= 79.5 && Math.abs(p[1]) <= 150 + 1e-6, `dot at ${p}`);
+  }
 });
