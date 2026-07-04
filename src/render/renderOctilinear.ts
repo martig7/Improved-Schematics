@@ -210,8 +210,11 @@ export interface RibbonGeometry {
    *  every placement-unit nodeId (in stopsByNode) that split off from it,
    *  INCLUDING the shrunken primary. Only entries with >=2 units are kept.
    *  Positions in stopsByNode are final by the time this map is built, so
-   *  taxicab connectors planned from it read the same dots the markers draw. */
-  splitGroups: Map<string, string[]>;
+   *  taxicab connectors planned from it read the same dots the markers draw.
+   *  OPTIONAL: geometry serialized BEFORE this field existed (older saved
+   *  maps / dump bundles — mapCache v8 / schema 18 predate it) deserializes
+   *  without it; paintRibbons must draw with no connectors, not crash. */
+  splitGroups?: Map<string, string[]>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
@@ -3181,7 +3184,10 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
-  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups } = geom;
+  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
+  // pre-splitGroups geometry (older saved maps / dumps deserialize without the
+  // field) — draw with no connectors rather than crash on an undefined iterate
+  const splitGroups = geom.splitGroups ?? new Map<string, string[]>();
 
   const casingParts: string[] = [];
   const strokeParts: string[] = [];
