@@ -243,3 +243,33 @@ test('slideRange: corridor states beyond arcLimit are reachable', () => {
     assert.ok(Math.abs(p[1]) >= 79.5 && Math.abs(p[1]) <= 150 + 1e-6, `dot at ${p}`);
   }
 });
+
+test('latTol: far parallel-corridor bundles attach into one aligned chain', () => {
+  // bundle A: vertical lanes at x=0/5.5 anchored at y=0; bundle B: vertical
+  // lanes at x=200/205.5 anchored at y=37. Rows are horizontal; on the 4px
+  // far grid the closest the two rows can get to collinear is 1px (37 mod 4),
+  // outside the strict 0.75px tolerance — so strict solves attach via a
+  // rotated/elbow join (rows misaligned), while latTol 3 admits the straight
+  // end-to-end bridge and the DP prefers it (shorter ext, no rotation).
+  const curves = [laneVFar(0), laneVFar(PITCH), laneVFar(200, 37), laneVFar(200 + PITCH, 37)];
+  const groups = [[0, 1], [2, 3]];
+  const far = {
+    ...OPTS,
+    extCap: 300,
+    step: 4,
+    slideRange: [[-100, 100], [-100, 100]] as Array<[number, number]>,
+  };
+  const strict = solveRows(curves, groups, far);
+  assert.ok(strict, 'strict solve still attaches (elbow/rotated join)');
+  const ysStrict = strict.pos.map((p) => p[1]);
+  assert.ok(
+    Math.max(...ysStrict) - Math.min(...ysStrict) > 3,
+    `strict join should be misaligned: ${ysStrict}`,
+  );
+  const sol = solveRows(curves, groups, { ...far, latTol: 3 });
+  assert.ok(sol, 'relaxed latTol must attach the bundles');
+  assert.equal(sol.order.length, 4);
+  const ys = sol.pos.map((p) => p[1]);
+  assert.ok(Math.max(...ys) - Math.min(...ys) <= 1.5, `rows not aligned: ${ys}`);
+  assert.equal(sol.cornerAfter.size, 1, 'one parallel-join corner between the rows');
+});

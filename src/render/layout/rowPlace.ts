@@ -32,6 +32,10 @@ export interface RowOpts {
    *  corridor tier bounds each bundle at half its incident corridor so a
    *  sliding row never invades the neighbouring stop's territory. */
   slideRange?: Array<[number, number]>;
+  /** Parallel end-to-end join lateral tolerance in px (default 0.75). The far
+   *  coarse pass relaxes this to ~0.75·step so grid-quantized rows can pair;
+   *  the fine polish pass restores the strict default. */
+  latTol?: number;
 }
 
 export interface RowSolution {
@@ -140,6 +144,7 @@ export function solveRows(
     return Number.isFinite(v) ? v : 12;
   })();
   const { minGap, arcLimit, extCap, blocked, proximity } = opts;
+  const latTol = opts.latTol ?? 0.75;
   const n = curves.length;
   const g = groups.length;
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
@@ -339,7 +344,7 @@ export function solveRows(
       // parallel rows (same snapped axis): feasible only if collinear within
       // sub-pixel lateral offset — they join end-to-end (spec §2.2)
       const lat = Math.abs((e2[0] - e1[0]) * -P.u[1] + (e2[1] - e1[1]) * P.u[0]);
-      if (lat >= 0.75) return null;
+      if (lat >= latTol) return null;
       // end-to-end means the facing ends point at each other; same-direction
       // orientations would interleave the two rows' bodies on one line
       if (o1x * o2x + o1y * o2y > -0.5) return null;
