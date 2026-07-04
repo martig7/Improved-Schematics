@@ -3237,7 +3237,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const connectorParts: string[] = [];
   if (args.showStations !== false) {
     const connStroke = dark ? '#e4e4e7' : '#111111'; // capsule border colors (stops.ts)
-    const connW = +(LINE_WIDTH * 0.9).toFixed(1);
+    const connW = +(LINE_WIDTH * 0.45).toFixed(1); // hairline bar (user call: half of the 0.9 initial width)
     const f = (n: number) => n.toFixed(1);
     for (const [base, unitIds] of splitGroups) {
       const memberSet = new Set(unitIds);

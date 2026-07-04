@@ -1,9 +1,10 @@
 // Per-station markers, NYC-subway-map style: EVERY stopping line gets a dot
 // on its own lane in all cases, and the capsule is an outline that SURROUNDS
 // the dots (real-map Canal St model) rather than replacing them — so a
-// capsule can never mislead about which lines actually stop. Capsule iff the
-// station has multiple member stations (group) OR multiple stopping lines at
-// one station (express/local pairs). Each dot prints its line's name (route
+// capsule can never mislead about which lines actually stop. Capsule iff
+// MULTIPLE stopping lines share the station (express/local pairs,
+// interchanges); a single-route station is always a plain dot, even when its
+// group has several member stations. Each dot prints its line's name (route
 // bullet) inside, upright, toggled by the stations toggle.
 
 import type { Pixel, StopMark } from './layout/types';
@@ -93,7 +94,12 @@ export function renderStops(
     if (marks.length === 0) continue;
     dotPrims.length = 0; // dots accumulate per node; reset before this marker
     const members = membersByNode?.get(nodeId);
-    const capsule = marks.length > 1 || (members !== undefined && members > 1);
+    // Capsule iff MULTIPLE ROUTES stop here (one dot per stopping line). A
+    // multi-member group served by a single route reads better as a plain
+    // dot — the capsule added bulk without information (user call, 2026-07-04;
+    // platform-split units with one line get bare dots the same way, and the
+    // taxicab connectors attach to dots just as well).
+    const capsule = marks.length > 1;
 
     // Farthest pair of marks defines the marker axis (marks per station are
     // the lane fan across a bundle, so they are near-collinear).
