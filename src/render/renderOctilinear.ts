@@ -3239,9 +3239,17 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (memberSet.has(nid)) continue;
         for (const m of marks) foreign.push(m.pos);
       }
+      // mega-boxed units draw no dots (stops.ts mega branch) — a connector into
+      // a bare box reads as a stray line, and the box already says "everything
+      // here"; anchor endpoints only on drawn (non-mega) dots, and drop the
+      // group if <2 attachable units remain
       const units = unitIds
-        .map((id) => ({ id, dots: (stopsByNode.get(id) ?? []).map((m) => m.pos) }))
+        .map((id) => ({
+          id,
+          dots: (stopsByNode.get(id) ?? []).filter((m) => !m.mega).map((m) => m.pos),
+        }))
         .filter((u) => u.dots.length > 0);
+      if (units.length < 2) continue;
       const conns = planSplitConnectors(units, foreign);
       for (const c of conns) {
         const d = c.corner
