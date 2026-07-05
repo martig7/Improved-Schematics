@@ -400,6 +400,35 @@ export function cutSubCellFolds(pts: Pixel[], cell: number): Pixel[] {
   return out;
 }
 
+/** Subdivide long segments (KEEPING every original vertex, unlike densify's
+ *  uniform resampling) so fold detection sees a path that returns onto a
+ *  segment's INTERIOR, not only near a vertex. */
+function subdivideForFolds(pts: Pixel[], step: number): Pixel[] {
+  if (pts.length < 2 || step <= 0) return pts;
+  const out: Pixel[] = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const n = Math.ceil(dist(a, b) / step);
+    for (let k = 1; k < n; k++) {
+      out.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+/** Drawn-level fold excision for routed paths. cutPolylineFolds compares
+ *  VERTEX pairs, so a stitched path that overshoots and returns onto the
+ *  interior of its own segment (SEA 44 St: east 4 cells, back 2, then south —
+ *  the return point is mid-segment) escapes it entirely; downstream the merge
+ *  fuses the retrace into phantom out-and-back runs and traversals break.
+ *  Subdividing at half a cell bounds the vertex phase mismatch to dg/4,
+ *  well inside the 3/4-cell return epsilon. */
+export function cutDrawnFolds(p: Pixel[], dg: number): Pixel[] {
+  return cutPolylineFolds(subdivideForFolds(p, dg / 2), dg * 0.75, dg);
+}
+
 /**
  * Collapse every degree-2 station into its corridor, exactly like LOOM's comb
  * graph: octi then routes only the topological skeleton (interchanges and
@@ -1363,11 +1392,10 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
         cuts++;
         continue;
       }
-      if (p.length <= 3) continue;
       // minArc one cell: the return-distance guard (eps = 3/4 cell) already
       // protects genuine U-turns — any real grid U returns a full cell away
-      const cut = cutPolylineFolds(p, dg * 0.75, dg);
-      if (cut.length !== p.length) {
+      const cut = cutDrawnFolds(p, dg);
+      if (polyLen(cut) < polyLen(p) - 1e-6) {
         cuts++;
         paths.set(id, cut);
       }

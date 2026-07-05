@@ -30,6 +30,7 @@ import {
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
+import { auditTraversals } from './layout/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
@@ -946,7 +947,21 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     preserveStations: false,
   };
   lap('warpBuild');
+  auditTraversals(
+    'graph',
+    graph.lineTraversals,
+    (id) => graph.edges.find((e) => e.id === id),
+    (nid) => graph.nodes.get(nid)?.pos,
+    (lid) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
+  );
   const support = buildSupportGraph(graph, groups, topoParams);
+  auditTraversals(
+    'support',
+    support.lineTraversals,
+    (id) => support.edges.get(id),
+    (nid) => support.nodes.get(nid)?.pos,
+    (lid) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
   lap('topoMerge');
   const medLen = medianEdgeLength(support);
   const octiOpts = { ...DEFAULT_OCTI_OPTIONS };
@@ -1037,6 +1052,25 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   octiOpts.lenPresW = 1.5;
   lap('octiSetup');
   const imageRaw = octi(support, octiOpts);
+  // dev: OCTI_AUDIT_LINE=<label> dumps a line's support traversal with octi
+  // placement/path status per edge (which edge lost its grid path, and where).
+  if (env?.OCTI_AUDIT_LINE) {
+    for (const [lid, steps] of support.lineTraversals) {
+      if (support.lineRefs.get(lid)?.label !== env.OCTI_AUDIT_LINE) continue;
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        const e = support.edges.get(s.edgeId);
+        if (!e) { console.error(`[octidbg] [${i}] ${s.edgeId} MISSING-EDGE`); continue; }
+        const a = s.reversed ? e.to : e.from;
+        const b = s.reversed ? e.from : e.to;
+        const pa = imageRaw.placement.get(a);
+        const pb = imageRaw.placement.get(b);
+        const path = imageRaw.paths.get(e.id);
+        const at = (p?: readonly number[]): string => (p ? `(${p[0].toFixed(0)},${p[1].toFixed(0)})` : '(unplaced)');
+        console.error(`[octidbg] [${i}] ${e.id} ${s.reversed ? 'REV' : '   '} ${a}${at(pa)} -> ${b}${at(pb)} path=${path ? path.length : 'NONE'} lines=${e.lineIds.size}`);
+      }
+    }
+  }
   lap('octi');
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
@@ -1044,6 +1078,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // carrying the union of lines so the renderer fans them into a bundle
   // instead of drawing one line invisibly on top of the other.
   const merged = mergeCoincidentPaths(support, imageRaw);
+  auditTraversals(
+    'mergeOnly',
+    merged.h.lineTraversals,
+    (id) => merged.h.edges.get(id),
+    (nid) => merged.img.placement.get(nid) ?? merged.h.nodes.get(nid)?.pos,
+    (lid) => merged.h.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
   lap('mergeCoincident');
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation
@@ -1051,6 +1092,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   separateFusedStations(merged.h, merged.img, dHat);
   const supportM = merged.h;
   const image = merged.img;
+  auditTraversals(
+    'mergeCoincident',
+    supportM.lineTraversals,
+    (id) => supportM.edges.get(id),
+    (nid) => image.placement.get(nid) ?? supportM.nodes.get(nid)?.pos,
+    (lid) => supportM.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
 
   // Build a Layout from the merged support graph, then override node positions
   // with octi's grid placement and edge paths with its routed octilinear
@@ -1105,6 +1153,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       }
     }
   }
+  auditTraversals(
+    'spurCleanup',
+    layout.lineTraversals,
+    (id) => layout.edges.find((e) => e.id === id),
+    (nid) => nodePx.get(nid),
+    (lid) => { for (const e of layout.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
+  );
   // Suppress zero-progress synthetic hooks (LON pink-triangle / hairpins): the
   // topo merge can route a line's bundle down a shared lane to a synthetic
   // junction and fan back, drawing a closed triangle / hairpin purely through
@@ -1123,6 +1178,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const trace =
       env?.OCTI_TRACE === '1' || env?.OCTI_PLACE_DEBUG === '1';
     if (spliced > 0 || trace) console.log(`[hooks] spliced=${spliced}`);
+    auditTraversals(
+      'hooks',
+      layout.lineTraversals,
+      (id) => layout.edges.find((e) => e.id === id),
+      (nid) => nodePx.get(nid),
+      (lid) => { for (const e of layout.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
+    );
   }
   orderLines(layout);
   // capsule rule counts only SERVED members: a routeless platform in a

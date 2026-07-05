@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { medianEdgeLength, octi, DEFAULT_OCTI_OPTIONS, cutSubCellFolds } from './octi';
+import { medianEdgeLength, octi, DEFAULT_OCTI_OPTIONS, cutSubCellFolds, cutDrawnFolds } from './octi';
 import { OctiGridGraph, DEFAULT_PENALTIES } from './gridGraph';
 import type { SupportGraph } from './types';
 
@@ -50,6 +50,32 @@ test('cutSubCellFolds keeps a real balloon loop (extent beyond one cell)', () =>
 test('cutSubCellFolds leaves straight courses alone', () => {
   const pts: Array<[number, number]> = [[0, 0], [10, 0], [20, 0], [30, 0]];
   assert.deepEqual(cutSubCellFolds(pts, 22), pts);
+});
+
+test('cutDrawnFolds excises a fold returning onto a segment INTERIOR (SEA he1023)', () => {
+  // The 44 St shape: east 4 cells, back west 2, then south. The return point
+  // (21.2, 0) lies on the INTERIOR of the first segment — no vertex pair is
+  // within eps, so vertex-sampled cutPolylineFolds misses it.
+  const dg = 10.6;
+  const pts: Array<[number, number]> = [[0, 0], [42.4, 0], [21.2, 0], [21.2, 16.2]];
+  const cut = cutDrawnFolds(pts, dg);
+  const maxX = Math.max(...cut.map((p) => p[0]));
+  assert.ok(maxX <= 21.2 + 1e-6, `overshoot east of the return point excised (maxX=${maxX})`);
+  assert.deepEqual(cut[0], [0, 0], 'from endpoint preserved');
+  assert.deepEqual(cut[cut.length - 1], [21.2, 16.2], 'to endpoint preserved');
+});
+
+test('cutDrawnFolds keeps straight paths and orthogonal-adjacent U-turns', () => {
+  const dg = 10.6;
+  const straight: Array<[number, number]> = [[0, 0], [42.4, 0], [42.4, 42.4]];
+  assert.deepEqual(cutDrawnFolds(straight, dg), cutDrawnFolds(straight, dg).slice(), 'deterministic');
+  const straightLen = cutDrawnFolds(straight, dg).reduce((acc, p, i, a) => (i ? acc + Math.sqrt((p[0] - a[i - 1][0]) ** 2 + (p[1] - a[i - 1][1]) ** 2) : 0), 0);
+  assert.ok(Math.abs(straightLen - 84.8) < 1e-6, 'straight path length preserved');
+  // U-turn across one full cell (parallel runs dg apart) is a REAL drawable U
+  const u: Array<[number, number]> = [[0, 0], [42.4, 0], [42.4, 10.6], [0, 10.6]];
+  const uCut = cutDrawnFolds(u, dg);
+  const uLen = uCut.reduce((acc, p, i, a) => (i ? acc + Math.sqrt((p[0] - a[i - 1][0]) ** 2 + (p[1] - a[i - 1][1]) ** 2) : 0), 0);
+  assert.ok(Math.abs(uLen - (42.4 + 10.6 + 42.4)) < 1e-6, `full-cell U-turn untouched (len=${uLen})`);
 });
 
 test('grid graph: getNEdg/getDir agree and reverse edges resolve', () => {
