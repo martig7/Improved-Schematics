@@ -423,10 +423,18 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       if (!bySig.has(sig)) bySig.set(sig, []);
       bySig.get(sig)!.push(l);
     }
-    // OCTI_NO_PARTNERS=1 disables partner-block collapsing (every line optimized
-    // standalone) — a probe to test whether forcing a fixed-order contiguous block
-    // through the per-edge rev mirroring is what braids the block's end lanes.
-    const noPartners = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_PARTNERS === '1';
+    // Partner-block collapsing — DISABLED BY DEFAULT on this experiment branch
+    // (bundle-straight-lock): the block orientation pass rewrites member slots
+    // without rescoring and leaks member-vs-foreign flips at straight nodes
+    // (~6 of NYC's 11 residual straight braids; knob matrix 2026-07-04). With
+    // partners off every family member is scored directly — the straight-lock
+    // governs them all — at the cost of larger solution spaces and family
+    // adjacency resting on colorFragPen/splitPen alone (sameSegCross 66→102
+    // on NYC). In-game A/B: OCTI_NO_PARTNERS=0 re-enables the collapse
+    // offline; the game runtime always takes the default.
+    const noPartners =
+      typeof process === 'undefined' ||
+      (process as { env?: Record<string, string> }).env?.OCTI_NO_PARTNERS !== '0';
     const drop = new Set<string>();
     if (!noPartners) for (const members of bySig.values()) {
       if (members.length < 2) continue;
