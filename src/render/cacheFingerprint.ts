@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 21; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 22; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on

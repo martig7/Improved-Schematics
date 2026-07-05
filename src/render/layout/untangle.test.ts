@@ -141,14 +141,15 @@ test('untangle: partner lines stay adjacent as a block', () => {
   assert.equal(t.lineOrder.length, 3, 'all lines present after block expansion');
 });
 
-test('cornerTurnFactor: straight LOCKED, 45deg half, 90deg+ nearly free', async () => {
+test('cornerTurnFactor: straight LOCKED, bends/corners keep the gradient', async () => {
   const { cornerTurnFactor, xCornerTurnFactor } = await import('./untangle');
-  assert.equal(cornerTurnFactor(-1), 2.5e5); // straight through: LOCKED (lexicographic)
+  // Best measured config (NYC flips: 13): straight tier locked, 45°/90°
+  // ordinary. Shallow-band lock (17) and all-angle lock (24) both measured
+  // worse — see cornerTurnFactor's comment for the ladder.
+  assert.equal(cornerTurnFactor(-1), 2.5e5); // straight through: LOCKED
   assert.equal(cornerTurnFactor(-0.71), 0.5); // 45 degree bend
   assert.equal(cornerTurnFactor(0), 0.15); // 90 degree corner
   assert.equal(cornerTurnFactor(0.7), 0.15); // 135 degree hook
-  // U-shaped variant: BOTH near-collinear ends lock (straight braid + hairpin
-  // braid); the 90deg valley keeps its ordinary price
   assert.equal(xCornerTurnFactor(-1), 2.5e5);
   assert.equal(xCornerTurnFactor(1), 2.5e5);
   assert.ok(xCornerTurnFactor(0) < 1, `90deg stays cheap: ${xCornerTurnFactor(0)}`);
@@ -160,8 +161,10 @@ test('cornerTurnFactor: OCTI_STRAIGHT_LOCK=0 restores the soft 6x tiers', async 
   process.env.OCTI_STRAIGHT_LOCK = '0';
   try {
     assert.equal(cornerTurnFactor(-1), 6); // legacy soft tier
+    assert.equal(cornerTurnFactor(0), 0.15);
     assert.equal(xCornerTurnFactor(-1), 6); // U-shape peak (xAngleK default 6)
     assert.equal(xCornerTurnFactor(1), 6);
+    assert.equal(xCornerTurnFactor(0), 0.15);
   } finally {
     if (prev === undefined) delete process.env.OCTI_STRAIGHT_LOCK;
     else process.env.OCTI_STRAIGHT_LOCK = prev;

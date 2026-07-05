@@ -103,6 +103,14 @@ const straightLockW = (): number => {
   return Number.isFinite(v) && v > 0 ? v : 2.5e5;
 };
 
+// Straight-tier lock; 45° bends and 90°+ corners keep ordinary prices.
+// Empirical ladder on NYC (2026-07-04, flips at straight nodes): this config
+// + locked seams + corridor-scale tangents = 13 (best); shallow-band lock
+// (≤45° locked) = 17; all-angle lock = 24 (cliffed landscape freezes hill
+// climbing); straight-only without locked seams = 45. The residual flips
+// (Eastern Pkwy class) survive EVERY lock level — they are structurally
+// placed on corner-less stretches between conflicting junction pins, a
+// search/placement problem, not a pricing one.
 export const cornerTurnFactor = (dot: number): number => {
   if (dot < -0.92) {
     const w = straightLockW();
@@ -130,10 +138,9 @@ const xAngleK = (() => {
   const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XANGLE_K) : NaN;
   return Number.isFinite(v) && v > 0 ? v : 6;
 })();
-// The straight-lock applies at BOTH near-collinear ends here (|dot| ≥ 0.92):
-// a straight pass-through swap and a hairpin/parallel swap are the same
-// shallow braid drawn in opposite directions, and the U-shape already treats
-// them as equals — the lock keeps that symmetry.
+// U-shape with BOTH near-collinear ends locked (straight braid + hairpin
+// braid are the same shallow weave); the 90° valley keeps its ordinary
+// price so forced crossings keep a real gradient toward corners.
 export const xCornerTurnFactor = (dot: number): number => {
   if (dot * dot >= 0.92 * 0.92) {
     const w = straightLockW();
@@ -325,6 +332,13 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     // noise — a straight corridor then reads as a random-angle corner, the
     // swap prices at the cheap bend tier, and the straight-lock never fires
     // there (the "visually straight but technically bent" braid class).
+    // Corridor-scale direction: accumulate ~12px of arc before normalizing
+    // (quarter of a grid cell), not just the first segment. A station-
+    // approach lane jog of a few px at the node otherwise misreads a
+    // straight corridor as a bend, buying the cheap corner tier for a swap
+    // the straight-lock should forbid (the 2/3+4/5 exchange drawn at
+    // Eastern Pkwy-Brooklyn Museum). Genuine corners are unaffected: their
+    // first 12px per side still point apart.
     for (const cand of [oe.parts[0], oe.parts[oe.parts.length - 1]]) {
       const e = cand.edge;
       const path = e.path as unknown as Array<[number, number]>;
@@ -334,7 +348,7 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
       let hi = 1;
       let dx = pts[1][0] - pts[0][0];
       let dy = pts[1][1] - pts[0][1];
-      while (dx * dx + dy * dy < 0.25 && hi < pts.length - 1) {
+      while (dx * dx + dy * dy < 12 * 12 && hi < pts.length - 1) {
         hi++;
         dx = pts[hi][0] - pts[0][0];
         dy = pts[hi][1] - pts[0][1];
@@ -668,41 +682,83 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     // bookkeeping intact) — a mild double-price on a class we want forbidden
     // anyway, negligible against the lock weight.
     if (seamScoreOn) {
-      const stacksAt = new Map<number, OptEdge[]>();
-      for (const e of adj) {
-        if (e.stackGroup === undefined) continue;
-        let g = stacksAt.get(e.stackGroup);
-        if (!g) stacksAt.set(e.stackGroup, (g = []));
-        g.push(e);
+      // Composed "views" at nd: one per stack group (concat sibling cfgs by
+      // stackIdx — exactly what write-back draws) and one per plain edge.
+      // Seam pairs = line pairs whose relative order differs between two
+      // views AND that the plain pair loop above cannot see — i.e. NOT
+      // (same carrier on side A && same carrier on side B). Covers both
+      // stack-vs-plain (Franklin Av class) and stack-vs-stack (dogbone
+      // chains: N/R at 36 St ride {N,R}/{D} on one side, {N}/{R} on the
+      // other, so no concrete cfg pair ever contains both lines).
+      interface SeamView {
+        rank: Map<string, { r: number; sib: OptEdge }>;
+        len: number;
+        rev: boolean;      // view leaves nd against its canonical direction
+        rep: OptEdge;      // for cornerFactor tangents
+        stack: boolean;
       }
-      for (const [grp, sibs] of stacksAt) {
-        if (sibs.length < 2) continue;
-        sibs.sort((a, b) => (a.stackIdx! - b.stackIdx!) || (a.id - b.id)); // canonical from→to frame (matches write-back)
-        const comp: Array<{ line: string; sib: OptEdge }> = [];
-        for (const s of sibs) for (const l of cfg.get(s.id)!) comp.push({ line: l, sib: s });
-        const compRank = new Map<string, { r: number; sib: OptEdge }>();
-        for (let i = 0; i < comp.length; i++) compRank.set(comp[i].line, { r: i, sib: comp[i].sib });
-        const revS = sibs[0].from !== nd;
-        for (const eb of adj) {
-          if (eb.stackGroup === grp) continue;
-          const revB = eb.from !== nd;
-          const rev = revS === revB; // same mirror rule as the pair loop
-          const ceb = cfg.get(eb.id)!;
-          const rel: Array<{ r: number; sib: OptEdge }> = [];
-          for (const line of ceb) {
-            const ent = compRank.get(line);
-            if (!ent || !connOccurs(line, nd, ent.sib, eb)) continue;
-            rel.push({ r: rev ? comp.length - 1 - ent.r : ent.r, sib: ent.sib });
+      const views: SeamView[] = [];
+      {
+        const stacksAt = new Map<number, OptEdge[]>();
+        for (const e of adj) {
+          if (e.stackGroup === undefined) continue;
+          let g = stacksAt.get(e.stackGroup);
+          if (!g) stacksAt.set(e.stackGroup, (g = []));
+          g.push(e);
+        }
+        for (const [, sibs] of stacksAt) {
+          if (sibs.length < 2) continue;
+          sibs.sort((a, b) => (a.stackIdx! - b.stackIdx!) || (a.id - b.id)); // canonical from→to (write-back order)
+          const rank = new Map<string, { r: number; sib: OptEdge }>();
+          let r = 0;
+          for (const s of sibs) for (const l of cfg.get(s.id)!) rank.set(l, { r: r++, sib: s });
+          views.push({ rank, len: r, rev: sibs[0].from !== nd, rep: sibs[0], stack: true });
+        }
+        const inStack = new Set<number>();
+        for (const [g, sibs] of stacksAt) if (sibs.length >= 2) inStack.add(g);
+        for (const e of adj) {
+          if (e.stackGroup !== undefined && inStack.has(e.stackGroup)) continue;
+          const ce = cfg.get(e.id)!;
+          const rank = new Map<string, { r: number; sib: OptEdge }>();
+          for (let i = 0; i < ce.length; i++) rank.set(ce[i], { r: i, sib: e });
+          views.push({ rank, len: ce.length, rev: e.from !== nd, rep: e, stack: false });
+        }
+      }
+      for (let a = 0; a < views.length; a++) {
+        for (let b = a + 1; b < views.length; b++) {
+          const A = views[a];
+          const B = views[b];
+          if (!A.stack && !B.stack) continue; // plain-vs-plain fully covered by the pair loop
+          const rev = A.rev === B.rev; // same mirror rule as the pair loop
+          // walk B's view in canonical order, ranking by A's (mirror-aware)
+          const entB = [...B.rank.entries()].sort((u, v) => u[1].r - v[1].r);
+          const rel: Array<{ r: number; sibA: OptEdge; sibB: OptEdge }> = [];
+          for (const [line, eb] of entB) {
+            const ea = A.rank.get(line);
+            if (!ea || !connOccurs(line, nd, ea.sib, eb.sib)) continue;
+            rel.push({ r: rev ? A.len - 1 - ea.r : ea.r, sibA: ea.sib, sibB: eb.sib });
           }
           let x = 0;
           for (let i = 0; i < rel.length; i++) {
             for (let j = i + 1; j < rel.length; j++) {
-              if (rel[i].sib !== rel[j].sib && rel[i].r > rel[j].r) x++;
+              // skip pairs the plain loop already prices (both lines share
+              // BOTH concrete cfgs)
+              if (rel[i].sibA === rel[j].sibA && rel[i].sibB === rel[j].sibB) continue;
+              if (rel[i].r > rel[j].r) x++;
             }
           }
+          // Seam pairs ride the SAME corridor through nd — unlike a genuine
+          // corner crossing (two corridors meeting), a seam braid can never
+          // be absorbed by a turn: it draws as an in-bundle weave at any
+          // angle (N/R at 36 St braided at a 45° bend). So seams price at
+          // the STRAIGHT-tier lock regardless of the node's geometry; only
+          // with the lock off do they fall back to the corner factor.
           // ×2 mirrors the pair loop's both-directions accumulation (the
-          // final score halves sameWeighted)
-          if (x > 0) sameWeighted += 2 * x * cornerFactor(nd, sibs[0], eb);
+          // final score halves sameWeighted).
+          if (x > 0) {
+            const w = straightLockW();
+            sameWeighted += 2 * x * (w > 0 ? w : cornerFactor(nd, A.rep, B.rep));
+          }
         }
       }
     }
@@ -1247,6 +1303,10 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
               const ra = rev ? e1.lineOrder.length - 1 - ia : ia;
               const rb = rev ? e1.lineOrder.length - 1 - ib : ib;
               if ((ra - rb) * (e2.lineOrder.indexOf(shared[x]) - e2.lineOrder.indexOf(shared[y])) < 0) {
+                // OCTI_FLIP_DETAIL=1: one line per flip with node label + pair
+                if ((process as { env?: Record<string, string> }).env?.OCTI_FLIP_DETAIL === '1') {
+                  console.error(`[flip] @ ${nd}"${layout.nodes.get(nd)?.label ?? ''}" ${shared[x].slice(0, 8)}×${shared[y].slice(0, 8)} e1=${e1.id} e2=${e2.id}`);
+                }
                 if (freeCross.has(nd)) flipsFree++;
                 else if (sameOpt) flipsInterior++;
                 else {
