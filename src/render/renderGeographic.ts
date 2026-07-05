@@ -31,6 +31,7 @@ import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
 import { untangleLineOrder } from './layout/untangle';
+import { orderByBlocks } from './layout/bundleOrder';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
@@ -1133,16 +1134,24 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // unavoidable swaps into bends instead of hiding them under boxes. To
   // revert: rebuild the mega-node set here and pass { freeCrossNodes } to
   // untangleLineOrder (see v0.2.22..26 history).
-  // LOOM untangle: optimize per-corridor line order against crossings and
-  // separations at nodes (the barycenter pass above only seeds it).
-  // (dev A/B switch: OCTI_NO_UNTANGLE=1 keeps the barycenter order)
+  // Line ordering: OCTI_ORDER=blocks (default, spec 2026-07-04 bundle-blocks
+  // rebuild) = structural rigid-bundle ordering (bundleOrder.ts);
+  // OCTI_ORDER=loom = the LOOM untangle scorer (A/B baseline; deprecation to
+  // old/ pending user sign-off per the repo deprecation policy).
+  // OCTI_NO_UNTANGLE=1 still skips ordering entirely (barycenter seed only,
+  // legacy diagnostic).
   if (
     !(
       typeof process !== 'undefined' &&
       (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
     )
   ) {
-    untangleLineOrder(layout);
+    const orderMode =
+      typeof process !== 'undefined'
+        ? (process as { env?: Record<string, string> }).env?.OCTI_ORDER
+        : undefined;
+    if (orderMode === 'loom') untangleLineOrder(layout);
+    else orderByBlocks(layout);
   }
   lap('untangle');
 
