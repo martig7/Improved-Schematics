@@ -902,8 +902,17 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         for (let i = 1; i < poly.length; i++) L += hyp(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
         return L;
       };
-      const taperA = Math.min(spacing * 8, polyLenOf(pA) * 0.45);
-      const taperB = Math.min(spacing * 8, polyLenOf(pB) * 0.45);
+      // Localize small swaps AT the node: the drift length scales with the
+      // LATERAL gap (≈40° crossing) instead of the fixed 8-slot window, so a
+      // one-slot lane swap pivots within ~1.5 slots of the node and reads as
+      // part of the corner/junction it belongs to (user rule 2026-07-04: a
+      // reorder draws at the split, not smeared along the open run — the N/R
+      // X at 36 St, the 2/3-4 swap at Franklin Av). Wide band exchanges
+      // (Flatbush class) still spread: the 8-slot cap and the short-edge
+      // guard below are unchanged, so gap≈8 slots keeps the long shallow X.
+      const drift = Math.max(spacing * 1.5, gap * 1.2);
+      const taperA = Math.min(drift, spacing * 8, polyLenOf(pA) * 0.45);
+      const taperB = Math.min(drift, spacing * 8, polyLenOf(pB) * 0.45);
       jlog(`  ${endA} taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)} gap=${gap.toFixed(1)} lenA=${polyLenOf(pA).toFixed(0)} lenB=${polyLenOf(pB).toFixed(0)} ${(taperA < gap || taperB < gap) ? ((taperA < spacing * 1.5 || taperB < spacing * 1.5) ? 'CONTINUE(short)' : 'taper-anyway') : 'taper-mid'}`);
       if (taperA < gap || taperB < gap) {
         // A big band-on-band exchange — the WHOLE bundle reorders at one straight
