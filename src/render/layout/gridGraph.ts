@@ -355,11 +355,16 @@ export class OctiGridGraph {
       for (let j = 0; j < 8; j++) {
         if (i === j) continue;
         const e = this.bendIdx(b, i, j);
-        // STRAIGHT pass-through across a corridor-occupied (but unsettled)
-        // node is an overlap crossing — legal at a finite price. Turning
-        // inside another corridor, and anything at a settled (station/
-        // junction) node, stays soft-closed.
-        if ((i + 4) % 8 === j && !this.ndSettled[b]) this.crossClose(e);
+        // STRAIGHT pass-through across an occupied node is an overlap
+        // crossing — legal at the finite crossingPen. This INCLUDES settled
+        // (station/junction) bases: the 2026-07-05 blockage census measured
+        // 81% of all detour-routed edges orbiting hard-priced settled bases
+        // (SOFT_INF straights) — the single largest zigzag/loop factory the
+        // excision layers then repaired. Crossing a settled node on a
+        // straight is normal schematic practice; TURNING inside any occupied
+        // node stays soft-closed (that genuinely tangles the resident's
+        // geometry).
+        if ((i + 4) % 8 === j) this.crossClose(e);
         else this.softClose(e);
       }
     }
