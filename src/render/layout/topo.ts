@@ -1023,8 +1023,18 @@ export function anchorGraphStops(
   nextNodeId: () => string,
   nextEdgeId: () => string,
 ): void {
-  const hasNodeNear = (p: Pixel): boolean => {
-    for (const n of nodes.values()) if (dist(n.pos, p) <= snapRadius) return true;
+  // A nearby node only satisfies a stop if it CARRIES the stop's line: twin
+  // platforms put another line's corridor node within snapRadius of this
+  // line's stop (191 Pl: K's anchor 1.4px from the 2's platform), and skipping
+  // the anchor then leaves the line with no on-corridor node — traversal
+  // reconstruction falls back to the foreign twin and heals a horseshoe
+  // detour around the network to touch it.
+  const carriesLine = (nid: string, lineId: string): boolean =>
+    (adj.get(nid) ?? []).some((eid) => edges.get(eid)?.lineIds.has(lineId));
+  const hasNodeNear = (p: Pixel, lineId: string): boolean => {
+    for (const n of nodes.values()) {
+      if (dist(n.pos, p) <= snapRadius && carriesLine(n.id, lineId)) return true;
+    }
     return false;
   };
 
@@ -1042,8 +1052,26 @@ export function anchorGraphStops(
     }
   }
 
+  const anchorDbg =
+    typeof process !== 'undefined'
+      ? (process as { env?: Record<string, string> }).env?.OCTI_ANCHOR_DBG
+      : undefined;
+  const dbgBox = anchorDbg ? anchorDbg.split(',').map(Number) : null;
+  const inDbgBox = (p: Pixel): boolean =>
+    !!dbgBox && p[0] >= dbgBox[0] && p[0] <= dbgBox[2] && p[1] >= dbgBox[1] && p[1] <= dbgBox[3];
+
   for (const { pos, lineId } of stopsToAnchor) {
-    if (hasNodeNear(pos)) continue;
+    if (hasNodeNear(pos, lineId)) {
+      if (inDbgBox(pos)) {
+        let who = '';
+        for (const n of nodes.values()) {
+          if (dist(n.pos, pos) <= snapRadius && carriesLine(n.id, lineId)) { who = `${n.id}@${dist(n.pos, pos).toFixed(1)}px`; break; }
+        }
+        console.error(`[anchordbg] stop ${lineId.slice(0, 8)} (${pos[0].toFixed(0)},${pos[1].toFixed(0)}) SKIP near-carrying ${who}`);
+      }
+      continue;
+    }
+    if (inDbgBox(pos)) console.error(`[anchordbg] stop ${lineId.slice(0, 8)} (${pos[0].toFixed(0)},${pos[1].toFixed(0)}) anchoring...`);
 
     let bestEid: string | null = null;
     let bestD = Infinity;
@@ -1060,7 +1088,11 @@ export function anchorGraphStops(
     }
     // Force-place: a far anchor is still better than a silently missing
     // station (the user-facing symptom is a line ending one stop early).
-    if (!bestEid) continue; // no corridor carries this line at all
+    if (!bestEid) {
+      if (inDbgBox(pos)) console.error(`[anchordbg]   -> NO corridor carries ${lineId.slice(0, 8)}`);
+      continue; // no corridor carries this line at all
+    }
+    if (inDbgBox(pos)) console.error(`[anchordbg]   -> best ${bestEid} at ${bestD.toFixed(1)}px point (${bestPoint[0].toFixed(0)},${bestPoint[1].toFixed(0)})`);
     if (
       bestD > snapRadius * 4 &&
       typeof process !== 'undefined' &&
@@ -1077,7 +1109,39 @@ export function anchorGraphStops(
       const d = dist(n.pos, bestPoint);
       if (d < nearestD) nearestD = d;
     }
-    if (nearestD < minSep) continue;
+    let weldInto: string | null = null;
+    if (nearestD < minSep) {
+      // Spacing floor hit. If the blocking node already carries the line the
+      // stop can simply seat there — no split needed. If it's a FOREIGN twin
+      // (191 Pl: K's anchor 1.1px from where the 2's corridor passes), minting
+      // a node would recreate the sub-cell pair the floor exists to prevent —
+      // but skipping leaves the line with no on-corridor node and traversal
+      // reconstruction heals a horseshoe to reach the twin. Weld the corridor
+      // THROUGH the existing node instead: it becomes a real shared junction
+      // carrying both lines, with no new node and no sub-cell pair.
+      let nearestN: SupportNode | null = null;
+      for (const n of nodes.values()) {
+        if (dist(n.pos, bestPoint) === nearestD) { nearestN = n; break; }
+      }
+      if (!nearestN || carriesLine(nearestN.id, lineId) || nearestN.id === e.from || nearestN.id === e.to) {
+        if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (nearest node ${nearestD.toFixed(1)}px < ${minSep}, carries line or endpoint)`);
+        continue;
+      }
+      // Only weld when the stop would otherwise be STRANDED: if the line
+      // already has a carrying node within seating range, the stop homes
+      // there and a weld would just add a redundant twin node to ping-pong
+      // between (E's terminus grew a 17px stutter that way).
+      let seatD = Infinity;
+      for (const n of nodes.values()) {
+        if (dist(n.pos, pos) < seatD && carriesLine(n.id, lineId)) seatD = dist(n.pos, pos);
+      }
+      if (seatD <= minSep * 2) {
+        if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (line seats at carrying node ${seatD.toFixed(1)}px away)`);
+        continue;
+      }
+      weldInto = nearestN.id;
+      if (inDbgBox(pos)) console.error(`[anchordbg]   -> WELD-THROUGH ${weldInto} (foreign twin at ${nearestD.toFixed(1)}px)`);
+    }
 
     let splitAt = 0;
     for (let i = 1; i < e.points.length; i++) {
@@ -1094,10 +1158,15 @@ export function anchorGraphStops(
         break;
       }
     }
+    // Weld case: the corridor halves meet at the EXISTING node's position (a
+    // sub-minSep jog off the course), not at the projection point.
+    if (weldInto) bestPoint = nodes.get(weldInto)!.pos.slice() as Pixel;
 
-    const nid = nextNodeId();
-    nodes.set(nid, { id: nid, pos: bestPoint.slice() as Pixel });
-    adj.set(nid, []);
+    const nid = weldInto ?? nextNodeId();
+    if (!weldInto) {
+      nodes.set(nid, { id: nid, pos: bestPoint.slice() as Pixel });
+      adj.set(nid, []);
+    }
 
     const leftPts = [...e.points.slice(0, splitAt + 1), bestPoint];
     const rightPts = [bestPoint, ...e.points.slice(splitAt + 1)];

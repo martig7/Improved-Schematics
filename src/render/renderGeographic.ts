@@ -961,6 +961,25 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => graph.nodes.get(nid)?.pos,
     (lid) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
   );
+  // dev: OCTI_AUDIT_BOX also dumps the TRANSIT graph (pre-merge) in the box —
+  // original node ids, stop flags, and each incident edge's lines + geometry,
+  // so support-stage defects can be diffed against what the merge was given.
+  if (env?.OCTI_AUDIT_BOX) {
+    const [bx0, by0, bx1, by1] = env.OCTI_AUDIT_BOX.split(',').map(Number);
+    const lbl = (lid: string) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); };
+    for (const [nid, n] of graph.nodes) {
+      if (!n.pos || n.pos[0] < bx0 || n.pos[0] > bx1 || n.pos[1] < by0 || n.pos[1] > by1) continue;
+      console.error(`[graphbox] ${nid.slice(0, 12)} (${n.pos[0].toFixed(1)},${n.pos[1].toFixed(1)})${n.label ? ` "${n.label}"` : ''}`);
+      for (const e of graph.edges) {
+        if (e.from !== nid && e.to !== nid) continue;
+        const other = e.from === nid ? e.to : e.from;
+        const on = graph.nodes.get(other);
+        const chord = on ? Math.hypot(on.pos[0] - n.pos[0], on.pos[1] - n.pos[1]) : NaN;
+        const stops = [...e.stops.entries()].map(([l, f]) => `${lbl(l)}${f.atFrom ? (e.from === nid ? '@this' : '@far') : ''}${f.atTo ? (e.to === nid ? '@this' : '@far') : ''}`).join(' ');
+        console.error(`[graphbox]    ${e.id.slice(0, 10)} -> ${other.slice(0, 12)}"${on?.label ?? ''}"(${on ? on.pos.map((v) => v.toFixed(0)).join(',') : '?'}) chord=${chord.toFixed(1)} geo=${e.geo?.length ?? 0}pts lines=[${e.lines.map((l) => l.label ?? l.id.slice(0, 6)).join(',')}] stops:{${stops}}`);
+      }
+    }
+  }
   const support = buildSupportGraph(graph, groups, topoParams);
   auditTraversals(
     'support',
@@ -1126,10 +1145,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (n.pos[0] >= bx0 && n.pos[0] <= bx1 && n.pos[1] >= by0 && n.pos[1] <= by1) inBox.push({ id, pos: n.pos });
     }
     inBox.sort((a, b) => (a.id < b.id ? -1 : 1));
+    const lineLabel = (lid: string) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 6);
     for (const { id, pos } of inBox) {
       const deg = (support.adj.get(id) ?? []).length;
       const st = stationNode.get(id);
       console.error(`[boxdbg] ${id} (${pos[0].toFixed(1)},${pos[1].toFixed(1)}) deg=${deg}${st ? ` STATION "${st}"` : ''}`);
+      for (const eid of support.adj.get(id) ?? []) {
+        const e = support.edges.get(eid);
+        if (!e) continue;
+        const other = e.from === id ? e.to : e.from;
+        const op = support.nodes.get(other)?.pos;
+        const len = op ? Math.hypot(op[0] - pos[0], op[1] - pos[1]) : NaN;
+        console.error(`[boxdbg]    ${eid} -> ${other}(${op ? op.map((v) => v.toFixed(0)).join(',') : '?'}) ${len.toFixed(1)}px lines=[${[...e.lineIds].map(lineLabel).sort().join(',')}]`);
+      }
     }
     const cell = octiOpts.cellSize ?? 0;
     for (let i = 0; i < inBox.length; i++) {

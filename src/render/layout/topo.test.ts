@@ -289,6 +289,38 @@ test('anchorGraphStops refuses to create a node within minSep of an existing one
   assert.equal(f.edges.size, 1, 'corridor not split');
 });
 
+test('anchorGraphStops ignores near nodes on foreign corridors (191 Pl twin platforms)', () => {
+  // Twin-platform shape: the stop position coincides with ANOTHER line's
+  // corridor node while this line's own corridor runs parallel 42px away.
+  // The foreign node must not suppress the anchor — traversal reconstruction
+  // snaps line-aware, and without a node that CARRIES the line it falls back
+  // to the foreign twin and heals a horseshoe detour around the network.
+  const nodes = new Map([
+    ['F', { id: 'F', pos: [100, 0] as Pixel }],
+    ['F2', { id: 'F2', pos: [160, 0] as Pixel }],
+    ['A', { id: 'A', pos: [0, 42] as Pixel }],
+    ['B', { id: 'B', pos: [200, 42] as Pixel }],
+  ]);
+  const edges = new Map([
+    ['eF', { id: 'eF', from: 'F', to: 'F2', points: [[100, 0], [160, 0]] as Pixel[], lineIds: new Set(['lK']) }],
+    ['e2', { id: 'e2', from: 'A', to: 'B', points: [[0, 42], [200, 42]] as Pixel[], lineIds: new Set(['l2']) }],
+  ]);
+  const adj = new Map<string, string[]>([['F', ['eF']], ['F2', ['eF']], ['A', ['e2']], ['B', ['e2']]]);
+  const g = {
+    nodes: new Map([['gS', { id: 'gS', pos: [99, 0] as Pixel, lngLat: [0, 0] }]]),
+    edges: [{ id: 'ge0', from: 'gS', to: 'gS', lines: [], lineOrder: [], geo: undefined, stops: new Map([['l2', { atFrom: true, atTo: false }]]) }],
+    adj: new Map(),
+    lineTraversals: new Map(),
+  };
+  let n = 0;
+  let e = 0;
+  anchorGraphStops(g as never, nodes as never, edges as never, adj, 8, 16, () => 'ha' + n++, () => 'he' + e++);
+  assert.equal(nodes.size, 5, 'anchor created on the line own corridor despite the near foreign node');
+  const anchor = nodes.get('ha0');
+  assert.ok(anchor, 'anchor node minted');
+  assert.deepEqual(anchor!.pos, [99, 42], 'anchored at the projection onto the l2 corridor');
+});
+
 test('anchorGraphStops still anchors a stop clear of every node', () => {
   const f = anchorFixture(25, 60); // 25px from A, 35px from B — both >= 16
   f.run(8, 16);
