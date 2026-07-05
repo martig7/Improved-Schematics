@@ -30,7 +30,7 @@ import {
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
-import { auditTraversals } from './layout/travAudit';
+import { auditTraversals, auditZigzags } from './layout/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
@@ -954,8 +954,22 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => graph.nodes.get(nid)?.pos,
     (lid) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
   );
+  auditZigzags(
+    'graph',
+    graph.lineTraversals,
+    (id) => graph.edges.find((e) => e.id === id),
+    (nid) => graph.nodes.get(nid)?.pos,
+    (lid) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
+  );
   const support = buildSupportGraph(graph, groups, topoParams);
   auditTraversals(
+    'support',
+    support.lineTraversals,
+    (id) => support.edges.get(id),
+    (nid) => support.nodes.get(nid)?.pos,
+    (lid) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
+  auditZigzags(
     'support',
     support.lineTraversals,
     (id) => support.edges.get(id),
@@ -1173,6 +1187,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => image.placement.get(nid) ?? supportM.nodes.get(nid)?.pos,
     (lid) => supportM.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
   );
+  auditZigzags(
+    'mergeCoincident',
+    supportM.lineTraversals,
+    (id) => supportM.edges.get(id),
+    (nid) => image.placement.get(nid) ?? supportM.nodes.get(nid)?.pos,
+    (lid) => supportM.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
 
   // Build a Layout from the merged support graph, then override node positions
   // with octi's grid placement and edge paths with its routed octilinear
@@ -1253,6 +1274,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       env?.OCTI_TRACE === '1' || env?.OCTI_PLACE_DEBUG === '1';
     if (spliced > 0 || trace) console.log(`[hooks] spliced=${spliced}`);
     auditTraversals(
+      'hooks',
+      layout.lineTraversals,
+      (id) => layout.edges.find((e) => e.id === id),
+      (nid) => nodePx.get(nid),
+      (lid) => { for (const e of layout.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
+    );
+    auditZigzags(
       'hooks',
       layout.lineTraversals,
       (id) => layout.edges.find((e) => e.id === id),
