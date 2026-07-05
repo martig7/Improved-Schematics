@@ -1242,6 +1242,23 @@ function probeDirectCourse(
   }
 }
 
+/** Drawn arc length over endpoint chord for a placed support edge (1 = the
+ *  route is as direct as its endpoints allow; > 1.5 = it wanders). */
+function drawnRatio(drawing: Drawing, ce: SupportEdge, grid: OctiGridGraph): number {
+  const path = drawing.edgs.get(ce.id);
+  const fb = drawing.nds.get(ce.from);
+  const tb = drawing.nds.get(ce.to);
+  if (!path || fb === undefined || tb === undefined) return 1;
+  let arc = 0;
+  for (const ge of path) {
+    if (!grid.isGridEdge(ge)) continue;
+    const [a, b] = grid.gridEdgeBases(ge);
+    arc += dist(grid.basePos(a), grid.basePos(b));
+  }
+  const chord = dist(grid.basePos(fb), grid.basePos(tb));
+  return chord < 1e-6 ? 1 : arc / chord;
+}
+
 type Undrawable = 'DRAWN' | 'NO_PATH' | 'NO_CANDS';
 
 function drawOrder(
@@ -1963,6 +1980,17 @@ function tryDraw(
       }
     }
 
+    // NOTE (cost-regime Phase 4, 2026-07-05): a coupled rip-up sweep was
+    // built here (rip a wandering edge PLUS the residents settled across its
+    // direct course, redraw wanderer-first, accept on net score win) and
+    // FALSIFIED: the final-state wander census below reads 2/298 with or
+    // without it, and the accepted rip-ups steered convergence to a slightly
+    // WORSE score (1940.1 -> 1941.2) and zigzag census (36 -> 38) on
+    // SEA-split. The insertion-time blockage census (Phases 1-3's ruler)
+    // counts transient difficulty that the node-move + single-edge sweeps
+    // already repair by convergence — it is NOT a picture of the final map.
+    // Judge any future router work by [blockage:final], not [blockage].
+
     if (DBG) {
       console.error(
         `[octi] locSearch sweep ${iter}: score=${drawing.score().toFixed(1)} ` +
@@ -1971,6 +1999,24 @@ function tryDraw(
     }
     locSweeps = iter + 1;
     if (sweepImp < CONVERGENCE_THRESHOLD) { locConverged = true; break; }
+  }
+
+  // FINAL-state wander census (OCTI_BLOCKAGE=1). The insertion-time census
+  // above counts every routing attempt — the local-search sweeps re-route, so
+  // it inflates with the amount of searching done. THIS number is the honest
+  // Phase-4 ruler: how many edges still wander in the state we actually draw.
+  if (BLOCKAGE) {
+    let wander = 0;
+    let total = 0;
+    let worstR = 1;
+    for (const ce of hEdges) {
+      if (ce.from === ce.to || !drawing.drawn(ce.id)) continue;
+      total++;
+      const r = drawnRatio(drawing, ce, grid);
+      if (r > 1.5) wander++;
+      if (r > worstR) worstR = r;
+    }
+    console.error(`[blockage:final] wanderers=${wander} of ${total} drawn (worst ratio ${worstR.toFixed(2)})`);
   }
 
   // OCTI_DEBUG telemetry: why the local search stopped. No wall-clock budget
