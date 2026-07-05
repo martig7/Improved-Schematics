@@ -1261,15 +1261,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // non-station nodes. Splice an octilinear shortcut past such folds. Runs
   // AFTER the spur-step cleanup and BEFORE orderLines (lanes don't exist yet).
   {
-    const stationNodeIds = new Set<string>();
-    for (const sp of supportM.stations.values()) stationNodeIds.add(sp.nodeId);
     const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
     const ratioEnv = Number(env?.OCTI_HOOK_RATIO);
     const foldEnv = Number(env?.OCTI_HOOK_FOLD);
     const hookOpts: { ratio?: number; fold?: number } = {};
     if (Number.isFinite(ratioEnv) && ratioEnv > 0) hookOpts.ratio = ratioEnv;
     if (Number.isFinite(foldEnv)) hookOpts.fold = foldEnv;
-    const { spliced } = suppressHooks(layout, (id) => stationNodeIds.has(id), hookOpts);
+    const { spliced } = suppressHooks(layout, hookOpts);
     const trace =
       env?.OCTI_TRACE === '1' || env?.OCTI_PLACE_DEBUG === '1';
     if (spliced > 0 || trace) console.log(`[hooks] spliced=${spliced}`);

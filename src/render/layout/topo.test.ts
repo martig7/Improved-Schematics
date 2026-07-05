@@ -187,6 +187,36 @@ test('contractShortEdges leaves terminal stubs alone', () => {
   assert.deepEqual(h.nodePos(tip), [6, 0]);
 });
 
+// --- Fix 2 increment 1: length-weighted line pathing --------------------------
+
+import { linePathByLength } from './topo';
+
+test('linePathByLength prefers the short direct course over a few-hop V detour', () => {
+  // src ---(3 hops of 10px)--- dst   vs   src --(1 hop, 90px V)-- dst.
+  // Hop-count BFS took the V (1 edge beats 3); length must take the corridor.
+  const mk = (id: string, from: string, to: string, pts: Pixel[]) =>
+    [id, { id, from, to, points: pts, lineIds: new Set(['L']) }] as const;
+  const edges = new Map([
+    mk('d1', 'S', 'm1', [[0, 0], [10, 0]]),
+    mk('d2', 'm1', 'm2', [[10, 0], [20, 0]]),
+    mk('d3', 'm2', 'T', [[20, 0], [30, 0]]),
+    mk('v1', 'S', 'T', [[0, 0], [15, 45], [30, 0]]), // one edge, ~95px
+  ]);
+  const adj = new Map<string, string[]>([
+    ['S', ['d1', 'v1']], ['m1', ['d1', 'd2']], ['m2', ['d2', 'd3']], ['T', ['d3', 'v1']],
+  ]);
+  const steps = linePathByLength('S', 'T', 'L', edges as never, adj)!;
+  assert.deepEqual(steps.map((s) => s.edgeId), ['d1', 'd2', 'd3'], 'direct corridor chosen');
+});
+
+test('linePathByLength stays on line-carrying edges and reports unreachable as null', () => {
+  const edges = new Map([
+    ['e1', { id: 'e1', from: 'S', to: 'T', points: [[0, 0], [10, 0]] as Pixel[], lineIds: new Set(['OTHER']) }],
+  ]);
+  const adj = new Map<string, string[]>([['S', ['e1']], ['T', ['e1']]]);
+  assert.equal(linePathByLength('S', 'T', 'L', edges as never, adj), null);
+});
+
 // --- Bundle A: contraction metric + anchor floor ------------------------------
 
 test('contractShortEdges contracts a wiggly sub-span connector (node distance, not polyline length)', () => {

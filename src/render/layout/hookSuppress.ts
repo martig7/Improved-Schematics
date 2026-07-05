@@ -107,7 +107,6 @@ function shortcutCourse(ax: number, ay: number, ex: number, ey: number): Cell[] 
 
 export function suppressHooks(
   layout: Layout,
-  isStation: (nodeId: string) => boolean,
   opts?: { ratio?: number; fold?: number },
 ): { spliced: number } {
   const ratio = opts?.ratio ?? DEFAULT_RATIO;
@@ -133,16 +132,32 @@ export function suppressHooks(
     const steps = resolveSteps(trav, edgeById);
     if (steps.length < 2) continue;
 
+    // Run boundaries are THIS LINE's own stops (read from edge stop flags),
+    // not the global station set: a fold that threads other lines' stations
+    // without serving them is still a fold (SEA line 2 bowed down the 50 St
+    // column — stops it never serves — and the old station-segmented scan
+    // could never span it). The interior-stop guard in planRun stays as the
+    // correctness backstop.
+    const stopsAtSeam = (a: Runstep, b: Runstep | undefined): boolean => {
+      const sa = a.edge.stops.get(lineId);
+      if (sa && (a.reversed ? sa.atFrom : sa.atTo)) return true;
+      if (b) {
+        const sb = b.edge.stops.get(lineId);
+        if (sb && (b.reversed ? sb.atTo : sb.atFrom)) return true;
+      }
+      return false;
+    };
+
     const plans: SplicePlan[] = [];
     let i = 0;
     while (i < steps.length) {
       let j = i + 1;
-      while (j < steps.length && !isStation(steps[j - 1].to)) j++;
+      while (j < steps.length && !stopsAtSeam(steps[j - 1], steps[j])) j++;
       if (j - i >= 2) {
         const plan = planRun(lineId, steps, i, j, layout, ratio, fold);
         if (plan) plans.push(plan);
       }
-      // next run starts at this run's terminating station node.
+      // next run starts at this run's terminating stop node.
       i = j;
     }
 

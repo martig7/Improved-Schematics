@@ -862,9 +862,18 @@ function freezeBuilder(h: HBuilder, g: TransitGraph): {
   return { nodes, edges, adj, index };
 }
 
-/** BFS through support edges whose lineIds include `lineId`, from `src` to
- *  `dst`. Returns the ordered support-edge steps, or null if unreachable. */
-function bfsLinePath(
+/** Shortest path BY LENGTH over support edges carrying `lineId` (Dijkstra,
+ *  same structure as shortestAnyPath). Returns ordered steps or null.
+ *
+ *  This replaced a hop-count BFS (RCA Fix 2, increment 1): fewest merged
+ *  edges is NOT the schematic course. The direct corridor between two
+ *  consecutive stops is chopped into many small anchor-split edges, while a
+ *  V-shaped detour through a stop column the line never serves can be fewer
+ *  (longer) hops — hop-count BFS routed SEA's 2 down the 50 St column and
+ *  back (13 manufactured zigzags on one line). Length restores the obvious
+ *  choice; the input tracks are near-straight (max perp 0.2x chord), so the
+ *  shortest painted course is the faithful one. */
+export function linePathByLength(
   src: string,
   dst: string,
   lineId: string,
@@ -872,51 +881,39 @@ function bfsLinePath(
   adj: Map<string, string[]>,
 ): TraversalStep[] | null {
   if (src === dst) return [];
+  const distTo = new Map<string, number>([[src, 0]]);
   const prev = new Map<string, { node: string; edgeId: string }>();
-  const seen = new Set<string>([src]);
-  const queue = [src];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
+  const done = new Set<string>();
+  for (;;) {
+    let cur: string | null = null;
+    let curD = Infinity;
+    for (const [n, d] of distTo) {
+      if (!done.has(n) && d < curD) { cur = n; curD = d; }
+    }
+    if (cur === null) return null;
+    if (cur === dst) break;
+    done.add(cur);
     for (const eid of adj.get(cur) ?? []) {
       const e = edges.get(eid);
       if (!e || !e.lineIds.has(lineId)) continue;
       const nxt = e.from === cur ? e.to : e.from;
-      if (seen.has(nxt)) continue;
-      seen.add(nxt);
-      prev.set(nxt, { node: cur, edgeId: eid });
-      if (nxt === dst) {
-        const steps: TraversalStep[] = [];
-        let at = dst;
-        while (at !== src) {
-          const back = prev.get(at)!;
-          const e = edges.get(back.edgeId)!;
-          steps.push({ edgeId: back.edgeId, reversed: e.from !== back.node });
-          at = back.node;
-        }
-        steps.reverse();
-        return steps;
+      const nd = curD + polylineLength(e.points);
+      if (nd < (distTo.get(nxt) ?? Infinity)) {
+        distTo.set(nxt, nd);
+        prev.set(nxt, { node: cur, edgeId: eid });
       }
-      queue.push(nxt);
     }
   }
-  return null;
-}
-
-/** Single-hop step when BFS is unnecessary. */
-function directStep(
-  src: string,
-  dst: string,
-  lineId: string,
-  edges: Map<string, SupportEdge>,
-  adj: Map<string, string[]>,
-): TraversalStep | null {
-  for (const eid of adj.get(src) ?? []) {
-    const e = edges.get(eid);
-    if (!e || !e.lineIds.has(lineId)) continue;
-    const nxt = e.from === src ? e.to : e.from;
-    if (nxt === dst) return { edgeId: eid, reversed: e.from !== src };
+  const steps: TraversalStep[] = [];
+  let at = dst;
+  while (at !== src) {
+    const back = prev.get(at)!;
+    const e = edges.get(back.edgeId)!;
+    steps.push({ edgeId: back.edgeId, reversed: e.from !== back.node });
+    at = back.node;
   }
-  return null;
+  steps.reverse();
+  return steps;
 }
 
 /** Shortest path over ALL support edges (Dijkstra by polyline length), with a
@@ -1548,7 +1545,7 @@ export function buildSupportGraph(
   // Heal-ladder census (dev, OCTI_AUDIT=1): how often traversal reconstruction
   // falls past the line-constrained BFS. Sizes the prize of carrying line
   // paths THROUGH the merge instead of re-deriving them (RCA Fix 2).
-  const healStats = { bfs: 0, direct: 0, anyPath: 0, bridge: 0, stallJump: 0 };
+  const healStats = { bfs: 0, anyPath: 0, bridge: 0, stallJump: 0 };
 
   const appendTraversalSteps = (steps: TraversalStep[], seg: TraversalStep[]): void => {
     for (const s of seg) {
@@ -1564,10 +1561,8 @@ export function buildSupportGraph(
     lineId: string,
   ): TraversalStep[] | null => {
     if (fromS === toS) return [];
-    const path = bfsLinePath(fromS, toS, lineId, edges, adj);
+    const path = linePathByLength(fromS, toS, lineId, edges, adj);
     if (path) { healStats.bfs++; return path; }
-    const direct = directStep(fromS, toS, lineId, edges, adj);
-    if (direct) { healStats.direct++; return [direct]; }
     // Self-heal an under-painted merge: the walk can miss unioning a line
     // onto corridors its geometry rides (then the line-constrained BFS finds
     // nothing and the line would silently vanish from the map). Route over
@@ -1712,7 +1707,7 @@ export function buildSupportGraph(
     (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
   ) {
     console.error(
-      `[audit:heal-ladder] bfs=${healStats.bfs} direct=${healStats.direct} ` +
+      `[audit:heal-ladder] path=${healStats.bfs} ` +
       `anyPath(paint)=${healStats.anyPath} bridge(__heal)=${healStats.bridge} stallJump=${healStats.stallJump}`,
     );
   }
