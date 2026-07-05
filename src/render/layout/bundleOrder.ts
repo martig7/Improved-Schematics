@@ -179,18 +179,40 @@ const angleAt = (c: Corridor, nd: string): number => {
   return Math.round(Math.atan2(dy, dx) * 1e6) / 1e6;
 };
 
-/** Comparable exit key for a line leaving `nd`: angular rank of each
- *  successive exit corridor, bounded depth (structural destination grouping
- *  — spec §2.4). */
+// normalize to (-pi, pi], quantized — the wrap-safe frame for relative ranks
+const normAngle = (a: number): number => {
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  while (a > Math.PI) a -= 2 * Math.PI;
+  return Math.round(a * 1e6) / 1e6;
+};
+
+// bearing of `c` departing `nd`, RELATIVE to the walker's facing direction —
+// absolute atan2 mis-ranks exits across the ±pi wrap (review finding #4);
+// every left/right decision at a junction ranks in this relative frame.
+const relAngleAt = (c: Corridor, nd: string, facing: number): number =>
+  normAngle(angleAt(c, nd) - facing);
+
+// the direction a walker FACES leaving `nd` after arriving along `arrived`
+// (angleAt points back along the corridor, so facing is its opposite)
+const facingAfter = (arrived: Corridor, nd: string): number =>
+  normAngle(angleAt(arrived, nd) + Math.PI);
+
+/** Comparable exit key for a line: walk-relative angular rank of each
+ *  successive exit corridor, bounded depth, with the facing carried hop to
+ *  hop (structural destination grouping — spec §2.4). Walk-relative keys
+ *  make the seed frame-invariant: absolute angles would encode the
+ *  corridor's arbitrary endA/endB labeling into the order. */
 const exitKeyOf = (
   line: string,
   nd: string,
+  facing0: number,
   cs: CorridorSet,
   flows: Map<string, Map<string, LineFlow>>,
   depth: number,
 ): number[] => {
   const key: number[] = [];
   let node = nd;
+  let facing = facing0;
   for (let d = 0; d < depth; d++) {
     const f = flows.get(node)?.get(line);
     const toId = f ? f.to : null;
@@ -199,8 +221,10 @@ const exitKeyOf = (
       break;
     }
     const to = cs.corridors[toId];
-    key.push(angleAt(to, node));
-    node = to.endA === node ? to.endB : to.endA;
+    key.push(relAngleAt(to, node, facing));
+    const far = to.endA === node ? to.endB : to.endA;
+    facing = facingAfter(to, far);
+    node = far;
   }
   return key;
 };
@@ -225,14 +249,27 @@ export function orderByBlocks(layout: Layout): void {
   let plannedSwaps = 0; // split-contiguity crossings (at junctions)
   let residualSwaps = 0; // cycle-closure disagreements (at junctions)
 
-  // seed: flat order by exit keys toward endB (structural destination
-  // grouping — no colors, no barycenter). Survives only where propagation
-  // never reaches (roots, isolated corridors).
+  // seed: flat order by walk-relative exit keys in the LINES' TRAVEL frame
+  // (structural destination grouping — no colors, no barycenter), stored
+  // mirrored into the corridor's canonical frame when travel opposes it.
+  // Keying "toward endB" would bake the arbitrary endA/endB labeling into
+  // the physical drawing (a reversed corridor definition would flip the
+  // map). Survives only where propagation never reaches (roots, isolated
+  // corridors); majority entry-end decides the frame, ties → canonical.
   const seedBlock = (c: Corridor): Block => {
     const ls = [...c.lines];
-    const keys = new Map(ls.map((l) => [l, exitKeyOf(l, c.endB, cs, flows, 4)]));
+    let enterA = 0;
+    let enterB = 0;
+    for (const l of ls) {
+      if (flows.get(c.endA)?.get(l)?.to === c.id) enterA++;
+      if (flows.get(c.endB)?.get(l)?.to === c.id) enterB++;
+    }
+    const travelAB = enterA >= enterB; // walk endA→endB
+    const exitEnd = travelAB ? c.endB : c.endA;
+    const facing0 = facingAfter(c, exitEnd); // travel direction through the exit
+    const keys = new Map(ls.map((l) => [l, exitKeyOf(l, exitEnd, facing0, cs, flows, 4)]));
     ls.sort((a, b) => cmpKeys(keys.get(a)!, keys.get(b)!) || (a < b ? -1 : 1));
-    return ls;
+    return travelAB ? ls : ls.reverse(); // canonical storage frame
   };
 
   const bfsOrder = [...cs.corridors].sort(
@@ -240,8 +277,23 @@ export function orderByBlocks(layout: Layout): void {
   );
   const visited = new Set<number>();
 
-  /** Join side by pair-ownership lookahead (spec §2.1). */
+  /** Join side by pair-ownership lookahead (spec §2.1). The WALK reasons
+   *  entirely in the travel frame (walking away from the join); the single
+   *  travel→canonical conversion happens at the outer return so the
+   *  deterministic fallback is frame-invariant too (an "a-first" verdict
+   *  must describe the same PHYSICAL side regardless of which end of the
+   *  joined corridor the join landed on). */
   const joinSideLookahead = (
+    a: Block,
+    b: Block,
+    joined: Corridor,
+    joinNode: string,
+  ): boolean => {
+    const bFirstTravel = joinSideLookaheadTravel(a, b, joined, joinNode);
+    return joinNode === joined.endB ? !bFirstTravel : bFirstTravel;
+  };
+
+  const joinSideLookaheadTravel = (
     a: Block,
     b: Block,
     joined: Corridor,
@@ -265,19 +317,22 @@ export function orderByBlocks(layout: Layout): void {
       for (const l of bLines) bExits.add(exitOf(l));
       const union = new Set<number | null>([...aExits, ...bExits]);
       if (union.size > 1) {
+        // rank exits RELATIVE to the walker's facing at the separation node
+        // (wrap-safe); the walker arrived along `corridor`
+        const facing = facingAfter(corridor, node);
         const rank = (s: Set<number | null>): number => {
           let m = Infinity;
           for (const gid of s) {
             if (gid === null) continue;
-            const ang = angleAt(cs.corridors[gid], node);
+            const ang = relAngleAt(cs.corridors[gid], node, facing);
             if (ang < m) m = ang;
           }
           return m;
         };
         const ra = rank(aExits);
         const rb = rank(bExits);
-        if (ra === rb) break;
-        return rb < ra; // bFirst iff B's separation side ranks lower
+        if (ra === rb) break; // tie (mixing split) — fall to the a-first default
+        return rb < ra; // TRAVEL-frame verdict; canonical conversion at the wrapper
       }
       const nextArr = [...union];
       const next = nextArr[0];
@@ -308,18 +363,24 @@ export function orderByBlocks(layout: Layout): void {
     }
     if (exits.size === 0) return;
 
-    // SPLIT-FIRST: contiguity plan over the continuing lines
+    // SPLIT-FIRST: contiguity plan over the continuing lines. Only when the
+    // junction actually DERIVES something (some exit target unvisited) — a
+    // pure look-back at already-settled neighbours must not resort or count
+    // (review finding #5: phantom planned-crossings).
     let ordered = atNd.filter((l) => {
       const f = ndFlows.get(l);
       if (!f) return false;
       const other = f.from === from.id ? f.to : f.to === from.id ? f.from : null;
       return other !== null && other !== undefined;
     });
-    if (exits.size >= 2) {
+    const anyUnvisited = [...exits.keys()].some((gid) => !visited.has(gid));
+    if (exits.size >= 2 && anyUnvisited) {
       const groupOf = new Map<string, number>();
       for (const [gid, ls] of exits) for (const l of ls) groupOf.set(l, gid);
+      // exits ranked RELATIVE to the walker's facing (wrap-safe; finding #4)
+      const facing = facingAfter(from, nd);
       const ranked = [...exits.keys()].sort(
-        (x, y) => angleAt(cs.corridors[x], nd) - angleAt(cs.corridors[y], nd) || x - y,
+        (x, y) => relAngleAt(cs.corridors[x], nd, facing) - relAngleAt(cs.corridors[y], nd, facing) || x - y,
       );
       const plan = reorderToGroups(ordered, groupOf, ranked);
       plannedSwaps += plan.swaps;
@@ -331,8 +392,11 @@ export function orderByBlocks(layout: Layout): void {
       const to = cs.corridors[gid];
       const lsSet = new Set(ls);
       const slice: Block = ordered.filter((l) => lsSet.has(l));
-      // frame rule: mirror iff both corridors present the SAME end to nd
-      const rev = (from.endB === nd) === (to.endB === nd);
+      // frame rule (review finding #1): `ordered`/`slice` are ALREADY in the
+      // node walking frame — atNd normalized the from side. Only the TO side
+      // remains: its canonical frame reads endA→endB, so mirror exactly when
+      // the corridor departs nd via its endB (canonical points INTO nd).
+      const rev = to.endB === nd;
       const finalSlice: Block = rev ? mirrorBlock(slice) : slice;
       if (!visited.has(to.id)) {
         const existing = blocks.get(to.id);
@@ -349,11 +413,15 @@ export function orderByBlocks(layout: Layout): void {
         }
       } else {
         // cycle back-edge: count the disagreement, leave blocks alone (the
-        // flip draws across nd — a junction, allowed by construction)
+        // flip draws across nd — a junction, allowed by construction).
+        // BOTH sides compared in the NODE walking frame (review finding #3):
+        // `slice` is node-frame by construction; `to`'s stored block reads
+        // node-frame when flattened canonically at an endA departure and
+        // mirrored at an endB departure.
         const b = blocks.get(to.id)!;
         const flat = to.endA === nd ? flattenBlock(b) : flattenBlock(mirrorBlock(b));
         const haveOrder = flat.filter((l) => lsSet.has(l));
-        const want = flattenBlock(finalSlice);
+        const want = flattenBlock(slice);
         const rankW = new Map(want.map((l, i) => [l, i]));
         let inv = 0;
         for (let i = 0; i < haveOrder.length; i++) {

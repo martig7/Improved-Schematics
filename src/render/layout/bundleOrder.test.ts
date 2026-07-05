@@ -159,3 +159,110 @@ test('blocks: join lookahead — joined pairs stay intact blocks on the trunk', 
   assert.equal(Math.abs(pos.get('A1')! - pos.get('A2')!), 1, 'A-block intact on the trunk');
   assert.equal(Math.abs(pos.get('B1')! - pos.get('B2')!), 1, 'B-block intact on the trunk');
 });
+
+test('blocks: frame invariance — a reversed trunk edge draws the mirror-identical order', () => {
+  // Same physical Y twice; the second defines the trunk edge REVERSED
+  // (from n to r, traversals riding it reversed). The drawn lateral order
+  // along the physical corridor must be identical, i.e. the stored edge
+  // order mirrors with the edge frame. Exercises the from.endA === nd
+  // junction handoffs that aligned fixtures never reach.
+  const mk = (revTrunk: boolean) => makeLayout(
+    [['r', 0, 0], ['n', 20, 0], ['pe', 30, -10], ['qe', 30, 10]],
+    [
+      revTrunk
+        ? { id: 't', from: 'n', to: 'r', lines: ['A', 'B'] }
+        : { id: 't', from: 'r', to: 'n', lines: ['A', 'B'] },
+      { id: 'p', from: 'n', to: 'pe', lines: ['A'] },
+      { id: 'q', from: 'n', to: 'qe', lines: ['B'] },
+    ],
+    {
+      A: [{ edgeId: 't', reversed: revTrunk }, { edgeId: 'p', reversed: false }],
+      B: [{ edgeId: 't', reversed: revTrunk }, { edgeId: 'q', reversed: false }],
+    },
+  );
+  const fwd = mk(false);
+  orderByBlocks(fwd);
+  const rev = mk(true);
+  orderByBlocks(rev);
+  const tFwd = fwd.edges.find((e) => e.id === 't')!;
+  const tRev = rev.edges.find((e) => e.id === 't')!;
+  assert.deepEqual([...tFwd.lineOrder].reverse(), tRev.lineOrder,
+    `drawn order must be frame-invariant (fwd=${tFwd.lineOrder} rev=${tRev.lineOrder})`);
+});
+
+test('blocks: endB-side join — same geometry, same drawn sides', () => {
+  // The lookahead fixture with the trunk defined s->j (join lands at the
+  // trunk corridor's endB; traversals ride it reversed). Blocks must stay
+  // intact and the drawn order must be the exact mirror of the endA-join
+  // fixture's trunk order.
+  const mk = (revTrunk: boolean) => makeLayout(
+    [['a0', 0, -10], ['b0', 0, 10], ['j', 10, 0], ['s', 30, 0], ['n1', 40, -10], ['n2', 40, 10]],
+    [
+      { id: 'ea', from: 'a0', to: 'j', lines: ['A1', 'A2'] },
+      { id: 'eb', from: 'b0', to: 'j', lines: ['B1', 'B2'] },
+      revTrunk
+        ? { id: 'tr', from: 's', to: 'j', lines: ['A1', 'A2', 'B1', 'B2'] }
+        : { id: 'tr', from: 'j', to: 's', lines: ['A1', 'A2', 'B1', 'B2'] },
+      { id: 'n', from: 's', to: 'n1', lines: ['A1', 'B1'] },
+      { id: 'm', from: 's', to: 'n2', lines: ['A2', 'B2'] },
+    ],
+    {
+      A1: [{ edgeId: 'ea', reversed: false }, { edgeId: 'tr', reversed: revTrunk }, { edgeId: 'n', reversed: false }],
+      A2: [{ edgeId: 'ea', reversed: false }, { edgeId: 'tr', reversed: revTrunk }, { edgeId: 'm', reversed: false }],
+      B1: [{ edgeId: 'eb', reversed: false }, { edgeId: 'tr', reversed: revTrunk }, { edgeId: 'n', reversed: false }],
+      B2: [{ edgeId: 'eb', reversed: false }, { edgeId: 'tr', reversed: revTrunk }, { edgeId: 'm', reversed: false }],
+    },
+  );
+  const fwd = mk(false);
+  orderByBlocks(fwd);
+  const rev = mk(true);
+  orderByBlocks(rev);
+  const trFwd = fwd.edges.find((e) => e.id === 'tr')!;
+  const trRev = rev.edges.find((e) => e.id === 'tr')!;
+  for (const tr of [trFwd, trRev]) {
+    const pos = new Map(tr.lineOrder.map((l, i) => [l, i]));
+    assert.equal(Math.abs(pos.get('A1')! - pos.get('A2')!), 1, `A-block intact (${tr.lineOrder})`);
+    assert.equal(Math.abs(pos.get('B1')! - pos.get('B2')!), 1, `B-block intact (${tr.lineOrder})`);
+  }
+  assert.deepEqual([...trFwd.lineOrder].reverse(), trRev.lineOrder,
+    `endB join draws the same physical sides (fwd=${trFwd.lineOrder} rev=${trRev.lineOrder})`);
+});
+
+test('blocks: look-back junctions add zero phantom counts', () => {
+  // Original lookahead fixture under OCTI_DEBUG: exactly ONE planned
+  // crossing (the s-split is structurally non-contiguous) and ZERO cycle
+  // residuals — the trunk's look-back at its own settled feeders must not
+  // inflate either counter.
+  const layout = makeLayout(
+    [['a0', 0, -10], ['b0', 0, 10], ['j', 10, 0], ['s', 30, 0], ['n1', 40, -10], ['n2', 40, 10]],
+    [
+      { id: 'ea', from: 'a0', to: 'j', lines: ['A1', 'A2'] },
+      { id: 'eb', from: 'b0', to: 'j', lines: ['B1', 'B2'] },
+      { id: 'tr', from: 'j', to: 's', lines: ['A1', 'A2', 'B1', 'B2'] },
+      { id: 'n', from: 's', to: 'n1', lines: ['A1', 'B1'] },
+      { id: 'm', from: 's', to: 'n2', lines: ['A2', 'B2'] },
+    ],
+    {
+      A1: [{ edgeId: 'ea', reversed: false }, { edgeId: 'tr', reversed: false }, { edgeId: 'n', reversed: false }],
+      A2: [{ edgeId: 'ea', reversed: false }, { edgeId: 'tr', reversed: false }, { edgeId: 'm', reversed: false }],
+      B1: [{ edgeId: 'eb', reversed: false }, { edgeId: 'tr', reversed: false }, { edgeId: 'n', reversed: false }],
+      B2: [{ edgeId: 'eb', reversed: false }, { edgeId: 'tr', reversed: false }, { edgeId: 'm', reversed: false }],
+    },
+  );
+  const prev = process.env.OCTI_DEBUG;
+  process.env.OCTI_DEBUG = '1';
+  const logs: string[] = [];
+  const origErr = console.error;
+  console.error = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
+  try {
+    orderByBlocks(layout);
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.OCTI_DEBUG;
+    else process.env.OCTI_DEBUG = prev;
+  }
+  const line = logs.find((l) => l.startsWith('[blocks]'));
+  assert.ok(line, 'OCTI_DEBUG summary line emitted');
+  assert.match(line!, /planned-crossings=1 /, `exactly one real planned crossing: ${line}`);
+  assert.match(line!, /cycle-residuals=0 /, `no phantom residuals: ${line}`);
+});
