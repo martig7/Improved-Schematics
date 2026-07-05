@@ -102,14 +102,17 @@ test('grid graph: settling an edge closes turns and blocks the crossing diagonal
   g.settleEdg(a, b, 'ce1');
   assert.ok(g.isClosed(a));
   assert.ok(g.isClosed(b));
-  // crossing diagonal between N-neighbour and E-neighbour must be blocked
+  // crossing diagonal between N-neighbour and E-neighbour is PRICED, not
+  // banned (cost-regime Phase 3): an X mid-cell is a normal drawn crossing.
+  // Dearer than a plain crossing, far below a violation.
   const na = g.neigh(a, 0);
   const nb = g.neigh(a, 2);
   const cross = g.getNEdg(na, nb);
-  assert.ok(g.edgeCost(cross) >= 100_000);
+  const raw = g.rawCost(cross);
+  assert.equal(g.edgeCost(cross), DEFAULT_PENALTIES.crossingPen * 2 + raw);
   g.unSettleEdg('ce1', a, b);
   assert.ok(!g.isClosed(a));
-  assert.ok(g.edgeCost(cross) < 100_000);
+  assert.equal(g.edgeCost(cross), raw, 'unsettle restores the raw price');
 });
 
 /** True when every consecutive segment of a pixel polyline is octilinear

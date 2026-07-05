@@ -317,8 +317,15 @@ export class OctiGridGraph {
 
   edgeCost(e: number): number {
     const f = this.flags[e];
-    if (f & (F_SOFT | F_BLOCKED)) return SOFT_INF + this.cost0[e];
+    if (f & F_SOFT) return SOFT_INF + this.cost0[e];
     if (f & F_CLOSED) return Infinity;
+    // Conjugate diagonal of a settled diagonal: an X crossing mid-cell is a
+    // normal drawn crossing — price it (2x a plain crossing), don't ban it.
+    // The SOFT_INF here was LOOM planar-output bookkeeping this pipeline
+    // doesn't need (imageMerge only merges COINCIDENT geometry; an X is just
+    // a crossing). Phase-1 census: 30-40% of classic-mode wanderers were
+    // orbiting these.
+    if (f & F_BLOCKED) return this.pens.crossingPen * 2 + this.cost0[e];
     if (f & F_CROSS) return this.pens.crossingPen + this.cost0[e];
     return this.cost0[e];
   }
@@ -349,26 +356,48 @@ export class OctiGridGraph {
     this.ndClosed[b] = 0;
   }
 
+  /** Port d of base b is in use by a settled path. */
+  private portOccupied(b: number, d: number): boolean {
+    const n = this.neigh(b, d);
+    if (n < 0) return true;
+    const e = this.getNEdg(b, n);
+    return e >= 0 && !!this.resEdgs.get(e)?.size;
+  }
+
   closeTurns(b: number): void {
     if (this.ndClosed[b]) return;
+    const occ: boolean[] = [];
+    for (let d = 0; d < 8; d++) occ[d] = this.portOccupied(b, d);
     for (let i = 0; i < 8; i++) {
       for (let j = 0; j < 8; j++) {
         if (i === j) continue;
         const e = this.bendIdx(b, i, j);
-        // STRAIGHT pass-through across an occupied node is an overlap
-        // crossing — legal at the finite crossingPen. This INCLUDES settled
-        // (station/junction) bases: the 2026-07-05 blockage census measured
-        // 81% of all detour-routed edges orbiting hard-priced settled bases
-        // (SOFT_INF straights) — the single largest zigzag/loop factory the
-        // excision layers then repaired. Crossing a settled node on a
-        // straight is normal schematic practice; TURNING inside any occupied
-        // node stays soft-closed (that genuinely tangles the resident's
-        // geometry).
+        // Crossing an occupied node is legal at the finite crossingPen —
+        // including settled (station/junction) bases: the 2026-07-05
+        // blockage census measured 81% of all detour-routed edges orbiting
+        // hard-priced settled bases, the single largest zigzag/loop factory
+        // the excision layers then repaired. STRAIGHT passes are always
+        // purchasable; a TURN is purchasable only through two ports the
+        // resident does not use (a kink ONTO the resident's own port would
+        // tangle its geometry — those stay soft-closed, and occupyPortTurns
+        // re-closes turns as ports fill after this base was first closed).
         if ((i + 4) % 8 === j) this.crossClose(e);
+        else if (!occ[i] && !occ[j]) this.crossClose(e);
         else this.softClose(e);
       }
     }
     this.ndClosed[b] = 1;
+  }
+
+  /** A settled path just took port d of base b: turns kinking onto that port
+   *  are no longer purchasable (straight pass d<->d+4 stays cross-priced). */
+  private occupyPortTurns(b: number, d: number): void {
+    if (!this.ndClosed[b]) return; // closeTurns will read live occupancy
+    for (let k = 0; k < 8; k++) {
+      if (k === d || (k + 4) % 8 === d) continue;
+      this.softClose(this.bendIdx(b, d, k));
+      this.softClose(this.bendIdx(b, k, d));
+    }
   }
 
   isClosed(b: number): boolean { return this.ndClosed[b] === 1; }
@@ -449,6 +478,9 @@ export class OctiGridGraph {
     this.addResEdg(gf, ceId);
     this.closeTurns(aB);
     this.closeTurns(bB);
+    const dAB = this.getDir(aB, bB);
+    this.occupyPortTurns(aB, dAB);
+    this.occupyPortTurns(bB, (dAB + 4) % 8);
     // Block the crossing diagonal of a used diagonal (OctiGridGraph).
     const dir = this.getDir(aB, bB);
     if (dir % 2 !== 0) {
