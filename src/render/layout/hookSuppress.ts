@@ -125,38 +125,49 @@ export function suppressHooks(
   for (const lineId of lineIds) {
     const trav = layout.lineTraversals.get(lineId);
     if (!trav || trav.length < 2) continue;
-    let lineSplices = 0;
 
-    // Because we mutate `trav` as we splice, recompute the step list each pass
-    // and re-scan runs in traversal order. A splice invalidates the step list,
-    // so we restart the scan after each one (capped by MAX_SPLICES_PER_LINE).
-    let advanced = true;
-    while (advanced && lineSplices < MAX_SPLICES_PER_LINE) {
-      advanced = false;
-      const steps = resolveSteps(trav, edgeById);
-      if (steps.length < 2) break;
+    // Plan ALL fold runs from the pristine step list, then apply. Game routes
+    // traverse their edges out-and-back, so a fold appears TWICE in one
+    // traversal (mirrored); splicing one run must not corrupt the detection or
+    // the edges of its mirror. Runs are index-disjoint, so the plans compose.
+    const steps = resolveSteps(trav, edgeById);
+    if (steps.length < 2) continue;
 
-      // Walk maximal runs whose INTERIOR nodes are all synthetic. A run
-      // [i..j-1] ends at the first station-boundary node (or the traversal end);
-      // its interior seam nodes are steps[i..j-2].to.
-      let i = 0;
-      while (i < steps.length) {
-        let j = i + 1;
-        while (j < steps.length && !isStation(steps[j - 1].to)) j++;
-        if (
-          j - i >= 2 &&
-          tryRun(lineId, trav, steps, i, j, layout, edgeById, ratio, fold)
-        ) {
-          spliced++;
-          lineSplices++;
-          advanced = true;
-          break; // steps invalidated by the splice; recompute
+    const plans: SplicePlan[] = [];
+    let i = 0;
+    while (i < steps.length) {
+      let j = i + 1;
+      while (j < steps.length && !isStation(steps[j - 1].to)) j++;
+      if (j - i >= 2) {
+        const plan = planRun(lineId, steps, i, j, layout, ratio, fold);
+        if (plan) plans.push(plan);
+      }
+      // next run starts at this run's terminating station node.
+      i = j;
+    }
+
+    // Apply in REVERSE traversal order so earlier splice indices stay valid.
+    const capped = plans.slice(0, MAX_SPLICES_PER_LINE);
+    for (let k = capped.length - 1; k >= 0; k--) {
+      applyPlan(capped[k], trav, layout, edgeById);
+      spliced++;
+    }
+
+    // Strip the line from run edges its rewritten traversal no longer visits.
+    // (An edge can sit inside one run yet still carry the line elsewhere in
+    // the same traversal — the mirror leg — so membership follows usage.)
+    if (capped.length > 0) {
+      const used = new Set(trav.map((s) => s.edgeId));
+      for (const p of capped) {
+        for (const e of p.runEdges) {
+          if (!used.has(e.id)) removeLineFromEdge(e, lineId);
         }
-        // next run starts at this run's terminating station node.
-        i = j;
       }
     }
   }
+
+  // Purge emptied edges once, after every line's splices are applied.
+  pruneEmptyEdges(layout, edgeById);
 
   return { spliced };
 }
@@ -167,10 +178,9 @@ function resolveSteps(trav: TraversalStep[], edgeById: Map<string, LayoutEdge>):
   for (let k = 0; k < trav.length; k++) {
     const s = trav[k];
     const e = edgeById.get(s.edgeId);
-    // Defensive only: a traversal step referencing a nonexistent edge would be
-    // an upstream invariant violation (doesn't occur). If it DID drop a step,
-    // the surviving steps' travIndex span would be non-contiguous and a splice
-    // over it would eat the skipped step — so this continue must stay dead.
+    // Defensive only: steps are resolved from the pristine traversal before any
+    // splice, and edge pruning is deferred until all lines are done, so a
+    // missing edge here is an upstream invariant violation.
     if (!e) continue;
     const from = s.reversed ? e.to : e.from;
     const to = s.reversed ? e.from : e.to;
@@ -179,24 +189,38 @@ function resolveSteps(trav: TraversalStep[], edgeById: Map<string, LayoutEdge>):
   return out;
 }
 
-/** Attempt to splice the run steps[i..j-1]. Returns true if it spliced. */
-function tryRun(
+/** A planned splice: everything needed to rewrite the traversal later without
+ *  re-reading layout state that other splices may have changed. */
+interface SplicePlan {
+  lineId: string;
+  A: string;
+  E: string;
+  cA: Cell;
+  cE: Cell;
+  startIdx: number; // trav index of the run's first step
+  endIdx: number;   // trav index of the run's last step
+  runEdges: LayoutEdge[];
+  lineRef: LineRef;
+  stopAtA: boolean;
+  stopAtE: boolean;
+}
+
+/** Detect whether the run steps[i..j-1] is a spliceable fold. Pure read. */
+function planRun(
   lineId: string,
-  trav: TraversalStep[],
   steps: Runstep[],
   i: number,
   j: number,
   layout: Layout,
-  edgeById: Map<string, LayoutEdge>,
   ratio: number,
   fold: number,
-): boolean {
+): SplicePlan | null {
   const run = steps.slice(i, j);
   const A = run[0].from;
   const E = run[run.length - 1].to;
 
   // Safety: closed loop at one node.
-  if (A === E) return false;
+  if (A === E) return null;
 
   // Safety: the line must not STOP at any interior node of the run.
   // Interior nodes are run[k].to for k in [0, run.length-2]; also the shared
@@ -209,19 +233,19 @@ function tryRun(
     const stopAtTo = rs.reversed ? stop.atFrom : stop.atTo;
     const stopAtFrom = rs.reversed ? stop.atTo : stop.atFrom;
     // stopping at an interior node (any node strictly between A and E) blocks.
-    if (k < run.length - 1 && stopAtTo) return false; // rs.to is interior
-    if (k > 0 && stopAtFrom) return false; // rs.from is interior
+    if (k < run.length - 1 && stopAtTo) return null; // rs.to is interior
+    if (k > 0 && stopAtFrom) return null; // rs.from is interior
   }
 
   // Geometry: node cells along the run.
   const cA = cellOf(layout, A);
   const cE = cellOf(layout, E);
-  if (!cA || !cE) return false;
+  if (!cA || !cE) return null;
 
   const seq: Cell[] = [cA];
   for (const rs of run) {
     const c = cellOf(layout, rs.to);
-    if (!c) return false;
+    if (!c) return null;
     seq.push(c);
   }
 
@@ -231,8 +255,8 @@ function tryRun(
     pathLen += dist(seq[k][0], seq[k][1], seq[k + 1][0], seq[k + 1][1]);
   }
   const chordLen = dist(cA[0], cA[1], cE[0], cE[1]);
-  if (chordLen === 0) return false;
-  if (pathLen / chordLen <= ratio) return false;
+  if (chordLen === 0) return null;
+  if (pathLen / chordLen <= ratio) return null;
 
   // Fold: min consecutive-segment direction dot < fold.
   let minDot = 1;
@@ -246,56 +270,79 @@ function tryRun(
     const dot = d0[0] * d1[0] + d0[1] * d1[1];
     if (dot < minDot) minDot = dot;
   }
-  if (minDot >= fold) return false;
+  if (minDot >= fold) return null;
 
-  // --- splice ------------------------------------------------------------
   const lineRef = findLineRef(run, lineId);
-  if (!lineRef) return false;
+  if (!lineRef) return null;
 
-  const shortcutId = `hook:${A}:${E}`;
-  let shortcut = edgeById.get(shortcutId);
+  return {
+    lineId,
+    A,
+    E,
+    cA,
+    cE,
+    startIdx: run[0].travIndex,
+    endIdx: run[run.length - 1].travIndex,
+    runEdges: run.map((rs) => rs.edge),
+    lineRef,
+    stopAtA: boundaryStop(run[0], lineId, true),
+    stopAtE: boundaryStop(run[run.length - 1], lineId, false),
+  };
+}
+
+/** Splice one planned run: reuse (either orientation) or build the shortcut
+ *  edge, seat the line + its boundary stops on it, rewrite the traversal.
+ *  Edge membership cleanup happens AFTER all of a line's plans are applied. */
+function applyPlan(
+  p: SplicePlan,
+  trav: TraversalStep[],
+  layout: Layout,
+  edgeById: Map<string, LayoutEdge>,
+): void {
+  // The mirror leg of an out-and-back fold produces the same shortcut with A/E
+  // swapped — reuse the forward edge with a reversed step instead of minting a
+  // second, coincident edge.
+  const fwdId = `hook:${p.A}:${p.E}`;
+  const revId = `hook:${p.E}:${p.A}`;
+  let shortcut = edgeById.get(fwdId);
+  let reversed = false;
+  if (!shortcut && edgeById.has(revId)) {
+    shortcut = edgeById.get(revId)!;
+    reversed = true;
+  }
   if (!shortcut) {
     shortcut = {
-      id: shortcutId,
-      from: A,
-      to: E,
-      path: shortcutCourse(cA[0], cA[1], cE[0], cE[1]),
+      id: fwdId,
+      from: p.A,
+      to: p.E,
+      path: shortcutCourse(p.cA[0], p.cA[1], p.cE[0], p.cE[1]),
       lines: [],
       lineOrder: [],
       stops: new Map<string, EdgeStop>(),
     };
     layout.edges.push(shortcut);
-    edgeById.set(shortcutId, shortcut);
+    edgeById.set(fwdId, shortcut);
   }
   // add the line to the shortcut edge (dedupe; keep line list id-sorted).
-  if (!shortcut.lines.some((l) => l.id === lineId)) {
-    shortcut.lines.push({ id: lineRef.id, label: lineRef.label, color: lineRef.color });
+  if (!shortcut.lines.some((l) => l.id === p.lineId)) {
+    shortcut.lines.push({ id: p.lineRef.id, label: p.lineRef.label, color: p.lineRef.color });
     shortcut.lines.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     shortcut.lineOrder = shortcut.lines.map((l) => l.id);
   }
-  // carry the line's endpoint stop flags onto the shortcut: whether the line
-  // stops at A / at E (the run's boundary nodes).
-  const stopAtA = boundaryStop(run[0], lineId, true);
-  const stopAtE = boundaryStop(run[run.length - 1], lineId, false);
-  if (stopAtA || stopAtE) {
-    shortcut.stops.set(lineId, { atFrom: stopAtA, atTo: stopAtE });
+  // carry the line's endpoint stop flags onto the shortcut, in the EDGE's
+  // orientation (merge with flags a mirror-leg splice may already have set).
+  const atFrom = reversed ? p.stopAtE : p.stopAtA;
+  const atTo = reversed ? p.stopAtA : p.stopAtE;
+  if (atFrom || atTo) {
+    const prev = shortcut.stops.get(p.lineId);
+    shortcut.stops.set(p.lineId, {
+      atFrom: atFrom || !!prev?.atFrom,
+      atTo: atTo || !!prev?.atTo,
+    });
   }
-
-  // Remove the line from each hook-run edge; delete edges whose line set empties.
-  for (const rs of run) {
-    removeLineFromEdge(rs.edge, lineId);
-  }
-  // Rewrite the traversal: replace steps [run[0].travIndex .. run[last].travIndex]
-  // (contiguous in trav) with one step over the shortcut edge.
-  const startIdx = run[0].travIndex;
-  const endIdx = run[run.length - 1].travIndex;
-  const reversed = false; // shortcut is always built from A, so the spliced step runs forward
-  trav.splice(startIdx, endIdx - startIdx + 1, { edgeId: shortcutId, reversed });
-
-  // Purge emptied edges from the layout + index.
-  pruneEmptyEdges(layout, edgeById);
-
-  return true;
+  // Rewrite the traversal: replace steps [startIdx .. endIdx] (contiguous in
+  // trav) with one step over the shortcut edge.
+  trav.splice(p.startIdx, p.endIdx - p.startIdx + 1, { edgeId: shortcut.id, reversed });
 }
 
 function findLineRef(run: Runstep[], lineId: string): LineRef | undefined {

@@ -217,6 +217,61 @@ test('suppressHooks: reversed-step run with an interior stop (reversed flag read
   assert.ok(layout.edges.find((e) => e.id === 'e1'), 'e1 kept');
 });
 
+// Out-and-back fixture (SEA E@44St): every game route traverses its edges in
+// BOTH directions, so a fold appears twice in one traversal — outbound and
+// mirrored return. The splice of the outbound run must not corrupt the return
+// run (which references the same edges).
+function outAndBackLayout(): { layout: Layout; stations: Set<string> } {
+  const A = node('A', 2244, 1980);
+  const s1 = node('s1', 2244, 2112);
+  const s2 = node('s2', 2288, 2068);
+  const X = node('X', 2400, 2068);
+  const e0 = edge({ id: 'e0', from: 'A', to: 's1', lineIds: ['mag'] });
+  const e1 = edge({ id: 'e1', from: 's1', to: 's2', lineIds: ['mag'] });
+  const e2 = edge({ id: 'e2', from: 's2', to: 'X', lineIds: ['mag'], stops: { mag: { atFrom: false, atTo: true } } });
+  const layout = makeLayout(
+    [A, s1, s2, X],
+    [e0, e1, e2],
+    {
+      mag: [
+        { edgeId: 'e0', reversed: false },
+        { edgeId: 'e1', reversed: false },
+        { edgeId: 'e2', reversed: false },
+        { edgeId: 'e2', reversed: true },
+        { edgeId: 'e1', reversed: true },
+        { edgeId: 'e0', reversed: true },
+      ],
+    },
+  );
+  return { layout, stations: new Set(['A', 's2', 'X']) };
+}
+
+test('suppressHooks: out-and-back fold — BOTH directions spliced, no traversal step references a missing edge', () => {
+  const { layout, stations } = outAndBackLayout();
+  suppressHooks(layout, isStationFrom(stations));
+
+  const edgeIds = new Set(layout.edges.map((e) => e.id));
+  const trav = layout.lineTraversals.get('mag')!;
+  for (const s of trav) {
+    assert.ok(edgeIds.has(s.edgeId), `traversal step references missing edge ${s.edgeId}`);
+  }
+  // consecutive steps must chain (share a node) — no graph-level breaks
+  const eById = new Map(layout.edges.map((e) => [e.id, e]));
+  for (let i = 0; i + 1 < trav.length; i++) {
+    const a = eById.get(trav[i].edgeId)!;
+    const b = eById.get(trav[i + 1].edgeId)!;
+    const aEnd = trav[i].reversed ? a.from : a.to;
+    const bStart = trav[i + 1].reversed ? b.to : b.from;
+    assert.equal(aEnd, bStart, `steps ${i}->${i + 1} do not chain (${aEnd} != ${bStart})`);
+  }
+  // and every surviving edge's line list matches the traversal that uses it
+  for (const e of layout.edges) {
+    const used = trav.some((s) => s.edgeId === e.id);
+    const carries = e.lines.some((l) => l.id === 'mag');
+    assert.equal(carries, used, `edge ${e.id}: carries mag=${carries} but traversal uses it=${used}`);
+  }
+});
+
 test('suppressHooks: deterministic — two structurally-equal inputs give deep-equal outputs', () => {
   const a = triangleLayout({ extraLine: true });
   const b = triangleLayout({ extraLine: true });
