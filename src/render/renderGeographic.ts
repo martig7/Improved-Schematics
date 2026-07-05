@@ -1263,6 +1263,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // spur's far node — a terminus retrace keeps its steps (its flag is set).
   {
     const eById = new Map(layout.edges.map((e) => [e.id, e]));
+    let spurDrops = 0;
     for (const [lineId, trav] of layout.lineTraversals) {
       let changed = true;
       while (changed) {
@@ -1277,11 +1278,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
           const flagAtFar = a.reversed ? !!stop?.atFrom : !!stop?.atTo;
           if (flagAtFar) continue;
           trav.splice(i, 2);
+          spurDrops++;
           changed = true;
           break;
         }
       }
     }
+    if (spurDrops > 0 && env?.OCTI_AUDIT) console.error(`[audit:fire] spurStepDrops=${spurDrops}`);
   }
   auditTraversals(
     'spurCleanup',

@@ -1060,8 +1060,10 @@ export function anchorGraphStops(
   const inDbgBox = (p: Pixel): boolean =>
     !!dbgBox && p[0] >= dbgBox[0] && p[0] <= dbgBox[2] && p[1] >= dbgBox[1] && p[1] <= dbgBox[3];
 
+  const stats = { seated: 0, minted: 0, welded: 0, stranded: 0, noCorridor: 0, far: 0 };
   for (const { pos, lineId } of stopsToAnchor) {
     if (hasNodeNear(pos, lineId)) {
+      stats.seated++;
       if (inDbgBox(pos)) {
         let who = '';
         for (const n of nodes.values()) {
@@ -1089,9 +1091,11 @@ export function anchorGraphStops(
     // Force-place: a far anchor is still better than a silently missing
     // station (the user-facing symptom is a line ending one stop early).
     if (!bestEid) {
+      stats.noCorridor++;
       if (inDbgBox(pos)) console.error(`[anchordbg]   -> NO corridor carries ${lineId.slice(0, 8)}`);
       continue; // no corridor carries this line at all
     }
+    if (bestD > snapRadius * 4) stats.far++;
     if (inDbgBox(pos)) console.error(`[anchordbg]   -> best ${bestEid} at ${bestD.toFixed(1)}px point (${bestPoint[0].toFixed(0)},${bestPoint[1].toFixed(0)})`);
     if (
       bestD > snapRadius * 4 &&
@@ -1124,6 +1128,7 @@ export function anchorGraphStops(
         if (dist(n.pos, bestPoint) === nearestD) { nearestN = n; break; }
       }
       if (!nearestN || carriesLine(nearestN.id, lineId) || nearestN.id === e.from || nearestN.id === e.to) {
+        stats.seated++;
         if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (nearest node ${nearestD.toFixed(1)}px < ${minSep}, carries line or endpoint)`);
         continue;
       }
@@ -1136,9 +1141,11 @@ export function anchorGraphStops(
         if (dist(n.pos, pos) < seatD && carriesLine(n.id, lineId)) seatD = dist(n.pos, pos);
       }
       if (seatD <= minSep * 2) {
+        stats.seated++;
         if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (line seats at carrying node ${seatD.toFixed(1)}px away)`);
         continue;
       }
+      stats.welded++;
       weldInto = nearestN.id;
       if (inDbgBox(pos)) console.error(`[anchordbg]   -> WELD-THROUGH ${weldInto} (foreign twin at ${nearestD.toFixed(1)}px)`);
     }
@@ -1164,6 +1171,7 @@ export function anchorGraphStops(
 
     const nid = weldInto ?? nextNodeId();
     if (!weldInto) {
+      stats.minted++;
       nodes.set(nid, { id: nid, pos: bestPoint.slice() as Pixel });
       adj.set(nid, []);
     }
@@ -1183,6 +1191,15 @@ export function anchorGraphStops(
     adj.get(nid)!.push(leftId);
     adj.get(nid)!.push(rightId);
     adj.get(e.to)!.push(rightId);
+  }
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+  ) {
+    console.error(
+      `[audit:fire] anchorGraphStops: stops=${stopsToAnchor.length} seated=${stats.seated} ` +
+      `minted=${stats.minted} welded=${stats.welded} far=${stats.far} noCorridor=${stats.noCorridor}`,
+    );
   }
 }
 
@@ -1237,6 +1254,7 @@ function weldRedundantStubs(
     adj.set(nid, arr);
   };
 
+  let stubWelds = 0;
   for (let pass = 0; pass < 4; pass++) {
     let changed = false;
     for (const eid of [...edges.keys()].sort()) {
@@ -1256,6 +1274,7 @@ function weldRedundantStubs(
           if (proj.d > eps) continue;
           // A must project interior to f, else there is nothing to split
           if (proj.arc < 2 || proj.total - proj.arc < 2) continue;
+          stubWelds++;
 
           const head = f.points.slice(0, proj.segIdx + 1).map(cp);
           const tail = f.points.slice(proj.segIdx + 1).map(cp);
@@ -1285,6 +1304,13 @@ function weldRedundantStubs(
     }
     if (!changed) break;
   }
+  if (
+    stubWelds > 0 &&
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+  ) {
+    console.error(`[audit:fire] weldRedundantStubs=${stubWelds}`);
+  }
 }
 
 /** Absorb sub-dHat degree-1 stubs hanging off junctions (degree >= 3 with
@@ -1305,6 +1331,7 @@ function absorbJunctionStubs(
   const DBG =
     typeof process !== 'undefined' &&
     !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
+  let absorbed = 0;
   for (const eid of [...edges.keys()].sort()) {
     const e = edges.get(eid);
     if (!e) continue;
@@ -1342,9 +1369,17 @@ function absorbJunctionStubs(
       const arrB = adj.get(B)!;
       const i = arrB.indexOf(eid);
       if (i >= 0) arrB.splice(i, 1);
+      absorbed++;
       if (DBG) console.error(`[topo] absorb ${eid} ${A} -> ${B} (span ${span.toFixed(1)})`);
       break;
     }
+  }
+  if (
+    absorbed > 0 &&
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+  ) {
+    console.error(`[audit:fire] absorbJunctionStubs=${absorbed}`);
   }
 }
 
@@ -1605,11 +1640,10 @@ export function buildSupportGraph(
     );
   };
 
-  let healCounter = 0;
   // Heal-ladder census (dev, OCTI_AUDIT=1): how often traversal reconstruction
   // falls past the line-constrained BFS. Sizes the prize of carrying line
   // paths THROUGH the merge instead of re-deriving them (RCA Fix 2).
-  const healStats = { bfs: 0, anyPath: 0, bridge: 0, stallJump: 0 };
+  const healStats = { bfs: 0, anyPath: 0, miss: 0, stallJump: 0 };
 
   const appendTraversalSteps = (steps: TraversalStep[], seg: TraversalStep[]): void => {
     for (const s of seg) {
@@ -1643,22 +1677,13 @@ export function buildSupportGraph(
       for (const s of any) edges.get(s.edgeId)!.lineIds.add(lineId);
       return any;
     }
-    healStats.bridge++;
-    // No path at all — the merge fragmented this part of the network into
-    // disconnected pieces (its stitching is heuristic). The input graph
-    // guarantees the line IS connected here, so restore the link with a
-    // bridge edge carrying the line.
-    const id = '__heal' + healCounter++;
-    edges.set(id, {
-      id,
-      from: fromS,
-      to: toS,
-      points: [fa.pos.slice() as Pixel, fb.pos.slice() as Pixel],
-      lineIds: new Set([lineId]),
-    });
-    adj.get(fromS)?.push(id);
-    adj.get(toS)?.push(id);
-    return [{ edgeId: id, reversed: false }];
+    // No path at all. A synthetic "__heal" bridge edge used to be minted here
+    // — deleted 2026-07-05 after measuring ZERO fires across a 6-config corpus
+    // (SEA split+classic, NYC-XD, NYC-Jul4, LON-3, SF). If it ever HAD fired
+    // it would have drawn a fabricated straight track across the map; the
+    // caller's stall/service-break handling below is the honest failure mode.
+    healStats.miss++;
+    return null;
   };
 
   // Line-aware node mapping: snap a graph node to the nearest support node
@@ -1772,7 +1797,7 @@ export function buildSupportGraph(
   ) {
     console.error(
       `[audit:heal-ladder] path=${healStats.bfs} ` +
-      `anyPath(paint)=${healStats.anyPath} bridge(__heal)=${healStats.bridge} stallJump=${healStats.stallJump}`,
+      `anyPath(paint)=${healStats.anyPath} miss=${healStats.miss} stallJump=${healStats.stallJump}`,
     );
   }
 
@@ -1926,12 +1951,9 @@ export function buildSupportGraph(
     (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
   ) {
     let anchors = 0;
-    let heals = 0;
     for (const id of nodes.keys()) if (id.startsWith('ha')) anchors++;
-    for (const id of edges.keys()) if (id.startsWith('__heal')) heals++;
     console.error(
-      `[topo] support: ${nodes.size} nodes (${anchors} anchor splits), ` +
-      `${edges.size} edges (${heals} heal bridges)`,
+      `[topo] support: ${nodes.size} nodes (${anchors} anchor splits), ${edges.size} edges`,
     );
   }
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };

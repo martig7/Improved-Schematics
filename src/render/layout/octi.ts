@@ -1487,6 +1487,9 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     // Stations are h-level NODES (path endpoints, preserved by the cut).
     const paths = new Map(joined.paths);
     let cuts = 0;
+    let cutsSub = 0;
+    let cutsShort = 0;
+    let cutsFold = 0;
     for (const [id, p] of paths) {
       if (p.length < 3) continue;
       // Detoured edge: the routed path is 2x+ its endpoint span — the router
@@ -1501,6 +1504,8 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
       // each near-direct).
       const span = dist(p[0], p[p.length - 1]);
       if (span < dg * 6 && polyLen(p) > Math.max(2 * span, dg * 0.75)) {
+        if (span < dg * 1.2) cutsSub++;
+        else cutsShort++;
         paths.set(
           id,
           span < dg * 1.2
@@ -1517,10 +1522,14 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
       const cut = cutDrawnFolds(p, dg);
       if (polyLen(cut) < polyLen(p) - 1e-6) {
         cuts++;
+        cutsFold++;
         paths.set(id, cut);
       }
     }
-    if (DBG && cuts) console.error(`[octi] drawn-level detour cuts: ${cuts}`);
+    if (DBG && cuts)
+      console.error(
+        `[octi] drawn-level detour cuts: ${cuts} (sub-cell chord ${cutsSub}, widened shortcut ${cutsShort}, fold-cut ${cutsFold})`,
+      );
     const traceP =
       typeof process !== 'undefined'
         ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_PATHS
