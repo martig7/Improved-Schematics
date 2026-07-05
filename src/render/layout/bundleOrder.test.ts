@@ -338,3 +338,45 @@ test('blocks: mirrored parts — opposed edge orientations mirror the order', ()
   const eb = layout.edges.find((e) => e.id === 'eb')!;
   assert.deepEqual([...ea.lineOrder].reverse(), eb.lineOrder, 'order mirrors across the flip');
 });
+
+test('blocks: round-trip traversals never duplicate lines in a block (CPW regression)', () => {
+  // The in-game defect (NYC CPW 96-145 St): every game route is a ROUND
+  // TRIP, and last-write-wins flow classification made B/D look like they
+  // enter the shared corridor at BOTH ends — the 103 St join then re-added
+  // them, drawing a 7-slot bundle for 5 lines that weaved at every seam.
+  // Shape: bronx feeder {B,D} joins at `top`; north stub {A,C} feeds too;
+  // shared trunk top->bot carries {A,B,C,D}; split at `bot` into {A,B} and
+  // {C,D}. ALL traversals ride out AND back.
+  const rt = (steps: TraversalStep[]): TraversalStep[] => [
+    ...steps,
+    ...[...steps].reverse().map((s) => ({ edgeId: s.edgeId, reversed: !s.reversed })),
+  ];
+  const layout = makeLayout(
+    [['bx', 30, -30], ['no', 10, -30], ['top', 20, -10], ['bot', 20, 50], ['se', 30, 60], ['sw', 10, 60]],
+    [
+      { id: 'bxe', from: 'bx', to: 'top', lines: ['B', 'D'] },
+      { id: 'nse', from: 'no', to: 'top', lines: ['A', 'C'] },
+      { id: 'main', from: 'top', to: 'bot', lines: ['A', 'B', 'C', 'D'] },
+      { id: 'seb', from: 'bot', to: 'se', lines: ['A', 'B'] },
+      { id: 'swb', from: 'bot', to: 'sw', lines: ['C', 'D'] },
+    ],
+    {
+      A: rt([{ edgeId: 'nse', reversed: false }, { edgeId: 'main', reversed: false }, { edgeId: 'seb', reversed: false }]),
+      B: rt([{ edgeId: 'bxe', reversed: false }, { edgeId: 'main', reversed: false }, { edgeId: 'seb', reversed: false }]),
+      C: rt([{ edgeId: 'nse', reversed: false }, { edgeId: 'main', reversed: false }, { edgeId: 'swb', reversed: false }]),
+      D: rt([{ edgeId: 'bxe', reversed: false }, { edgeId: 'main', reversed: false }, { edgeId: 'swb', reversed: false }]),
+    },
+  );
+  orderByBlocks(layout);
+  for (const e of layout.edges) {
+    const uniq = new Set(e.lineOrder);
+    assert.equal(uniq.size, e.lineOrder.length, `no duplicate slots on ${e.id}: ${e.lineOrder}`);
+    assert.deepEqual([...e.lineOrder].sort(), e.lines.map((l) => l.id).sort(),
+      `membership exact on ${e.id}: ${e.lineOrder}`);
+  }
+  // and the feeder blocks stay intact on the trunk
+  const main = layout.edges.find((e) => e.id === 'main')!;
+  const pos = new Map(main.lineOrder.map((l, i) => [l, i]));
+  assert.equal(Math.abs(pos.get('B')! - pos.get('D')!), 1, `bronx pair adjacent (${main.lineOrder})`);
+  assert.equal(Math.abs(pos.get('A')! - pos.get('C')!), 1, `north pair adjacent (${main.lineOrder})`);
+});

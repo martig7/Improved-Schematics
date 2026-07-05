@@ -123,12 +123,26 @@ export function classifyFlows(
   cs: CorridorSet,
 ): Map<string, Map<string, LineFlow>> {
   const flows = new Map<string, Map<string, LineFlow>>();
+  // FIRST-write-wins: game routes are ROUND TRIPS — the return leg revisits
+  // every node with from/to swapped, and last-write-wins made lines look
+  // like they enter a corridor at BOTH ends (the CPW B/D duplication: a
+  // join re-added lines the corridor already carried, drawing a 7-slot
+  // bundle for 5 lines that weaved at every seam). The outbound leg defines
+  // each line's direction consistently; later passes must not flip it.
   const at = (nd: string, line: string): LineFlow => {
     let m = flows.get(nd);
     if (!m) flows.set(nd, (m = new Map()));
     let f = m.get(line);
     if (!f) m.set(line, (f = { from: null, to: null }));
     return f;
+  };
+  const setFrom = (nd: string, line: string, corr: number): void => {
+    const f = at(nd, line);
+    if (f.from === null) f.from = corr;
+  };
+  const setTo = (nd: string, line: string, corr: number): void => {
+    const f = at(nd, line);
+    if (f.to === null) f.to = corr;
   };
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
   const sortedTravs = [...layout.lineTraversals.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -138,7 +152,7 @@ export function classifyFlows(
     if (first) {
       const startNode = steps[0].reversed ? first.to : first.from;
       const c = cs.byEdge.get(first.id);
-      if (c && cs.atNode.has(startNode)) at(startNode, lineId).to = c.id;
+      if (c && cs.atNode.has(startNode)) setTo(startNode, lineId, c.id);
     }
     for (let i = 1; i < steps.length; i++) {
       const e1 = edgeById.get(steps[i - 1].edgeId);
@@ -148,14 +162,14 @@ export function classifyFlows(
       const c2 = cs.byEdge.get(e2.id);
       if (!c1 || !c2 || c1 === c2) continue; // interior step within one corridor
       const nd = steps[i - 1].reversed ? e1.from : e1.to; // shared node
-      at(nd, lineId).from = c1.id;
-      at(nd, lineId).to = c2.id;
+      setFrom(nd, lineId, c1.id);
+      setTo(nd, lineId, c2.id);
     }
     const last = edgeById.get(steps[steps.length - 1].edgeId);
     if (last) {
       const endNode = steps[steps.length - 1].reversed ? last.from : last.to;
       const c = cs.byEdge.get(last.id);
-      if (c && cs.atNode.has(endNode)) at(endNode, lineId).from = c.id;
+      if (c && cs.atNode.has(endNode)) setFrom(endNode, lineId, c.id);
     }
   }
   return flows;
@@ -248,6 +262,20 @@ export function orderByBlocks(layout: Layout): void {
   const blocks = new Map<number, Block>();
   let plannedSwaps = 0; // split-contiguity crossings (at junctions)
   let residualSwaps = 0; // cycle-closure disagreements (at junctions)
+
+  // OCTI_BLOCKS_TRACE=<lineId>: log every derivation event touching a
+  // corridor that carries the line — root seeds, slice handoffs, join sides,
+  // back-edge disagreements — the blocks-mode analogue of OCTI_TRACE1.
+  const traceLine =
+    typeof process !== 'undefined'
+      ? (process as { env?: Record<string, string> }).env?.OCTI_BLOCKS_TRACE
+      : undefined;
+  const lbl = (nd: string): string => layout.nodes.get(nd)?.label || '·';
+  const cinfo = (c: Corridor): string =>
+    `c${c.id}[${c.endA}"${lbl(c.endA)}"↔${c.endB}"${lbl(c.endB)}" ${c.lines.length}L via ${c.parts.map((p) => p.edge.id).join(',')}]`;
+  const tlog = (c: Corridor, msg: string): void => {
+    if (traceLine && c.lines.includes(traceLine)) console.error(`[btrace] ${cinfo(c)} ${msg}`);
+  };
 
   // seed: flat order by walk-relative exit keys in the LINES' TRAVEL frame
   // (structural destination grouping — no colors, no barycenter), stored
@@ -402,9 +430,36 @@ export function orderByBlocks(layout: Layout): void {
         const existing = blocks.get(to.id);
         if (existing === undefined) {
           blocks.set(to.id, finalSlice);
+          tlog(to, `SLICE from ${cinfo(from)} @ ${nd}"${lbl(nd)}" rev=${rev} -> [${flattenBlock(finalSlice).map((l) => l.slice(0, 8)).join(',')}]`);
         } else {
-          const bFirst = joinSideLookahead(existing, finalSlice, to, nd);
-          blocks.set(to.id, joinBlocks(existing, finalSlice, bFirst));
+          // Overlap guard: a line already contributed to this block must
+          // NEVER join again — a duplicate slot draws a phantom lane (the
+          // CPW B/D weave). Overlaps arise from round-trip flow artifacts
+          // and partially-overlapping feeders; only genuinely NEW lines
+          // join, and a fully-known slice is a pure consistency constraint
+          // (disagreements count as residuals, same as a back-edge).
+          const have = blockLines(existing);
+          const newLines: Block = flattenBlock(finalSlice).filter((l) => !have.has(l));
+          if (newLines.length === 0) {
+            const haveOrder = flattenBlock(existing).filter((l) => lsSet.has(l));
+            const want = flattenBlock(finalSlice);
+            const rankW = new Map(want.map((l, i) => [l, i]));
+            let inv = 0;
+            for (let i = 0; i < haveOrder.length; i++) {
+              for (let j = i + 1; j < haveOrder.length; j++) {
+                const ri = rankW.get(haveOrder[i]);
+                const rj = rankW.get(haveOrder[j]);
+                if (ri !== undefined && rj !== undefined && ri > rj) inv++;
+              }
+            }
+            residualSwaps += inv;
+            if (inv > 0) tlog(to, `RE-DERIVE from ${cinfo(from)} @ ${nd}"${lbl(nd)}" inv=${inv} (constraint only, no join)`);
+          } else {
+            const sub: Block = newLines;
+            const bFirst = joinSideLookahead(existing, sub, to, nd);
+            blocks.set(to.id, joinBlocks(existing, sub, bFirst));
+            tlog(to, `JOIN slice from ${cinfo(from)} @ ${nd}"${lbl(nd)}" bFirst=${bFirst} new=${newLines.length}/${flattenBlock(finalSlice).length} -> [${flattenBlock(blocks.get(to.id)!).map((l) => l.slice(0, 8)).join(',')}]`);
+          }
         }
         const have = blockLines(blocks.get(to.id)!);
         if (to.lines.every((l) => have.has(l))) {
@@ -432,6 +487,7 @@ export function orderByBlocks(layout: Layout): void {
           }
         }
         residualSwaps += inv;
+        if (inv > 0) tlog(to, `BACKEDGE from ${cinfo(from)} @ ${nd}"${lbl(nd)}" inv=${inv} have=[${haveOrder.map((l) => l.slice(0, 8)).join(',')}] want=[${want.map((l) => l.slice(0, 8)).join(',')}]`);
       }
     }
   };
@@ -450,7 +506,10 @@ export function orderByBlocks(layout: Layout): void {
       for (const l of c.lines) {
         const f = ndFlows.get(l);
         if (!f || f.to !== c.id) continue; // not an inbound edge of c at nd
-        if (f.from !== null && f.from !== undefined && !visited.has(f.from)) return true;
+        // f.from === c.id is a round-trip turnaround artifact (the return
+        // leg re-enters the corridor it just left at the route origin) — a
+        // corridor is never its own feeder.
+        if (f.from !== null && f.from !== undefined && f.from !== c.id && !visited.has(f.from)) return true;
       }
     }
     return false;
@@ -464,6 +523,7 @@ export function orderByBlocks(layout: Layout): void {
     // where some seed must break the symmetry per spec §2.3).
     const root = remaining.find((c) => !hasPendingFeeder(c)) ?? remaining[0];
     blocks.set(root.id, seedBlock(root));
+    tlog(root, `ROOT seed -> [${flattenBlock(blocks.get(root.id)!).map((l) => l.slice(0, 8)).join(',')}]`);
     visited.add(root.id);
     const queue: Corridor[] = [root];
     while (queue.length > 0) {
