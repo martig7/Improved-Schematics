@@ -1160,6 +1160,88 @@ function getRtPair(
 
 // ---- the core edge-insertion loop (Octilinearizer::draw) -------------------
 
+// Blockage census (dev, OCTI_BLOCKAGE=1): when an edge routes at 1.5x+ its
+// endpoint chord, walk the ideal octilinear course between the CHOSEN endpoint
+// bases at that exact moment's grid state — what would the router have had to
+// traverse to go direct? Classifies each step by grid-edge flags plus node
+// closure/settlement, so the census names the availability gap that forces
+// wandering (RCA cost-regime Phase 1).
+const BLOCKAGE: boolean =
+  typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_BLOCKAGE;
+export const blockageStats = {
+  routed: 0,
+  wanderers: 0,
+  cells: {} as Record<string, number>,
+  worst: {} as Record<string, number>,
+  samples: [] as string[],
+  reset(): void {
+    this.routed = 0;
+    this.wanderers = 0;
+    this.cells = {};
+    this.worst = {};
+    this.samples = [];
+  },
+  report(): void {
+    if (!BLOCKAGE) return;
+    const fmt = (o: Record<string, number>): string =>
+      Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' ');
+    console.error(
+      `[blockage] routed=${this.routed} wanderers(>1.5x)=${this.wanderers} ` +
+      `worst-per-edge{ ${fmt(this.worst)} } course-cells{ ${fmt(this.cells)} }`,
+    );
+    for (const s of this.samples) console.error(`[blockage]   ${s}`);
+  },
+};
+
+function probeDirectCourse(
+  grid: OctiGridGraph,
+  ce: SupportEdge,
+  res: { edges: number[]; fromBase: number; toBase: number },
+): void {
+  let arc = 0;
+  for (const ge of res.edges) {
+    if (!grid.isGridEdge(ge)) continue;
+    const [a, b] = grid.gridEdgeBases(ge);
+    arc += dist(grid.basePos(a), grid.basePos(b));
+  }
+  const chord = dist(grid.basePos(res.fromBase), grid.basePos(res.toBase));
+  blockageStats.routed++;
+  if (chord < 1e-6 || arc / chord <= 1.5) return;
+  blockageStats.wanderers++;
+  let c = grid.baseCol(res.fromBase);
+  let r = grid.baseRow(res.fromBase);
+  const tc = grid.baseCol(res.toBase);
+  const tr = grid.baseRow(res.toBase);
+  const seen: Record<string, number> = {};
+  const bump = (k: string): void => {
+    seen[k] = (seen[k] ?? 0) + 1;
+    blockageStats.cells[k] = (blockageStats.cells[k] ?? 0) + 1;
+  };
+  let guard = 0;
+  while ((c !== tc || r !== tr) && guard++ < 500) {
+    const sc = Math.sign(tc - c);
+    const sr = Math.sign(tr - r);
+    const cur = grid.baseIdx(c, r);
+    const nxt = grid.baseIdx(c + sc, r + sr);
+    const ge = grid.getNEdg(cur, nxt);
+    bump(ge >= 0 ? grid.edgeClass(ge) : 'offgrid');
+    if (grid.isClosed(nxt)) bump('closedNode');
+    else if (grid.isSettledBase(nxt) && (c + sc !== tc || r + sr !== tr)) bump('settledBase');
+    c += sc;
+    r += sr;
+  }
+  const rank = ['closed', 'blocked', 'closedNode', 'soft', 'settledBase', 'cross', 'offgrid', 'free'];
+  let worst = 'free';
+  for (const k of rank) { if (seen[k]) { worst = k; break; } }
+  blockageStats.worst[worst] = (blockageStats.worst[worst] ?? 0) + 1;
+  if (blockageStats.samples.length < 12) {
+    blockageStats.samples.push(
+      `${ce.id} span=${chord.toFixed(0)}px ratio=${(arc / chord).toFixed(2)} worst=${worst} ` +
+      `course{ ${Object.entries(seen).map(([k, v]) => `${k}:${v}`).join(' ')} }`,
+    );
+  }
+}
+
 type Undrawable = 'DRAWN' | 'NO_PATH' | 'NO_CANDS';
 
 function drawOrder(
@@ -1244,6 +1326,8 @@ function drawOrder(
     res.costs[res.costs.length - 1] -= costOffsetTo;
 
     drawing.draw(ce, rev, res.edges, res.costs, res.fromBase, res.toBase, grid, ctx.childCount(ce.id), ctx.geoLenOf(ce), ctx.lenPresW);
+
+    if (BLOCKAGE) probeDirectCourse(grid, ce, res);
 
     for (const b of toCands) grid.closeSinkTo(b);
     for (const b of frCands) grid.closeSinkFr(b);
@@ -1352,6 +1436,7 @@ function growthOrder(ctx: CombCtx, key: (nd: string) => number): SupportEdge[] {
 // ---- main -------------------------------------------------------------------
 
 export function octi(h: SupportGraph, opts: OctiOptions): Image {
+  blockageStats.reset();
   // grid cell from the ORIGINAL station spacing (LOOM: gridSize = avg adjacent
   // station distance), but route the planarized, deg-2-collapsed skeleton
   let dg = opts.cellSize ?? Math.max(4, medianEdgeLength(h) / (opts.cellDivisor ?? 1.5));
@@ -1373,6 +1458,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
   }
 
   const finish = (imgP: Image): Image => {
+    blockageStats.report();
     const joined = expandContraction(contractSplits(imgP, hK, splits), h, merged);
     // Drawn-level detour excision runs on the REJOINED edge paths: planarize
     // splits edges at crossings into straight sub-paths, so a port-congestion

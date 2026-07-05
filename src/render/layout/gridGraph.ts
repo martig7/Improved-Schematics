@@ -304,6 +304,17 @@ export class OctiGridGraph {
   }
 
   /** Effective traversal cost honouring closed/soft/blocked/cross state. */
+  /** Dev probe (blockage census): availability class of a grid edge from its
+   *  flags, in blocking-severity order. Read-only. */
+  edgeClass(e: number): 'closed' | 'blocked' | 'soft' | 'cross' | 'free' {
+    const f = this.flags[e];
+    if (f & F_CLOSED) return 'closed';
+    if (f & F_BLOCKED) return 'blocked';
+    if (f & F_SOFT) return 'soft';
+    if (f & F_CROSS) return 'cross';
+    return 'free';
+  }
+
   edgeCost(e: number): number {
     const f = this.flags[e];
     if (f & (F_SOFT | F_BLOCKED)) return SOFT_INF + this.cost0[e];
