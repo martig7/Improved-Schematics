@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 24; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 25; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -109,6 +109,13 @@ const SCHEMA = 24; // bump to bust all fingerprints when the renderer's inputs c
 // `stationSplit` render option (Settings → "Split station complexes") joins the
 // fingerprint and default layouts revert to classic group-center nodes; bust
 // main + detail-inset caches.
+// v25: (a) drawn-path fold excision made segment-aware (cutDrawnFolds:
+// subdivide at half a cell so a stitched path returning onto a segment
+// INTERIOR is excised — SEA-split 44 St spike/break); (b) sub-cell support
+// nodes weld into one before octi (weldSubCellNodes: stations absorb
+// synthetics, station pairs never fuse — kills the SEA-split closed-loop
+// router detours). Layout changes with unchanged raw inputs; bust main +
+// detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {

@@ -14,7 +14,7 @@ import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './
 import { fingerprintInputs } from './cacheFingerprint';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
-import { buildSupportGraph, type TopoParams } from './layout/topo';
+import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
@@ -1050,7 +1050,48 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // absolute positions, giving the user-preferred more-vertical layout.
   // Weight 8 (spacing benefit saturates ≥1). OCTI_LENPRES=<n> overrides.
   octiOpts.lenPresW = 1.5;
+  // Same-cell collapse: anchorGraphStops re-splits corridors at stop positions
+  // AFTER the merge's short-edge contraction, so synthetic junctions can land
+  // inside a station's grid cell — sub-cell edges whose endpoints then need
+  // DISTINCT cells force the router into multi-cell detours (SEA-split
+  // Stevens Way: an 11px edge drawn as a 170px C — a closed-loop artifact).
+  // Weld sub-cell node clusters into one node (station survives) before octi
+  // sees them. Threshold = half a cell, the same resolution the octi
+  // contraction uses. (dev override: OCTI_WELD=<px>, 0 disables)
+  {
+    const weldEnv = Number(env?.OCTI_WELD);
+    const weldDist = Number.isFinite(weldEnv) && weldEnv >= 0 ? weldEnv : octiOpts.cellSize / 2;
+    if (weldDist > 0) {
+      const welds = weldSubCellNodes(support, weldDist);
+      if (welds > 0 && (env?.OCTI_TRACE || env?.OCTI_AUDIT)) console.error(`[weld] sub-cell welds=${welds} (dist=${weldDist.toFixed(1)})`);
+    }
+  }
   lap('octiSetup');
+  // dev: OCTI_AUDIT_BOX="x0,y0,x1,y1" dumps pre-octi support nodes in the box
+  // (id, position, station?, degree) plus sub-cell node pairs — the router
+  // congestion picture octi actually faces.
+  if (env?.OCTI_AUDIT_BOX) {
+    const [bx0, by0, bx1, by1] = env.OCTI_AUDIT_BOX.split(',').map(Number);
+    const stationNode = new Map<string, string>();
+    for (const [gid, sp] of support.stations) stationNode.set(sp.nodeId, sp.label || gid);
+    const inBox: Array<{ id: string; pos: Pixel }> = [];
+    for (const [id, n] of support.nodes) {
+      if (n.pos[0] >= bx0 && n.pos[0] <= bx1 && n.pos[1] >= by0 && n.pos[1] <= by1) inBox.push({ id, pos: n.pos });
+    }
+    inBox.sort((a, b) => (a.id < b.id ? -1 : 1));
+    for (const { id, pos } of inBox) {
+      const deg = (support.adj.get(id) ?? []).length;
+      const st = stationNode.get(id);
+      console.error(`[boxdbg] ${id} (${pos[0].toFixed(1)},${pos[1].toFixed(1)}) deg=${deg}${st ? ` STATION "${st}"` : ''}`);
+    }
+    const cell = octiOpts.cellSize ?? 0;
+    for (let i = 0; i < inBox.length; i++) {
+      for (let j = i + 1; j < inBox.length; j++) {
+        const d = Math.sqrt((inBox[i].pos[0] - inBox[j].pos[0]) ** 2 + (inBox[i].pos[1] - inBox[j].pos[1]) ** 2);
+        if (d < cell) console.error(`[boxdbg] SUB-CELL pair ${inBox[i].id} <-> ${inBox[j].id}: ${d.toFixed(1)}px (cell=${cell.toFixed(1)})`);
+      }
+    }
+  }
   const imageRaw = octi(support, octiOpts);
   // dev: OCTI_AUDIT_LINE=<label> dumps a line's support traversal with octi
   // placement/path status per edge (which edge lost its grid path, and where).

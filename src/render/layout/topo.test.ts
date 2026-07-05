@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, type TopoParams } from './topo';
-import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup } from './types';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, type TopoParams } from './topo';
+import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from './types';
 
 test('dist computes euclidean distance', () => {
   assert.equal(dist([0, 0], [3, 4]), 5);
@@ -185,6 +185,80 @@ test('contractShortEdges leaves terminal stubs alone', () => {
   h.contractShortEdges(16);
   assert.equal(h.edgeList().length, 3);
   assert.deepEqual(h.nodePos(tip), [6, 0]);
+});
+
+// --- weldSubCellNodes -------------------------------------------------------
+
+function weldFixture(): SupportGraph {
+  // X ----- J -- A ----- Y : J is a synthetic junction 8px from station A.
+  // A spur S hangs off J so J is deg-3 (a real junction, not a chain node).
+  const mk = (id: string, pos: Pixel) => [id, { id, pos }] as const;
+  const nodes = new Map([
+    mk('nX', [0, 0]), mk('nJ', [100, 0]), mk('nA', [108, 0]),
+    mk('nY', [200, 0]), mk('nS', [100, 80]),
+  ]);
+  const edges = new Map([
+    ['eXJ', { id: 'eXJ', from: 'nX', to: 'nJ', points: [[0, 0], [100, 0]] as Pixel[], lineIds: new Set(['l1']) }],
+    ['eJA', { id: 'eJA', from: 'nJ', to: 'nA', points: [[100, 0], [108, 0]] as Pixel[], lineIds: new Set(['l1']) }],
+    ['eAY', { id: 'eAY', from: 'nA', to: 'nY', points: [[108, 0], [200, 0]] as Pixel[], lineIds: new Set(['l1']) }],
+    ['eJS', { id: 'eJS', from: 'nJ', to: 'nS', points: [[100, 0], [100, 80]] as Pixel[], lineIds: new Set(['l2']) }],
+  ]);
+  const adj = new Map<string, string[]>([
+    ['nX', ['eXJ']], ['nJ', ['eXJ', 'eJA', 'eJS']], ['nA', ['eJA', 'eAY']], ['nY', ['eAY']], ['nS', ['eJS']],
+  ]);
+  return {
+    nodes: nodes as never,
+    edges: edges as never,
+    adj,
+    lineRefs: new Map([['l1', { id: 'l1', label: '1', color: '#000' }], ['l2', { id: 'l2', label: '2', color: '#111' }]]),
+    lineTraversals: new Map([
+      ['l1', [{ edgeId: 'eXJ', reversed: false }, { edgeId: 'eJA', reversed: false }, { edgeId: 'eAY', reversed: false }]],
+      ['l2', [{ edgeId: 'eJS', reversed: true }]],
+    ]),
+    stations: new Map([
+      ['gA', { id: 'gA', label: 'A St', lngLat: [0, 0], nodeId: 'nA', stopNodes: new Map([['l1', 'nA']]) }],
+    ]),
+    stopAt: new Set(['l1|nA']),
+  };
+}
+
+test('weldSubCellNodes welds a sub-cell junction INTO the station and keeps traversals chained', () => {
+  const h = weldFixture();
+  const welds = weldSubCellNodes(h, 10);
+  assert.equal(welds, 1, 'one weld');
+  assert.ok(!h.nodes.has('nJ'), 'junction node gone');
+  assert.ok(h.nodes.has('nA'), 'station node survives');
+  assert.ok(!h.edges.has('eJA'), 'zero-length weld edge removed');
+  assert.equal(h.edges.get('eXJ')!.to, 'nA', 'corridor re-endpointed onto the station');
+  assert.equal(h.edges.get('eJS')!.from, 'nA', 'spur re-endpointed onto the station');
+  assert.deepEqual(h.edges.get('eXJ')!.points[h.edges.get('eXJ')!.points.length - 1], [108, 0], 'edge geometry ends at survivor pos');
+  // traversal chain intact: eXJ -> eAY share nA
+  const t1 = h.lineTraversals.get('l1')!;
+  assert.deepEqual(t1.map((s) => s.edgeId), ['eXJ', 'eAY'], 'weld-edge step dropped, chain preserved');
+  // adjacency rebuilt
+  assert.deepEqual([...(h.adj.get('nA') ?? [])].sort(), ['eAY', 'eJS', 'eXJ']);
+  assert.equal(h.stations.get('gA')!.nodeId, 'nA');
+  assert.ok(h.stopAt.has('l1|nA'));
+});
+
+test('weldSubCellNodes leaves nodes a cell apart alone', () => {
+  const h = weldFixture();
+  const welds = weldSubCellNodes(h, 5); // J-A gap is 8 > 5
+  assert.equal(welds, 0);
+  assert.ok(h.nodes.has('nJ'));
+  assert.ok(h.edges.has('eJA'));
+});
+
+test('weldSubCellNodes remaps station anchors when the SURVIVOR is the other node', () => {
+  const h = weldFixture();
+  // make the junction the survivor magnet: not possible — station always wins.
+  // Instead check a synthetic-synthetic weld: add nK 4px from nJ.
+  h.nodes.set('nK', { id: 'nK', pos: [104, 3] } as never);
+  h.adj.set('nK', []);
+  const welds = weldSubCellNodes(h, 10);
+  // nJ, nK, nA all within 10px transitively -> one component, station nA survives
+  assert.ok(welds >= 2, 'transitive component welded');
+  assert.ok(h.nodes.has('nA') && !h.nodes.has('nJ') && !h.nodes.has('nK'));
 });
 
 test('cutPolylineFolds leaves straight and gently-curved polylines alone', () => {

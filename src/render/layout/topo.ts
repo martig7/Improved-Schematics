@@ -1251,6 +1251,177 @@ function absorbJunctionStubs(
   }
 }
 
+/**
+ * Weld support nodes that would fight for the SAME octi grid cell into one
+ * node (spec: SEA-split simplification, 2026-07-05). The anchor pass re-splits
+ * corridors at stop positions AFTER short-edge contraction, so a synthetic
+ * junction can sit inside a station's cell (Stevens Way: an 11px edge whose
+ * endpoints need distinct cells — the router paid a 170px detour, drawn as a
+ * closed loop). Collapsing sub-cell clusters removes the degenerate inputs
+ * instead of teaching the router/merge/draw new edge cases.
+ *
+ * Components are transitive closures of pairs closer than `minDist`.
+ * Survivor priority: station node > higher degree > smaller id (deterministic).
+ * Weld edges (zero-span after remap) are deleted; their traversal steps drop
+ * out without breaking the chain (both endpoints became the survivor).
+ * Distinct station groups welded onto one node stay separate SupportStations —
+ * the existing separateFusedStations pass re-splits or capsules them.
+ */
+export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
+  if (minDist <= 0) return 0;
+  const ids = [...h.nodes.keys()].sort();
+  if (ids.length < 2) return 0;
+
+  // spatial hash so the pair scan is O(n · bucket) not O(n²)
+  const bucket = new Map<string, string[]>();
+  const bKey = (x: number, y: number): string =>
+    Math.floor(x / minDist) + ',' + Math.floor(y / minDist);
+  for (const id of ids) {
+    const p = h.nodes.get(id)!.pos;
+    const k = bKey(p[0], p[1]);
+    (bucket.get(k) ?? bucket.set(k, []).get(k)!).push(id);
+  }
+
+  const stationNodes = new Set<string>();
+  for (const sp of h.stations.values()) {
+    stationNodes.add(sp.nodeId);
+    for (const nid of sp.stopNodes?.values() ?? []) stationNodes.add(nid);
+  }
+
+  const parent = new Map<string, string>(ids.map((id) => [id, id]));
+  const find = (a: string): string => {
+    let r = a;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    while (parent.get(a) !== a) { const nxt = parent.get(a)!; parent.set(a, r); a = nxt; }
+    return r;
+  };
+  const union = (a: string, b: string): void => { parent.set(find(a), find(b)); };
+
+  for (const id of ids) {
+    const p = h.nodes.get(id)!.pos;
+    const cx = Math.floor(p[0] / minDist);
+    const cy = Math.floor(p[1] / minDist);
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        for (const other of bucket.get(cx + ox + ',' + (cy + oy)) ?? []) {
+          if (other <= id) continue;
+          // Two distinct STATION nodes never weld: that would change what the
+          // map says (two stops become one). Stations only absorb synthetics.
+          if (stationNodes.has(id) && stationNodes.has(other)) continue;
+          if (dist(p, h.nodes.get(other)!.pos) < minDist) union(id, other);
+        }
+      }
+    }
+  }
+
+  // survivor per component: station > degree > smaller id
+  const comps = new Map<string, string[]>();
+  for (const id of ids) {
+    const r = find(id);
+    (comps.get(r) ?? comps.set(r, []).get(r)!).push(id);
+  }
+  const survivorOf = new Map<string, string>();
+  let welds = 0;
+  for (const members of comps.values()) {
+    if (members.length < 2) continue;
+    members.sort();
+    const stationsIn = members.filter((m) => stationNodes.has(m));
+    if (stationsIn.length > 1) {
+      // A synthetic can chain two stations into one component even though
+      // station pairs never union directly. Keep every station; weld each
+      // synthetic into its NEAREST station (deterministic tie-break by id).
+      for (const m of members) {
+        if (stationNodes.has(m)) continue;
+        const mp = h.nodes.get(m)!.pos;
+        let best = stationsIn[0];
+        let bd = Infinity;
+        for (const s of stationsIn) {
+          const d = dist(mp, h.nodes.get(s)!.pos);
+          if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && s < best)) { bd = d; best = s; }
+        }
+        survivorOf.set(m, best);
+        welds++;
+      }
+      continue;
+    }
+    let best = members[0];
+    for (const m of members) {
+      const bStation = stationNodes.has(best) ? 1 : 0;
+      const mStation = stationNodes.has(m) ? 1 : 0;
+      const bDeg = (h.adj.get(best) ?? []).length;
+      const mDeg = (h.adj.get(m) ?? []).length;
+      if (
+        mStation > bStation ||
+        (mStation === bStation && (mDeg > bDeg || (mDeg === bDeg && m < best)))
+      ) best = m;
+    }
+    for (const m of members) {
+      if (m === best) continue;
+      survivorOf.set(m, best);
+      welds++;
+    }
+  }
+  if (welds === 0) return 0;
+
+  const remap = (nid: string): string => survivorOf.get(nid) ?? nid;
+
+  // nodes
+  for (const dead of survivorOf.keys()) h.nodes.delete(dead);
+
+  // edges: re-endpoint, pin polyline ends to survivor positions, drop
+  // degenerate weld edges (self-loop after remap with sub-weld geometry)
+  const removedEdges = new Set<string>();
+  for (const [eid, e] of h.edges) {
+    const nf = remap(e.from);
+    const nt = remap(e.to);
+    if (nf === e.from && nt === e.to) continue;
+    e.from = nf;
+    e.to = nt;
+    if (nf === nt && polylineLength(e.points) < minDist * 2) {
+      h.edges.delete(eid);
+      removedEdges.add(eid);
+      continue;
+    }
+    const fp = h.nodes.get(nf)!.pos;
+    const tp = h.nodes.get(nt)!.pos;
+    e.points[0] = [fp[0], fp[1]];
+    e.points[e.points.length - 1] = [tp[0], tp[1]];
+  }
+
+  // adjacency: rebuild from surviving edges
+  h.adj.clear();
+  for (const id of h.nodes.keys()) h.adj.set(id, []);
+  for (const e of h.edges.values()) {
+    h.adj.get(e.from)!.push(e.id);
+    h.adj.get(e.to)!.push(e.id);
+  }
+
+  // traversals: drop steps over removed weld edges — the chain stays intact
+  // because a removed edge's endpoints are the same survivor node.
+  if (removedEdges.size > 0) {
+    for (const [lineId, steps] of h.lineTraversals) {
+      const kept = steps.filter((s) => !removedEdges.has(s.edgeId));
+      if (kept.length !== steps.length) h.lineTraversals.set(lineId, kept);
+    }
+  }
+
+  // stations + stop flags follow their nodes
+  for (const sp of h.stations.values()) {
+    sp.nodeId = remap(sp.nodeId);
+    if (sp.stopNodes) {
+      for (const [lid, nid] of sp.stopNodes) sp.stopNodes.set(lid, remap(nid));
+    }
+  }
+  const stopAt = [...h.stopAt];
+  h.stopAt.clear();
+  for (const key of stopAt) {
+    const i = key.indexOf('|');
+    h.stopAt.add(key.slice(0, i + 1) + remap(key.slice(i + 1)));
+  }
+
+  return welds;
+}
+
 export function buildSupportGraph(
   g: TransitGraph,
   groups: StationGroup[],
