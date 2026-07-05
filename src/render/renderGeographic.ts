@@ -987,6 +987,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
+  // (dev A/B pin: OCTI_CELL=<px> fixes the grid cell absolutely, so upstream
+  //  structural changes are measured on the SAME ruler instead of re-rolling
+  //  the layout through the medLen -> cellSize feedback. Unset in production.)
+  const cellEnv = Number(env?.OCTI_CELL);
+  if (Number.isFinite(cellEnv) && cellEnv > 0) octiOpts.cellSize = cellEnv;
   if (env?.OCTI_TRACE) console.error(`[trace] cellSize=${octiOpts.cellSize.toFixed(1)} (medLen=${medLen.toFixed(1)} divisor=${divisor}) contract<${(octiOpts.cellSize / 2).toFixed(1)}`);
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)

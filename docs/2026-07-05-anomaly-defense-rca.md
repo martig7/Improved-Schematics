@@ -376,3 +376,52 @@ equipment. The next structural lever is Fix 2 (carry line paths through the
 merge), gated on heal-ladder fire-counts from more cities; the STN↔h minting
 in `ndCollapseCand`'s guard path is a better-scoped alternative target than
 anchorGraphStops was.
+
+---
+
+## Bundle A result (2026-07-05, later the same day): PASSED
+
+Fix 1 solo failed; Bundle A v1 (anchor floor + ndCollapseCand anchor-reuse)
+also failed its falsifier (census 49 -> 55) — the reused anchor lands in
+`myNds` and the next sample mints a twin anyway. The census attribution then
+exposed the REAL factories, which the RCA had missed:
+
+1. **`contractShortEdges` measured POLYLINE length, not node distance** — a
+   wiggly 8px-span connector carrying >= dHat of sampled geometry shielded
+   itself from contraction (same length-vs-extent bug class as the weld
+   self-loop rule).
+2. **`intersectionSmoothing` runs after the last contraction and MOVES
+   nodes** — pairs pulled sub-cell with no contraction left to repair them.
+
+Bundle A v2 = anchor floor (`minSep=dHat` in anchorGraphStops) + contraction
+metric fix (node distance with a balloon-extent shield) + re-contract after
+smoothing + OCTI_CELL grid pin for measurement. SEA-split, cell pinned 21.2:
+
+| metric | old shipping | Bundle A v2 |
+|---|---:|---:|
+| pre-weld edges < cell/2 | 49 | **4** |
+| pre-weld edges < cell | 210 | **80** |
+| weld count | 31 | **3** |
+| hooks spliced | 20 (36 weld-off) | **8** |
+| heal ladder anyPath/__heal | 8 / 1 | **5 / 0** |
+| gray max drawn gap | 7.7px | 4.6px |
+| green line chronic gap | 22–25px | **5.6px** (unpinned) |
+| magenta 17.8px "gap" | 17.8px | gone (pinned); colour-proxy H-vs-I artifact otherwise |
+| octi detour cuts | 6 | 18 (watch item) |
+| tests | 445 | 451, all pass |
+
+No-split control also improved (gray 11.6 -> 6.9, green 11.6 -> 5.8, hooks
+-> 2). The invariant now holds at freeze: the merge's contraction is the
+single owner of node spacing, and no later pass (smoothing, anchoring) may
+violate it. `weldSubCellNodes` drops from load-bearing (31) to residual
+backstop (3-5: both-protected pairs its station rule correctly refuses);
+`suppressHooks` drops 36 -> 8. Neither is deletable yet, but both are now
+minor. Remaining watch items: detour-cut count rose 6 -> 18 (repairs firing
+on the 80 one-to-two-cell edges — investigate before deleting the excisions);
+the residual ~8 hooks; Fix 2 (traversal transform) still pending with a
+measured prize of ~5 paint-heals/build.
+
+Lesson recorded: the two failures + one success were all separated by the
+SAME instrument (the seam census with per-edge attribution). Single fixes
+lose to the homeostat; bundles built around ONE invariant, measured on a
+pinned ruler, win.

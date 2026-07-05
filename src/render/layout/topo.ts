@@ -333,7 +333,22 @@ export class HBuilder {
     while (changed) {
       changed = false;
       for (const e of this.edges.values()) {
-        if (polylineLength(e.points) >= maxLen) continue;
+        // Degeneracy metric is NODE distance, not polyline length: a wiggly
+        // sub-maxLen-span connector can carry >= maxLen of sampled geometry
+        // and shield itself from contraction (the RCA Bundle-A STN<->h twins
+        // — sub-cell node pairs the router cannot route cleanly). Geometry
+        // that genuinely LEAVES the neighbourhood (a balloon spur) is a real
+        // course, not a degenerate connector — the extent test keeps it.
+        const na = this.nodes.get(e.a)!;
+        if (dist(na, this.nodes.get(e.b)!) >= maxLen) continue;
+        if (polylineLength(e.points) >= maxLen) {
+          let extent = 0;
+          for (const p of e.points) {
+            const d = dist(na, p);
+            if (d > extent) extent = d;
+          }
+          if (extent >= maxLen) continue; // real geometry (balloon), keep
+        }
         // Terminal stubs survive: stations don't exist at builder stage, so a
         // contracted dead-end deletes a real terminus (the line then ends one
         // station early and anchorGraphStops has no corridor to split).
@@ -627,7 +642,12 @@ function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos
   return perp > along;
 }
 
-/** LOOM MapConstructor::ndCollapseCand — nearest node within dCut, or create. */
+/** LOOM MapConstructor::ndCollapseCand — nearest node within dCut, or create.
+ *  (Bundle-A note: a "reuse the nearest protected anchor instead of minting"
+ *  fallback here was tried and REVERTED — a reused anchor lands in myNds and
+ *  the very next sample mints a twin anyway. Walk-time twins are fine; the
+ *  spacing invariant is enforced by contraction, which must simply not be
+ *  undone afterwards.) */
 function ndCollapseCand(
   h: HBuilder,
   myNds: Set<string>,
@@ -994,18 +1014,20 @@ function projectOntoPolyline(pts: Pixel[], p: Pixel): Pixel {
 
 /** Split support edges so contracted pass-through stops regain a node.
  *
- *  NOTE (2026-07-05 Fix-1 experiment, REJECTED): an anchor-creation spacing
- *  floor here (refuse nodes within dHat of an existing one) does eliminate the
- *  anchor-created sub-cell class, but ~40 fewer stop nodes raise medLen →
- *  coarser octi grid → net-WORSE layouts (detour excisions 12→17, new meander
- *  artifacts). The sub-cell repairs live in weldSubCellNodes, which knows the
- *  actual cellSize. See docs/2026-07-05-anomaly-defense-rca.md. */
-function anchorGraphStops(
+ *  `minSep` (RCA Bundle A): never create an anchor node within minSep of an
+ *  existing node — contraction just guaranteed dHat spacing, and a closer
+ *  anchor is a sub-cell edge the router cannot route cleanly. Solo (Fix 1)
+ *  this measured net-worse because ~40 fewer nodes coarsened the grid ruler;
+ *  in Bundle A the ndCollapseCand anchor-reuse removes the dominant sub-cell
+ *  source and the ruler effect is measured pinned (OCTI_CELL). See
+ *  docs/2026-07-05-anomaly-defense-rca.md. */
+export function anchorGraphStops(
   g: TransitGraph,
   nodes: Map<string, SupportNode>,
   edges: Map<string, SupportEdge>,
   adj: Map<string, string[]>,
   snapRadius: number,
+  minSep: number,
   nextNodeId: () => string,
   nextEdgeId: () => string,
 ): void {
@@ -1056,7 +1078,14 @@ function anchorGraphStops(
     }
     const e = edges.get(bestEid);
     if (!e) continue;
-    if (dist(bestPoint, e.points[0]) < 1 || dist(bestPoint, e.points[e.points.length - 1]) < 1) continue;
+    // Spacing floor: never create a node within minSep of an existing one
+    // (subsumes the old 1px endpoint guard — endpoints are nodes).
+    let nearestD = Infinity;
+    for (const n of nodes.values()) {
+      const d = dist(n.pos, bestPoint);
+      if (d < nearestD) nearestD = d;
+    }
+    if (nearestD < minSep) continue;
 
     let splitAt = 0;
     for (let i = 1; i < e.points.length; i++) {
@@ -1459,6 +1488,11 @@ export function buildSupportGraph(
   // never sees phantom length (it pays it back as candy-cane grid detours).
   builder.sanitizeEdgeGeometry(params.dHat);
   if (!params.preserveStations) builder.intersectionSmoothing(params.dHat);
+  // Smoothing MOVES nodes (each to the average of its cropped edge endpoints)
+  // and can pull a pair inside the spacing floor with no contraction pass left
+  // to repair it — the last writer of node positions must re-enforce the
+  // invariant, or octi receives sub-cell pairs it cannot route (RCA Bundle A).
+  builder.contractShortEdges(params.dHat);
   const { nodes, edges, adj } = freezeBuilder(builder, g);
 
   let nodeSeq = nodes.size;
@@ -1475,6 +1509,7 @@ export function buildSupportGraph(
       edges,
       adj,
       Math.max(2, params.dHat / 2),
+      params.dHat,
       () => 'ha' + nodeSeq++,
       () => 'he' + edgeSeq++,
     );

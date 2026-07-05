@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, type TopoParams } from './topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, anchorGraphStops, type TopoParams } from './topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from './types';
 
 test('dist computes euclidean distance', () => {
@@ -185,6 +185,88 @@ test('contractShortEdges leaves terminal stubs alone', () => {
   h.contractShortEdges(16);
   assert.equal(h.edgeList().length, 3);
   assert.deepEqual(h.nodePos(tip), [6, 0]);
+});
+
+// --- Bundle A: contraction metric + anchor floor ------------------------------
+
+test('contractShortEdges contracts a wiggly sub-span connector (node distance, not polyline length)', () => {
+  // A and B are 8px apart but joined by 20+px of sampled wiggle — the old
+  // polyline-length metric shielded exactly these (the STN<->h twins).
+  const h = new HBuilder(5);
+  const w = h.addNode([-100, 0]);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([8, 0]);
+  const c = h.addNode([100, 0]);
+  h.markProtected(a);
+  h.addOrUnionEdge(w, a, new Set(['L1']));
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L1']));
+  // give the a-b edge a wiggly 22px polyline that never leaves the neighbourhood
+  const ab = h.edgeList().find((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a))!;
+  ab.points = [[0, 0], [3, 5], [6, -5], [8, 0]];
+  h.contractShortEdges(16);
+  // b contracted into protected a
+  assert.equal(h.edgeList().length, 2, 'wiggly connector contracted');
+  assert.deepEqual(h.nodePos(a), [0, 0], 'protected endpoint kept in place');
+});
+
+test('contractShortEdges keeps a balloon spur (geometry leaves the neighbourhood)', () => {
+  const h = new HBuilder(5);
+  const w = h.addNode([-100, 0]);
+  const a = h.addNode([0, 0]);
+  const b = h.addNode([8, 0]);
+  const c = h.addNode([100, 0]);
+  h.addOrUnionEdge(w, a, new Set(['L1']));
+  h.addOrUnionEdge(a, b, new Set(['L1']));
+  h.addOrUnionEdge(b, c, new Set(['L1']));
+  const ab = h.edgeList().find((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a))!;
+  ab.points = [[0, 0], [4, 40], [30, 40], [8, 0]]; // extent ~40 >= 16
+  h.contractShortEdges(16);
+  assert.equal(h.edgeList().length, 3, 'balloon kept');
+});
+
+function anchorFixture(stopX: number, edgeLen: number) {
+  // support: A(0,0) --- B(edgeLen,0), one corridor carrying l1.
+  // graph: a stop for l1 at (stopX, 0), contracted away by the merge.
+  const nodes = new Map([
+    ['A', { id: 'A', pos: [0, 0] as Pixel }],
+    ['B', { id: 'B', pos: [edgeLen, 0] as Pixel }],
+  ]);
+  const edges = new Map([
+    ['e0', { id: 'e0', from: 'A', to: 'B', points: [[0, 0], [edgeLen, 0]] as Pixel[], lineIds: new Set(['l1']) }],
+  ]);
+  const adj = new Map<string, string[]>([['A', ['e0']], ['B', ['e0']]]);
+  const g = {
+    nodes: new Map([['gS', { id: 'gS', pos: [stopX, 0] as Pixel, lngLat: [0, 0] }]]),
+    edges: [{ id: 'ge0', from: 'gS', to: 'gS', lines: [], lineOrder: [], geo: undefined, stops: new Map([['l1', { atFrom: true, atTo: false }]]) }],
+    adj: new Map(),
+    lineTraversals: new Map(),
+  };
+  let n = 0;
+  let e = 0;
+  return {
+    run: (snapRadius: number, minSep: number) =>
+      anchorGraphStops(g as never, nodes as never, edges as never, adj, snapRadius, minSep, () => 'ha' + n++, () => 'he' + e++),
+    nodes,
+    edges,
+  };
+}
+
+test('anchorGraphStops refuses to create a node within minSep of an existing one', () => {
+  const f = anchorFixture(14, 30); // 14px from A — below the dHat spacing floor
+  f.run(8, 16);
+  assert.equal(f.nodes.size, 2, 'no sub-spacing node created');
+  assert.equal(f.edges.size, 1, 'corridor not split');
+});
+
+test('anchorGraphStops still anchors a stop clear of every node', () => {
+  const f = anchorFixture(25, 60); // 25px from A, 35px from B — both >= 16
+  f.run(8, 16);
+  assert.equal(f.nodes.size, 3, 'anchor node created');
+  assert.equal(f.edges.size, 2, 'corridor split at the stop');
+  for (const e of f.edges.values()) {
+    assert.ok(polylineLength(e.points) >= 16, `sub-edge ${e.id} respects the spacing floor`);
+  }
 });
 
 // --- weldSubCellNodes -------------------------------------------------------
