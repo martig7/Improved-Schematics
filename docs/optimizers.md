@@ -37,7 +37,7 @@ to nudge those greedy outer layers out of their local optima.
    8 grid neighbours, or re-route one edge}; at convergence no single such move helps by
    >0.05. Monotone greedy immediate-accept — can't make the coordinated multi-node move
    needed to escape, and a station migrates one cell per accepted move.
-3. **Line-order hill-climb** — [untangle.ts](../src/render/layout/untangle.ts)
+3. **Line ordering (bundle-blocks)** — [bundleOrder.ts](../src/render/layout/bundleOrder.ts) + [blockAlgebra.ts](../src/render/layout/blockAlgebra.ts): structural rigid-block ordering (no search; see spec 2026-07-04-bundle-blocks-rebuild). The former LOOM hill-climb lives in [old/](../old/README.md)
    `HillClimbOptimizer`. Minimizes `compScore` (crossings + separation + colorFrag, fixed
    penalty weights). *Optimal =* coordinate-descent local min: no single pairwise
    swap/insertion on any one edge improves the per-edge score. Multi-basin restarts raise the
@@ -87,7 +87,7 @@ continuous problem)*
   argmin over discretized (slide, axis) states → chain DP exact over the product of bundle
   states for a fixed sequence+mask → enumerate all `g!` orderings × `2^g` orientations, keep
   the DP-min. Exact for g≤5; **degrades to one greedy sequence (best-effort) for g>5**.
-- **Exhaustive line-order optimizer** — [untangle.ts](../src/render/layout/untangle.ts)
+- **Exhaustive line-order optimizer** — deprecated to [old/src/render/layout/untangle.ts](../old/src/render/layout/untangle.ts) (replaced by bundle-blocks, 2026-07-05)
   `ExhaustiveOptimizer`: exact global min of `compScore` over all per-edge permutations of a
   (small) component.
 - **`chooseMutualSlide`** — [capsuleSlide.ts](../src/render/layout/capsuleSlide.ts): exhaustive

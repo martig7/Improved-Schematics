@@ -30,7 +30,6 @@ import {
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
-import { untangleLineOrder } from './layout/untangle';
 import { orderByBlocks } from './layout/bundleOrder';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
@@ -1129,29 +1128,21 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   for (const g of groups) {
     servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
   }
-  // MEGA-BOX PHASE-OUT EXPERIMENT (v0.2.27): freeCross under boxes is OFF —
-  // corner-prioritized crossing weights (cornerTurnFactor) now route
-  // unavoidable swaps into bends instead of hiding them under boxes. To
-  // revert: rebuild the mega-node set here and pass { freeCrossNodes } to
-  // untangleLineOrder (see v0.2.22..26 history).
-  // Line ordering: OCTI_ORDER=blocks (default, spec 2026-07-04 bundle-blocks
-  // rebuild) = structural rigid-bundle ordering (bundleOrder.ts);
-  // OCTI_ORDER=loom = the LOOM untangle scorer (A/B baseline; deprecation to
-  // old/ pending user sign-off per the repo deprecation policy).
-  // OCTI_NO_UNTANGLE=1 still skips ordering entirely (barycenter seed only,
-  // legacy diagnostic).
+  // Line ordering: bundle-blocks structural ordering (bundleOrder.ts, spec
+  // 2026-07-04 bundle-blocks rebuild) — corridors carry rigid recursive
+  // blocks; order changes exist only at bundle joins/splits and cycle
+  // residuals, all at junctions by construction. The LOOM untangle scorer
+  // it replaced (and its OCTI_ORDER=loom A/B knob) lives in
+  // old/src/render/layout/untangle.ts — sign-off 2026-07-05, A/B results in
+  // the spec appendix. OCTI_NO_UNTANGLE=1 skips ordering entirely
+  // (barycenter seed only, legacy diagnostic).
   if (
     !(
       typeof process !== 'undefined' &&
       (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
     )
   ) {
-    const orderMode =
-      typeof process !== 'undefined'
-        ? (process as { env?: Record<string, string> }).env?.OCTI_ORDER
-        : undefined;
-    if (orderMode === 'loom') untangleLineOrder(layout);
-    else orderByBlocks(layout);
+    orderByBlocks(layout);
   }
   lap('untangle');
 
