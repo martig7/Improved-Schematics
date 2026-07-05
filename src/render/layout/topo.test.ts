@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, anchorGraphStops, type TopoParams } from './topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, type TopoParams } from './topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from './types';
 
 test('dist computes euclidean distance', () => {
@@ -255,80 +255,63 @@ test('contractShortEdges keeps a balloon spur (geometry leaves the neighbourhood
   assert.equal(h.edgeList().length, 3, 'balloon kept');
 });
 
-function anchorFixture(stopX: number, edgeLen: number) {
-  // support: A(0,0) --- B(edgeLen,0), one corridor carrying l1.
-  // graph: a stop for l1 at (stopX, 0), contracted away by the merge.
-  const nodes = new Map([
-    ['A', { id: 'A', pos: [0, 0] as Pixel }],
-    ['B', { id: 'B', pos: [edgeLen, 0] as Pixel }],
-  ]);
-  const edges = new Map([
-    ['e0', { id: 'e0', from: 'A', to: 'B', points: [[0, 0], [edgeLen, 0]] as Pixel[], lineIds: new Set(['l1']) }],
-  ]);
-  const adj = new Map<string, string[]>([['A', ['e0']], ['B', ['e0']]]);
-  const g = {
-    nodes: new Map([['gS', { id: 'gS', pos: [stopX, 0] as Pixel, lngLat: [0, 0] }]]),
-    edges: [{ id: 'ge0', from: 'gS', to: 'gS', lines: [], lineOrder: [], geo: undefined, stops: new Map([['l1', { atFrom: true, atTo: false }]]) }],
-    adj: new Map(),
-    lineTraversals: new Map(),
-  };
-  let n = 0;
-  let e = 0;
-  return {
-    run: (snapRadius: number, minSep: number) =>
-      anchorGraphStops(g as never, nodes as never, edges as never, adj, snapRadius, minSep, () => 'ha' + n++, () => 'he' + e++),
-    nodes,
-    edges,
-  };
-}
+// --- stop protection through the merge (replaced the deleted anchor pass) ---
 
-test('anchorGraphStops refuses to create a node within minSep of an existing one', () => {
-  const f = anchorFixture(14, 30); // 14px from A — below the dHat spacing floor
-  f.run(8, 16);
-  assert.equal(f.nodes.size, 2, 'no sub-spacing node created');
-  assert.equal(f.edges.size, 1, 'corridor not split');
-});
-
-test('anchorGraphStops ignores near nodes on foreign corridors (191 Pl twin platforms)', () => {
-  // Twin-platform shape: the stop position coincides with ANOTHER line's
-  // corridor node while this line's own corridor runs parallel 42px away.
-  // The foreign node must not suppress the anchor — traversal reconstruction
-  // snaps line-aware, and without a node that CARRIES the line it falls back
-  // to the foreign twin and heals a horseshoe detour around the network.
-  const nodes = new Map([
-    ['F', { id: 'F', pos: [100, 0] as Pixel }],
-    ['F2', { id: 'F2', pos: [160, 0] as Pixel }],
-    ['A', { id: 'A', pos: [0, 42] as Pixel }],
-    ['B', { id: 'B', pos: [200, 42] as Pixel }],
-  ]);
-  const edges = new Map([
-    ['eF', { id: 'eF', from: 'F', to: 'F2', points: [[100, 0], [160, 0]] as Pixel[], lineIds: new Set(['lK']) }],
-    ['e2', { id: 'e2', from: 'A', to: 'B', points: [[0, 42], [200, 42]] as Pixel[], lineIds: new Set(['l2']) }],
-  ]);
-  const adj = new Map<string, string[]>([['F', ['eF']], ['F2', ['eF']], ['A', ['e2']], ['B', ['e2']]]);
-  const g = {
-    nodes: new Map([['gS', { id: 'gS', pos: [99, 0] as Pixel, lngLat: [0, 0] }]]),
-    edges: [{ id: 'ge0', from: 'gS', to: 'gS', lines: [], lineOrder: [], geo: undefined, stops: new Map([['l2', { atFrom: true, atTo: false }]]) }],
-    adj: new Map(),
-    lineTraversals: new Map(),
-  };
-  let n = 0;
-  let e = 0;
-  anchorGraphStops(g as never, nodes as never, edges as never, adj, 8, 16, () => 'ha' + n++, () => 'he' + e++);
-  assert.equal(nodes.size, 5, 'anchor created on the line own corridor despite the near foreign node');
-  const anchor = nodes.get('ha0');
-  assert.ok(anchor, 'anchor node minted');
-  assert.deepEqual(anchor!.pos, [99, 42], 'anchored at the projection onto the l2 corridor');
-});
-
-test('anchorGraphStops still anchors a stop clear of every node', () => {
-  const f = anchorFixture(25, 60); // 25px from A, 35px from B — both >= 16
-  f.run(8, 16);
-  assert.equal(f.nodes.size, 3, 'anchor node created');
-  assert.equal(f.edges.size, 2, 'corridor split at the stop');
-  for (const e of f.edges.values()) {
-    assert.ok(polylineLength(e.points) >= 16, `sub-edge ${e.id} respects the spacing floor`);
+test('a mid-corridor stop survives the merge as a node at its own position', () => {
+  // Degree-2 same-lines stop: contraction used to remove it and the deleted
+  // anchorGraphStops pass re-split the corridor afterwards (losing WHICH
+  // corridor the stop was on — the 191 Pl twin-platform strandings). Stop
+  // protection in runMergeRounds must keep a node at the stop position.
+  const g = graphFrom(
+    { a: [0, 0], s: [100, 0], b: [200, 0] },
+    [
+      { id: 'e0', from: 'a', to: 's', lines: ['L1'] },
+      { id: 'e1', from: 's', to: 'b', lines: ['L1'] },
+    ],
+  );
+  for (const e of g.edges) e.stops.set('L1', { atFrom: true, atTo: true });
+  const groups: StationGroup[] = [
+    { id: 'a', name: 'A', center: [0, 0], stationIds: [] },
+    { id: 's', name: 'S', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'b', name: 'B', center: [200 / 1e5, 0], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  let found = false;
+  for (const n of h.nodes.values()) {
+    if (dist(n.pos, [100, 0]) < 5) { found = true; break; }
   }
+  assert.ok(found, 'a support node survives at the mid-corridor stop position');
+  const sp = h.stations.get('s');
+  assert.ok(sp, 'the stop group is placed');
+  assert.ok(dist(h.nodes.get(sp!.nodeId)!.pos, [100, 0]) < 5, 'and seats at the stop position');
+});
+
+test('stops inside another stop\'s dHat cell share one node (spacing floor at the seed)', () => {
+  // Two parallel lines with twin platforms 8px apart (< dHat=20): only one
+  // protected seed is placed, both corridors zip onto it, and no sub-cell
+  // station pair reaches the router (RCA Bundle A's floor, moved to the
+  // source when the anchor pass was deleted).
+  const g = graphFrom(
+    { a0: [0, 0], s1: [100, 0], a1: [200, 0], b0: [0, 8], s2: [100, 8], b1: [200, 8] },
+    [
+      { id: 'e0', from: 'a0', to: 's1', lines: ['L1'] },
+      { id: 'e1', from: 's1', to: 'a1', lines: ['L1'] },
+      { id: 'e2', from: 'b0', to: 's2', lines: ['L2'] },
+      { id: 'e3', from: 's2', to: 'b1', lines: ['L2'] },
+    ],
+  );
+  g.edges[0].stops.set('L1', { atFrom: false, atTo: true });
+  g.edges[2].stops.set('L2', { atFrom: false, atTo: true });
+  const groups: StationGroup[] = [
+    { id: 's1', name: 'S1', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 's2', name: 'S2', center: [100 / 1e5, 8 / 1e5], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  const near: string[] = [];
+  for (const [id, n] of h.nodes) {
+    if (dist(n.pos, [100, 4]) < PARAMS.dHat) near.push(id);
+  }
+  assert.equal(near.length, 1, `twin platforms share one node (got ${near.length}: ${near.join(',')})`);
 });
 
 // --- weldSubCellNodes -------------------------------------------------------

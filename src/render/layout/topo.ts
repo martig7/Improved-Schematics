@@ -788,9 +788,39 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
   // averaging crept two genuinely ~24px-apart legs within dHat of each other
   // and round 2 zipped them into a phantom shared trunk, demoting a real
   // degree-4 junction and manufacturing a fake one a corridor away.
+  // STOP nodes are protected too (RCA Fix 1 full form, 2026-07-05): the merge
+  // used to contract every degree-2 same-lines stop away and anchorGraphStops
+  // re-split corridors afterwards — a re-derivation that loses which corridor
+  // the stop was ON (the twin-platform strandings). Protecting stops keeps
+  // them at their exact positions with correct per-side paint, so downstream
+  // seating/snapping is identity, not proximity search.
+  const stopNodeIds = new Set<string>();
+  for (const e of g.edges) {
+    for (const flags of e.stops.values()) {
+      if (flags.atFrom) stopNodeIds.add(e.from);
+      if (flags.atTo) stopNodeIds.add(e.to);
+    }
+  }
+  // Spacing floor at the SOURCE (Bundle A's invariant, relocated from the
+  // anchor pass): a stop within dHat of an already-protected position gets NO
+  // seed of its own — its walk samples snap onto the neighbour and the stops
+  // share a node, as the old anchor floor + re-home produced. Without this,
+  // dense maps grow sub-cell station twins the router must ping-pong around
+  // (NYC/SF zigzag census +14/+24). Anchors seed first (junctions stay put);
+  // stop seeding order is sorted by node id — deterministic.
   const protectedPositions = [...g.nodes.values()]
     .filter((n) => isMergeAnchor(g, n.id))
     .map((n) => n.pos.slice() as Pixel);
+  const stopOnly = [...g.nodes.values()]
+    .filter((n) => !isMergeAnchor(g, n.id) && stopNodeIds.has(n.id))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const n of stopOnly) {
+    let clear = true;
+    for (const p of protectedPositions) {
+      if (dist(p, n.pos) < params.dHat) { clear = false; break; }
+    }
+    if (clear) protectedPositions.push(n.pos.slice() as Pixel);
+  }
   for (let round = 1; round <= params.maxRounds; round++) {
     const input = h === null ? inputFromGraph(g, params.projectGeo) : inputFromBuilder(h, params.dHat);
     const next = collapseSharedSegments(input, params, protectedPositions);
@@ -984,224 +1014,6 @@ function isMergeAnchor(g: TransitGraph, nodeId: string): boolean {
   return lineKey(es[0]) !== lineKey(es[1]);
 }
 
-function projectOntoPolyline(pts: Pixel[], p: Pixel): Pixel {
-  let bestD = Infinity;
-  let bestPoint: Pixel = pts[0];
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1];
-    const b = pts[i];
-    const vx = b[0] - a[0];
-    const vy = b[1] - a[1];
-    const c2 = vx * vx + vy * vy;
-    const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / c2));
-    const q: Pixel = [a[0] + t * vx, a[1] + t * vy];
-    const d = dist(p, q);
-    if (d < bestD) {
-      bestD = d;
-      bestPoint = q;
-    }
-  }
-  return bestPoint;
-}
-
-/** Split support edges so contracted pass-through stops regain a node.
- *
- *  `minSep` (RCA Bundle A): never create an anchor node within minSep of an
- *  existing node — contraction just guaranteed dHat spacing, and a closer
- *  anchor is a sub-cell edge the router cannot route cleanly. Solo (Fix 1)
- *  this measured net-worse because ~40 fewer nodes coarsened the grid ruler;
- *  in Bundle A the ndCollapseCand anchor-reuse removes the dominant sub-cell
- *  source and the ruler effect is measured pinned (OCTI_CELL). See
- *  docs/2026-07-05-anomaly-defense-rca.md. */
-export function anchorGraphStops(
-  g: TransitGraph,
-  nodes: Map<string, SupportNode>,
-  edges: Map<string, SupportEdge>,
-  adj: Map<string, string[]>,
-  snapRadius: number,
-  minSep: number,
-  nextNodeId: () => string,
-  nextEdgeId: () => string,
-): void {
-  // A nearby node only satisfies a stop if it CARRIES the stop's line: twin
-  // platforms put another line's corridor node within snapRadius of this
-  // line's stop (191 Pl: K's anchor 1.4px from the 2's platform), and skipping
-  // the anchor then leaves the line with no on-corridor node — traversal
-  // reconstruction falls back to the foreign twin and heals a horseshoe
-  // detour around the network to touch it.
-  const carriesLine = (nid: string, lineId: string): boolean =>
-    (adj.get(nid) ?? []).some((eid) => edges.get(eid)?.lineIds.has(lineId));
-  const hasNodeNear = (p: Pixel, lineId: string): boolean => {
-    for (const n of nodes.values()) {
-      if (dist(n.pos, p) <= snapRadius && carriesLine(n.id, lineId)) return true;
-    }
-    return false;
-  };
-
-  const stopsToAnchor: Array<{ pos: Pixel; lineId: string }> = [];
-  for (const ge of g.edges) {
-    for (const [lineId, flags] of ge.stops) {
-      if (flags.atFrom) {
-        const gp = g.nodes.get(ge.from);
-        if (gp) stopsToAnchor.push({ pos: gp.pos, lineId });
-      }
-      if (flags.atTo) {
-        const gp = g.nodes.get(ge.to);
-        if (gp) stopsToAnchor.push({ pos: gp.pos, lineId });
-      }
-    }
-  }
-
-  const anchorDbg =
-    typeof process !== 'undefined'
-      ? (process as { env?: Record<string, string> }).env?.OCTI_ANCHOR_DBG
-      : undefined;
-  const dbgBox = anchorDbg ? anchorDbg.split(',').map(Number) : null;
-  const inDbgBox = (p: Pixel): boolean =>
-    !!dbgBox && p[0] >= dbgBox[0] && p[0] <= dbgBox[2] && p[1] >= dbgBox[1] && p[1] <= dbgBox[3];
-
-  const stats = { seated: 0, minted: 0, welded: 0, stranded: 0, noCorridor: 0, far: 0 };
-  for (const { pos, lineId } of stopsToAnchor) {
-    if (hasNodeNear(pos, lineId)) {
-      stats.seated++;
-      if (inDbgBox(pos)) {
-        let who = '';
-        for (const n of nodes.values()) {
-          if (dist(n.pos, pos) <= snapRadius && carriesLine(n.id, lineId)) { who = `${n.id}@${dist(n.pos, pos).toFixed(1)}px`; break; }
-        }
-        console.error(`[anchordbg] stop ${lineId.slice(0, 8)} (${pos[0].toFixed(0)},${pos[1].toFixed(0)}) SKIP near-carrying ${who}`);
-      }
-      continue;
-    }
-    if (inDbgBox(pos)) console.error(`[anchordbg] stop ${lineId.slice(0, 8)} (${pos[0].toFixed(0)},${pos[1].toFixed(0)}) anchoring...`);
-
-    let bestEid: string | null = null;
-    let bestD = Infinity;
-    let bestPoint: Pixel = pos;
-    for (const [eid, e] of edges) {
-      if (!e.lineIds.has(lineId)) continue;
-      const point = projectOntoPolyline(e.points, pos);
-      const d = dist(point, pos);
-      if (d < bestD) {
-        bestD = d;
-        bestEid = eid;
-        bestPoint = point;
-      }
-    }
-    // Force-place: a far anchor is still better than a silently missing
-    // station (the user-facing symptom is a line ending one stop early).
-    if (!bestEid) {
-      stats.noCorridor++;
-      if (inDbgBox(pos)) console.error(`[anchordbg]   -> NO corridor carries ${lineId.slice(0, 8)}`);
-      continue; // no corridor carries this line at all
-    }
-    if (bestD > snapRadius * 4) stats.far++;
-    if (inDbgBox(pos)) console.error(`[anchordbg]   -> best ${bestEid} at ${bestD.toFixed(1)}px point (${bestPoint[0].toFixed(0)},${bestPoint[1].toFixed(0)})`);
-    if (
-      bestD > snapRadius * 4 &&
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
-    ) {
-      console.error(`[topo] anchor FAR: stop for ${lineId.slice(0, 8)} at ${bestD.toFixed(0)}px`);
-    }
-    const e = edges.get(bestEid);
-    if (!e) continue;
-    // Spacing floor: never create a node within minSep of an existing one
-    // (subsumes the old 1px endpoint guard — endpoints are nodes).
-    let nearestD = Infinity;
-    for (const n of nodes.values()) {
-      const d = dist(n.pos, bestPoint);
-      if (d < nearestD) nearestD = d;
-    }
-    let weldInto: string | null = null;
-    if (nearestD < minSep) {
-      // Spacing floor hit. If the blocking node already carries the line the
-      // stop can simply seat there — no split needed. If it's a FOREIGN twin
-      // (191 Pl: K's anchor 1.1px from where the 2's corridor passes), minting
-      // a node would recreate the sub-cell pair the floor exists to prevent —
-      // but skipping leaves the line with no on-corridor node and traversal
-      // reconstruction heals a horseshoe to reach the twin. Weld the corridor
-      // THROUGH the existing node instead: it becomes a real shared junction
-      // carrying both lines, with no new node and no sub-cell pair.
-      let nearestN: SupportNode | null = null;
-      for (const n of nodes.values()) {
-        if (dist(n.pos, bestPoint) === nearestD) { nearestN = n; break; }
-      }
-      if (!nearestN || carriesLine(nearestN.id, lineId) || nearestN.id === e.from || nearestN.id === e.to) {
-        stats.seated++;
-        if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (nearest node ${nearestD.toFixed(1)}px < ${minSep}, carries line or endpoint)`);
-        continue;
-      }
-      // Only weld when the stop would otherwise be STRANDED: if the line
-      // already has a carrying node within seating range, the stop homes
-      // there and a weld would just add a redundant twin node to ping-pong
-      // between (E's terminus grew a 17px stutter that way).
-      let seatD = Infinity;
-      for (const n of nodes.values()) {
-        if (dist(n.pos, pos) < seatD && carriesLine(n.id, lineId)) seatD = dist(n.pos, pos);
-      }
-      if (seatD <= minSep * 2) {
-        stats.seated++;
-        if (inDbgBox(pos)) console.error(`[anchordbg]   -> minSep SKIP (line seats at carrying node ${seatD.toFixed(1)}px away)`);
-        continue;
-      }
-      stats.welded++;
-      weldInto = nearestN.id;
-      if (inDbgBox(pos)) console.error(`[anchordbg]   -> WELD-THROUGH ${weldInto} (foreign twin at ${nearestD.toFixed(1)}px)`);
-    }
-
-    let splitAt = 0;
-    for (let i = 1; i < e.points.length; i++) {
-      const a = e.points[i - 1];
-      const b = e.points[i];
-      const vx = b[0] - a[0];
-      const vy = b[1] - a[1];
-      const c2 = vx * vx + vy * vy;
-      const t = c2 === 0 ? 0 : Math.max(0, Math.min(1, ((bestPoint[0] - a[0]) * vx + (bestPoint[1] - a[1]) * vy) / c2));
-      const q: Pixel = [a[0] + t * vx, a[1] + t * vy];
-      if (dist(q, bestPoint) < 1) {
-        splitAt = i - 1;
-        bestPoint = q;
-        break;
-      }
-    }
-    // Weld case: the corridor halves meet at the EXISTING node's position (a
-    // sub-minSep jog off the course), not at the projection point.
-    if (weldInto) bestPoint = nodes.get(weldInto)!.pos.slice() as Pixel;
-
-    const nid = weldInto ?? nextNodeId();
-    if (!weldInto) {
-      stats.minted++;
-      nodes.set(nid, { id: nid, pos: bestPoint.slice() as Pixel });
-      adj.set(nid, []);
-    }
-
-    const leftPts = [...e.points.slice(0, splitAt + 1), bestPoint];
-    const rightPts = [bestPoint, ...e.points.slice(splitAt + 1)];
-
-    adj.get(e.from)!.splice(adj.get(e.from)!.indexOf(bestEid), 1);
-    adj.get(e.to)!.splice(adj.get(e.to)!.indexOf(bestEid), 1);
-    edges.delete(bestEid);
-
-    const leftId = nextEdgeId();
-    const rightId = nextEdgeId();
-    edges.set(leftId, { id: leftId, from: e.from, to: nid, points: leftPts, lineIds: new Set(e.lineIds) });
-    edges.set(rightId, { id: rightId, from: nid, to: e.to, points: rightPts, lineIds: new Set(e.lineIds) });
-    adj.get(e.from)!.push(leftId);
-    adj.get(nid)!.push(leftId);
-    adj.get(nid)!.push(rightId);
-    adj.get(e.to)!.push(rightId);
-  }
-  if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
-  ) {
-    console.error(
-      `[audit:fire] anchorGraphStops: stops=${stopsToAnchor.length} seated=${stats.seated} ` +
-      `minted=${stats.minted} welded=${stats.welded} far=${stats.far} noCorridor=${stats.noCorridor}`,
-    );
-  }
-}
 
 /** Nearest point on a polyline with arc/segment info (the older
  *  projectOntoPolyline above returns only the point). */
@@ -1385,9 +1197,8 @@ function absorbJunctionStubs(
 
 /**
  * Weld support nodes that would fight for the SAME octi grid cell into one
- * node (spec: SEA-split simplification, 2026-07-05). The anchor pass re-splits
- * corridors at stop positions AFTER short-edge contraction, so a synthetic
- * junction can sit inside a station's cell (Stevens Way: an 11px edge whose
+ * node (spec: SEA-split simplification, 2026-07-05). Merge guards can still
+ * mint a synthetic twin inside a protected stop's cell (Stevens Way: an 11px edge whose
  * endpoints need distinct cells — the router paid a 170px detour, drawn as a
  * closed loop). Collapsing sub-cell clusters removes the degenerate inputs
  * instead of teaching the router/merge/draw new edge cases.
@@ -1415,10 +1226,32 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
   }
 
   const stationNodes = new Set<string>();
-  for (const sp of h.stations.values()) {
+  const primaryNodes = new Set<string>();
+  const nodeGroups = new Map<string, Set<string>>();
+  const addNg = (nid: string, gid: string): void => {
+    let s = nodeGroups.get(nid);
+    if (!s) nodeGroups.set(nid, (s = new Set()));
+    s.add(gid);
+  };
+  for (const [gid, sp] of h.stations) {
     stationNodes.add(sp.nodeId);
-    for (const nid of sp.stopNodes?.values() ?? []) stationNodes.add(nid);
+    primaryNodes.add(sp.nodeId);
+    addNg(sp.nodeId, gid);
+    for (const nid of sp.stopNodes?.values() ?? []) {
+      stationNodes.add(nid);
+      addNg(nid, gid);
+    }
   }
+  // Same-GROUP platform twins may fuse: the group draws ONE capsule either
+  // way, so welding them changes nothing the map says — it removes the
+  // sub-cell ping-pong between sibling platforms. DISTINCT groups never fuse.
+  const sameGroup = (a: string, b: string): boolean => {
+    const sa = nodeGroups.get(a);
+    const sb = nodeGroups.get(b);
+    if (!sa || !sb) return false;
+    for (const g of sa) if (sb.has(g)) return true;
+    return false;
+  };
 
   const parent = new Map<string, string>(ids.map((id) => [id, id]));
   const find = (a: string): string => {
@@ -1437,9 +1270,10 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
       for (let oy = -1; oy <= 1; oy++) {
         for (const other of bucket.get(cx + ox + ',' + (cy + oy)) ?? []) {
           if (other <= id) continue;
-          // Two distinct STATION nodes never weld: that would change what the
-          // map says (two stops become one). Stations only absorb synthetics.
-          if (stationNodes.has(id) && stationNodes.has(other)) continue;
+          // Two distinct-GROUP station nodes never weld: that would change
+          // what the map says (two stops become one). Same-group twins and
+          // synthetics are fair game.
+          if (stationNodes.has(id) && stationNodes.has(other) && !sameGroup(id, other)) continue;
           if (dist(p, h.nodes.get(other)!.pos) < minDist) union(id, other);
         }
       }
@@ -1459,15 +1293,47 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     members.sort();
     const stationsIn = members.filter((m) => stationNodes.has(m));
     if (stationsIn.length > 1) {
-      // A synthetic can chain two stations into one component even though
-      // station pairs never union directly. Keep every station; weld each
-      // synthetic into its NEAREST station (deterministic tie-break by id).
+      // A synthetic can chain stations of DIFFERENT groups into one component.
+      // Cluster the stations by shared group: same-group twins weld to one
+      // survivor per cluster (a group's primary marker node wins, then
+      // degree, then id); distinct-group clusters stay separate; synthetics
+      // weld into their NEAREST surviving station (deterministic ties by id).
+      const sPar = new Map(stationsIn.map((s) => [s, s]));
+      const sFind = (a: string): string => { while (sPar.get(a) !== a) a = sPar.get(a)!; return a; };
+      for (let i = 0; i < stationsIn.length; i++) {
+        for (let j = i + 1; j < stationsIn.length; j++) {
+          if (sameGroup(stationsIn[i], stationsIn[j])) sPar.set(sFind(stationsIn[i]), sFind(stationsIn[j]));
+        }
+      }
+      const clusters = new Map<string, string[]>();
+      for (const s of stationsIn) {
+        const r = sFind(s);
+        (clusters.get(r) ?? clusters.set(r, []).get(r)!).push(s);
+      }
+      const survivors: string[] = [];
+      for (const cl of clusters.values()) {
+        cl.sort();
+        let best = cl[0];
+        for (const m of cl) {
+          const bPrim = primaryNodes.has(best) ? 1 : 0;
+          const mPrim = primaryNodes.has(m) ? 1 : 0;
+          const bDeg = (h.adj.get(best) ?? []).length;
+          const mDeg = (h.adj.get(m) ?? []).length;
+          if (mPrim > bPrim || (mPrim === bPrim && (mDeg > bDeg || (mDeg === bDeg && m < best)))) best = m;
+        }
+        survivors.push(best);
+        for (const m of cl) {
+          if (m === best) continue;
+          survivorOf.set(m, best);
+          welds++;
+        }
+      }
       for (const m of members) {
         if (stationNodes.has(m)) continue;
         const mp = h.nodes.get(m)!.pos;
-        let best = stationsIn[0];
+        let best = survivors[0];
         let bd = Infinity;
-        for (const s of stationsIn) {
+        for (const s of survivors) {
           const d = dist(mp, h.nodes.get(s)!.pos);
           if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && s < best)) { bd = d; best = s; }
         }
@@ -1591,24 +1457,13 @@ export function buildSupportGraph(
   builder.contractShortEdges(params.dHat);
   const { nodes, edges, adj } = freezeBuilder(builder, g);
 
-  let nodeSeq = nodes.size;
   let edgeSeq = edges.size;
   {
-    // ALWAYS re-anchor stops: the merge contracts away mid-corridor nodes, so
-    // without splitting the corridors back open at stop positions, every
-    // intermediate station snaps to the nearest surviving node (usually an
-    // interchange at the corridor END) — stations visually vanish and long
-    // corridors render as misleading express-like straights.
-    anchorGraphStops(
-      g,
-      nodes,
-      edges,
-      adj,
-      Math.max(2, params.dHat / 2),
-      params.dHat,
-      () => 'ha' + nodeSeq++,
-      () => 'he' + edgeSeq++,
-    );
+    // Stops survive the merge as protected nodes (runMergeRounds), so no
+    // re-anchoring pass runs here — anchorGraphStops measured minted=0 across
+    // a 6-config corpus after protection landed and was deleted (old/).
+    // adj normalization: deterministic edge-id insertion order for every
+    // node — downstream tie-breaks iterate adj arrays.
     for (const ids of adj.values()) ids.length = 0;
     for (const id of nodes.keys()) if (!adj.has(id)) adj.set(id, []);
     for (const e of edges.values()) {
@@ -1617,8 +1472,8 @@ export function buildSupportGraph(
       adj.get(e.from)!.push(e.id);
       adj.get(e.to)!.push(e.id);
     }
-    // Terminus retrace stubs duplicate corridor geometry the anchors just
-    // split — weld them in before traversal reconstruction sees the fold.
+    // Terminus retrace stubs duplicate corridor geometry the protected stops
+    // keep split — weld them in before traversal reconstruction sees the fold.
     weldRedundantStubs(nodes, edges, adj, params.dHat, () => 'he' + edgeSeq++);
     // Sub-dHat stubs at junctions fold into the junction node entirely.
     absorbJunctionStubs(nodes, edges, adj, params.dHat);
