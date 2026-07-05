@@ -514,14 +514,18 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const sTracks = input.tracks ? byId(input.tracks) : input.tracks;
   const sGroups = input.stationGroups ? byId(input.stationGroups) : input.stationGroups;
   const groups = getOrBuildStationGroups(sStations, sGroups);
-  // Per-station nodes: platforms of a multi-station complex enter the pipeline
-  // at their REAL coordinates instead of being pre-collapsed onto one group
-  // point — parallel trunks through Times Sq stay distinct corridors and the
-  // capsule joins their stop nodes back into one marker via stopNodes.
-  // (dev A/B switch: OCTI_NO_GROUP_SPLIT=1 restores group-point nodes)
-  const perStationNodes =
-    typeof process === 'undefined' ||
-    (process as { env?: Record<string, string> }).env?.OCTI_NO_GROUP_SPLIT !== '1';
+  // Per-station nodes (BETA — Settings → "Split station complexes", default
+  // OFF): platforms of a multi-station complex enter the pipeline at their
+  // REAL coordinates instead of being pre-collapsed onto one group point —
+  // parallel trunks through Times Sq stay distinct corridors and the capsule
+  // joins their stop nodes back into one marker via stopNodes. Off = classic
+  // group-center nodes.
+  // (dev A/B override: OCTI_GROUP_SPLIT=1 forces on, =0 forces off — pre-toggle
+  //  dumps carry no stationSplit option but were captured with the split on, so
+  //  reproducing them offline needs =1)
+  const envSplit =
+    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_GROUP_SPLIT : undefined;
+  const perStationNodes = envSplit === '1' ? true : envSplit === '0' ? false : opts.stationSplit === true;
   const graph = buildTransitGraph(sStations, sRoutes, groups, sTracks, { perStationNodes });
   if (graph.edges.length === 0) {
     return renderGeographic({ ...input, smooth: false });

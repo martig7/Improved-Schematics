@@ -108,6 +108,14 @@ export interface SchematicOptions {
    *  (broader warping); higher = only the densest cores → fewer/smaller boxes.
    *  Default 0.4. */
   boxFrac?: number;
+  /** Smoothed mode only (BETA): build one graph node per member STATION of a
+   *  multi-station complex (platforms at their real coordinates) instead of one
+   *  node per station group — parallel trunks through a complex (Times Sq) stay
+   *  distinct corridors, and the capsule placer joins the platforms back into
+   *  one marker via stopNodes. Off (default) keeps the classic group-center
+   *  nodes. Bakes into the layout → in the cache fingerprint; toggling
+   *  regenerates. Default false. */
+  stationSplit?: boolean;
   /** Landmass style for the geography backdrop (smoothed mode). DRAW-TIME only —
    *  like megaFallback it never changes the layout, is excluded from the cache
    *  fingerprint, and toggling it just repaints. 'faithful' (default) draws the

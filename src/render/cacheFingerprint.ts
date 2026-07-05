@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 23; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 24; // bump to bust all fingerprints when the renderer's inputs change
 // v2: same-bullet+colour routes (e.g. loop directions) now collapse to one line in
 // buildTransitGraph — a layout change with unchanged raw inputs, so bust caches.
 // v3: partner-block orientation propagation in untangle.ts changes line order on
@@ -102,6 +102,13 @@ const SCHEMA = 23; // bump to bust all fingerprints when the renderer's inputs c
 // separation is handled only at data pickup (per-station nodes) plus the
 // capsule placer's stopNodes join. Support-graph merge reverts to classic
 // LOOM collapse; bust main + detail-inset caches.
+// v19–v23: renderer-side layout changes with unchanged raw inputs (escalation
+// ladder rewrite, far-attach capsules, taxicab split connectors, terminus-trim
+// fix, bundle-blocks ordering) — see the bump commits for details.
+// v24: per-station nodes (v17) demoted to a BETA OPTION, default OFF — the
+// `stationSplit` render option (Settings → "Split station complexes") joins the
+// fingerprint and default layouts revert to classic group-center nodes; bust
+// main + detail-inset caches.
 
 /** djb2 → 8 hex chars. Cheap and cross-engine stable. */
 function hash(s: string): string {
@@ -126,6 +133,7 @@ export interface FingerprintInput {
     boxExpand?: number;
     boxGrowth?: number;
     boxFrac?: number;
+    stationSplit?: boolean;
     dark?: boolean;
     theme?: { lineWidth?: number };
   };
@@ -201,6 +209,7 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.boxExpand ?? '',
     o.boxGrowth ?? '',
     o.boxFrac ?? '',
+    o.stationSplit ? 's' : '',
     o.dark ? 'd' : 'l',
     o.theme?.lineWidth ?? '',
   ].join('|');

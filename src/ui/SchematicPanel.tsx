@@ -216,7 +216,7 @@ type RestoredSettings = {
   megaFallback?: 'box' | 'curve';
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; stationSplit?: boolean };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -323,9 +323,12 @@ export function SchematicPanel() {
   const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
   // Box density cutoff (densityBoxWarp frac) — same draft→Save flow as the realism sliders.
   const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
+  // BETA: per-station complex split (layout-baking toggle, same draft→Save flow).
+  const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? false);
   const [applied, setApplied] = useState(
     rapp
-      ? { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC } // older files lack boxFrac → default it
+      ? // older files lack boxFrac/stationSplit → default them
+        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: rapp.stationSplit ?? false }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -334,6 +337,7 @@ export function SchematicPanel() {
           linePos: DEFAULT_REALISM_POS,
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
+          stationSplit: false,
         },
   );
   const appearanceDirty =
@@ -343,7 +347,8 @@ export function SchematicPanel() {
     applied.warpPos !== warpPos ||
     applied.linePos !== linePos ||
     applied.boxWarpPos !== boxWarpPos ||
-    applied.boxFrac !== boxFrac;
+    applied.boxFrac !== boxFrac ||
+    applied.stationSplit !== stationSplit;
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -354,13 +359,15 @@ export function SchematicPanel() {
     linePos === DEFAULT_REALISM_POS &&
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
+    stationSplit === false &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
     applied.warpPos === DEFAULT_REALISM_POS &&
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
-    applied.boxFrac === DEFAULT_BOX_FRAC;
+    applied.boxFrac === DEFAULT_BOX_FRAC &&
+    applied.stationSplit === false;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -449,7 +456,8 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
     };
-    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC }; // older entries lack boxFrac
+    // older entries lack boxFrac/stationSplit
+    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: apRaw.stationSplit ?? false };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setMegaFallback(v.megaFallback ?? 'box');
@@ -464,6 +472,7 @@ export function SchematicPanel() {
     setLinePos(ap.linePos);
     setBoxWarpPos(ap.boxWarpPos);
     setBoxFrac(ap.boxFrac);
+    setStationSplit(ap.stationSplit);
     setMode(target);
   }, [mountCity]);
   // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
@@ -599,6 +608,7 @@ export function SchematicPanel() {
         boxExpand: boxExpandFromPos(applied.boxWarpPos),
         boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
         boxFrac: applied.boxFrac,
+        stationSplit: applied.stationSplit,
         theme: {
           ...(dark ? DARK_THEME : DEFAULT_THEME),
           lineWidth: applied.lineWidth,
@@ -1041,6 +1051,7 @@ export function SchematicPanel() {
       linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
       boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
       boxFrac: num(s.applied.boxFrac, BOX_FRAC_MIN, BOX_FRAC_MAX, DEFAULT_BOX_FRAC),
+      stationSplit: s.applied.stationSplit === true,
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
@@ -1059,6 +1070,7 @@ export function SchematicPanel() {
       setLinePos(clampedApplied.linePos);
       setBoxWarpPos(clampedApplied.boxWarpPos);
       setBoxFrac(clampedApplied.boxFrac);
+      setStationSplit(clampedApplied.stationSplit);
     }
     // Queue the saved detail areas; the inject effect restores them after the new
     // layout settles (instead of clearing). Bump the id counter past the restored
@@ -1091,6 +1103,7 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
+      stationSplit: false,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
     const liveFp = fp
@@ -1107,6 +1120,7 @@ export function SchematicPanel() {
             boxExpand: boxExpandFromPos(ap.boxWarpPos),
             boxGrowth: boxGrowthFromPos(ap.boxWarpPos),
             boxFrac: ap.boxFrac,
+            stationSplit: ap.stationSplit,
             dark,
             theme: { lineWidth: ap.lineWidth },
           },
@@ -1998,6 +2012,41 @@ export function SchematicPanel() {
                     onChange={setBoxFrac}
                   />
 
+                  {/* BETA: per-station complex split. Bakes into the layout
+                      (fingerprinted), so it rides the same draft→Save flow as
+                      the realism sliders — Save regenerates. */}
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+                    <span>
+                      Split station complexes{' '}
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          background: 'rgba(234,179,8,0.18)',
+                          color: api.ui.getResolvedTheme() === 'dark' ? '#facc15' : '#a16207',
+                          border: '1px solid rgba(234,179,8,0.45)',
+                        }}
+                      >
+                        BETA
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={stationSplit}
+                      onChange={(e) => setStationSplit(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                  </label>
+                  {stationSplit && (
+                    <span style={{ fontSize: 11, lineHeight: 1.35, opacity: 0.65, marginTop: -6 }}>
+                      ⚠ Beta: lays out each platform of a multi-station complex at its real
+                      position instead of one merged point. Untested on most networks — markers
+                      or transfers may misplace. Turn off and Save to go back.
+                    </span>
+                  )}
+
                   {/* Map shape: the landmass backdrop style. Draw-time (like
                       Label size) — the dropdown + slider apply instantly with a
                       repaint, no Save/regenerate. */}
@@ -2053,6 +2102,7 @@ export function SchematicPanel() {
                     setLinePos(DEFAULT_REALISM_POS);
                     setBoxWarpPos(DEFAULT_REALISM_POS);
                     setBoxFrac(DEFAULT_BOX_FRAC);
+                    setStationSplit(false);
                     setLandmass('faithful');
                     setLandmassDetail(0.5);
                     setApplied({
@@ -2063,6 +2113,7 @@ export function SchematicPanel() {
                       linePos: DEFAULT_REALISM_POS,
                       boxWarpPos: DEFAULT_REALISM_POS,
                       boxFrac: DEFAULT_BOX_FRAC,
+                      stationSplit: false,
                     });
                     // Smoothed bakes these into the precompute → rebuild.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
@@ -2085,7 +2136,7 @@ export function SchematicPanel() {
                 </button>
                 <button
                   onClick={() => {
-                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac });
+                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, stationSplit });
                     // Smoothed bakes these into the precompute → rebuild if shown.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
                   }}
