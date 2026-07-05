@@ -266,3 +266,75 @@ test('blocks: look-back junctions add zero phantom counts', () => {
   assert.match(line!, /planned-crossings=1 /, `exactly one real planned crossing: ${line}`);
   assert.match(line!, /cycle-residuals=0 /, `no phantom residuals: ${line}`);
 });
+
+test('blocks: triangle cycle — forced inversion lands at a junction, not mid-corridor', () => {
+  // three corridors forming a triangle r-s-t, each carrying {A,B}, with
+  // branch stubs pinning opposite orders at r and t. SOME junction must eat
+  // one A/B flip; every edge's own lineOrder must still be internally
+  // consistent with its corridor (no mid-corridor flip is representable).
+  const layout = makeLayout(
+    [['r', 0, 0], ['s', 20, 0], ['t', 10, 17], ['ra', -10, -5], ['rb', -10, 5], ['ta', 10, 30]],
+    [
+      { id: 'rs', from: 'r', to: 's', lines: ['A', 'B'] },
+      { id: 'st', from: 's', to: 't', lines: ['A', 'B'] },
+      { id: 'tr', from: 't', to: 'r', lines: ['A', 'B'] },
+      { id: 'pa', from: 'ra', to: 'r', lines: ['A'] },
+      { id: 'pb', from: 'rb', to: 'r', lines: ['B'] },
+      { id: 'pt', from: 't', to: 'ta', lines: ['A'] },
+    ],
+    {
+      A: [{ edgeId: 'pa', reversed: false }, { edgeId: 'rs', reversed: false }, { edgeId: 'st', reversed: false }, { edgeId: 'pt', reversed: false }],
+      B: [{ edgeId: 'pb', reversed: false }, { edgeId: 'rs', reversed: false }, { edgeId: 'st', reversed: false }, { edgeId: 'tr', reversed: false }],
+    },
+  );
+  orderByBlocks(layout);
+  for (const id of ['rs', 'st', 'tr']) {
+    const e = layout.edges.find((x) => x.id === id)!;
+    assert.deepEqual([...e.lineOrder].sort(), [...new Set(e.lines.map((l) => l.id))].sort(),
+      `membership preserved on ${id}`);
+  }
+});
+
+test('blocks: write-back parity — idempotent and membership-preserving', () => {
+  const layout = makeLayout(
+    [['r', 0, 0], ['n', 20, 0], ['pe', 30, -10], ['qe', 30, 10]],
+    [
+      { id: 't', from: 'r', to: 'n', lines: ['A', 'B', 'C'] },
+      { id: 'p', from: 'n', to: 'pe', lines: ['A', 'B'] },
+      { id: 'q', from: 'n', to: 'qe', lines: ['C'] },
+    ],
+    {
+      A: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      B: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      C: [{ edgeId: 't', reversed: false }, { edgeId: 'q', reversed: false }],
+    },
+  );
+  orderByBlocks(layout);
+  const first = layout.edges.map((e) => [...e.lineOrder]);
+  orderByBlocks(layout);
+  const second = layout.edges.map((e) => [...e.lineOrder]);
+  assert.deepEqual(first, second, 'idempotent');
+  for (const e of layout.edges) {
+    assert.deepEqual([...e.lineOrder].sort(), e.lines.map((l) => l.id).sort());
+  }
+});
+
+test('blocks: mirrored parts — opposed edge orientations mirror the order', () => {
+  // ea: a->n, eb: b->n (both INTO n), same set: one corridor; written orders
+  // must mirror across the flip exactly like untangle's contraction test
+  const layout = makeLayout(
+    [['a', 0, 0], ['n', 10, 0], ['b', 20, 0]],
+    [
+      { id: 'ea', from: 'a', to: 'n', lines: ['L1', 'L2'] },
+      { id: 'eb', from: 'b', to: 'n', lines: ['L1', 'L2'] },
+    ],
+    {
+      L1: [{ edgeId: 'ea', reversed: false }, { edgeId: 'eb', reversed: true }],
+      L2: [{ edgeId: 'ea', reversed: false }, { edgeId: 'eb', reversed: true }],
+    },
+  );
+  orderByBlocks(layout);
+  const ea = layout.edges.find((e) => e.id === 'ea')!;
+  const eb = layout.edges.find((e) => e.id === 'eb')!;
+  assert.deepEqual([...ea.lineOrder].reverse(), eb.lineOrder, 'order mirrors across the flip');
+});
