@@ -12,6 +12,14 @@
 // selected by OCTI_ORDER=blocks|loom at the renderGeographic call site.
 
 import type { Layout, LayoutEdge } from './types';
+import {
+  type Block,
+  flattenBlock,
+  mirrorBlock,
+  joinBlocks,
+  blockLines,
+  reorderToGroups,
+} from './blockAlgebra';
 
 export interface CorridorPart {
   edge: LayoutEdge;
@@ -151,4 +159,265 @@ export function classifyFlows(
     }
   }
   return flows;
+}
+
+// quantized atan2 angular rank (cross-V8): direction of `c` departing `nd`,
+// sampled over ~12px of arc (corridor-scale, immune to seam micro-jogs —
+// same hardening as untangle's tangentAt).
+const angleAt = (c: Corridor, nd: string): number => {
+  const part = c.endA === nd ? c.parts[0] : c.parts[c.parts.length - 1];
+  const path = part.edge.path;
+  const pts = part.edge.from === nd ? path : [...path].reverse();
+  let dx = pts[1][0] - pts[0][0];
+  let dy = pts[1][1] - pts[0][1];
+  let hi = 1;
+  while (dx * dx + dy * dy < 12 * 12 && hi < pts.length - 1) {
+    hi++;
+    dx = pts[hi][0] - pts[0][0];
+    dy = pts[hi][1] - pts[0][1];
+  }
+  return Math.round(Math.atan2(dy, dx) * 1e6) / 1e6;
+};
+
+/** Comparable exit key for a line leaving `nd`: angular rank of each
+ *  successive exit corridor, bounded depth (structural destination grouping
+ *  — spec §2.4). */
+const exitKeyOf = (
+  line: string,
+  nd: string,
+  cs: CorridorSet,
+  flows: Map<string, Map<string, LineFlow>>,
+  depth: number,
+): number[] => {
+  const key: number[] = [];
+  let node = nd;
+  for (let d = 0; d < depth; d++) {
+    const f = flows.get(node)?.get(line);
+    const toId = f ? f.to : null;
+    if (toId === null || toId === undefined) {
+      key.push(Number.MAX_SAFE_INTEGER);
+      break;
+    }
+    const to = cs.corridors[toId];
+    key.push(angleAt(to, node));
+    node = to.endA === node ? to.endB : to.endA;
+  }
+  return key;
+};
+
+const cmpKeys = (a: number[], b: number[]): number => {
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = i < a.length ? a[i] : -Infinity;
+    const y = i < b.length ? b[i] : -Infinity;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+};
+
+/** The pipeline: assign a Block to every corridor, then write back. */
+export function orderByBlocks(layout: Layout): void {
+  const cs = buildCorridors(layout);
+  if (cs.corridors.length === 0) return;
+  const flows = classifyFlows(layout, cs);
+
+  const blocks = new Map<number, Block>();
+  let plannedSwaps = 0; // split-contiguity crossings (at junctions)
+  let residualSwaps = 0; // cycle-closure disagreements (at junctions)
+
+  // seed: flat order by exit keys toward endB (structural destination
+  // grouping — no colors, no barycenter). Survives only where propagation
+  // never reaches (roots, isolated corridors).
+  const seedBlock = (c: Corridor): Block => {
+    const ls = [...c.lines];
+    const keys = new Map(ls.map((l) => [l, exitKeyOf(l, c.endB, cs, flows, 4)]));
+    ls.sort((a, b) => cmpKeys(keys.get(a)!, keys.get(b)!) || (a < b ? -1 : 1));
+    return ls;
+  };
+
+  const bfsOrder = [...cs.corridors].sort(
+    (a, b) => (b.lines.length - a.lines.length) || (a.id - b.id),
+  );
+  const visited = new Set<number>();
+
+  /** Join side by pair-ownership lookahead (spec §2.1). */
+  const joinSideLookahead = (
+    a: Block,
+    b: Block,
+    joined: Corridor,
+    joinNode: string,
+  ): boolean => {
+    const aLines = blockLines(a);
+    const bLines = blockLines(b);
+    let node = joined.endA === joinNode ? joined.endB : joined.endA;
+    let corridor = joined;
+    for (let hops = 0; hops < 64; hops++) {
+      const ndFlows = flows.get(node);
+      if (!ndFlows) break;
+      const exitOf = (l: string): number | null => {
+        const f = ndFlows.get(l);
+        if (!f) return null;
+        return f.from === corridor.id ? f.to : null;
+      };
+      const aExits = new Set<number | null>();
+      const bExits = new Set<number | null>();
+      for (const l of aLines) aExits.add(exitOf(l));
+      for (const l of bLines) bExits.add(exitOf(l));
+      const union = new Set<number | null>([...aExits, ...bExits]);
+      if (union.size > 1) {
+        const rank = (s: Set<number | null>): number => {
+          let m = Infinity;
+          for (const gid of s) {
+            if (gid === null) continue;
+            const ang = angleAt(cs.corridors[gid], node);
+            if (ang < m) m = ang;
+          }
+          return m;
+        };
+        const ra = rank(aExits);
+        const rb = rank(bExits);
+        if (ra === rb) break;
+        return rb < ra; // bFirst iff B's separation side ranks lower
+      }
+      const nextArr = [...union];
+      const next = nextArr[0];
+      if (next === null || next === undefined) break;
+      corridor = cs.corridors[next];
+      node = corridor.endA === node ? corridor.endB : corridor.endA;
+    }
+    return false; // deterministic fallback: a-first
+  };
+
+  const processJunction = (nd: string, from: Corridor, queue: Corridor[]): void => {
+    const ndFlows = flows.get(nd);
+    if (!ndFlows) return;
+    const fromBlock = blocks.get(from.id);
+    if (fromBlock === undefined) return;
+    // from's flattened order reading INTO nd
+    const atNd = from.endB === nd ? flattenBlock(fromBlock) : flattenBlock(mirrorBlock(fromBlock));
+    // partition by exit corridor across nd (only lines that continue)
+    const exits = new Map<number, string[]>();
+    for (const l of atNd) {
+      const f = ndFlows.get(l);
+      if (!f) continue;
+      const other = f.from === from.id ? f.to : f.to === from.id ? f.from : null;
+      if (other === null || other === undefined) continue;
+      let arr = exits.get(other);
+      if (!arr) exits.set(other, (arr = []));
+      arr.push(l);
+    }
+    if (exits.size === 0) return;
+
+    // SPLIT-FIRST: contiguity plan over the continuing lines
+    let ordered = atNd.filter((l) => {
+      const f = ndFlows.get(l);
+      if (!f) return false;
+      const other = f.from === from.id ? f.to : f.to === from.id ? f.from : null;
+      return other !== null && other !== undefined;
+    });
+    if (exits.size >= 2) {
+      const groupOf = new Map<string, number>();
+      for (const [gid, ls] of exits) for (const l of ls) groupOf.set(l, gid);
+      const ranked = [...exits.keys()].sort(
+        (x, y) => angleAt(cs.corridors[x], nd) - angleAt(cs.corridors[y], nd) || x - y,
+      );
+      const plan = reorderToGroups(ordered, groupOf, ranked);
+      plannedSwaps += plan.swaps;
+      ordered = plan.order;
+    }
+
+    // THEN JOIN/DERIVE: hand each exit its slice
+    for (const [gid, ls] of [...exits.entries()].sort((a, b) => a[0] - b[0])) {
+      const to = cs.corridors[gid];
+      const lsSet = new Set(ls);
+      const slice: Block = ordered.filter((l) => lsSet.has(l));
+      // frame rule: mirror iff both corridors present the SAME end to nd
+      const rev = (from.endB === nd) === (to.endB === nd);
+      const finalSlice: Block = rev ? mirrorBlock(slice) : slice;
+      if (!visited.has(to.id)) {
+        const existing = blocks.get(to.id);
+        if (existing === undefined) {
+          blocks.set(to.id, finalSlice);
+        } else {
+          const bFirst = joinSideLookahead(existing, finalSlice, to, nd);
+          blocks.set(to.id, joinBlocks(existing, finalSlice, bFirst));
+        }
+        const have = blockLines(blocks.get(to.id)!);
+        if (to.lines.every((l) => have.has(l))) {
+          visited.add(to.id);
+          queue.push(to);
+        }
+      } else {
+        // cycle back-edge: count the disagreement, leave blocks alone (the
+        // flip draws across nd — a junction, allowed by construction)
+        const b = blocks.get(to.id)!;
+        const flat = to.endA === nd ? flattenBlock(b) : flattenBlock(mirrorBlock(b));
+        const haveOrder = flat.filter((l) => lsSet.has(l));
+        const want = flattenBlock(finalSlice);
+        const rankW = new Map(want.map((l, i) => [l, i]));
+        let inv = 0;
+        for (let i = 0; i < haveOrder.length; i++) {
+          for (let j = i + 1; j < haveOrder.length; j++) {
+            const ri = rankW.get(haveOrder[i]);
+            const rj = rankW.get(haveOrder[j]);
+            if (ri !== undefined && rj !== undefined && ri > rj) inv++;
+          }
+        }
+        residualSwaps += inv;
+      }
+    }
+  };
+
+  // A corridor must not be force-seeded as a fresh root while it still has a
+  // real, unvisited feeder waiting to join into it — otherwise the seed wins
+  // by accident (this corridor gets marked visited before the join arrives),
+  // and the genuine feeder is later shunted into the cycle-residual branch
+  // instead of the join path (pair-ownership theorem, spec §2.1). A corridor
+  // only counts as "no upstream structure" (spec §2.4) when every line of
+  // its own either starts there or arrives from an ALREADY-visited corridor.
+  const hasPendingFeeder = (c: Corridor): boolean => {
+    for (const nd of [c.endA, c.endB]) {
+      const ndFlows = flows.get(nd);
+      if (!ndFlows) continue;
+      for (const l of c.lines) {
+        const f = ndFlows.get(l);
+        if (!f || f.to !== c.id) continue; // not an inbound edge of c at nd
+        if (f.from !== null && f.from !== undefined && !visited.has(f.from)) return true;
+      }
+    }
+    return false;
+  };
+
+  let remaining = bfsOrder.filter((c) => !visited.has(c.id));
+  while (remaining.length > 0) {
+    // prefer widest candidates with no pending feeder (genuine sources /
+    // already-fed join targets); fall back to the widest overall only when
+    // every remaining corridor is still mid-join (pure-cycle components,
+    // where some seed must break the symmetry per spec §2.3).
+    const root = remaining.find((c) => !hasPendingFeeder(c)) ?? remaining[0];
+    blocks.set(root.id, seedBlock(root));
+    visited.add(root.id);
+    const queue: Corridor[] = [root];
+    while (queue.length > 0) {
+      const c = queue.shift()!;
+      processJunction(c.endA, c, queue);
+      processJunction(c.endB, c, queue);
+    }
+    remaining = remaining.filter((c) => !visited.has(c.id));
+  }
+
+  // write-back: flatten per corridor, mirror rev parts
+  for (const c of cs.corridors) {
+    const b = blocks.get(c.id) ?? seedBlock(c);
+    const flat = flattenBlock(b);
+    for (const p of c.parts) {
+      p.edge.lineOrder = p.rev ? [...flat].reverse() : [...flat];
+    }
+  }
+
+  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
+    console.error(
+      `[blocks] corridors=${cs.corridors.length} planned-crossings=${plannedSwaps} cycle-residuals=${residualSwaps} (all at junctions by construction)`,
+    );
+  }
 }
