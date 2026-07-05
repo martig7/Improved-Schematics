@@ -40,3 +40,63 @@ export function joinBlocks(a: Block, b: Block, bFirst: boolean): Block {
 export function blockLines(b: Block): Set<string> {
   return new Set(flattenBlock(b));
 }
+
+export interface SplitPlanResult {
+  /** the exit-contiguous order (stable within groups) */
+  order: string[];
+  /** adjacent-transposition (bubble) distance from the input order — the
+   *  crossings this split forces, drawn AT the split node */
+  swaps: number;
+}
+
+/** Kendall-tau distance between `from` and `to` (same multiset): the number
+ *  of pairwise inversions = minimal adjacent transpositions. O(n²), n ≤
+ *  bundle width (≤ ~16 in practice). */
+function bubbleDistance(from: string[], to: string[]): number {
+  const rank = new Map<string, number>();
+  for (let i = 0; i < to.length; i++) rank.set(to[i], i);
+  let inv = 0;
+  for (let i = 0; i < from.length; i++) {
+    for (let j = i + 1; j < from.length; j++) {
+      if (rank.get(from[i])! > rank.get(from[j])!) inv++;
+    }
+  }
+  return inv;
+}
+
+/** Reorder `order` so lines sharing a group are contiguous, groups appearing
+ *  in `groupRank` order, STABLE within each group. Returns the new order and
+ *  the forced-crossing count. */
+export function reorderToGroups(
+  order: string[],
+  groupOf: Map<string, number>,
+  groupRank: number[],
+): SplitPlanResult {
+  const rankOf = new Map<number, number>();
+  for (let i = 0; i < groupRank.length; i++) rankOf.set(groupRank[i], i);
+  const idx = new Map<string, number>();
+  for (let i = 0; i < order.length; i++) idx.set(order[i], i);
+  const target = [...order].sort((a, b) => {
+    const ga = rankOf.get(groupOf.get(a)!)!;
+    const gb = rankOf.get(groupOf.get(b)!)!;
+    if (ga !== gb) return ga - gb;
+    return idx.get(a)! - idx.get(b)!; // stable within group
+  });
+  return { order: target, swaps: bubbleDistance(order, target) };
+}
+
+/** Split planning: make each exit-group contiguous with minimal crossings.
+ *  Group order = first appearance in the current order (the least-motion
+ *  choice: groups keep their current center of mass ordering). Callers with
+ *  geometric exit ranks use reorderToGroups directly. */
+export function splitPlan(
+  order: string[],
+  groupOf: Map<string, number>,
+): SplitPlanResult {
+  const seen: number[] = [];
+  for (const l of order) {
+    const g = groupOf.get(l)!;
+    if (!seen.includes(g)) seen.push(g);
+  }
+  return reorderToGroups(order, groupOf, seen);
+}
