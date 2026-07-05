@@ -85,12 +85,10 @@ function triangleLayout(opts?: {
   return { layout, stations };
 }
 
-const isStationFrom = (s: Set<string>) => (id: string) => s.has(id);
-
 // --- tests -----------------------------------------------------------------
 
 test('suppressHooks: LON triangle splices — new A<->s2 edge, traversal rewritten, s1 edges drop the line', () => {
-  const { layout, stations } = triangleLayout();
+  const { layout } = triangleLayout();
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 1, 'one splice');
 
@@ -117,7 +115,7 @@ test('suppressHooks: LON triangle splices — new A<->s2 edge, traversal rewritt
 });
 
 test('suppressHooks: straight-through synthetic run (no fold) is untouched', () => {
-  const { layout, stations } = triangleLayout({ straight: true });
+  const { layout } = triangleLayout({ straight: true });
   const before = JSON.stringify(dumpEdges(layout));
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 0, 'no splice for straight run');
@@ -125,7 +123,7 @@ test('suppressHooks: straight-through synthetic run (no fold) is untouched', () 
 });
 
 test('suppressHooks: run with a station stop at an interior node is untouched', () => {
-  const { layout, stations } = triangleLayout({ stopAtS1: true });
+  const { layout } = triangleLayout({ stopAtS1: true });
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 0, 'no splice when the line stops inside the run');
   assert.ok(layout.edges.find((e) => e.id === 'e0'), 'e0 kept');
@@ -133,7 +131,7 @@ test('suppressHooks: run with a station stop at an interior node is untouched', 
 });
 
 test('suppressHooks: two lines sharing the same hook get ONE shortcut edge', () => {
-  const { layout, stations } = triangleLayout({ extraLine: true });
+  const { layout } = triangleLayout({ extraLine: true });
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 2, 'two lines spliced');
   const shortcuts = layout.edges.filter(
@@ -189,7 +187,7 @@ function reversedTriangleLayout(opts?: { stopAtS1?: boolean }): {
 }
 
 test('suppressHooks: reversed-step hook splices — node sequence from [to,from], boundary stop carried', () => {
-  const { layout, stations } = reversedTriangleLayout();
+  const { layout } = reversedTriangleLayout();
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 1, 'reversed-step hook spliced');
 
@@ -210,7 +208,7 @@ test('suppressHooks: reversed-step hook splices — node sequence from [to,from]
 });
 
 test('suppressHooks: reversed-step run with an interior stop (reversed flag reading) is untouched', () => {
-  const { layout, stations } = reversedTriangleLayout({ stopAtS1: true });
+  const { layout } = reversedTriangleLayout({ stopAtS1: true });
   const res = suppressHooks(layout);
   assert.equal(res.spliced, 0, 'interior stop seen through reversed reading blocks the splice');
   assert.ok(layout.edges.find((e) => e.id === 'e0'), 'e0 kept');
@@ -247,7 +245,7 @@ function outAndBackLayout(): { layout: Layout; stations: Set<string> } {
 }
 
 test('suppressHooks: out-and-back fold — BOTH directions spliced, no traversal step references a missing edge', () => {
-  const { layout, stations } = outAndBackLayout();
+  const { layout } = outAndBackLayout();
   suppressHooks(layout);
 
   const edgeIds = new Set(layout.edges.map((e) => e.id));

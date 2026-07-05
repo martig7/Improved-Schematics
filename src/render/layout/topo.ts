@@ -778,11 +778,6 @@ export function collapseSharedSegments(
   return h;
 }
 
-/** @deprecated Use collapseSharedSegments; kept as alias for tests. */
-function onePass(input: MergeInput, params: TopoParams, protectedPositions?: Pixel[]): HBuilder {
-  return collapseSharedSegments(input, params, protectedPositions);
-}
-
 export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
   let h: HBuilder | null = null;
   let prevLen = Infinity;
