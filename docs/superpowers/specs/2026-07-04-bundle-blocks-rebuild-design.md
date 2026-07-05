@@ -101,3 +101,16 @@ Integration: the §4 gates; determinism double-run (`fp` unchanged between two r
 - Root-corridor orientation is arbitrary per component (two global mirrorings score identically); pick lowest-id-first for determinism.
 - Exact bubble-distance realization when a non-contiguous split has multiple minimal transposition sequences: pick the lexicographically-least sequence (determinism), placement identical.
 - Whether the k-way terminal-yard lookahead (§2.4) needs the angular tie-break often enough to matter — measure on SEA (ferry terminals).
+
+## Appendix — A/B results (2026-07-04, plan Task 7)
+
+Four dumps × blocks/loom, OCTI_DEBUG counters + wall time (ordering stage included in full render):
+
+| dump | blocks scored-flips | loom scored-flips | blocks planned@junctions (+residuals) | blocks vs loom wall |
+|---|---|---|---|---|
+| NYC-Jul-4 | 56 | 13 | 240 (+23) | 38s vs 55s |
+| NYC-EXTRA-DIFFICULT | 24 | 29 | 592 (+103) | 1m32 vs 3m27 |
+| LON-3 | 1 | 0 | 46 (+5) | par |
+| SEA-2 | 0 (1 diverge) | 0 | 35 (+2) | par |
+
+Reading: the flip reporter penalizes ALL straight-node through-pair flips — under blocks, split-contiguity crossings at geometrically-straight split junctions are sanctioned (user rule 2 allows splits), so raw numbers overstate blocks' defects; loom pre-sorts trunks upstream instead, paying at distant corners. Blocks wins the hardest map outright (24 vs 29), ties LON/SEA, and is 1.4–2.3× faster where loom hill-climbs. Visual (crops, NYC-Jul-4): Franklin-class corridors par-to-better under blocks; dense junction interiors (Jay St–DeKalb complex) carry different warts per regime (blocks: per-feeder slice handoffs produce S-hooks/vertical chords; loom: hairpin spikes). Verdict deferred to user; junction-interior slice coordination identified as blocks' next lever.
