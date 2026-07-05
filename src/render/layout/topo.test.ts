@@ -241,6 +241,25 @@ test('weldSubCellNodes welds a sub-cell junction INTO the station and keeps trav
   assert.ok(h.stopAt.has('l1|nA'));
 });
 
+test('weldSubCellNodes deletes a curly self-loop (long polyline, sub-cell extent)', () => {
+  const h = weldFixture();
+  // Replace the straight 8px weld edge with a CURLY one: 8px node span but
+  // ~36px of polyline that never leaves the node neighbourhood. The old
+  // polyline-LENGTH keep-rule spared these as "balloons"; drawn, they are
+  // curl blobs at the station. Extent is what distinguishes a real balloon.
+  h.edges.get('eJA')!.points = [[100, 0], [104, 9], [110, 0], [104, -9], [108, 0]] as Pixel[];
+  weldSubCellNodes(h, 10);
+  assert.ok(!h.edges.has('eJA'), 'curly self-loop deleted');
+});
+
+test('weldSubCellNodes keeps a true balloon self-loop (extent beyond 2x weld dist)', () => {
+  const h = weldFixture();
+  h.edges.get('eJA')!.points = [[100, 0], [104, 40], [130, 40], [108, 0]] as Pixel[]; // extent ~40
+  weldSubCellNodes(h, 10);
+  assert.ok(h.edges.has('eJA'), 'real balloon kept');
+  assert.equal(h.edges.get('eJA')!.from, h.edges.get('eJA')!.to, 'self-loop at the survivor');
+});
+
 test('weldSubCellNodes leaves nodes a cell apart alone', () => {
   const h = weldFixture();
   const welds = weldSubCellNodes(h, 5); // J-A gap is 8 > 5

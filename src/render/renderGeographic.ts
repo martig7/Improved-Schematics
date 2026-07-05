@@ -1058,12 +1058,40 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // Weld sub-cell node clusters into one node (station survives) before octi
   // sees them. Threshold = half a cell, the same resolution the octi
   // contraction uses. (dev override: OCTI_WELD=<px>, 0 disables)
+  // dev: OCTI_AUDIT=1 — short-edge census at the octi seam (the router-facing
+  // degeneracy picture: edges below half a cell cannot get distinct cells).
+  const shortEdgeCensus = (tag: string): void => {
+    if (!env?.OCTI_AUDIT) return;
+    const half = octiOpts.cellSize / 2;
+    let subHalf = 0;
+    let subCell = 0;
+    for (const e of support.edges.values()) {
+      const a = support.nodes.get(e.from)?.pos;
+      const b = support.nodes.get(e.to)?.pos;
+      if (!a || !b) continue;
+      const d = Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2);
+      if (d < half) {
+        subHalf++;
+        const kind = (nid: string): string => {
+          if (support.stations.size) {
+            for (const sp of support.stations.values()) if (sp.nodeId === nid) return 'STN';
+          }
+          return nid.replace(/\d+$/, '');
+        };
+        console.error(`[audit:octi-seam ${tag}]   ${e.id} ${e.from}(${kind(e.from)})<->${e.to}(${kind(e.to)}) ${d.toFixed(1)}px`);
+      }
+      if (d < octiOpts.cellSize) subCell++;
+    }
+    console.error(`[audit:octi-seam ${tag}] edges<cell/2(${half.toFixed(1)}px)=${subHalf} edges<cell=${subCell} total=${support.edges.size}`);
+  };
+  shortEdgeCensus('pre-weld');
   {
     const weldEnv = Number(env?.OCTI_WELD);
     const weldDist = Number.isFinite(weldEnv) && weldEnv >= 0 ? weldEnv : octiOpts.cellSize / 2;
     if (weldDist > 0) {
       const welds = weldSubCellNodes(support, weldDist);
       if (welds > 0 && (env?.OCTI_TRACE || env?.OCTI_AUDIT)) console.error(`[weld] sub-cell welds=${welds} (dist=${weldDist.toFixed(1)})`);
+      if (welds > 0) shortEdgeCensus('post-weld');
     }
   }
   lap('octiSetup');

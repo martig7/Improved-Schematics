@@ -337,3 +337,42 @@ The codebase has **already conceded this twice**: `crossingPen` is a non-LOOM ad
 ---
 
 **One-line summary for the owner:** The defenses fall into three families patching three causes — **(A)** the merge re-derives line routes by nearest-neighbor snapping instead of transforming them, **(B)** stops are re-split into corridors *after* contraction, birthing unroutable sub-cell edges, and **(C)** the old ordering scorer over-fought crossings (already fixed by `bundle-blocks`). Your crossing hunch is right about (C) and misplaced for the rest: the router already prices a legal crossing at 4 vs. SOFT_INF at ~200 000 — it detours only where legal crossings are *unavailable* (settled/diagonal/station nodes) or where the input geometry is infeasible at grid resolution. **Start with Fix 1** (protect stops through contraction): it is ~1–2 days, retires `weldSubCellNodes` + two octi excisions + several stub welds, and has a cheap `OCTI_WELD=0` falsifying test before you write a line of rewrite.
+---
+
+## Post-report addendum: Fix 1 experiment result (2026-07-05, same day)
+
+**Fix 1 was run and FALSIFIED by its own abort criterion.** An anchor-creation
+spacing floor in `anchorGraphStops` (refuse nodes within dHat of an existing
+node) was implemented and measured on the SEA-split dump:
+
+| metric (weld off) | baseline | with anchor floor |
+|---|---:|---:|
+| support edges < cell/2 at octi seam | 49 | 39 |
+| octi drawn-level detour cuts | 12 | 11 |
+| hooks spliced | 36 | 28 |
+
+The anchor-created sub-cell class WAS fully eliminated (zero `ha*` entries in
+the census) — but it was only ~10 of 49. The dominant class is **protected
+station anchors with a merge junction created 2–13px beside them** (STN↔h
+pairs: the merge's creepBlocked/lateralToTravel snap guards refuse to weld a
+corridor onto the pinned station and mint a neighbour node instead). Worse,
+~40 fewer stop nodes raised medLen → coarser grid (cell 21.2→25.2) → a net-
+WORSE re-roll (detour cuts 17, new meander artifacts). **Reverted.**
+
+What survived the experiment:
+- `weldSubCellNodes` is NOT dead code — it is the correctly-placed repair for
+  the STN↔h class (it knows the real cellSize; the anchor pass does not).
+  With it, detour cuts drop 12 → 6 on this dump.
+- Its self-loop keep-rule was wrong (polyline length, not extent) — fixed:
+  curly sub-extent self-loops are deleted, true balloons kept.
+- Fix 2 prize, measured (`[audit:heal-ladder]`, SEA-split): bfs=1077
+  direct=0 anyPath(paint)=8 bridge(__heal)=1 stallJump=0 — the heal ladder
+  fires 9 times per build. Small but each firing is a potential
+  CPW/Franklin-class artifact; re-measure on NYC/LON dumps before deciding.
+
+Revised recommendation: the census instrumentation (`OCTI_AUDIT=1`:
+octi-seam short-edge census + heal-ladder counters) is now permanent
+equipment. The next structural lever is Fix 2 (carry line paths through the
+merge), gated on heal-ladder fire-counts from more cities; the STN↔h minting
+in `ndCollapseCand`'s guard path is a better-scoped alternative target than
+anchorGraphStops was.

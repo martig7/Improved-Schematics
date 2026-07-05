@@ -992,7 +992,14 @@ function projectOntoPolyline(pts: Pixel[], p: Pixel): Pixel {
   return bestPoint;
 }
 
-/** Split support edges so contracted pass-through stops regain a node. */
+/** Split support edges so contracted pass-through stops regain a node.
+ *
+ *  NOTE (2026-07-05 Fix-1 experiment, REJECTED): an anchor-creation spacing
+ *  floor here (refuse nodes within dHat of an existing one) does eliminate the
+ *  anchor-created sub-cell class, but ~40 fewer stop nodes raise medLen →
+ *  coarser octi grid → net-WORSE layouts (detour excisions 12→17, new meander
+ *  artifacts). The sub-cell repairs live in weldSubCellNodes, which knows the
+ *  actual cellSize. See docs/2026-07-05-anomaly-defense-rca.md. */
 function anchorGraphStops(
   g: TransitGraph,
   nodes: Map<string, SupportNode>,
@@ -1377,10 +1384,22 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     if (nf === e.from && nt === e.to) continue;
     e.from = nf;
     e.to = nt;
-    if (nf === nt && polylineLength(e.points) < minDist * 2) {
-      h.edges.delete(eid);
-      removedEdges.add(eid);
-      continue;
+    if (nf === nt) {
+      // Self-loop after weld: keep only a REAL balloon (terminal loop with
+      // extent beyond a cell). A curly sub-cell connector can carry lots of
+      // polyline length while never leaving the node's neighbourhood — drawn,
+      // it's a curl blob at the station.
+      const pos = h.nodes.get(nf)!.pos;
+      let extent = 0;
+      for (const p of e.points) {
+        const d = dist(pos, p);
+        if (d > extent) extent = d;
+      }
+      if (extent < minDist * 2) {
+        h.edges.delete(eid);
+        removedEdges.add(eid);
+        continue;
+      }
     }
     const fp = h.nodes.get(nf)!.pos;
     const tp = h.nodes.get(nt)!.pos;
@@ -1491,6 +1510,10 @@ export function buildSupportGraph(
   };
 
   let healCounter = 0;
+  // Heal-ladder census (dev, OCTI_AUDIT=1): how often traversal reconstruction
+  // falls past the line-constrained BFS. Sizes the prize of carrying line
+  // paths THROUGH the merge instead of re-deriving them (RCA Fix 2).
+  const healStats = { bfs: 0, direct: 0, anyPath: 0, bridge: 0, stallJump: 0 };
 
   const appendTraversalSteps = (steps: TraversalStep[], seg: TraversalStep[]): void => {
     for (const s of seg) {
@@ -1507,9 +1530,9 @@ export function buildSupportGraph(
   ): TraversalStep[] | null => {
     if (fromS === toS) return [];
     const path = bfsLinePath(fromS, toS, lineId, edges, adj);
-    if (path) return path;
+    if (path) { healStats.bfs++; return path; }
     const direct = directStep(fromS, toS, lineId, edges, adj);
-    if (direct) return [direct];
+    if (direct) { healStats.direct++; return [direct]; }
     // Self-heal an under-painted merge: the walk can miss unioning a line
     // onto corridors its geometry rides (then the line-constrained BFS finds
     // nothing and the line would silently vanish from the map). Route over
@@ -1522,9 +1545,11 @@ export function buildSupportGraph(
     const cap = dist(fa.pos, fb.pos) * 3 + params.dHat * 10;
     const any = shortestAnyPath(fromS, toS, edges, adj, cap);
     if (any) {
+      healStats.anyPath++;
       for (const s of any) edges.get(s.edgeId)!.lineIds.add(lineId);
       return any;
     }
+    healStats.bridge++;
     // No path at all — the merge fragmented this part of the network into
     // disconnected pieces (its stitching is heuristic). The input graph
     // guarantees the line IS connected here, so restore the link with a
@@ -1628,7 +1653,7 @@ export function buildSupportGraph(
         // single mis-mapped node. Second consecutive failure: jump to the
         // target with a discontinuity (the renderer flushes runs across gaps)
         // instead of stalling forever and dropping the entire line.
-        if (stalled) curNode = target;
+        if (stalled) { curNode = target; healStats.stallJump++; }
         stalled = !stalled;
         continue;
       }
@@ -1646,6 +1671,15 @@ export function buildSupportGraph(
       );
     }
     if (steps.length > 0) lineTraversals.set(lineId, steps);
+  }
+  if (
+    typeof process !== 'undefined' &&
+    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+  ) {
+    console.error(
+      `[audit:heal-ladder] bfs=${healStats.bfs} direct=${healStats.direct} ` +
+      `anyPath(paint)=${healStats.anyPath} bridge(__heal)=${healStats.bridge} stallJump=${healStats.stallJump}`,
+    );
   }
 
   const stopAt = new Set<string>();
