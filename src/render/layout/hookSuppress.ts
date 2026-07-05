@@ -53,8 +53,10 @@ function unit(ax: number, ay: number, bx: number, by: number): [number, number] 
 
 /** Octilinear two-segment shortcut course A..E through the layout cells.
  *  One axis-aligned leg + one 45° leg; corner chosen nearest the chord.
- *  Degenerates to a single segment when the chord is already octilinear. */
-function shortcutCourse(ax: number, ay: number, ex: number, ey: number): Cell[] {
+ *  Degenerates to a single segment when the chord is already octilinear.
+ *  (Also used by octi's drawn-level detour excision as the replacement
+ *  course for hairpin-routed edges.) */
+export function shortcutCourse(ax: number, ay: number, ex: number, ey: number): Cell[] {
   const dx = ex - ax;
   const dy = ey - ay;
   const adx = dx < 0 ? -dx : dx;

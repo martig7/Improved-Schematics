@@ -1173,6 +1173,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => merged.img.placement.get(nid) ?? merged.h.nodes.get(nid)?.pos,
     (lid) => merged.h.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
   );
+  auditZigzags(
+    'mergeOnly',
+    merged.h.lineTraversals,
+    (id) => merged.h.edges.get(id),
+    (nid) => merged.img.placement.get(nid) ?? merged.h.nodes.get(nid)?.pos,
+    (lid) => merged.h.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
   lap('mergeCoincident');
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation

@@ -20,6 +20,7 @@ import {
   type Penalties,
 } from './gridGraph';
 import { cutPolylineFolds } from './topo';
+import { shortcutCourse } from './hookSuppress';
 
 export interface OctiOptions {
   /** Geographic-course enforcement penalty (LOOM's -G enfGeoPen). A grid edge
@@ -1385,10 +1386,26 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     let cuts = 0;
     for (const [id, p] of paths) {
       if (p.length < 3) continue;
-      // sub-cell span with a multi-hop detour: replace with the chord
+      // Detoured edge: the routed path is 2x+ its endpoint span — the router
+      // paid a hairpin around blocked ports instead of the direct course
+      // (SEA 66 Pl: a 65px edge routed as a 150px hairpin whose return leg
+      // rode the NEXT edge's course; imageMerge then merged the coincident
+      // stretch and the traversal manufactured an out-and-back wishbone at
+      // the stop). Replace with the octilinear shortcut course. Was gated to
+      // sub-cell spans (span < dg*1.2); the gate is widened, not a new rule —
+      // a 2x wander is pathological at any span this side of a real balloon
+      // (multi-edge terminal loops are untouched: their per-edge paths are
+      // each near-direct).
       const span = dist(p[0], p[p.length - 1]);
-      if (span < dg * 1.2 && polyLen(p) > Math.max(2 * span, dg * 0.75)) {
-        paths.set(id, [p[0], p[p.length - 1]]);
+      if (span < dg * 6 && polyLen(p) > Math.max(2 * span, dg * 0.75)) {
+        paths.set(
+          id,
+          span < dg * 1.2
+            ? [p[0], p[p.length - 1]] // sub-cell: plain chord, as before
+            : shortcutCourse(p[0][0], p[0][1], p[p.length - 1][0], p[p.length - 1][1]).map(
+                (c) => [c[0], c[1]] as Pixel,
+              ),
+        );
         cuts++;
         continue;
       }
