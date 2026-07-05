@@ -242,3 +242,55 @@ test('untangle: Y rewrite locks the trunk side by branch geometry', () => {
   assert.deepEqual([...ta].sort(), ['A', 'B']);
   assert.notDeepEqual(ta, tb, 'mirrored branch geometry flips the trunk side');
 });
+
+test('seam scoring: composed stack order governs the un-stacked continuation', () => {
+  // Trunk r->n->m carrying {A,B,C,D}; a stub at n breaks contraction so
+  // r->n (t1) and n->m (t2) are separate opt edges; at m the lines partition
+  // into branches {A,B} and {C,D} -> tryY stacks t2 into two siblings. Colors
+  // are chosen ADVERSARIALLY: A/C share one color and B/D another, so
+  // colorFrag prefers the interleaved t1 order [A,C,B,D] (one boundary) over
+  // the seam-consistent grouped order (three boundaries). Without seam
+  // scoring the optimizer takes the frag-optimal order and writes a silent
+  // cross-sibling braid at n (the Franklin Av class); WITH seam scoring the
+  // straight-lock prices that braid lexicographically and the continuation
+  // must match the composed sibling order.
+  const mkSeam = () => {
+    const layout = makeLayout(
+      [['r', 0, 0], ['n', 20, 0], ['s', 20, 10], ['m', 40, 0], ['pe', 50, -10], ['qe', 50, 10]],
+      [
+        { id: 't1', from: 'r', to: 'n', lines: ['A', 'B', 'C', 'D'], order: ['A', 'C', 'B', 'D'] },
+        { id: 'stub', from: 'n', to: 's', lines: ['S'] },
+        { id: 't2', from: 'n', to: 'm', lines: ['A', 'B', 'C', 'D'], order: ['A', 'C', 'B', 'D'] },
+        { id: 'bp', from: 'm', to: 'pe', lines: ['A', 'B'] },
+        { id: 'bq', from: 'm', to: 'qe', lines: ['C', 'D'] },
+      ],
+      {
+        A: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'bp', reversed: false }],
+        B: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'bp', reversed: false }],
+        C: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'bq', reversed: false }],
+        D: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'bq', reversed: false }],
+        S: [{ edgeId: 'stub', reversed: false }],
+      },
+    );
+    // adversarial colors: frag pressure wants A/C adjacent and B/D adjacent
+    for (const e of layout.edges) {
+      for (const l of e.lines) {
+        l.color = l.id === 'A' || l.id === 'C' ? '#e00' : l.id === 'B' || l.id === 'D' ? '#0a0' : '#888';
+      }
+    }
+    return layout;
+  };
+  const layout = mkSeam();
+  untangleLineOrder(layout);
+  const t1 = layout.edges.find((e) => e.id === 't1')!;
+  const t2 = layout.edges.find((e) => e.id === 't2')!;
+  // continuity at n (t1 arrives, t2 leaves; same canonical direction): the
+  // un-stacked continuation must equal t2's COMPOSED written-back order —
+  // zero cross-sibling flips at the straight seam
+  assert.deepEqual(t1.lineOrder, t2.lineOrder,
+    `seam-consistent orders at n (t1=${t1.lineOrder} t2=${t2.lineOrder})`);
+  // and the branch partition really is a stack: {A,B} contiguous, {C,D} contiguous
+  const pos = new Map(t2.lineOrder.map((l, i) => [l, i]));
+  assert.equal(Math.abs(pos.get('A')! - pos.get('B')!), 1, 'A/B contiguous in the composed order');
+  assert.equal(Math.abs(pos.get('C')! - pos.get('D')!), 1, 'C/D contiguous in the composed order');
+});

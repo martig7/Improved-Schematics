@@ -506,6 +506,10 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
     const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_SELF_SEAM) : NaN;
     return Number.isFinite(v) && v >= 0 ? v : 0;
   })();
+  // Stack-seam same-seg scoring (2026-07-04, bundle-straight-lock experiment):
+  // default ON; OCTI_SEAM_SCORE=0 reverts to the unpriced-seam behavior.
+  const seamScoreOn =
+    (typeof process === 'undefined' ? undefined : (process as { env?: Record<string, string> }).env?.OCTI_SEAM_SCORE) !== '0';
 
   const crossPenSameSeg = (nd: string): number => {
     if (freeCross.has(nd)) return 0;
@@ -647,6 +651,59 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
         sameDouble += cross;
         sameWeighted += cross * cornerFactor(nd, ea, eb);
         seps += pairSeps;
+      }
+    }
+    // ---- stack-seam same-seg crossings (2026-07-04, straight-lock exp) -----
+    // A Y-stacked trunk meets a non-sibling edge here with a through PAIR
+    // split across two siblings: neither sibling's cfg contains both lines,
+    // so the pair loop above never prices their inversion — write-back's
+    // composition then eats it silently as a drawn braid at the seam node
+    // (the 3-vs-{2,5} exchange at Franklin Av). Price the COMPOSED sibling
+    // order (concat by stackIdx — exactly what write-back draws) against
+    // every non-sibling edge, counting ONLY cross-sibling pairs (same-sibling
+    // pairs are already scored above), at the same corner-factored same-seg
+    // rate — the straight-lock now governs seam swaps too. NOTE: these
+    // inversions may ALSO appear once in the raw diff-seg sweep below (they
+    // are deliberately NOT added to sameDouble to keep its diff-correction
+    // bookkeeping intact) — a mild double-price on a class we want forbidden
+    // anyway, negligible against the lock weight.
+    if (seamScoreOn) {
+      const stacksAt = new Map<number, OptEdge[]>();
+      for (const e of adj) {
+        if (e.stackGroup === undefined) continue;
+        let g = stacksAt.get(e.stackGroup);
+        if (!g) stacksAt.set(e.stackGroup, (g = []));
+        g.push(e);
+      }
+      for (const [grp, sibs] of stacksAt) {
+        if (sibs.length < 2) continue;
+        sibs.sort((a, b) => (a.stackIdx! - b.stackIdx!) || (a.id - b.id)); // canonical from→to frame (matches write-back)
+        const comp: Array<{ line: string; sib: OptEdge }> = [];
+        for (const s of sibs) for (const l of cfg.get(s.id)!) comp.push({ line: l, sib: s });
+        const compRank = new Map<string, { r: number; sib: OptEdge }>();
+        for (let i = 0; i < comp.length; i++) compRank.set(comp[i].line, { r: i, sib: comp[i].sib });
+        const revS = sibs[0].from !== nd;
+        for (const eb of adj) {
+          if (eb.stackGroup === grp) continue;
+          const revB = eb.from !== nd;
+          const rev = revS === revB; // same mirror rule as the pair loop
+          const ceb = cfg.get(eb.id)!;
+          const rel: Array<{ r: number; sib: OptEdge }> = [];
+          for (const line of ceb) {
+            const ent = compRank.get(line);
+            if (!ent || !connOccurs(line, nd, ent.sib, eb)) continue;
+            rel.push({ r: rev ? comp.length - 1 - ent.r : ent.r, sib: ent.sib });
+          }
+          let x = 0;
+          for (let i = 0; i < rel.length; i++) {
+            for (let j = i + 1; j < rel.length; j++) {
+              if (rel[i].sib !== rel[j].sib && rel[i].r > rel[j].r) x++;
+            }
+          }
+          // ×2 mirrors the pair loop's both-directions accumulation (the
+          // final score halves sameWeighted)
+          if (x > 0) sameWeighted += 2 * x * cornerFactor(nd, sibs[0], eb);
+        }
       }
     }
     let diff = 0;
@@ -1193,14 +1250,21 @@ export function untangleLineOrder(layout: Layout, opts: UntangleOpts = {}): void
                 if (freeCross.has(nd)) flipsFree++;
                 else if (sameOpt) flipsInterior++;
                 else {
-                  // scorer-visible only when BOTH lines' traversals connect
-                  // through nd between these two edges (a diverging line's
-                  // inversion draws no braid on this corridor)
-                  const oe1 = o1[0];
-                  const oe2 = o2[0];
+                  // scorer-visible when BOTH lines' traversals connect through
+                  // nd between their CARRYING opt edges on each side (a stacked
+                  // layout edge maps to several sibling opt edges — resolving
+                  // per line, not o[0], counts seam braids as scored instead of
+                  // mislabeling them diverge). A genuinely diverging line's
+                  // inversion draws no braid on this corridor.
+                  const carrier = (os: OptEdge[], l: string): OptEdge | undefined =>
+                    os.find((oe) => oe.lines.includes(l)) ?? os[0];
+                  const x1 = carrier(o1, shared[x]);
+                  const x2 = carrier(o2, shared[x]);
+                  const y1 = carrier(o1, shared[y]);
+                  const y2 = carrier(o2, shared[y]);
                   const conn =
-                    oe1 !== undefined && oe2 !== undefined &&
-                    connOccurs(shared[x], nd, oe1, oe2) && connOccurs(shared[y], nd, oe1, oe2);
+                    x1 !== undefined && x2 !== undefined && y1 !== undefined && y2 !== undefined &&
+                    connOccurs(shared[x], nd, x1, x2) && connOccurs(shared[y], nd, y1, y2);
                   if (conn) flipsBoundary++;
                   else flipsDiverge++;
                 }
