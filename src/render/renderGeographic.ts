@@ -1129,7 +1129,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (weldDist > 0) {
       const welds = weldSubCellNodes(support, weldDist);
       if (welds > 0 && (env?.OCTI_TRACE || env?.OCTI_AUDIT)) console.error(`[weld] sub-cell welds=${welds} (dist=${weldDist.toFixed(1)})`);
-      if (welds > 0) shortEdgeCensus('post-weld');
+      if (welds > 0) {
+        shortEdgeCensus('post-weld');
+        // The weld remaps traversals over fused nodes — chord reversals born
+        // HERE were previously invisible (no census between weld and octi)
+        // and got mis-attributed to the drawn-level merge.
+        auditZigzags(
+          'postWeld',
+          support.lineTraversals,
+          (id) => support.edges.get(id),
+          (nid) => support.nodes.get(nid)?.pos,
+          (lid) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+        );
+      }
     }
   }
   lap('octiSetup');
@@ -1188,6 +1200,17 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     }
   }
   lap('octi');
+  // 'placed' census: the SAME traversals as postWeld, measured at octi's
+  // node placements. A reversal appearing here (and not at postWeld) is
+  // PLACEMENT-born — a real curve flattened into degenerate angles — while
+  // one appearing only at mergeOnly is manufactured by the merge remap.
+  auditZigzags(
+    'placed',
+    support.lineTraversals,
+    (id) => support.edges.get(id),
+    (nid) => imageRaw.placement.get(nid) ?? support.nodes.get(nid)?.pos,
+    (lid) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
+  );
 
   // LOOM Drawing::getLineGraph: octi's relaxed constraints let two support
   // edges share grid segments; consolidate coincident runs into single edges
