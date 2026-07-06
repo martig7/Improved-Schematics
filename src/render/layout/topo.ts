@@ -177,12 +177,14 @@ export class HBuilder {
   private edges = new Map<string, HEdge>();
   private adj = new Map<string, Set<string>>(); // nodeId -> edgeIds
   private index: NodeIndex;
+  private protIndex: NodeIndex; // protected nodes only (endpoint binding)
   private nId = 0;
   private eId = 0;
   private protected_ = new Set<string>();
 
   constructor(indexCell: number) {
     this.index = new NodeIndex(indexCell);
+    this.protIndex = new NodeIndex(indexCell);
   }
 
   addNode(p: Pixel): string {
@@ -196,6 +198,16 @@ export class HBuilder {
 
   markProtected(id: string): void {
     this.protected_.add(id);
+    const p = this.nodes.get(id);
+    if (p) this.protIndex.insert(id, p);
+  }
+
+  /** Nearest PROTECTED node within `radius`. Protected nodes never move, so
+   *  the protIndex needs no move-tracking; a stale id (protected node deleted
+   *  by a later pass) is filtered against the live node map. */
+  nearestProtectedNode(p: Pixel, radius: number): string | null {
+    const id = this.protIndex.nearest(p, radius);
+    return id !== null && this.nodes.has(id) ? id : null;
   }
 
   nodePos(id: string): Pixel {
@@ -716,7 +728,20 @@ export function collapseSharedSegments(
 
     for (let i = 0; i < samples.length; i++) {
       const pk = samples[i];
-      const cur = ndCollapseCand(h, myNds, pk, dHat, samples, i);
+      // ENDPOINT samples bind the edge's identity (imgNds below) and sit
+      // exactly ON a graph-node position — they must reuse the nearest
+      // PROTECTED node within dHat (the seed-dedupe policy applied at bind
+      // time), even when this walk already consumed it mid-course (myNds)
+      // or a snap guard would refuse. Otherwise the walk mints a twin a
+      // couple of px from the seed, the endpoint binds to the TWIN, and
+      // contraction later dissolves it and slides the corridor's attachment
+      // to a neighbouring protected node (NYC jul-5: the B/D 155 St branch
+      // re-attached at 135 St, drawing every B trip as an out-and-back hook
+      // through 145 St; the B/D 145 platform sits 2px from the A/C twin
+      // whose seed won the dedupe).
+      const isEnd = i === 0 || i === samples.length - 1;
+      const seed = isEnd ? h.nearestProtectedNode(pk, dHat) : null;
+      const cur = seed ?? ndCollapseCand(h, myNds, pk, dHat, samples, i);
       myNds.add(cur);
 
       if (i === 0 && !imgNds.has(e.fromId)) {
@@ -745,10 +770,16 @@ export function collapseSharedSegments(
     }
 
     if (trace2 && e.lineIds.has(trace2)) {
+      const at = (nid: string | undefined | null): string => {
+        if (!nid) return '?';
+        const p = h.nodePos(nid);
+        return `${nid}(${p[0].toFixed(0)},${p[1].toFixed(0)})`;
+      };
       console.error(
         `[walk] edge ${e.fromId.slice(0, 6)}->${e.toId.slice(0, 6)} ` +
         `len=${polylineLength(e.points).toFixed(0)} samples=${samples.length} ` +
-        `unions=${unions} earlyBreak=${broke}`,
+        `unions=${unions} earlyBreak=${broke} ` +
+        `ends: ${at(imgNds.get(e.fromId))} -> ${at(imgNds.get(e.toId))} first=${at(front)} last=${at(last)}`,
       );
     }
 
