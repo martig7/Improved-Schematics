@@ -1474,6 +1474,12 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     }
   }
 
+  // Geographic loops (JFK terminal ring, HBLR): detected on the ORIGINAL h
+  // where traversals and edges are consistent — contraction/deg-2 collapse
+  // scramble the edge ids the (shared) traversals reference. tryDraw's
+  // loop-area penalty defends the enclosed area of the surviving nodes.
+  const loopCycles = detectLoopCycles(h, dg);
+
   const finish = (imgP: Image): Image => {
     blockageStats.report();
     const joined = expandContraction(contractSplits(imgP, hK, splits), h, merged);
@@ -1547,7 +1553,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
 
   for (let attempt = 0; ; attempt++) {
     const grid = new OctiGridGraph(bounds(h), dg, pens);
-    const result = tryDraw(hC, grid, opts, info);
+    const result = tryDraw(hC, grid, opts, info, loopCycles);
     if (result) {
       // Drawn-level detour-loop excision: a routed path that returns within
       // ~3/4 cell of itself after 3+ cells of arc is a port-congestion
@@ -1795,11 +1801,78 @@ function snapToGrid(grid: OctiGridGraph, p: Pixel): Pixel {
   return grid.basePos(grid.baseIdx(col, row));
 }
 
+/** Geographic loop cycles from the line traversals: simple cycles of >= 3
+ *  distinct nodes that enclose real area in SUPPORT geometry (the JFK AirTrain
+ *  terminal ring, HBLR loops). MUST run on the ORIGINAL support graph, where
+ *  traversals and edges are consistent — tryDraw's local search runs on the
+ *  deg-2-collapsed, short-edge-contracted graph whose edge ids no longer match
+ *  the (shared-reference) traversals. An out-and-back retrace is not a simple
+ *  cycle and never qualifies; `target` (the drawn area the penalty defends) is
+ *  floored below the true area so a large loop that already draws open is
+ *  never inflated. */
+function detectLoopCycles(h: SupportGraph, cellSize: number): Array<{ nds: string[]; target: number }> {
+  const cell2 = cellSize * cellSize;
+  const LOOP_TARGET_CELLS = 1.5; // minimal-visible enclosed area, in cell^2
+  const pos = (nd: string): Pixel | null => h.nodes.get(nd)?.pos ?? null;
+  const area = (nds: string[]): number => {
+    const first = pos(nds[0]);
+    if (!first) return 0;
+    let a2 = 0;
+    let prev = first;
+    for (let i = 1; i <= nds.length; i++) {
+      const p = i < nds.length ? pos(nds[i]) : first;
+      if (!p) return 0;
+      a2 += prev[0] * p[1] - p[0] * prev[1];
+      prev = p;
+    }
+    return Math.abs(a2) / 2;
+  };
+  const out: Array<{ nds: string[]; target: number }> = [];
+  const seen = new Set<string>();
+  for (const steps of h.lineTraversals.values()) {
+    const chunks: string[][] = [];
+    let seq: string[] = [];
+    let prevEnd: string | null = null;
+    for (const s of steps) {
+      const e = h.edges.get(s.edgeId);
+      if (!e) { if (seq.length) chunks.push(seq); seq = []; prevEnd = null; continue; }
+      const a = s.reversed ? e.to : e.from;
+      const b = s.reversed ? e.from : e.to;
+      if (prevEnd !== a) { if (seq.length) chunks.push(seq); seq = [a]; }
+      seq.push(b);
+      prevEnd = b;
+    }
+    if (seq.length) chunks.push(seq);
+    for (const chunk of chunks) {
+      const firstIdx = new Map<string, number>();
+      for (let k = 0; k < chunk.length; k++) {
+        const nd = chunk[k];
+        const i = firstIdx.get(nd);
+        if (i !== undefined) {
+          const cyc = chunk.slice(i, k); // distinct cycle nodes; closes k==i
+          if (cyc.length >= 3 && new Set(cyc).size === cyc.length) {
+            const key = [...cyc].sort().join('|');
+            const sArea = area(cyc);
+            if (!seen.has(key) && sArea >= cell2 * 0.5) {
+              seen.add(key);
+              out.push({ nds: cyc, target: Math.min(sArea, cell2 * LOOP_TARGET_CELLS) });
+            }
+          }
+          firstIdx.clear();
+        }
+        firstIdx.set(nd, k);
+      }
+    }
+  }
+  return out;
+}
+
 function tryDraw(
   h: SupportGraph,
   grid: OctiGridGraph,
   opts: OctiOptions,
   info: CollapseInfo,
+  loopCycles: Array<{ nds: string[]; target: number }>,
 ): Image | null {
   const ctx = buildCombCtx(h, grid, opts, info);
   const empty = new Map<string, number>();
@@ -1940,6 +2013,63 @@ function tryDraw(
     }
     return pen;
   };
+
+  // LOOP-AREA penalty (geographic loops collapsing to a line). A line whose
+  // traversal forms a simple cycle of >= 3 distinct nodes encloses AREA in
+  // truth — the JFK AirTrain terminal ring (T8->T7->T5->T4->T1->T8), the HBLR
+  // loops. octi's bend-min objective has no term rewarding that area, so a
+  // small loop flattens onto one grid row (all nodes collinear) and draws as
+  // an out-and-back band. This term penalizes a cycle whose DRAWN enclosed
+  // area falls below a minimal-visible target (~cells), pushing placement to
+  // open it. Truth-gated: only cycles that genuinely enclose area in SUPPORT
+  // geometry register (an out-and-back retrace is not a simple cycle and
+  // never qualifies), and the target is capped by the true area so a large
+  // loop that already draws open is never inflated.
+  const polyArea = (nds: string[], posOf: (id: string) => Pixel | null): number => {
+    const first = posOf(nds[0]);
+    if (!first) return 0;
+    let a2 = 0;
+    let prev = first;
+    for (let i = 1; i <= nds.length; i++) {
+      const p = i < nds.length ? posOf(nds[i]) : first;
+      if (!p) return 0;
+      a2 += prev[0] * p[1] - p[0] * prev[1];
+      prev = p;
+    }
+    return Math.abs(a2) / 2;
+  };
+  const LOOP_PEN =
+    typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_LOOP_PEN === '0'
+      ? 0
+      : grid.pens.crossingPen * 6; // per unit of area deficit (OCTI_LOOP_PEN=0: diagnostic A/B)
+  interface LoopCycle { nds: string[]; target: number }
+  const loopsByNode = new Map<string, LoopCycle[]>();
+  const allLoops: LoopCycle[] = [];
+  // Cycles were detected on the ORIGINAL support graph (detectLoopCycles);
+  // keep only nodes that SURVIVED contraction / deg-2 collapse into this
+  // routed graph (stations persist; a sub-cell loop edge may have merged its
+  // endpoints). >= 3 survivors still enclose area.
+  for (const lc of loopCycles) {
+    const nds = lc.nds.filter((n) => h.nodes.has(n));
+    if (nds.length < 3) continue;
+    const survived: LoopCycle = { nds, target: lc.target };
+    allLoops.push(survived);
+    for (const m of nds) {
+      let arr = loopsByNode.get(m);
+      if (!arr) loopsByNode.set(m, (arr = []));
+      arr.push(survived);
+    }
+  }
+  const loopAreaPenalty = (nd: string, posOf: (id: string) => Pixel | null): number => {
+    let pen = 0;
+    for (const lc of loopsByNode.get(nd) ?? []) {
+      const drawn = polyArea(lc.nds, posOf);
+      const deficit = 1 - Math.min(1, drawn / lc.target);
+      if (deficit > 0) pen += deficit;
+    }
+    return pen;
+  };
+
   // Geographic quality tie-break (OCTI_TIEBREAK=<eps>, default off). Among grid
   // positions for a node move whose score is within <eps> cost units of the
   // best, prefer the one closest to the node's true (warped) geographic
@@ -1996,7 +2126,8 @@ function tryDraw(
         const b = run?.nds.get(id) ?? drawing.nds.get(id);
         return b === undefined ? null : grid.basePos(b);
       };
-      const revPen = (run: Drawing | null): number => COURSE_DETOUR_PEN * courseDetourPenalty(a, posInRun(run));
+      const revPen = (run: Drawing | null): number =>
+        COURSE_DETOUR_PEN * courseDetourPenalty(a, posInRun(run)) + LOOP_PEN * loopAreaPenalty(a, posInRun(run));
       const statusQuoEff = drawing.score() + revPen(null);
       let bestEff = statusQuoEff; // a move must beat the status quo
 
@@ -2163,6 +2294,18 @@ function tryDraw(
       if (excess > 0) { bad++; if (excess > worstX) worstX = excess; }
     }
     console.error(`[blockage:course] detour windows=${bad} of ${allWindows.length} (worst excess ${worstX.toFixed(2)})`);
+    // Loop-area census: geographic cycles whose DRAWN enclosed area collapsed
+    // below half their minimal-visible target — the flattened-loop population
+    // (JFK terminal ring, HBLR) the loop-area penalty opens.
+    let collapsed = 0;
+    let worstFrac = 1;
+    for (const lc of allLoops) {
+      const drawn = polyArea(lc.nds, posAt);
+      const frac = drawn / lc.target;
+      if (frac < 0.5) collapsed++;
+      if (frac < worstFrac) worstFrac = frac;
+    }
+    console.error(`[blockage:loop] collapsed loops=${collapsed} of ${allLoops.length} (worst frac ${worstFrac.toFixed(2)})`);
   }
 
   // OCTI_DEBUG telemetry: why the local search stopped. No wall-clock budget
