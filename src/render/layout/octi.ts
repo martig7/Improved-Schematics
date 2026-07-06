@@ -1843,6 +1843,51 @@ function tryDraw(
   const t0 = Date.now(); // OCTI_DEBUG timing log only — never gates control flow
   const nodes = [...h.nodes.keys()].filter((nd) => ctx.deg(nd) > 0);
   const hEdges = [...h.edges.values()];
+
+  // Course triples per node, from the line traversals octi received. The
+  // placement objective prices bends and crossings, but nothing prices a
+  // node placed OUT OF ORDER along its line's course — dense station knots
+  // then draw as chord reversals even though every per-edge path is clean
+  // (the 'placed' zigzag-census family: NYC-Jul4 +28, SF +22). The node-move
+  // sweep below charges REVERSAL_PEN per course reversal touching the moved
+  // node, so order-restoring moves win and order-breaking moves lose.
+  const courseTriples = new Map<string, Array<[string, string, string]>>();
+  for (const steps of h.lineTraversals.values()) {
+    let prev: string | null = null;
+    let cur: string | null = null;
+    for (const s of steps) {
+      const e = h.edges.get(s.edgeId);
+      if (!e) { prev = null; cur = null; continue; }
+      const a = s.reversed ? e.to : e.from;
+      const b = s.reversed ? e.from : e.to;
+      if (cur !== a) { prev = null; cur = a; }
+      if (prev && prev !== cur && cur !== b && prev !== b) {
+        for (const nd of [prev, cur, b]) {
+          let arr = courseTriples.get(nd);
+          if (!arr) courseTriples.set(nd, (arr = []));
+          arr.push([prev, cur, b]);
+        }
+      }
+      prev = cur;
+      cur = b;
+    }
+  }
+  const REVERSAL_PEN = grid.pens.crossingPen * 3;
+  const reversalsTouching = (nd: string, posOf: (id: string) => Pixel | null): number => {
+    let n = 0;
+    for (const [p, c, q] of courseTriples.get(nd) ?? []) {
+      const pp = posOf(p);
+      const pc = posOf(c);
+      const pq = posOf(q);
+      if (!pp || !pc || !pq) continue;
+      const ux = pc[0] - pp[0], uy = pc[1] - pp[1];
+      const vx = pq[0] - pc[0], vy = pq[1] - pc[1];
+      const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+      if (lu < 1e-6 || lv < 1e-6) continue;
+      if ((ux * vx + uy * vy) / (lu * lv) < -0.5) n++;
+    }
+    return n;
+  };
   // Geographic quality tie-break (OCTI_TIEBREAK=<eps>, default off). Among grid
   // positions for a node move whose score is within <eps> cost units of the
   // best, prefer the one closest to the node's true (warped) geographic
@@ -1892,7 +1937,16 @@ function tryDraw(
       grid.unSettleNd(a);
 
       let bestRun: Drawing | null = null;
-      let bestScore = drawing.score(); // a move must beat the status quo
+      // Effective score = drawing score + course-reversal penalty around the
+      // moved node (same triple set for every candidate, so deltas are
+      // comparable). Status quo reads the CURRENT drawing (a still placed).
+      const posInRun = (run: Drawing | null) => (id: string): Pixel | null => {
+        const b = run?.nds.get(id) ?? drawing.nds.get(id);
+        return b === undefined ? null : grid.basePos(b);
+      };
+      const revPen = (run: Drawing | null): number => REVERSAL_PEN * reversalsTouching(a, posInRun(run));
+      const statusQuoEff = drawing.score() + revPen(null);
+      let bestEff = statusQuoEff; // a move must beat the status quo
 
       if (!TIEBREAK_GEO) {
         for (let pos = 0; pos <= 8; pos++) {
@@ -1900,11 +1954,14 @@ function tryDraw(
           if (n < 0) continue;
 
           const run = dcp.clone();
-          const err = drawOrder(adjE, new Map([[a, n]]), grid, run, bestScore, ctx);
+          const err = drawOrder(adjE, new Map([[a, n]]), grid, run, bestEff, ctx);
 
-          if (err === 'DRAWN' && run.score() < bestScore) {
-            bestRun = run;
-            bestScore = run.score();
+          if (err === 'DRAWN') {
+            const eff = run.score() + revPen(run);
+            if (eff < bestEff) {
+              bestRun = run;
+              bestEff = eff;
+            }
           }
 
           // reset the grid to the un-drawn state
@@ -1922,9 +1979,9 @@ function tryDraw(
         // insertion-order argmin is a total, engine-stable order (deterministic).
         const geoPos = ctx.posOf(a);
         const cands: Array<{ run: Drawing | null; score: number; disp: number }> = [
-          { run: null, score: drawing.score(), disp: dist(grid.basePos(curBase), geoPos) },
+          { run: null, score: statusQuoEff, disp: dist(grid.basePos(curBase), geoPos) },
         ];
-        const cutoff = drawing.score() + TIEBREAK_EPS;
+        const cutoff = statusQuoEff + TIEBREAK_EPS;
         for (let pos = 0; pos <= 8; pos++) {
           const n = grid.neigh(curBase, pos);
           if (n < 0) continue;
@@ -1932,7 +1989,7 @@ function tryDraw(
           const run = dcp.clone();
           const err = drawOrder(adjE, new Map([[a, n]]), grid, run, cutoff, ctx);
           if (err === 'DRAWN') {
-            cands.push({ run, score: run.score(), disp: dist(grid.basePos(n), geoPos) });
+            cands.push({ run, score: run.score() + revPen(run), disp: dist(grid.basePos(n), geoPos) });
           }
 
           // reset the grid to the un-drawn state
@@ -1951,12 +2008,12 @@ function tryDraw(
           }
         }
         bestRun = pick.run;
-        bestScore = pick.score;
+        bestEff = pick.score;
       }
 
       if (bestRun) {
         // accept the move immediately
-        sweepImp += drawing.score() - bestScore;
+        sweepImp += statusQuoEff - bestEff;
         drawing = bestRun;
         const newBase = drawing.nds.get(a)!;
         grid.settleNd(newBase, a);
