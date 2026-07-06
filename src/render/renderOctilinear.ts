@@ -3285,7 +3285,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     }
   }
 
-  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'box');
+  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'curve');
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];

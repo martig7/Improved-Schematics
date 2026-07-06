@@ -1564,7 +1564,7 @@ export function drawSmoothed(
     dark: pre.dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
-    megaFallback: opts.megaFallback ?? 'box',
+    megaFallback: opts.megaFallback ?? 'curve',
     transfers: pre.transfers,
     backdrop,
     gridOverlay: pre.gridOverlay,

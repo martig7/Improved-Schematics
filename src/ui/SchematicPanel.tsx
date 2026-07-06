@@ -102,6 +102,11 @@ const boxGrowthFromPos = (p: number) => Math.max(1, 2.5 * Math.pow(2, p));
 // bakes into the layout (which regions warp), so it rides the Apply/Save flow and is
 // part of the fingerprint. A direct value in [BOX_FRAC_MIN, BOX_FRAC_MAX]; default 0.4.
 const DEFAULT_BOX_FRAC = 0.4;
+// Per-station complex split is the default layout (each platform of a
+// multi-station complex placed at its real position). Part of the fingerprint.
+const DEFAULT_STATION_SPLIT = true;
+// Dense-hub ("megabox") fallback shape default: 'curve' (squircle) vs 'box'.
+const DEFAULT_MEGA_FALLBACK: 'box' | 'curve' = 'curve';
 const BOX_FRAC_MIN = 0.1;
 const BOX_FRAC_MAX = 0.8;
 
@@ -266,7 +271,7 @@ export function SchematicPanel() {
   const [showLabels, setShowLabels] = useState(rvis.showLabels ?? false);
   // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
   // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
-  const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? 'box');
+  const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? DEFAULT_MEGA_FALLBACK);
   // Landmass style: geography backdrop as-is ('faithful'), simplified rounded
   // blobs ('rounded'), or octilinear-snapped diagram blobs ('diagram'), with a
   // 0..1 strength. Draw-time only (not in the layout fingerprint); persisted
@@ -323,12 +328,12 @@ export function SchematicPanel() {
   const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
   // Box density cutoff (densityBoxWarp frac) — same draft→Save flow as the realism sliders.
   const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
-  // BETA: per-station complex split (layout-baking toggle, same draft→Save flow).
-  const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? false);
+  // Per-station complex split (layout-baking toggle, same draft→Save flow).
+  const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? DEFAULT_STATION_SPLIT);
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/stationSplit → default them
-        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: rapp.stationSplit ?? false }
+        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -337,7 +342,7 @@ export function SchematicPanel() {
           linePos: DEFAULT_REALISM_POS,
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
-          stationSplit: false,
+          stationSplit: DEFAULT_STATION_SPLIT,
         },
   );
   const appearanceDirty =
@@ -359,7 +364,7 @@ export function SchematicPanel() {
     linePos === DEFAULT_REALISM_POS &&
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
-    stationSplit === false &&
+    stationSplit === DEFAULT_STATION_SPLIT &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
@@ -367,7 +372,7 @@ export function SchematicPanel() {
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
     applied.boxFrac === DEFAULT_BOX_FRAC &&
-    applied.stationSplit === false;
+    applied.stationSplit === DEFAULT_STATION_SPLIT;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -457,10 +462,10 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/stationSplit
-    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: apRaw.stationSplit ?? false };
+    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
-    setMegaFallback(v.megaFallback ?? 'box');
+    setMegaFallback(v.megaFallback ?? DEFAULT_MEGA_FALLBACK);
     setLandmass(v.landmass ?? 'faithful');
     setLandmassDetail(v.landmassDetail ?? 0.5);
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
@@ -1103,7 +1108,7 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
-      stationSplit: false,
+      stationSplit: DEFAULT_STATION_SPLIT,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
     const liveFp = fp
@@ -2012,26 +2017,11 @@ export function SchematicPanel() {
                     onChange={setBoxFrac}
                   />
 
-                  {/* BETA: per-station complex split. Bakes into the layout
+                  {/* Per-station complex split. Bakes into the layout
                       (fingerprinted), so it rides the same draft→Save flow as
                       the realism sliders — Save regenerates. */}
                   <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-                    <span>
-                      Split station complexes{' '}
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          padding: '1px 5px',
-                          borderRadius: 4,
-                          background: 'rgba(234,179,8,0.18)',
-                          color: api.ui.getResolvedTheme() === 'dark' ? '#facc15' : '#a16207',
-                          border: '1px solid rgba(234,179,8,0.45)',
-                        }}
-                      >
-                        BETA
-                      </span>
-                    </span>
+                    <span>Split station complexes</span>
                     <input
                       type="checkbox"
                       checked={stationSplit}
@@ -2039,13 +2029,6 @@ export function SchematicPanel() {
                       style={{ cursor: 'pointer' }}
                     />
                   </label>
-                  {stationSplit && (
-                    <span style={{ fontSize: 11, lineHeight: 1.35, opacity: 0.65, marginTop: -6 }}>
-                      ⚠ Beta: lays out each platform of a multi-station complex at its real
-                      position instead of one merged point. Untested on most networks — markers
-                      or transfers may misplace. Turn off and Save to go back.
-                    </span>
-                  )}
 
                   {/* Map shape: the landmass backdrop style. Draw-time (like
                       Label size) — the dropdown + slider apply instantly with a
@@ -2102,7 +2085,7 @@ export function SchematicPanel() {
                     setLinePos(DEFAULT_REALISM_POS);
                     setBoxWarpPos(DEFAULT_REALISM_POS);
                     setBoxFrac(DEFAULT_BOX_FRAC);
-                    setStationSplit(false);
+                    setStationSplit(DEFAULT_STATION_SPLIT);
                     setLandmass('faithful');
                     setLandmassDetail(0.5);
                     setApplied({
@@ -2113,7 +2096,7 @@ export function SchematicPanel() {
                       linePos: DEFAULT_REALISM_POS,
                       boxWarpPos: DEFAULT_REALISM_POS,
                       boxFrac: DEFAULT_BOX_FRAC,
-                      stationSplit: false,
+                      stationSplit: DEFAULT_STATION_SPLIT,
                     });
                     // Smoothed bakes these into the precompute → rebuild.
                     if (mode === 'smoothed' && smoothedReady) regenerate();
