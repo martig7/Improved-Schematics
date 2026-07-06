@@ -9,12 +9,10 @@
 // correctly ignored while the loop is caught.
 
 import type { Pixel } from './types';
+import { envNum } from '../../env';
 
 const num = (k: string, d: number): number => {
-  const v =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.[k])
-      : NaN;
+  const v = envNum(k);
   return Number.isFinite(v) ? v : d;
 };
 

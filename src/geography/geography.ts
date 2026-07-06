@@ -9,6 +9,7 @@ import { featuresBbox } from './bbox';
 import { combineClose } from './combine';
 import { readGeoCache, writeGeoCache } from './geoCache';
 import { computeHarvestBbox, bboxApproxEqual } from './harvestBbox';
+import { envNum as readEnvNum } from '../env';
 
 const TAG = '[ImprovedSchematics] geography:';
 // In-memory per-city cache, tagged with the harvest extent so a changed demand extent
@@ -19,7 +20,7 @@ const cache = new Map<string, { bbox: BoundingBox; geography: GeographyData }>()
 /** Read a numeric dev knob from the environment (Electron renderer exposes
  *  process.env, mirroring the OCTI_* tuning vars), falling back to a default. */
 function envNum(name: string, fallback: number): number {
-  const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[name]) : NaN;
+  const v = readEnvNum(name);
   return Number.isFinite(v) ? v : fallback;
 }
 
