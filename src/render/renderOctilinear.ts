@@ -2,6 +2,7 @@
 // pre-projected node pixels and paints the route lines, stops, and labels for
 // the smoothed renderer.
 
+import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
@@ -246,7 +247,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // shipped behaviour. OCTI_WIDE_MULT lets us probe whether a still-wider search
   // recovers boxes (diagnostic for coincident- vs divergent-lane megaboxes).
   const WIDE_MULT = (() => {
-    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WIDE_MULT) : NaN;
+    const v = envNum('OCTI_WIDE_MULT');
     return Number.isFinite(v) && v >= 1 ? v : 2;
   })();
   const WIDE_ARC = CHAIN_ARC_LIMIT * WIDE_MULT;
@@ -260,13 +261,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // coarse slide grid px (default 4); OCTI_FAR_CAP = lane-curve window cap px
   // (default 400) — bounds both the search and its cost.
   const farSlideOn =
-    (typeof process === 'undefined' ? undefined : (process as { env?: Record<string, string> }).env?.OCTI_FAR_SLIDE) !== '0';
+    (envStr('OCTI_FAR_SLIDE')) !== '0';
   const FAR_STEP = (() => {
-    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_FAR_STEP) : NaN;
+    const v = envNum('OCTI_FAR_STEP');
     return Number.isFinite(v) && v >= 1 ? v : 4;
   })();
   const FAR_CAP = (() => {
-    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_FAR_CAP) : NaN;
+    const v = envNum('OCTI_FAR_CAP');
     return Number.isFinite(v) && v > 0 ? v : 400;
   })();
   // Max lateral lane-jog (in slot-widths) the node join pass will bridge with a
@@ -274,7 +275,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // so a line sweeping most of the bundle (B's out-and-back at Montgomery) draws
   // contiguously. OCTI_GAP_MULT overrides.
   const bigGapMult = (() => {
-    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_GAP_MULT) : NaN;
+    const v = envNum('OCTI_GAP_MULT');
     return Number.isFinite(v) && v > 0 ? v : 16;
   })();
   // Max corner extension per row, as a multiple of `spacing`. The ext1+ext2 cost
@@ -282,7 +283,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // a large safety bound rather than a hard divergent-bundle reject. Raised 6→12
   // so the divergent NO-PAIRING hubs (Beach & Mason ms15, Columbus ms17) seat.
   const extCapMult = (() => {
-    const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_EXTCAP_MULT) : NaN;
+    const v = envNum('OCTI_EXTCAP_MULT');
     return Number.isFinite(v) && v > 0 ? v : 12;
   })();
   const segPath = new Map<string, Pixel[]>(); // edge.id|lineId -> offset polyline
@@ -633,14 +634,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   };
   // OCTI_NO_TURNMITER=1 A/B-disables the octilinear turn miter (default ON).
   const noTurnMiter =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_NO_TURNMITER === '1';
+    envStr('OCTI_NO_TURNMITER') === '1';
   // OCTI_NO_DOGLEG=1 A/B-disables the forward-turn two-bend dogleg (default ON),
   // independently of the turn miter.
   const noDogleg =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_NO_DOGLEG === '1';
-  const JOIN_TRACE = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_JOIN_TRACE : undefined;
+    envStr('OCTI_NO_DOGLEG') === '1';
+  const JOIN_TRACE = typeof process !== 'undefined' ? envStr('OCTI_JOIN_TRACE') : undefined;
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     const jlog = (m: string) => { if (JOIN_TRACE === lineId) console.error('[join] ' + m); };
@@ -723,8 +722,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // mega-box the rigid-row marker. Only this minimal end-move is safe.)
         // Browser-safe env guard: `process` is undefined in the game renderer.
         const noUncross =
-          typeof process !== 'undefined' &&
-          (process as { env?: Record<string, string> }).env?.OCTI_NO_UNCROSS === '1';
+          envStr('OCTI_NO_UNCROSS') === '1';
         const X = noUncross ? null : segCross(qa1, qa, qb1, qb);
         if (X && !endMoved.has(keyA) && !endMoved.has(keyB)) {
           if (aAtStart) pA[0] = X; else pA[pA.length - 1] = X;
@@ -931,7 +929,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // route's skeleton is a perfect overlap, so a self-crossing loop at a station
   // group (Chicago Blue A at Chestnut St) is invisible there but plain in the
   // painted lanes. Each loop is anchored to its nearest station group.
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_LOOPS) {
+  if (envStr('OCTI_LOOPS')) {
     const routesPainted: Array<{ lineId: string; pts: Pixel[] }> = [];
     for (const [lineId, traversal] of layout.lineTraversals) {
       if (!lineById.has(lineId)) continue;
@@ -1152,8 +1150,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     //   (no stopNodes) — the station was stripped upstream (its node did not
     //          survive imageMerge's node remap), so it never had marks to lose
     if (
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+      envStr('OCTI_DEBUG')
     ) {
       let vanished = 0;
       for (let i = 0; i < args.stations.length; i++) {
@@ -1204,9 +1201,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // overrides (raise it to clear more genuine pinches at the cost of overlap).
     const minGapSlack = (() => {
       const env =
-        typeof process !== 'undefined'
-          ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINGAP_SLACK)
-          : NaN;
+        envNum('OCTI_MINGAP_SLACK');
       return Number.isFinite(env) && env >= 0 ? env : 0;
     })();
     const intraGap = Math.max(2, 2 * r * MARKER_SCALE - minGapSlack);
@@ -1215,9 +1210,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // 0 = hard floor.
     const boxRescueMax = (() => {
       const env =
-        typeof process !== 'undefined'
-          ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_RESCUE)
-          : NaN;
+        envNum('OCTI_BOX_RESCUE');
       return Number.isFinite(env) && env >= 0 ? env : 1.5;
     })();
     // Cross-station §6 mask strictness (OCTI_XMASK): a candidate dot is vetoed
@@ -1229,7 +1222,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // 28→18 drawn boxes recovered) whose rings actually fit, with NO overlap.
     // OCTI_XMASK=1 restores the legacy strict 2r; higher widens the gap.
     const xMaskFactor = (() => {
-      const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XMASK) : NaN;
+      const v = envNum('OCTI_XMASK');
       return Number.isFinite(v) && v > 0 ? v : MARKER_SCALE;
     })();
     // SOFT cross-station mask parameters (replace the hard veto). comfort radius
@@ -1243,7 +1236,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const xMaskComfort = 2 * r * xMaskFactor - 0.05;
     const xMaskStack = Math.max(1.5, 0.4 * xMaskComfort);
     const xMaskWeight = (() => {
-      const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_XMASK_W) : NaN;
+      const v = envNum('OCTI_XMASK_W');
       return Number.isFinite(v) && v >= 0 ? v : 40;
     })();
     const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
@@ -1363,7 +1356,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // OCTI_PLACE_ORDER=input restores the legacy id-order (debugging).
     const placeOrderKey =
       typeof process !== 'undefined'
-        ? (process as { env?: Record<string, string> }).env?.OCTI_PLACE_ORDER
+        ? envStr('OCTI_PLACE_ORDER')
         : undefined;
     const byId = (a: number, b: number) =>
       gathered[a].nodeId < gathered[b].nodeId ? -1 : gathered[a].nodeId > gathered[b].nodeId ? 1 : 0;
@@ -1704,7 +1697,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             s.marks = clusters[keep].map((i) => s.marks[i]);
             s.splitBase = s.nodeId;
             placeQueue.push(s); // re-solve the shrunken primary cluster
-            if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
+            if (envStr('OCTI_PLACE_DEBUG') === '1') {
               console.error(
                 `[stops] platform-split "${layout.nodes.get(s.nodeId)?.label ?? s.nodeId}" ` +
                 `-> ${clusters.length} bundle units [${clusters.map((c) => c.length).join(',')}]`,
@@ -1725,7 +1718,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // with ldeg>deg means lines are welded onto few corridors → fan-fold /
           // over-weld (fix = de-weld). deg>8 means genuine 8-direction saturation
           // (fix = split the hub; we cannot add directions without breaking octi).
-          if (typeof process !== 'undefined' && process.env?.OCTI_PLACE_DEBUG === '1') {
+          if (envStr('OCTI_PLACE_DEBUG') === '1') {
             let deg = 0;
             for (const e of layout.edges) if (e.from === s.nodeId || e.to === s.nodeId) deg++;
             let cx = 0, cy = 0;
@@ -2239,8 +2232,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         return out;
       };
       const mutualEnabled = !(
-        typeof process !== 'undefined' &&
-        (process as { env?: Record<string, string> }).env?.OCTI_MUTUAL_SLIDE === '0'
+        envStr('OCTI_MUTUAL_SLIDE') === '0'
       );
       const smalls = gathered.filter((s) => s.marks.length > 0 && !boxOf(s).mega);
       const slidNodes = new Set<string>(); // pinned after one slide (mutual mode)
@@ -2310,8 +2302,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // as a TRUE last resort, GUARANTEEING no residual distinct-station marker
       // overlap. OCTI_NOOVL_FLOOR=0 disables it (diagnostic).
       const noOvlEnabled = !(
-        typeof process !== 'undefined' &&
-        (process as { env?: Record<string, string> }).env?.OCTI_NOOVL_FLOOR === '0'
+        envStr('OCTI_NOOVL_FLOOR') === '0'
       );
       if (noOvlEnabled) {
         const touch = 2 * r + 1.5; // casing rings just clear at this center gap
@@ -2331,7 +2322,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // the slidable/straight-corridor cases). OCTI_NOOVL_BOX=<px> re-enables the
         // last-resort box (e.g. =2r to box fill-merges, =touch to box every graze).
         const boxFloor = (() => {
-          const v = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_NOOVL_BOX) : NaN;
+          const v = envNum('OCTI_NOOVL_BOX');
           return Number.isFinite(v) && v >= 0 ? v : 0;
         })();
         // A station is "boxed" (renders as a rect, no rings) when either it is a
@@ -2452,7 +2443,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // box SKIPS them. Determinism: hyp(), projection + nodeId tie-breaks.
         // Gated under OCTI_NOOVL_FLOOR (default on); OCTI_CORRIDOR_SPREAD=0
         // disables only this spread (diagnostic — falls back to box-everything).
-        const spreadEnabled = !(typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CORRIDOR_SPREAD === '0');
+        const spreadEnabled = !(envStr('OCTI_CORRIDOR_SPREAD') === '0');
         const corridorPairs = new Set<string>(); // "ai|bi" (ai<bi) seen adjacent
         const pairKey = (i: number, j: number) => (i < j ? i + '|' + j : j + '|' + i);
         // Shared drawn corridor between two stations: a lineId carried by a mark
@@ -2539,7 +2530,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // capsules link junction hubs into large messy chains that (even with the
         // atomic guard) can leave a residual severe overlap, so they stay off
         // unless OCTI_CORRIDOR_MULTI=1 opts them in (the atomic plan still guards).
-        const allowMulti = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CORRIDOR_MULTI === '1';
+        const allowMulti = envStr('OCTI_CORRIDOR_MULTI') === '1';
         const eligible = (st: StMarks) => allowMulti || singleBullet(st);
         const singles: number[] = [];
         if (spreadEnabled) for (let i = 0; i < smalls.length; i++) if (!isBoxed(smalls[i]) && eligible(smalls[i])) singles.push(i);
@@ -2580,7 +2571,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         };
         let spreadChains = 0;
         let spreadMembers = 0;
-        const SPREAD_DBG = typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.CSPREAD_DEBUG;
+        const SPREAD_DBG = envStr('CSPREAD_DEBUG');
         for (const members of chains.values()) {
           if (members.length < 2) continue;
           // only spread chains that actually contain an OVERLAPPING (< touch)
@@ -2741,7 +2732,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // station that are NOT same-row-adjacent (a folded spine / piled junction).
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
-      if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
+      if (envStr('OCTI_DEBUG')) {
       const ringDia = 2 * r + 1.5;
       const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
       // Re-filter to stations still drawn as bullets: a station boxed by the
@@ -2777,7 +2768,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       ovls.sort((p, q) => p.dist - q.dist);
       const lbl = (id: string) => layout.nodes.get(id)?.label ?? '';
       const xstnAll = ovls.filter((o) => o.kind === 'XSTN');
-      for (const o of (process.env.OCTI_XSTN_ALL ? xstnAll : ovls.slice(0, 25))) {
+      for (const o of (envStr('OCTI_XSTN_ALL') ? xstnAll : ovls.slice(0, 25))) {
         const nm = o.kind === 'XSTN' ? ` "${lbl(o.a)}" vs "${lbl(o.b)}"` : '';
         console.error(`[stops] ${o.kind} ${o.dist.toFixed(1)}px ${o.a} vs ${o.b}${nm} @(${o.x.toFixed(0)},${o.y.toFixed(0)})`);
       }
@@ -2788,8 +2779,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
     if (
       slid.length > 0 &&
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+      envStr('OCTI_DEBUG')
     ) {
       for (const s of slid) {
         const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
@@ -2964,8 +2954,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       if (
         evicted.length > 0 &&
-        typeof process !== 'undefined' &&
-        (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+        envStr('OCTI_DEBUG')
       ) {
         for (const e of evicted) {
           const label = layout.nodes.get(e.node)?.label ?? e.node;
@@ -3011,8 +3000,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // regressive curveLaneJoin; marks the pair mitered so the connector pass
   // skips it. Only touches consecutive pairs no earlier join already handled.
   const noDrawFillet =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_NO_DRAWFILLET === '1';
+    envStr('OCTI_NO_DRAWFILLET') === '1';
   if (!noDrawFillet) {
     for (const [lineId, traversal] of layout.lineTraversals) {
       if (!lineById.has(lineId)) continue;
@@ -3105,7 +3093,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // dev sweeps.
       const bundleSpan = ((orderOf.get(a.edgeId)?.length ?? 1) + (orderOf.get(b.edgeId)?.length ?? 1)) * spacing;
       const maxGapEnv =
-        typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_CONN_MAXGAP) : NaN;
+        envNum('OCTI_CONN_MAXGAP');
       const maxGap = Number.isFinite(maxGapEnv) && maxGapEnv > 0 ? maxGapEnv : Math.max(spacing * 8, bundleSpan);
       if (gap < 0.5 || gap > maxGap) continue; // coincident, or pathological jump
       let d = dByLine.get(lineId);
@@ -3126,7 +3114,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // sweeps instead of tight Z-jogs)
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
-      if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_CONN_TRACE === lineId) {
+      if (envStr('OCTI_CONN_TRACE') === lineId) {
         const np = layout.nodes.get(endA)?.cell;
         console.error(`[conn] ${endA} pa=(${pa[0].toFixed(1)},${pa[1].toFixed(1)}) pb=(${pb[0].toFixed(1)},${pb[1].toFixed(1)}) gap=${gap.toFixed(1)} prevA=(${prevA[0].toFixed(1)},${prevA[1].toFixed(1)}) nextB=(${nextB[0].toFixed(1)},${nextB[1].toFixed(1)}) dirA=(${dirA[0].toFixed(2)},${dirA[1].toFixed(2)}) dirB=(${dirB[0].toFixed(2)},${dirB[1].toFixed(2)}) nA=${polyA.length} nB=${polyB.length} edges=${a.edgeId}|${b.edgeId} cell=${np ? np[0] + ',' + np[1] : '?'}`);
       }
@@ -3166,8 +3154,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   }
 
   if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    envStr('OCTI_DEBUG')
   ) {
     console.error(
       `[ribbons] per-edge: ${segPath.size} segments across ${layout.edges.length} edges, ` +

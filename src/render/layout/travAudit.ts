@@ -4,6 +4,7 @@
 // breaks a traversal identifies itself. Enable with OCTI_AUDIT=1 (all lines)
 // or OCTI_AUDIT=<lineId-prefix>.
 
+import { envStr } from '../../env';
 import type { TraversalStep } from './types';
 
 export interface AuditEdge {
@@ -24,7 +25,7 @@ export function auditZigzags(
   lineLabel?: (lineId: string) => string,
 ): void {
   const flag =
-    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_AUDIT : undefined;
+    typeof process !== 'undefined' ? envStr('OCTI_AUDIT') : undefined;
   if (!flag) return;
   let total = 0;
   const perLine: string[] = [];
@@ -76,7 +77,7 @@ export function auditTraversals(
   lineLabel?: (lineId: string) => string,
 ): void {
   const flag =
-    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_AUDIT : undefined;
+    typeof process !== 'undefined' ? envStr('OCTI_AUDIT') : undefined;
   if (!flag) return;
   const fmt = (nid: string): string => {
     const p = getPos(nid);

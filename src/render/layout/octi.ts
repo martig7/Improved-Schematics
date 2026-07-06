@@ -12,6 +12,7 @@
 //     grid positions (plus staying put), re-route its incident edges, and keep
 //     the best-scoring placement until convergence.
 
+import { envStr, envNum } from '../../env';
 import type { Pixel, SupportGraph, SupportEdge, Image } from './types';
 import {
   OctiGridGraph,
@@ -63,7 +64,7 @@ const CONVERGENCE_THRESHOLD = 0.05;
 
 /** Set OCTI_DEBUG=1 to log ordering scores and local-search convergence. */
 const DBG: boolean =
-  typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
+  typeof process !== 'undefined' && !!envStr('OCTI_DEBUG');
 
 function dist(a: Pixel, b: Pixel): number {
   const dx = a[0] - b[0], dy = a[1] - b[1];
@@ -674,9 +675,7 @@ function buildCombCtx(
 
   const geoW = opts.geographicAffinity ?? 0;
   const lenEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_LENPRES)
-      : NaN;
+    envNum('OCTI_LENPRES');
   const lenPresW = Number.isFinite(lenEnv) ? lenEnv : (opts.lenPresW ?? 0);
   const chordCache = new Map<string, number>();
   const geoLenOf = (ce: SupportEdge): number => {
@@ -1167,7 +1166,7 @@ function getRtPair(
 // closure/settlement, so the census names the availability gap that forces
 // wandering (RCA cost-regime Phase 1).
 const BLOCKAGE: boolean =
-  typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_BLOCKAGE;
+  typeof process !== 'undefined' && !!envStr('OCTI_BLOCKAGE');
 export const blockageStats = {
   routed: 0,
   wanderers: 0,
@@ -1284,8 +1283,7 @@ function drawOrder(
     let [frCands, toCands] = getRtPair(frNd, toNd, preSettled, grid, ctx);
     if (frCands.length === 0 || toCands.length === 0) {
       if (
-        typeof process !== 'undefined' &&
-        (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+        envStr('OCTI_DEBUG')
       ) {
         const why = (nd: string, cands: number[]) =>
           `${nd}(deg=${ctx.deg(nd)},settled=${grid.isSettled(nd)},cands=${cands.length})`;
@@ -1537,7 +1535,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
       );
     const traceP =
       typeof process !== 'undefined'
-        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_PATHS
+        ? envStr('OCTI_TRACE_PATHS')
         : undefined;
     if (traceP) {
       const [tx, ty] = traceP.split(',').map(Number);
@@ -1747,7 +1745,7 @@ function expandImage(imageC: Image, h: SupportGraph, hC: SupportGraph, info: Col
     // for the chain containing that node.
     const traceNd =
       typeof process !== 'undefined'
-        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_CHAIN
+        ? envStr('OCTI_TRACE_CHAIN')
         : undefined;
     const traceHit = (() => {
       if (!traceNd) return false;
@@ -1984,7 +1982,7 @@ function tryDraw(
     }
   }
   const COURSE_DETOUR_PEN =
-    typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_COURSE_PEN === '0'
+    envStr('OCTI_COURSE_PEN') === '0'
       ? 0
       : grid.pens.crossingPen * 3; // per unit of excess arc/chord ratio (OCTI_COURSE_PEN=0: diagnostic A/B)
   const DETOUR_FREE = 1.45; // 90° equal-leg corner = 1.414, always free
@@ -2036,7 +2034,7 @@ function tryDraw(
     return Math.abs(a2) / 2;
   };
   const LOOP_PEN =
-    typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_LOOP_PEN === '0'
+    envStr('OCTI_LOOP_PEN') === '0'
       ? 0
       : grid.pens.crossingPen * 6; // per unit of area deficit (OCTI_LOOP_PEN=0: diagnostic A/B)
   interface LoopCycle { nds: string[]; target: number }
@@ -2075,9 +2073,7 @@ function tryDraw(
   // faithfulness the continuous ndMovePen can't buy without jagging junctions.
   // dist() is sqrt-based and the argmin is a total order → deterministic.
   const tieEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_TIEBREAK)
-      : NaN;
+    envNum('OCTI_TIEBREAK');
   const TIEBREAK_GEO = Number.isFinite(tieEnv) && tieEnv >= 0;
   const TIEBREAK_EPS = TIEBREAK_GEO ? tieEnv : 0;
 
@@ -2332,8 +2328,7 @@ function tryDraw(
   // actually paid in geographic-course penalty and how far it strays from the
   // course. This is the ground truth for "is geoPen inert or just out-bid".
   if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_TRACE_GEO
+    envStr('OCTI_TRACE_GEO')
   ) {
     const geoW = opts.geographicAffinity ?? 0;
     const devTo = (p: Pixel, course: Pixel[]): number => {
@@ -2383,7 +2378,7 @@ function tryDraw(
 
     // OCTI_TRACE_CE=<id,...>: who occupies the grid along this edge's TRUE
     // course in the final state, the would-be faithful corridor's residents.
-    const traceCe = (process as { env?: Record<string, string> }).env?.OCTI_TRACE_CE;
+    const traceCe = envStr('OCTI_TRACE_CE');
     for (const ceId of (traceCe ?? '').split(',').filter(Boolean)) {
       const ce = h.edges.get(ceId);
       if (!ce) { console.error(`[octi] TRACE_CE ${ceId}: no such edge`); continue; }

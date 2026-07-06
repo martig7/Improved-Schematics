@@ -12,6 +12,7 @@
 // untangleLineOrder. Selected by OCTI_ORDER=blocks|loom at the
 // renderGeographic call site.
 
+import { envStr } from '../../env';
 import type { Layout, LayoutEdge } from './types';
 import {
   type Block,
@@ -268,7 +269,7 @@ export function orderByBlocks(layout: Layout): void {
   // back-edge disagreements), the blocks-mode analogue of OCTI_TRACE1.
   const traceLine =
     typeof process !== 'undefined'
-      ? (process as { env?: Record<string, string> }).env?.OCTI_BLOCKS_TRACE
+      ? envStr('OCTI_BLOCKS_TRACE')
       : undefined;
   const lbl = (nd: string): string => layout.nodes.get(nd)?.label || '·';
   const cinfo = (c: Corridor): string =>
@@ -543,7 +544,7 @@ export function orderByBlocks(layout: Layout): void {
     }
   }
 
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
+  if (envStr('OCTI_DEBUG')) {
     console.error(
       `[blocks] corridors=${cs.corridors.length} planned-crossings=${plannedSwaps} cycle-residuals=${residualSwaps} (all at junctions by construction)`,
     );
@@ -577,7 +578,7 @@ function reportStraightFlips(
   let scored = 0;
   let diverge = 0;
   const detail =
-    typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_FLIP_DETAIL === '1';
+    envStr('OCTI_FLIP_DETAIL') === '1';
   const edges = layout.edges.filter((e) => e.from !== e.to && e.lines.length > 0);
   const incAll = new Map<string, LayoutEdge[]>();
   for (const e of edges) {

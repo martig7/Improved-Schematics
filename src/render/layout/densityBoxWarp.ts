@@ -49,6 +49,7 @@
 // (local room), finding boxes and measuring demand in separable-warped space.
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
+import { envStr, envNum } from '../../env';
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
 import { densityGrid2D } from './densityWarp2d';
@@ -639,7 +640,7 @@ export function findDenseBoxes(
   const cutoff = frac * emax;
 
   // OCTI_BOX_PROBE diagnostics: density surface + cutoff (tuning aid)
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BOX_PROBE) {
+  if (envStr('OCTI_BOX_PROBE')) {
     let above = 0;
     let pos = 0;
     for (let i = 0; i < B * B; i++) { if (e[i] > 0) pos++; if (e[i] >= cutoff && e[i] > 0) above++; }
@@ -873,7 +874,7 @@ export function buildDemandBoxWarp(
   const maxGrowth = opts.maxGrowth ?? 2.5;
   const marginFrac = opts.marginFrac ?? 1;
   const anisoAmt = (() => {
-    const env = typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_BOX_ANISO) : NaN;
+    const env = envNum('OCTI_BOX_ANISO');
     const a = Number.isFinite(env) ? env : (opts.aniso ?? 1);
     return Math.min(1, Math.max(0, a));
   })();
@@ -894,7 +895,7 @@ export function buildDemandBoxWarp(
   // leaves boxes unsplit.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
   // OCTI_BOX_PROBE diagnostics: box provenance across discovery, merge, split
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BOX_PROBE) {
+  if (envStr('OCTI_BOX_PROBE')) {
     const nIn = (b: DenseBox): number => {
       let n = 0;
       for (const p of g.nodes) if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) n++;
@@ -1052,7 +1053,7 @@ export function buildDemandBoxWarp(
   result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
   if (out) { out.expands = expands; out.aniso = rs; }
 
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_WARP_DEBUG) {
+  if (envStr('OCTI_WARP_DEBUG')) {
     const ex = expands.map((e) => e.toFixed(2)).join(',');
     const an = rs.map((r) => r.toFixed(2)).join(',');
     console.error(

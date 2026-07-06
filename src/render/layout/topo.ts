@@ -3,6 +3,7 @@
 // ids, then re-insert stations at the best-scoring support nodes.
 // Reference: Brosi & Bast 2024, "Network Topology Extraction".
 
+import { envStr } from '../../env';
 import type { Coordinate } from '../../types/core';
 import type {
   Pixel,
@@ -281,7 +282,7 @@ export class HBuilder {
   contractDegree2WithMatchingLines(): void {
     const trace =
       typeof process !== 'undefined'
-        ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+        ? envStr('OCTI_TRACE_LINE')
         : undefined;
     let changed = true;
     while (changed) {
@@ -709,7 +710,7 @@ export function collapseSharedSegments(
 
   const trace2 =
     typeof process !== 'undefined'
-      ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+      ? envStr('OCTI_TRACE_LINE')
       : undefined;
 
   const imgNds = new Map<string, string>();
@@ -791,7 +792,7 @@ export function collapseSharedSegments(
 
   const trace =
     typeof process !== 'undefined'
-      ? (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE
+      ? envStr('OCTI_TRACE_LINE')
       : undefined;
   if (trace) {
     const n = h.edgeList().filter((e) => e.lineIds.has(trace)).length;
@@ -1140,8 +1141,7 @@ function weldRedundantStubs(
   }
   if (
     stubWelds > 0 &&
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+    envStr('OCTI_AUDIT')
   ) {
     console.error(`[audit:fire] weldRedundantStubs=${stubWelds}`);
   }
@@ -1163,7 +1163,7 @@ function absorbJunctionStubs(
 ): void {
   const DBG =
     typeof process !== 'undefined' &&
-    !!(process as { env?: Record<string, string> }).env?.OCTI_DEBUG;
+    !!envStr('OCTI_DEBUG');
   let absorbed = 0;
   for (const eid of [...edges.keys()].sort()) {
     const e = edges.get(eid);
@@ -1209,8 +1209,7 @@ function absorbJunctionStubs(
   }
   if (
     absorbed > 0 &&
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+    envStr('OCTI_AUDIT')
   ) {
     console.error(`[audit:fire] absorbJunctionStubs=${absorbed}`);
   }
@@ -1654,8 +1653,7 @@ export function buildSupportGraph(
       curNode = target;
     }
     if (
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_TRACE_LINE === lineId
+      envStr('OCTI_TRACE_LINE') === lineId
     ) {
       console.error(
         `[trav] line ${lineId.slice(0, 8)}: graphNodes=${graphNodes.length} ` +
@@ -1665,8 +1663,7 @@ export function buildSupportGraph(
     if (steps.length > 0) lineTraversals.set(lineId, steps);
   }
   if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_AUDIT
+    envStr('OCTI_AUDIT')
   ) {
     console.error(
       `[audit:heal-ladder] path=${healStats.bfs} ` +
@@ -1819,8 +1816,7 @@ export function buildSupportGraph(
   }
 
   if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_DEBUG
+    envStr('OCTI_DEBUG')
   ) {
     let anchors = 0;
     for (const id of nodes.keys()) if (id.startsWith('ha')) anchors++;

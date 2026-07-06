@@ -1,3 +1,4 @@
+import { envNum } from '../env';
 // Octilinear layout + render constants, ported verbatim from the game
 // (dev/reference/_constants.txt). Values must match the source. Do not change them.
 
@@ -19,7 +20,7 @@ export const CELL_PX = 36;
 const LINE_WIDTH_DEFAULT = 3.5;
 export const LINE_WIDTH =
   (typeof process !== 'undefined' &&
-    Number((process as { env?: Record<string, string> }).env?.IS_LINE_WIDTH)) ||
+    envNum('IS_LINE_WIDTH')) ||
   LINE_WIDTH_DEFAULT;
 export const LINE_GAP = 2;
 
@@ -32,9 +33,7 @@ export const LINE_GAP = 2;
  *  undefined inside the game renderer. */
 export const MARKER_SCALE = (() => {
   const env =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.IS_MARKER_SCALE)
-      : NaN;
+    envNum('IS_MARKER_SCALE');
   return Number.isFinite(env) && env > 0 ? env : 0.65;
 })();
 

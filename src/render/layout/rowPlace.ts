@@ -6,6 +6,7 @@
 // chain DP is exact on the discretized state space (R3); the only fallback
 // is the caller's mega box on a null return (R4, no partial degradation).
 
+import { envStr, envNum } from '../../env';
 import type { Pixel } from './types';
 import { type LaneCurve, curvePoint, curveTangent } from './chainPlace';
 
@@ -152,7 +153,7 @@ export function solveRows(
   // so the chain-DP pruning stays sound. OCTI_TURNW tunes it (0 = off).
   const turnW = (() => {
     const v =
-      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_TURNW) : NaN;
+      envNum('OCTI_TURNW');
     return Number.isFinite(v) ? v : 12;
   })();
   const { minGap, arcLimit, extCap, blocked, proximity } = opts;
@@ -260,8 +261,7 @@ export function solveRows(
     return states;
   };
   const dbg =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_PLACE_DEBUG === '1';
+    envStr('OCTI_PLACE_DEBUG') === '1';
   const statsArr: BundleStat[] = [];
   const bundleStates = groups.map((grp, i) => {
     const st: BundleStat | undefined = dbg

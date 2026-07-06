@@ -11,6 +11,7 @@
 // support graph + image whose edges are those runs. Line traversals, station
 // anchors, and stop flags are remapped onto the new edges.
 
+import { envStr } from '../../env';
 import type {
   Pixel,
   SupportGraph,
@@ -224,7 +225,7 @@ export function mergeCoincidentPaths(
   // dev: OCTI_MERGEDBG=<edgeId,edgeId> dumps an old edge's vertex list and its
   // run chain after pass 4 (which runs cover it, in what order/orientation).
   const mergeDbg =
-    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_MERGEDBG : undefined;
+    typeof process !== 'undefined' ? envStr('OCTI_MERGEDBG') : undefined;
   if (mergeDbg) {
     for (const eid of mergeDbg.split(',')) {
       const verts = edgeVerts.get(eid);

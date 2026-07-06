@@ -3,6 +3,7 @@
 // positions (Smoothed mode). Smoothed reuses the schematic's ribbon renderer so
 // lines bundle into parallel ribbons and multi-route stops become pills.
 
+import { envStr, envNum } from '../env';
 import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
 import type { WaterCollection, SchematicOptions } from './types';
@@ -495,7 +496,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   } as never).fp;
   // Stage timing (dev): OCTI_PERF=1 logs per-stage wall-clock to stderr so the
   // octi pass can be isolated from topo merge / untangle / render when profiling.
-  const PERF = typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.OCTI_PERF;
+  const PERF = typeof process !== 'undefined' && !!envStr('OCTI_PERF');
   let _perfT = PERF ? performance.now() : 0;
   const lap = (label: string): void => {
     if (!PERF) return;
@@ -525,7 +526,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   //  dumps carry no stationSplit option but were captured with the split on, so
   //  reproducing them offline needs =1)
   const envSplit =
-    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_GROUP_SPLIT : undefined;
+    typeof process !== 'undefined' ? envStr('OCTI_GROUP_SPLIT') : undefined;
   const perStationNodes = envSplit === '1' ? true : envSplit === '0' ? false : opts.stationSplit === true;
   const graph = buildTransitGraph(sStations, sRoutes, groups, sTracks, { perStationNodes });
   if (graph.edges.length === 0) {
@@ -553,9 +554,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const baseProj = createProjection(bounds, width, height, padding);
   const warpAlpha = (() => {
     const env =
-      typeof process !== 'undefined'
-        ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP)
-        : NaN;
+      envNum('OCTI_WARP');
     if (Number.isFinite(env)) return env; // dev sweep override wins
     if (typeof opts.warpAlpha === 'number' && Number.isFinite(opts.warpAlpha)) return opts.warpAlpha;
     return 0.8;
@@ -565,9 +564,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // to effectively unlimit — the warp stays fold-free at any value).
   const warpMaxScale = (() => {
     const env =
-      typeof process !== 'undefined'
-        ? Number((process as { env?: Record<string, string> }).env?.OCTI_MAXSCALE)
-        : NaN;
+      envNum('OCTI_MAXSCALE');
     return Number.isFinite(env) && env > 0 ? env : 12;
   })();
   // Compression floor for the separable warp: stops it from crushing peripheral
@@ -581,9 +578,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // at the cost of edge compression. OCTI_MINSCALE overrides (0 = no floor).
   const warpMinScale = (() => {
     const env =
-      typeof process !== 'undefined'
-        ? Number((process as { env?: Record<string, string> }).env?.OCTI_MINSCALE)
-        : NaN;
+      envNum('OCTI_MINSCALE');
     return Number.isFinite(env) && env >= 0 ? env : 1;
   })();
   // Per-station warp weight is its line count, UNCAPPED by default so a 10-line
@@ -591,9 +586,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // OCTI_LINECAP re-imposes a finite ceiling for sweeps.
   const warpLineCap = (() => {
     const env =
-      typeof process !== 'undefined'
-        ? Number((process as { env?: Record<string, string> }).env?.OCTI_LINECAP)
-        : NaN;
+      envNum('OCTI_LINECAP');
     return Number.isFinite(env) && env >= 1 ? env : Infinity;
   })();
   // Warp mode. DEFAULT 'both' (buildSepDemandBoxWarp): the separable warp
@@ -616,9 +609,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // separable, 2.5 = up to 2.5× bigger; demand past the cap shrinks globally,
   // default 2.5).
   const warpMode =
-    typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env?.OCTI_WARP_MODE : undefined;
-  const envNum = (k: string): number =>
-    typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.[k]) : NaN;
+    typeof process !== 'undefined' ? envStr('OCTI_WARP_MODE') : undefined;
   // boxFrac (density cutoff) takes the user's "Box density cutoff" setting via opts
   // (the env OCTI_BOX_FRAC override still wins for dev sweeps), mirroring boxExpand/boxGrowth.
   const boxFrac = (() => {
@@ -655,7 +646,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   })();
   const warpSigmaPx = (() => {
     const env =
-      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_SIGMA) : NaN;
+      envNum('OCTI_WARP_SIGMA');
     return Number.isFinite(env) && env > 0 ? env : width / 49;
   })();
   // Flow iterations for the 2D warp (Gastner–Newman). 1 = weak single pass;
@@ -663,7 +654,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // is the MILD setting (keeps the map geographically faithful).
   const warpIters = (() => {
     const env =
-      typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_WARP_ITERS) : NaN;
+      envNum('OCTI_WARP_ITERS');
     return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 10;
   })();
   // Per-station warp weight = (lines through it) × (local crowding):
@@ -677,9 +668,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   //    crowding directly. OCTI_CROWD is the exponent (0 disables → pure line-count).
   const crowdGamma = (() => {
     const env =
-      typeof process !== 'undefined'
-        ? Number((process as { env?: Record<string, string> }).env?.OCTI_CROWD)
-        : NaN;
+      envNum('OCTI_CROWD');
     return Number.isFinite(env) && env >= 0 ? env : 1;
   })();
   const edgeById = new Map<string, (typeof graph.edges)[number]>();
@@ -931,9 +920,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // radius for LOOM-parity sweeps, see dev/_parity-dhat-sweep.ts. Unset in
   // production, so behavior is unchanged.)
   const dHatEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_DHAT)
-      : NaN;
+    envNum('OCTI_DHAT');
   // dHat is a corridor-merge radius, not a stroke property: pinned >= 16px so
   // thinner theme line widths don't shrink the tuned merge radius.
   const dHat =
@@ -942,9 +929,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // isolates round-2+ drift zips (averaged geometry creeping corridors within
   // dHat of each other between rounds) from round-1 geometry-true collapses.)
   const roundsEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_ROUNDS)
-      : NaN;
+    envNum('OCTI_ROUNDS');
   const topoParams: TopoParams = {
     dHat,
     step: Math.max(2, dHat / 4),
@@ -1023,7 +1008,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // NOTE: mirrored pre-warp as `divisorEst` (box-warp contraction oracle).
   // Keep the threshold + constants in sync if tuned here.
   const divisor =
-    (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
+    (typeof process !== 'undefined' && envNum('OCTI_DIVISOR')) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
   // (dev A/B pin: OCTI_CELL=<px> fixes the grid cell absolutely, so upstream
@@ -1035,8 +1020,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)
   if (
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_NO_COMBINE === '1'
+    envStr('OCTI_NO_COMBINE') === '1'
   ) {
     octiOpts.combineDeg2 = false;
   }
@@ -1052,9 +1036,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       ? opts.geographicAffinity
       : 0.05;
   const affEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_AFFINITY)
-      : NaN;
+    envNum('OCTI_AFFINITY');
   if (Number.isFinite(affEnv) && affEnv > 0) {
     octiOpts.geographicAffinity = affEnv; // dev sweep override wins
   }
@@ -1063,9 +1045,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // stations. Default 0.5; higher resists vertical corridor compression but
   // risks switchback zigzags.)
   const denEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_DENSITY)
-      : NaN;
+    envNum('OCTI_DENSITY');
   if (Number.isFinite(denEnv) && denEnv >= 0) {
     octiOpts.penalties = { ...(octiOpts.penalties ?? {}), densityPen: denEnv };
   }
@@ -1079,9 +1059,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // preserve corridor LENGTHS / relative spacing, leave angles free (TODO).
   // Left at default; OCTI_NDMOVE=<n> stays as a dev override for experiments.
   const ndmEnv =
-    typeof process !== 'undefined'
-      ? Number((process as { env?: Record<string, string> }).env?.OCTI_NDMOVE)
-      : NaN;
+    envNum('OCTI_NDMOVE');
   if (Number.isFinite(ndmEnv) && ndmEnv >= 0) {
     octiOpts.penalties = { ...(octiOpts.penalties ?? {}), ndMovePen: ndmEnv };
   }
@@ -1366,8 +1344,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // entirely (barycenter seed only, diagnostic).
   if (
     !(
-      typeof process !== 'undefined' &&
-      (process as { env?: Record<string, string> }).env?.OCTI_NO_UNTANGLE === '1'
+      envStr('OCTI_NO_UNTANGLE') === '1'
     )
   ) {
     orderByBlocks(layout);

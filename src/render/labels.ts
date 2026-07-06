@@ -2,6 +2,7 @@
 // (dev/reference/placeLabels.js, renderLabel.js, estimateTextWidth.js,
 // boxesOverlap.js, segmentIntersectsBox.js). Shared by both renderers.
 
+import { envStr } from '../env';
 import type { GraphNode, StopMark, Pixel } from './layout/types';
 import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET } from './constants';
 import { escapeXml } from './escape';
@@ -108,7 +109,7 @@ const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
   // Diagnostic switch: OCTI_NO_LABEL_REANCHOR=1 disables re-anchoring, so the
   // label always hangs off the bare node centre.
-  if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_LABEL_REANCHOR === '1') {
+  if (envStr('OCTI_NO_LABEL_REANCHOR') === '1') {
     return center;
   }
   if (!marks || marks.length < 2) return center;
@@ -145,8 +146,7 @@ export function placeLabels(
   // boxGap is sqrt-based and the argmin is a total order (cost, then -clearance,
   // then enumeration), so deterministic.
   const LABEL_TIEBREAK =
-    typeof process !== 'undefined' &&
-    (process as { env?: Record<string, string> }).env?.OCTI_LABEL_TIEBREAK === '1';
+    envStr('OCTI_LABEL_TIEBREAK') === '1';
   const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale for "crowding"
   // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
   const crowding = (box: Box): number => {
