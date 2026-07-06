@@ -15,6 +15,7 @@ imports inside these files intentionally no longer resolve.
 | `src/render/layout/octilinearPath.ts` (+ test) | 2026-07-06 | octilinear path construction inside the smoothed-view render path | Standalone piecewise-octilinear path builder superseded by the octilinear path construction folded into the smoothed-view render path. |
 | `src/render/layout/hananRouter.ts` (+ test) | 2026-07-06 | `gridGraph.ts` plus the `octi.ts` local-search router | Hanan-grid Dijkstra routing (router + `hananGrid.ts` + `dijkstra.ts`, each with tests) superseded by `gridGraph.ts` plus the `octi.ts` local-search router. |
 | `src/water/oceanIndex.ts` | 2026-07-06 | tile-geography water backdrop | Runtime ocean-index water loader superseded by the tile-geography water backdrop; a runtime modding-API entry, not statically imported by the live tree. |
+| `src/render/layout/octilinear.ts`, `simplify.ts` (+ tests) | 2026-07-06 | geographic and smoothed render modes (`renderGeographic.ts` + LOOM `octi.ts`) | The `schematic` render mode (game-style grid-snap layout via `octilinearLayout` + `simplifyLayout`) was removed from `RenderMode` and the `generateSchematicSVG` dispatch. Its layout modules moved here; the schematic-only `renderOctilinear()` entry and `OctiOptions` in `renderOctilinear.ts` were deleted, leaving that file as the shared ribbon renderer. `renderOctilinear.test.ts` moved here too. |
 
 The `OCTI_ORDER=loom` A/B knob was removed with this move; historical env
 knobs documented inside the moved file (OCTI_XANGLE, OCTI_STRAIGHT_LOCK,

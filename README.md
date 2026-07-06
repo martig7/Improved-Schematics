@@ -66,13 +66,11 @@ src/
       densityWarp.ts       #   density-equalizing spatial warp
       gridGraph.ts octi.ts #   octilinearizer: grid graph + local-search cost model
       imageMerge.ts        #   merge coincident paths into bundles
-      lineOrder.ts untangle.ts  # order + de-tangle lines within bundles
+      lineOrder.ts         #   order lines within bundles
       offsets.ts           #   per-edge parallel lane offsets
       rowPlace.ts chainPlace.ts # rigid-row station marker placement
-      octilinear.ts hananRouter.ts ...  # game-style grid-snap layout (schematic mode)
 
   water/                   # runtime land/water pipeline (pure, testable)
-    oceanIndex.ts          # load the city's ocean_depth_index via the modding API
     grid.ts                # sparse depth cells → boolean water mask + geo mapper
     marchingSquares.ts     # trace coastline rings from the mask
     simplify.ts            # Douglas–Peucker + Chaikin smoothing

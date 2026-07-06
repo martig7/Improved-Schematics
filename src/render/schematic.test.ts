@@ -35,7 +35,7 @@ const SAMPLE = {
 };
 
 test('empty network yields the empty-state svg in every mode', () => {
-  for (const mode of ['geographic', 'smoothed', 'schematic'] as RenderMode[]) {
+  for (const mode of ['geographic', 'smoothed'] as RenderMode[]) {
     const svg = generateSchematicSVG({ routes: [], tracks: [], stations: [], options: { mode } });
     assert.match(svg, /^<svg/);
     assert.match(svg, /Build at least one route/);
@@ -85,7 +85,7 @@ test('each mode returns a well-formed svg for a small network', () => {
     },
   ];
 
-  for (const mode of ['geographic', 'smoothed', 'schematic'] as RenderMode[]) {
+  for (const mode of ['geographic', 'smoothed'] as RenderMode[]) {
     const svg = generateSchematicSVG({
       routes: routes as never,
       tracks: tracks as never,
@@ -137,11 +137,11 @@ test('geographyFrame is null when there is no geography', () => {
   assert.equal(geographyFrame(undefined, proj), null);
 });
 
-test('smoothed and schematic modes emit a content data-frame within the canvas', () => {
+test('smoothed mode emits a content data-frame within the canvas', () => {
   // Octi-based modes have no geographic demand bbox to project, so they frame on
   // the rendered network's pixel extent instead. Fit/export hug the map, not
   // the padded canvas.
-  for (const mode of ['smoothed', 'schematic'] as RenderMode[]) {
+  for (const mode of ['smoothed'] as RenderMode[]) {
     const svg = generateSchematicSVG({
       routes: SAMPLE.routes as never,
       tracks: SAMPLE.tracks as never,

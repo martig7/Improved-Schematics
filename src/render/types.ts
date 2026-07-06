@@ -39,7 +39,7 @@ export interface WaterCollection {
 }
 
 /** Which layout/render mode the panel is showing. */
-export type RenderMode = 'geographic' | 'smoothed' | 'schematic';
+export type RenderMode = 'geographic' | 'smoothed';
 
 /** Color and sizing options for a rendered schematic. */
 export interface SchematicTheme {
@@ -80,7 +80,7 @@ export interface SchematicOptions {
   mode: RenderMode;
   /** Smoothed mode only: density-warp strength (LOOM warp alpha). 0 disables
    *  the warp, keeping geography faithful. Higher magnifies dense cores more.
-   *  Default 0.8. Ignored by the geographic/schematic renderers. */
+   *  Default 0.8. Ignored by the geographic renderer. */
   warpAlpha?: number;
   /** Smoothed mode only: how strongly octi keeps each line on its true
    *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher gives more

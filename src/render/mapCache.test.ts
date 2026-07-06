@@ -200,8 +200,7 @@ test('mapCache: per-mode settings round-trip independently per (city, mode)', ()
   writeModeSettings('nyc', 'smoothed', { showLabels: false }, s);
   assert.deepEqual(readModeSettings('nyc', 'geographic', s), { showLabels: true });
   assert.deepEqual(readModeSettings('nyc', 'smoothed', s), { showLabels: false }, 'modes are independent');
-  assert.equal(readModeSettings('nyc', 'schematic', s), null, 'unset mode → null');
-  assert.equal(readModeSettings('chi', 'geographic', s), null, 'other city → null');
+  assert.equal(readModeSettings('chi', 'geographic', s), null, 'a city with no written settings reads null');
 });
 
 test('mapCache: per-mode settings are separate from the shared (export) settings', () => {

@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { orderLines } from './lineOrder';
-import { octilinearLayout } from './octilinear';
-import { twoLineGraph } from './_fixtures';
+import { twoLineLayout } from './_fixtures';
 
 test('orderLines is deterministic and preserves line membership', () => {
-  const layout = octilinearLayout(twoLineGraph());
+  const layout = twoLineLayout();
   orderLines(layout);
   const before = layout.edges.map((e) => [...e.lineOrder]);
   orderLines(layout);

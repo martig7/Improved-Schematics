@@ -1,12 +1,11 @@
-// Octilinear renderer + reusable ribbon renderer. The ribbon core
-// (renderRibbons) takes pre-projected node pixels and is also used by the
-// smoothed renderer; renderOctilinear is the grid-cell variant the schematic
-// mode uses (ported from dev/reference/renderSvg.js + gridToPx.js).
+// Reusable ribbon renderer. The ribbon core (renderRibbons) takes
+// pre-projected node pixels and paints the route lines, stops, and labels for
+// the smoothed renderer.
 
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
-import { CELL_PX, PAD, LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
+import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
@@ -40,18 +39,6 @@ const snapAxis = (dx: number, dy: number): Pixel => {
   }
   return AXES4[best];
 };
-
-export interface OctiOptions {
-  dark?: boolean;
-  showLabels?: boolean;
-  showStations?: boolean;
-  water?: WaterCollection;
-  transfers?: TransferPair[];
-}
-
-function gridToPx(cell: Cell, maxRow: number): Pixel {
-  return [cell[0] * CELL_PX + PAD, (maxRow - cell[1]) * CELL_PX + PAD];
-}
 
 /** Map water polygons into the schematic's pixel frame via a bbox affine. */
 function waterBackdrop(layout: Layout, nodePx: Map<string, Pixel>, water: WaterCollection, dark: boolean): string {
@@ -3397,46 +3384,4 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
   );
-}
-
-export function renderOctilinear(layout: Layout, opts: OctiOptions = {}): string {
-  const showLabels = opts.showLabels !== false;
-  const dark = opts.dark === true;
-
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  const grow = (c: Cell) => {
-    if (c[0] < minX) minX = c[0];
-    if (c[0] > maxX) maxX = c[0];
-    if (c[1] < minY) minY = c[1];
-    if (c[1] > maxY) maxY = c[1];
-  };
-  for (const n of layout.nodes.values()) grow(n.cell);
-  for (const e of layout.edges) for (const c of e.path) grow(c);
-  if (!isFinite(minX)) return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>';
-
-  const offX = -minX;
-  const offY = -minY;
-  const maxRow = maxY + offY;
-  const toPx = (c: Cell): Pixel => gridToPx([c[0] + offX, c[1] + offY], maxRow);
-  const width = (maxX - minX) * CELL_PX + PAD * 2;
-  const height = (maxY - minY) * CELL_PX + PAD * 2;
-
-  const nodePx = new Map<string, Pixel>();
-  for (const n of layout.nodes.values()) nodePx.set(n.id, toPx(n.cell));
-
-  return renderRibbons({
-    layout,
-    nodePx,
-    edgePolyline: (e) => e.path.map(toPx),
-    width,
-    height,
-    dark,
-    showLabels,
-    showStations: opts.showStations,
-    water: opts.water,
-    transfers: opts.transfers,
-  });
 }
