@@ -1,7 +1,7 @@
 // One detail "popout" area: a colored outline over the selected region of the
 // main map plus a draggable panel that re-simulates just that region (the cropped
-// sub-graph spread out over its own geography). Self-contained — owns its re-sim,
-// drag, and positioning — so the parent can render N of them independently.
+// sub-graph spread out over its own geography). Self-contained: it owns its re-sim,
+// drag, and positioning, so the parent can render N of them independently.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { precomputeSmoothedSchematic, drawSmoothedSchematic, type SmoothedPrecomputed } from '../render/schematic';
@@ -23,9 +23,9 @@ export interface Selection {
   /** Locked: the panel is pinned (can't be dragged) and pointer-transparent, so
    *  pan/zoom passes through to the map underneath. */
   locked?: boolean;
-  /** Saved popout panel rect in CONTENT (map) coords — the user's dragged position +
-   *  wheel-zoom. Persisted with the area so the popout restores where they left it;
-   *  absent for a freshly-drawn area (falls back to the default callout). */
+  /** Saved popout panel rect in CONTENT (map) coords: the dragged position plus
+   *  wheel-zoom. Persisted with the area so the popout restores where it was left.
+   *  Absent for a freshly-drawn area (falls back to the default callout). */
   rect?: { x: number; y: number; w: number; h: number };
 }
 export interface SelView {
@@ -59,14 +59,14 @@ interface DetailInsetProps {
   getCacheKey: () => { city: string; fp: string } | null;
   /** Full schematic input for the re-sim crop. */
   buildInput: () => unknown;
-  /** Base map SVG — magnified-crop fallback + a re-sim trigger when it changes. */
+  /** Base map SVG, used as the magnified-crop fallback and as a re-sim trigger when it changes. */
   baseSvg: string;
   showStations: boolean;
   showLabels: boolean;
-  /** Dense-hub fallback shape (the main map's setting) — re-sims of the crop may also
+  /** Dense-hub fallback shape (the main map's setting). Re-sims of the crop may also
    *  hit un-seatable hubs, so they honour the same box/curve choice. */
   megaFallback: 'box' | 'curve';
-  /** Landmass style (the main map's setting) — the popout's backdrop matches
+  /** Landmass style (the main map's setting). The popout's backdrop matches
    *  the main map's faithful/rounded/diagram look. */
   landmass: 'faithful' | 'rounded' | 'diagram';
   landmassDetail: number;
@@ -126,7 +126,7 @@ export function DetailInset({
   const subCacheRef = useRef<{ box: Box; pre: SmoothedPrecomputed | null; selFrame: Rect | null } | null>(null);
   // Panel rect in CONTENT (map) coords; mutated on drag/zoom. Restored from the saved rect
   // if the area has one, else a ~2.5x callout to the right of the source box (height re-fit
-  // to the re-sim aspect). The initialiser runs once, so our own persist (below) can't loop.
+  // to the re-sim aspect). The initialiser runs once, so the persist below can't loop.
   const bw = sel.box.x1 - sel.box.x0;
   const bh = sel.box.y1 - sel.box.y0;
   const rectRef = useRef(sel.rect ?? { x: sel.box.x1 + bw * 0.4, y: sel.box.y0, w: bw * 2.5, h: bh * 2.5 });
@@ -239,7 +239,7 @@ export function DetailInset({
 
   // Re-simulate the cropped region into the panel body. The heavy octi PRECOMPUTE
   // is cached per box (areas clear on any layout change, so the layout is stable
-  // for an area's life) — toggling stations/labels only RE-DRAWS the cached sub,
+  // for an area's life). Toggling stations/labels only RE-DRAWS the cached sub,
   // cheaply and with no spinner, exactly like the main map's two-phase render.
   // First compute is deferred behind a spinner; falls back to a base-map crop.
   useEffect(() => {
@@ -251,7 +251,7 @@ export function DetailInset({
       if (isvg) { isvg.setAttribute('width', '100%'); isvg.setAttribute('height', '100%'); }
       position();
     };
-    // Base-map crop fallback — reflects the toggles since baseSvg already does.
+    // Base-map crop fallback; reflects the toggles since baseSvg already does.
     const cropFallback = () => {
       body.innerHTML = baseSvg;
       const isvg = body.querySelector('svg');
@@ -298,8 +298,8 @@ export function DetailInset({
     const miss = (pre: SmoothedPrecomputed | null, selFrame: Rect | null) => { subCacheRef.current = { box, pre, selFrame }; };
 
     // Persistent hit: this region was octi-computed for this exact layout before. Restore
-    // the sub-layout from localStorage (fp+box gated) and draw it instantly — no spinner,
-    // no re-sim. Mirrors the main map's cache read; falls through to compute on a miss.
+    // the sub-layout from localStorage (fp+box gated) and draw it instantly, with no spinner
+    // and no re-sim. Mirrors the main map's cache read; falls through to compute on a miss.
     const boxKey = `${box.x0},${box.y0},${box.x1},${box.y1}`;
     const ck = getCacheKey();
     if (ck) {
@@ -358,7 +358,7 @@ export function DetailInset({
         miss(subPre, selFrame);
         drawResim(subPre, selFrame);
         // Persist AFTER the draw so the lazily-computed geometry (marker placement) is
-        // captured too — a restore then skips both octi and marker placement, like the
+        // captured too; a restore then skips both octi and marker placement, like the
         // main-map cache. Best-effort; fp+box gated.
         if (ck) writeSubPre(ck.city, ck.fp, boxKey, subPre, selFrame);
       }),
@@ -369,7 +369,7 @@ export function DetailInset({
   // Re-apply the label scale when only the setting changes (no re-draw needed).
   useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);
 
-  // Wheel over the panel zooms the WHOLE panel — frame and content together — like a
+  // Wheel over the panel zooms the WHOLE panel, frame and content together, like a
   // map object (the panel scales and moves so the point under the cursor stays put).
   // It rescales the panel's content-space rect, so panel + sub-map magnify as a unit;
   // position() redraws it. Independent of the main map (the panel isn't inside the
@@ -390,7 +390,7 @@ export function DetailInset({
       // anchor the point under the cursor (content coords): x' + fx·w' = x + fx·w
       rectRef.current = { x: ir.x + fx * ir.w * (1 - z), y: ir.y + fy * ir.h * (1 - z), w: ir.w * z, h: ir.h * z };
       position();
-      scheduleRectPersist(); // debounced — wheel has no "end" event
+      scheduleRectPersist(); // debounced; wheel has no "end" event
     };
     panel.addEventListener('wheel', onWheel, { passive: false });
     return () => panel.removeEventListener('wheel', onWheel);
@@ -398,7 +398,7 @@ export function DetailInset({
 
   // Drag the panel (content-space rect); stopPropagation so the map doesn't pan.
   const onDown = (e: React.PointerEvent) => {
-    if (sel.locked) return; // pinned — don't move (also pointer-transparent via CSS)
+    if (sel.locked) return; // pinned; don't move (also pointer-transparent via CSS)
     e.stopPropagation();
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const ir = rectRef.current;
@@ -420,8 +420,8 @@ export function DetailInset({
   };
 
   // Entering edit mode: seed the working box from the current source box and place the
-  // handles (they just mounted). Leaving: drop it. sel.box is stable during an edit —
-  // a commit changes it, which also ends editing — so this never reseeds mid-drag.
+  // handles (they just mounted). Leaving: drop it. sel.box is stable during an edit,
+  // since a commit changes it and also ends editing, so this never reseeds mid-drag.
   useEffect(() => {
     editBoxRef.current = editing ? { ...sel.box } : null;
     position();

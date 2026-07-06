@@ -4,12 +4,12 @@
 // operations are join (nest two blocks, binary side), mirror (flip
 // end-over-end at every level), and split helpers (contiguity + minimal
 // adjacent transpositions). In-bundle reorders on open track are
-// UNREPRESENTABLE by design. Pure data structures — no Layout imports, no
+// UNREPRESENTABLE by design. Pure data structures with no Layout imports, no
 // floating point, fully deterministic.
 
 export type Block = Array<string | Block>;
 
-/** Depth-first leaf order — the drawn lateral order. */
+/** Depth-first leaf order, i.e. the drawn lateral order. */
 export function flattenBlock(b: Block): string[] {
   const out: string[] = [];
   const walk = (x: string | Block): void => {
@@ -31,7 +31,7 @@ export function mirrorBlock(b: Block): Block {
 }
 
 /** Merge two corridors' blocks; `bFirst` picks the side. Operands nest
- *  INTACT — their internal order is the joined bundle's memory. */
+ *  INTACT so their internal order is the joined bundle's memory. */
 export function joinBlocks(a: Block, b: Block, bFirst: boolean): Block {
   return bFirst ? [b, a] : [a, b];
 }
@@ -44,8 +44,8 @@ export function blockLines(b: Block): Set<string> {
 export interface SplitPlanResult {
   /** the exit-contiguous order (stable within groups) */
   order: string[];
-  /** adjacent-transposition (bubble) distance from the input order — the
-   *  crossings this split forces, drawn AT the split node */
+  /** adjacent-transposition (bubble) distance from the input order. Counts
+   *  the crossings this split forces, drawn AT the split node */
   swaps: number;
 }
 

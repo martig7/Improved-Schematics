@@ -26,7 +26,7 @@ export interface ViewState {
 export interface CityConfig {
   /** Display name of the city */
   name: string;
-  /** Unique uppercase city code (e.g. "NYC", "LON") */
+  /** Unique uppercase city code */
   code: string;
   /** Optional description of the city */
   description?: string;

@@ -11,11 +11,12 @@ import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
 
 export interface DensityWarp2DOptions extends DensityWarpOptions {
-  /** Repulsion kernel radius in PIXELS — how local the expansion is. */
+  /** Repulsion kernel radius in PIXELS. Controls how local the expansion is. */
   sigmaPx?: number;
-  /** Flow iterations (Gastner–Newman style). 1 = single pass (weak on extreme
-   *  dynamic range — the global fold-clamp starves dense centres). >1 composes
-   *  small fold-safe steps into a strong, density-equalizing warp. Default 1. */
+  /** Flow iterations (Gastner/Newman style). 1 = single pass, which is weak on
+   *  extreme dynamic range because the global fold-clamp starves dense centres.
+   *  >1 composes small fold-safe steps into a strong, density-equalizing warp.
+   *  Default 1. */
   iterations?: number;
 }
 
@@ -52,7 +53,7 @@ export interface DensityGrid2D {
 }
 
 // Quantize exp to 1e-12 (sub-ULP at coordinate scale) so the smoothing kernel is
-// bit-identical across V8 builds — identical discipline to densityWarp.ts.
+// bit-identical across V8 builds. Same discipline as densityWarp.ts.
 const qexp = (x: number): number => Math.round(Math.exp(x) * 1e12) / 1e12;
 
 export function densityGrid2D(
@@ -102,10 +103,10 @@ export function densityGrid2D(
       hs[y * B + x] = v / ksum;
     }
 
-  // rho has mean 1 ((1-beta)·1 + beta·1). CLIP rho to maxScale (the 1D warp's
-  // dynamic-range cap): without it one super-dense spot (Manhattan ≈ 55× mean)
-  // dominates max‖∇F‖ and collapses the global fold-safe α to ~0, suppressing
-  // the warp everywhere. Re-centre afterwards so e stays mean-zero (no drift).
+  // rho has mean 1 ((1-beta)·1 + beta·1). CLIP rho to maxScale, a dynamic-range
+  // cap. Without it one super-dense spot dominates max‖∇F‖ and collapses the
+  // global fold-safe α to ~0, suppressing the warp everywhere. Re-centre
+  // afterwards so e stays mean-zero (no drift).
   const maxScale = opts.maxScale ?? 8;
   let hsum = 0;
   for (let i = 0; i < B * B; i++) hsum += hs[i];
@@ -177,9 +178,9 @@ export function displacementField2D(
 }
 
 // W(x) = x + α·F(x) is fold-free iff det(I + α·∇F) > 0 everywhere. ‖∇F‖·α < 1 is
-// a sufficient condition, so clamp α to 0.9/M where M = max grid Frobenius ‖∇F‖
-// (an upper bound on the spectral norm — conservative, never under-clamps, and
-// pure √ + arithmetic, no eigenvalue solve).
+// a sufficient condition, so clamp α to 0.9/M where M = max grid Frobenius ‖∇F‖.
+// Frobenius is an upper bound on the spectral norm, so it is conservative and
+// never under-clamps, using only √ + arithmetic with no eigenvalue solve.
 export function foldSafeAlpha(
   Fx: Float64Array,
   Fy: Float64Array,
@@ -203,7 +204,7 @@ export function foldSafeAlpha(
 
 // Public entry: build the 2D local density warp. Same signature as
 // buildDensityWarp (densityWarp.ts) so it is a drop-in in renderGeographic.
-// Iterates the repulsion field (Gastner–Newman flow): each step is a small
+// Iterates the repulsion field (Gastner/Newman flow): each step is a small
 // fold-safe displacement, re-measured on the advected samples; the composite of
 // fold-free maps is fold-free, and the cumulative warp is strong enough to
 // expand dense sectors that a single pass cannot (global-α starvation). The

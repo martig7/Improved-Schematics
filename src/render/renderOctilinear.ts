@@ -2313,30 +2313,31 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // ---- POST-SLIDE NO-OVERLAP FLOOR (marker-level GUARANTEE) -------------
       // The mutual-slide pass above thresholds on SPINE-HULL penetration, not on
       // the drawn casing rings: a capsule whose spine clears can still have an
-      // end-dot ring overlapping a neighbour's ring (root-cause bucket D — dense-
-      // cluster residual). This final pass measures the actual nearest MARKER
+      // end-dot ring overlapping a neighbour's ring in a dense residual cluster.
+      // This final pass measures the actual nearest MARKER
       // (dot-to-dot) distance between every pair of distinct non-mega stations
       // and, where it is below casing-touch (2r+1.5), slides them apart ALONG
       // their own lanes (reusing rigidSlide → applySlide, so the spine stays
       // octilinear by construction). It iterates to convergence; any pair STILL
       // overlapping after the cap boxes the more-flexible (fewer-marks) station
       // as a TRUE last resort, GUARANTEEING no residual distinct-station marker
-      // overlap. OCTI_NOOVL_FLOOR=0 disables it (diagnostic / legacy).
+      // overlap. OCTI_NOOVL_FLOOR=0 disables it (diagnostic).
       const noOvlEnabled = !(
         typeof process !== 'undefined' &&
         (process as { env?: Record<string, string> }).env?.OCTI_NOOVL_FLOOR === '0'
       );
       if (noOvlEnabled) {
         const touch = 2 * r + 1.5; // casing rings just clear at this center gap
-        // Last-resort BOX threshold: slides aim to fully separate to `touch`, but
-        // a residual is only boxed when distinct bullets visibly MERGE — centers
+        // Last-resort BOX threshold: slides aim to fully separate to `touch`. A
+        // residual is only boxed when distinct bullets visibly MERGE, with centers
         // closer than the bullet-FILL touch distance 2r (two r-radius fills just
         // touch). Residuals in the casing-only band [2r, touch) are two distinct
-        // bullets whose outer rings graze but whose fills are clear (e.g. adjacent
-        // consecutive stops) — left as-is (and reported) rather than boxed.
-        // DEFAULT OFF (boxFloor 0): boxing a residual overlap traded it for an ugly
-        // <rect>, and in SF's genuinely-crowded core that ballooned the box count
-        // (10→20) — worse than the overlap it removed. The residual crowded-core
+        // bullets whose outer rings graze but whose fills are clear, such as
+        // adjacent consecutive stops. Those are left as-is (and reported) rather
+        // than boxed.
+        // DEFAULT OFF (boxFloor 0): boxing a residual overlap trades it for a
+        // <rect>, and in a genuinely-crowded core that balloons the box count,
+        // worse than the overlap it removes. The residual crowded-core
         // overlaps are an UPSTREAM octi grid-quantization symptom (consecutive stops
         // collapsed below marker resolution), to be fixed there, not by boxing here.
         // The slide + along-corridor spread above still run (they cleanly separate
@@ -2352,7 +2353,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // boxOf().mega does NOT read mk.mega, so both must be checked.
         const isBoxed = (s: StMarks): boolean => boxOf(s).mega || s.marks.some((m) => m.mega);
         // nearest dot-pair between two stations (correctly-rounded hyp), plus the
-        // midpoint (push-apart pivot). Returns dist=Infinity for an empty side.
+        // midpoint push-apart pivot. Returns dist=Infinity for an empty side.
         const nearestMarks = (
           A: StMarks,
           B: StMarks,
@@ -2379,7 +2380,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         };
         // min dist from a proposed S placement to every OTHER non-boxed station
         // (so we can tell a globally-clearing slide from one that merely shifts
-        // the overlap onto a third station — used for the FULL-clear preference).
+        // the overlap onto a third station; used for the FULL-clear preference).
         const minToOthers = (S: StMarks, pts: Pixel[]): number => {
           let md = Infinity;
           for (const T of smalls) {
@@ -2705,8 +2706,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             plan.push({ i, dx, dy, pts });
           }
           // intra-chain marker floor: planned markers (in slot order) must stay
-          // ≥ touch from EVERY other planned member, not just the slot neighbour —
-          // for a curved corridor or a multi-mark member the centroid spacing can
+          // ≥ touch from EVERY other planned member, not just the slot neighbour.
+          // For a curved corridor or a multi-mark member the centroid spacing can
           // still leave two nearest markers tight. Abandon the chain if so.
           for (let x = 0; ok && x < plan.length; x++) for (let y = x + 1; y < plan.length; y++) {
             let md = Infinity;
@@ -2723,10 +2724,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (SPREAD_DBG) console.error(`[CSPREAD] chain SPREAD n=${seq2.length} axis=[${axis[0].toFixed(2)},${axis[1].toFixed(2)}] order=[${seq2.map((i) => smalls[i].nodeId).join(',')}]`);
         }
         if (spreadChains > 0) console.error(`[stops] corridor-spread: ${spreadChains} chains, ${spreadMembers} members`);
-        // last-resort: any pair whose bullet FILLS still merge (< boxFloor) →
-        // box the fewer-marks station. Casing-only grazes (boxFloor ≤ d < touch)
+        // last-resort: any pair whose bullet FILLS still merge (< boxFloor)
+        // boxes the fewer-marks station. Casing-only grazes (boxFloor ≤ d < touch)
         // are left as drawn-but-clear-fill adjacent bullets and reported below.
-        // Corridor-adjacent pairs (spread above) are SKIPPED — a consecutive
+        // Corridor-adjacent pairs (spread above) are SKIPPED. A consecutive
         // single-bullet stop is spread along its lane, never boxed.
         let floorBoxed = 0;
         for (let ai = 0; ai < smalls.length; ai++) {
@@ -2747,12 +2748,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (floorBoxed > 0) console.error('[stops] no-overlap-floor boxed: ' + floorBoxed);
       }
       capsAudit('final');
-      // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps — bullet rings
+      // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps. Bullet rings
       // (radius r+0.75, diameter 2r+1.5) crossing where they shouldn't. XSTN =
       // two DIFFERENT stations' bullets overlap; INSTN = two bullets of ONE
       // station that are NOT same-row-adjacent (a folded spine / piled junction).
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
-      // + node ids so the spot can be cropped (dev/_raster.ts).
+      // and node ids so the spot can be located.
       if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_DEBUG) {
       const ringDia = 2 * r + 1.5;
       const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
@@ -2810,10 +2811,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
 
     // Terminus trim: a line that ENDS at this station has exactly one drawn
-    // incident lane, and its ribbon runs all the way to the NODE — but the
+    // incident lane, and its ribbon runs all the way to the NODE. The
     // rigid-row solve (and the collision slides) move the marker DOT off the
     // node along that lane, so the terminating ink pokes straight THROUGH the
-    // capsule and out the far side (320 Pl's Y on Seattle). Trim the node-end
+    // capsule and out the far side. Trim the node-end
     // of the lane back to the dot so the ink stops at its stop.
     const arcToPoint = (pts: Pixel[], target: Pixel): number => {
       let acc = 0;
@@ -2844,9 +2845,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (segPath.has(k)) { nInc++; incEdge = e.id; }
           // A jog-sliver-SUPPRESSED incident lane still carries the line
           // onward (the connector pass bridges across it), so the line does
-          // NOT terminate here — counting only drawn lanes misread the E as
-          // a 7 Av terminus (NYC: me397_b7 suppressed) and trimmed 48px of
-          // through corridor back to its wide-window seat.
+          // NOT terminate here. Counting only drawn lanes would misread a
+          // through corridor as a terminus and trim it back to its seat.
           else if (suppressed.has(k)) nInc++;
         }
         if (nInc !== 1 || !incEdge) continue; // terminus = one drawn incident lane
@@ -2857,12 +2857,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const d = arcToPoint(pts, mk.pos);
         // A CAPSULE terminus draws a pill around the seated dot row; a lane that
         // runs even slightly past its dot pokes its round cap out the far side of
-        // the pill (the "nub" — worst on a slanted terminal edge, where the row is
+        // the pill (the "nub", worst on a slanted terminal edge, where the row is
         // re-seated square but the lanes still end along the slant). Trim capsule
         // termini flush to the stop. A lone terminal dot has no pill, so a small
-        // overhang past it reads as a normal line end — keep the looser threshold.
+        // overhang past it reads as a normal line end, so keep the looser threshold.
         const isCapsule = s.marks.length >= 2 || (membersByNode?.get(s.nodeId) ?? 0) > 1;
-        // Shared-anchor guard (Burke Court): a terminus sliver shared by two split
+        // Shared-anchor guard: a terminus sliver shared by two split
         // stations anchors both their marks; trimming it flush to THIS station's
         // dot would cut the lane back past the foreign station's dot and orphan
         // that marker off the ink. Leave the shared lane at its tip.
@@ -2873,14 +2873,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
 
     // Station-vs-capsule eviction: a terminus dot can land INSIDE a
-    // neighbouring station's capsule when two stops are near-coincident
-    // (320 Pl's C terminus dot trapped in 307 Pl's C+Y elbow on Seattle).
+    // neighbouring station's capsule when two stops are near-coincident.
     // The dot's only lane runs straight into that capsule, so it cannot
     // slide out ALONG it. Instead ROTATE the terminus stub: redraw it as a
     // single straight octilinear segment leaving the shared capsule-side
     // anchor in the octilinear direction closest to the original, far enough
     // to carry the dot clear of every foreign capsule (octilinearity holds
-    // by construction — one axis-aligned leg).
+    // by construction, one axis-aligned leg).
     {
       const ptSegD = (px: number, py: number, a: Pixel, b: Pixel): number => {
         const vx = b[0] - a[0], vy = b[1] - a[1];
@@ -2914,8 +2913,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       };
       // the new stub may legitimately lie inside the anchor's capsule for the
       // first ~capHalf (every line leaves a capsule through its fill), but
-      // BEYOND that it must run in open space — otherwise the rotated stub
-      // just slices across the foreign capsule (SW diagonal across 307 Pl).
+      // BEYOND that it must run in open space. Otherwise the rotated stub
+      // just slices across the foreign capsule.
       const stubClear = (anchor: Pixel, dir: Pixel, L: number, selfNode: string): boolean => {
         const steps = Math.max(2, Math.ceil(L));
         for (let i = 1; i <= steps; i++) {
@@ -2967,7 +2966,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
             if (placed) break;
           }
-          if (!placed) continue; // no clean octilinear escape — leave it
+          if (!placed) continue; // no clean octilinear escape, leave it
           mk.pos = placed;
           mk.cornerAfter = undefined;
           mk.chain = 0;
@@ -3018,8 +3017,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
   }
   // Draw-only sharp-corner fillet (post-marker): the sharp fused-station bends
-  // the gentle join left raw (F/G chevron at Chestnut St) — to keep the marker
-  // solver's lane input pristine — get filleted HERE, after every marker /
+  // that the gentle join left raw, kept raw to keep the marker
+  // solver's lane input pristine, get filleted HERE, after every marker /
   // slide / eviction read of segPath is done. So this rounds only the DRAWN
   // ribbon and cannot mega-box (the dots are already seated). Reuses the
   // regressive curveLaneJoin; marks the pair mitered so the connector pass
@@ -3098,7 +3097,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (!ea || !eb) continue;
       const endA = a.reversed ? ea.from : ea.to;
       const startB = b.reversed ? eb.to : eb.from;
-      if (!bridging && endA !== startB) continue; // discontinuity — nothing to bridge
+      if (!bridging && endA !== startB) continue; // discontinuity, nothing to bridge
       const pairKey = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
       const key = lineId + '|' + endA + '>' + startB + '|' + pairKey;
       const miterKey = lineId + '|' + endA + '|' + pairKey;
@@ -3109,15 +3108,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (!pa || !pb) continue;
       const gap = hyp(pb[0] - pa[0], pb[1] - pa[1]);
       // A graph-contiguous continuation at a shared node is ALWAYS the same line
-      // jogging between lane slots — it MUST be bridged or the drawn route breaks.
-      // The only non-bridge case is a genuinely coincident pair (gap < 0.5). The
-      // old fixed upper cap (spacing*8 = 44px) dropped legitimate large slot jogs
-      // at dense hubs where a line crosses a wide bundle (Broadway×Lex at 14 St-
-      // Union Sq: 45-71px), leaving Q/R/N/W/1/4/5/6 visibly broken. Bound the
-      // bridge to the actual incident bundle span instead of refusing it, so every
-      // real slot jog connects while a pathological cross-canvas jump (never
-      // produced by a same-node continuation) is still rejected. OCTI_CONN_MAXGAP
-      // overrides the cap for dev sweeps.
+      // jogging between lane slots. It MUST be bridged or the drawn route breaks.
+      // The only non-bridge case is a genuinely coincident pair (gap < 0.5). A
+      // fixed upper cap would drop legitimate large slot jogs at dense hubs where
+      // a line crosses a wide bundle. The bridge is bounded to the actual incident
+      // bundle span instead of refused, so every real slot jog connects while a
+      // pathological cross-canvas jump (never produced by a same-node
+      // continuation) is still rejected. OCTI_CONN_MAXGAP overrides the cap for
+      // dev sweeps.
       const bundleSpan = ((orderOf.get(a.edgeId)?.length ?? 1) + (orderOf.get(b.edgeId)?.length ?? 1)) * spacing;
       const maxGapEnv =
         typeof process !== 'undefined' ? Number((process as { env?: Record<string, string> }).env?.OCTI_CONN_MAXGAP) : NaN;
@@ -3125,8 +3123,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (gap < 0.5 || gap > maxGap) continue; // coincident, or pathological jump
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
-      // Tangent-matched cubic instead of a straight chord: a lateral lane jog
-      // reads as a smooth S through the node, not a crimp (LOOM transitmap's
+      // Tangent-matched cubic instead of a straight chord makes a lateral lane
+      // jog read as a smooth S through the node, not a crimp (LOOM transitmap's
       // inner node geometries). Control points extend along each lane's end
       // direction; for near-parallel ends this is the classic S-curve.
       const polyA = segPath.get(a.edgeId + '|' + lineId)!;
@@ -3146,11 +3144,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         console.error(`[conn] ${endA} pa=(${pa[0].toFixed(1)},${pa[1].toFixed(1)}) pb=(${pb[0].toFixed(1)},${pb[1].toFixed(1)}) gap=${gap.toFixed(1)} prevA=(${prevA[0].toFixed(1)},${prevA[1].toFixed(1)}) nextB=(${nextB[0].toFixed(1)},${nextB[1].toFixed(1)}) dirA=(${dirA[0].toFixed(2)},${dirA[1].toFixed(2)}) dirB=(${dirB[0].toFixed(2)},${dirB[1].toFixed(2)}) nA=${polyA.length} nB=${polyB.length} edges=${a.edgeId}|${b.edgeId} cell=${np ? np[0] + ',' + np[1] : '?'}`);
       }
       // The S only works when the jog makes forward progress along the
-      // travel direction: cap the tangent extension at the chord's
+      // travel direction, so cap the tangent extension at the chord's
       // LONGITUDINAL span. A pure lateral jog (lanes of two collinear edges
-      // ending at the same station of the corridor — Flatbush h3497 grays)
-      // has lon ~ 0; tangent-matched controls would balloon a 180-degree
-      // hairpin east of the node, so it degrades to a plain crossover chord.
+      // ending at the same station of the corridor) has lon ~ 0; tangent-matched
+      // controls would balloon a 180-degree hairpin past the node, so it degrades
+      // to a plain crossover chord.
       const tx = dirA[0] + dirB[0];
       const ty = dirA[1] + dirB[1];
       const tLen = hyp(tx, ty) || 1;
@@ -3165,8 +3163,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
       if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5 || prog < 0) {
         // regressive turn (or no forward progress): tangent-matched control
-        // points would bulge the bridge outward — a plain chord across the
-        // junction reads as the line passing straight through
+        // points would bulge the bridge outward. A plain chord across the
+        // junction reads as the line passing straight through.
         d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
       } else {
         const { c1, c2 } = connectorControls(pa, pb, dirA, dirB, k);
@@ -3195,14 +3193,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
 // precomputed geometry. renderStops honors showStations, placeLabels honors
-// showLabels; bg/casing are theme (dark). ~tens of ms — see docs/cache-read-perf.md.
+// showLabels; bg/casing are theme (dark). ~tens of ms. See docs/cache-read-perf.md.
 export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
   const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
-  // pre-splitGroups geometry (older saved maps / dumps deserialize without the
-  // field) — draw with no connectors rather than crash on an undefined iterate
+  // pre-splitGroups geometry (older saved maps deserialize without the field);
+  // draw with no connectors rather than crash on an undefined iterate
   const splitGroups = geom.splitGroups ?? new Map<string, string[]>();
 
   const casingParts: string[] = [];
@@ -3227,9 +3225,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
   }
 
-  // LINE degree: total drawn lines across the node's incident edges — the
-  // mega-capsule trigger. Two 3-line bundles crossing perpendicular = 12;
-  // a thin capsule only fails when the bundles are this large.
+  // LINE degree: total drawn lines across the node's incident edges. This is
+  // the mega-capsule trigger. A thin capsule only fails when the crossing
+  // bundles are large enough.
   const degByNode = new Map<string, number>();
   for (const e of layout.edges) {
     const n = (orderOf.get(e.id) ?? e.lines.map((l) => l.id)).length;
@@ -3242,11 +3240,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // Computed from FINAL mark positions (all slide/de-overlap passes done, per
   // splitGroups' doc comment). Drawn under the capsules in the capsule border
   // color: thin transfer bars that reunite a platform-split station group
-  // visually (spec 2026-07-04 escalation-ladder-rewrite §2.4).
+  // visually.
   const connectorParts: string[] = [];
   if (args.showStations !== false) {
     const connStroke = dark ? '#e4e4e7' : '#111111'; // capsule border colors (stops.ts)
-    const connW = +(LINE_WIDTH * 0.45).toFixed(1); // hairline bar (user call: half of the 0.9 initial width)
+    const connW = +(LINE_WIDTH * 0.45).toFixed(1); // hairline bar
     const f = (n: number) => n.toFixed(1);
     for (const [base, unitIds] of splitGroups) {
       const memberSet = new Set(unitIds);
@@ -3255,7 +3253,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (memberSet.has(nid)) continue;
         for (const m of marks) foreign.push(m.pos);
       }
-      // mega-boxed units draw no dots (stops.ts mega branch) — a connector into
+      // mega-boxed units draw no dots (stops.ts mega branch). A connector into
       // a bare box reads as a stray line, and the box already says "everything
       // here"; anchor endpoints only on drawn (non-mega) dots, and drop the
       // group if <2 attachable units remain
@@ -3340,8 +3338,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     );
   }
 
-  // Geographic-topo/smoothed pass an explicit geography frame; absent (e.g. no
-  // geography, or pure-octi schematic) → fall back to the rendered network extent.
+  // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
+  // no geography, or pure-octi schematic) fall back to the rendered network extent.
   const fr = args.frame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
   const frameAttr =
     ' data-frame="' + fr.x.toFixed(1) + ' ' + fr.y.toFixed(1) + ' ' + fr.w.toFixed(1) + ' ' + fr.h.toFixed(1) + '"';
@@ -3352,7 +3350,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // nothing unless a sink is passed, and never touch the string-building above.
   // Layers are emitted in the same source order as the markup. The big DYNAMIC
   // layers (edges here; stops/labels/transfers below) are emitted directly; the
-  // tiny STATIC backdrop/grid fragment reuses the proven parser (negligible).
+  // tiny STATIC backdrop/grid fragment reuses the proven parser.
   if (sceneOut) {
     const prims: Prim[] = [];
     // base canvas (void when a data hull bounds the land) + land
@@ -3361,7 +3359,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
     // edges: the markup emits ALL casings first, THEN all strokes
-    // (edgeParts = [...casingParts, ...strokeParts]) — match that order exactly.
+    // (edgeParts = [...casingParts, ...strokeParts]); match that order exactly.
     const casingPrims: Prim[] = [];
     const strokePrims: Prim[] = [];
     for (const [lineId, line] of lineById) {
@@ -3374,14 +3372,15 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     for (const p of casingPrims) prims.push(p);
     for (const p of strokePrims) prims.push(p);
     // transfers: a tiny `<g class="transfers">…</g>` fragment with FEW staple
-    // paths. Reuse the proven parser (consistent with the static water/grid above)
-    // — worldScale is correctly FALSE since transfers sits outside .edges/.imp-stop.
+    // paths. Reuse the proven parser (consistent with the static water/grid
+    // above). worldScale is correctly FALSE since transfers sits outside
+    // .edges/.imp-stop.
     if (transferPart) for (const p of sceneFromSvg(transferPart).prims) prims.push(p);
     // stops: station markers (dots/capsules/rings/mega rects + bullet text),
     // built alongside the markup by renderStops in source/concatenation order.
     for (const p of stopsPrims) prims.push(p);
     // labels (.stations layer): one TextPrim per label, world-anchored to the dot
-    // (ax,ay) with a screen-space offset (x,y) — worldScale FALSE, mirroring the
+    // (ax,ay) with a screen-space offset (x,y); worldScale FALSE, mirroring the
     // <text> renderLabel emits, in the same node-iteration order.
     for (const p of labelPrims) prims.push(p);
     sceneOut.scene = { width, height, frame: { x: fr.x, y: fr.y, w: fr.w, h: fr.h }, background: bg, prims };

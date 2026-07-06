@@ -91,9 +91,9 @@ test('separateFusedStations splits far-apart groups onto a new on-line node', ()
 });
 
 test('separateFusedStations splits even close pairs (one marker per station)', () => {
-  // user rule: distinct station groups ALWAYS render separate markers —
-  // capsule-ness comes from the group itself, not from fusion geometry
-  const { h, img } = fusedFixture([108, 4]); // ~11px from g1's truePos
+  // distinct station groups always render separate markers. Capsule-ness
+  // comes from the group itself, not from fusion geometry.
+  const { h, img } = fusedFixture([108, 4]); // close pair of true positions
   separateFusedStations(h, img, 16);
   const g1 = h.stations.get('g1')!;
   const g2 = h.stations.get('g2')!;
@@ -105,8 +105,8 @@ test('separateFusedStations splits even close pairs (one marker per station)', (
 });
 
 test('separateFusedStations clamps a near-node projection to a visible arc', () => {
-  // true offset mostly perpendicular: projection lands ~3px from N, inside
-  // MIN_SPLIT_ARC — the split point must be pushed along the edge instead
+  // A mostly-perpendicular true offset projects very close to N, inside
+  // MIN_SPLIT_ARC. The split point must be pushed along the edge instead.
   const { h, img } = fusedFixture([103, 30]);
   separateFusedStations(h, img, 16);
   const g2 = h.stations.get('g2')!;
@@ -118,7 +118,7 @@ test('separateFusedStations clamps a near-node projection to a visible arc', () 
 test('separateFusedStations trims terminating lines back to the split node', () => {
   // L2 terminates at the fused node N arriving from B: its traversal
   // turns around at N. After g2 splits onto e2 (toward B), L2 must end at
-  // the new node — not overshoot through the keeper.
+  // the new node and not overshoot through the keeper.
   const { h, img } = fusedFixture([140, 10]);
   h.lineTraversals.set('L2', [
     { edgeId: 'e2', reversed: true },  // B -> N

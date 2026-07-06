@@ -6,7 +6,7 @@ import type { BoundingBox } from '../types/core';
 import { computeBounds, padBounds } from '../render/projection';
 
 /** Harvest extent: the demand-point bbox (where people are), else the station-centroid
- *  extent. `fromDemand` says which — only demand-based (stable, full-city) harvests are
+ *  extent. `fromDemand` says which. Only demand-based (stable, full-city) harvests are
  *  persisted. Null when neither demand nor stations are ready, or the extent is implausibly
  *  large (uninitialized coords early in a load). */
 export function computeHarvestBbox(): { bbox: BoundingBox; fromDemand: boolean } | null {

@@ -4,8 +4,8 @@
  * Mirrors the game's own `buildGeoProjectedRoutes`: a route's geometry is the
  * concatenation of the track segments referenced by its stCombos paths, in
  * order. Track segments that stay within the same station group (e.g. parallel
- * forward/back tracks at one platform) contribute coords once — the same rule
- * as walkRouteVisits in buildTransitGraph.
+ * forward/back tracks at one platform) contribute coords once. This is the
+ * same rule as walkRouteVisits in buildTransitGraph.
  */
 
 import type { Route, Track, Station } from '../types/game-state';

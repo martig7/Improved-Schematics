@@ -85,7 +85,7 @@ export interface Visit {
   groupId: string;
   isStop: boolean;
   /** Service break: the leg AFTER this visit was suppressed (loop-closure
-   *  deadhead) — no edge may be painted between this visit and the next. */
+   *  deadhead). No edge may be painted between this visit and the next. */
   breakAfter?: boolean;
 }
 
@@ -100,10 +100,10 @@ export interface StopMark {
    *  dots sorted by this index form the capsule spine. */
   chain?: number;
   /** Rigid-row model (spec v2): synthetic corner vertex between this mark
-   *  and the next in chain order — a pair boundary's derived elbow point. */
+   *  and the next in chain order. A pair boundary's derived elbow point. */
   cornerAfter?: Pixel;
-  /** Rigid-row total fallback (spec v2 §3): no feasible row configuration —
-   *  the station renders as the mega box instead of a spine capsule. */
+  /** Rigid-row total fallback (spec v2 §3): when no feasible row configuration
+   *  exists, the station renders as the mega box instead of a spine capsule. */
   mega?: boolean;
 }
 
@@ -136,10 +136,10 @@ export interface SupportStation {
   /** Lines that stop at this group (for per-group marker separation). */
   stopLines?: Set<string>;
   /** Member stations in the group: > 1 renders as an interchange capsule,
-   *  1 renders as a dot (the user-set capsule rule). */
+   *  1 renders as a dot. */
   members?: number;
-  /** Per line: the support node carrying this line's stop flag (lines through
-   *  one station can ride diverged corridors — flags re-home per line). */
+  /** Per line: the support node carrying this line's stop flag. Lines through
+   *  one station can ride diverged corridors, so flags re-home per line. */
   stopNodes?: Map<string, string>;
 }
 

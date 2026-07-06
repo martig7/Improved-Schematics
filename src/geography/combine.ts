@@ -17,8 +17,8 @@ export interface CombineOptions {
  * then erode by k cells (which bridges gaps ≤ ~2k cells while leaving isolated
  * bodies unchanged and filling small holes), then re-trace the merged outlines
  * back to [lng,lat]. Meant to run BEFORE the size filter, so a road-split park
- * survives as one shape instead of its pieces being trimmed. (Holes are filled —
- * exteriors only.)
+ * survives as one shape instead of its pieces being trimmed. (Holes are filled.
+ * Exteriors only.)
  */
 export function combineClose(features: GeoPolyFeature[], opts: CombineOptions): GeoPolyFeature[] {
   if (features.length === 0 || opts.gapM <= 0) return features;

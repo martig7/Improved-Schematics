@@ -5,21 +5,23 @@ import type { ProbeResult } from './schemaProbe';
 
 const TAG = '[ImprovedSchematics] geography:';
 // Offscreen canvas size. Tiles-to-cover-the-viewport scales with this, so keep
-// it small: 512px loads ~4× fewer tiles than 1024px (less GPU + less contention
-// with the real map's tile worker during the one-time harvest), at a slightly
-// lower fitBounds zoom — fine, since we simplify the geometry afterwards anyway.
+// it small: halving the dimension loads ~4× fewer tiles (less GPU and less
+// contention with the real map's tile worker during the one-time harvest), at a
+// slightly lower fitBounds zoom. That is fine, since we simplify the geometry
+// afterwards anyway.
 const CONTAINER_PX = 512;
 // Total budget to wait for the offscreen source's tiles after fitBounds. On a fresh
 // game load the basemap is saturating the tile worker/network, so the harvest tiles
-// can take well over the old 6s — and waiting on a single `idle` event is unreliable
+// can take a long time to arrive. Waiting on a single `idle` event is unreliable
 // (it can fire before the fitBounds tiles arrive under contention). We instead wait
 // until areTilesLoaded() actually reports them in, up to this budget.
 const TILE_WAIT_MS = 20_000;
 const POLL_MS = 250;
 // Cap the wait for the offscreen map's `load` event. If the source can't initialize (the
-// game's tile backend not serving yet → the map errors instead of firing `load`), this
-// await would otherwise hang FOREVER — which strands the caller's warm-up (its `warming`
-// guard never clears) and blocks every future attempt. Time out → throw → retry.
+// game's tile backend not serving yet, so the map errors instead of firing `load`), this
+// await would otherwise hang forever, which strands the caller's warm-up (its `warming`
+// guard never clears) and blocks every future attempt. Timing out throws so the caller
+// can retry.
 const LOAD_TIMEOUT_MS = 15_000;
 
 /** Resolve once the tiles for the fitBounds view are loaded, or the budget elapses. */
@@ -32,8 +34,8 @@ async function waitForTiles(map: MlMap): Promise<void> {
   ]);
   // Wait for the post-fitBounds move + tile load to settle (the NEXT idle) BEFORE trusting
   // areTilesLoaded(): right after fitBounds it still reports the prior (z0/world) view as
-  // "loaded", so an early check returns before the target tiles are even requested — we'd
-  // query 0 features off the empty world view (the observed ~47ms / z0-only-404 failure).
+  // "loaded", so an early check returns before the target tiles are even requested, and we'd
+  // query 0 features off the empty world view.
   await idleOrDelay(deadline - now());
   // If idle fired before every tile arrived (first-load contention), keep waiting.
   while (!map.areTilesLoaded() && now() < deadline) {
@@ -53,7 +55,7 @@ export async function harvestTaggedFeatures(
   probe: ProbeResult,
   bbox: BoundingBox,
 ): Promise<TaggedFeature[]> {
-  // Borrow the constructor from the live instance — we never import the runtime.
+  // Borrow the constructor from the live instance so we never import the runtime.
   const MapCtor = gameMap.constructor as typeof MlMap;
 
   const container = document.createElement('div');

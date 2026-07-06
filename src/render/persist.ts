@@ -1,12 +1,12 @@
 // Serialize/deserialize a generated smoothed map so it can be saved to a file and
-// reloaded instantly — skipping the expensive octi precompute on every mod reload.
+// reloaded instantly. This skips the expensive octi precompute on every mod reload.
 //
 // The precompute (SmoothedPrecomputed) is almost all plain data, but it nests
 // several Maps (layout.nodes, layout.edges[].stops, layout.lineTraversals,
 // nodePx, stationPx, stations[].stopNodes) and carries one function, `unproject`.
-// JSON can't represent either, so: a Map-aware replacer/reviver round-trips the
-// Maps, and `unproject` — which is separable and monotone per axis (render-x ⟷
-// lng, render-y ⟷ lat) — is stored as two 1-D sample tables and rebuilt by linear
+// JSON can't represent either, so a Map-aware replacer/reviver round-trips the
+// Maps. `unproject` is separable and monotone per axis (render-x ⟷ lng, render-y
+// ⟷ lat), so it is stored as two 1-D sample tables and rebuilt by linear
 // interpolation. drawSmoothedSchematic never reads `unproject`, so a restored map
 // draws byte-identically; only the magnifier's box→geo step uses it.
 
@@ -16,7 +16,7 @@ const MAP_TAG = '__impmap__';
 const N = 256; // unproject sample count per axis
 
 /** One cached sub-layout entry in a saved map: a detail area's serialized sub
- *  precompute (serializePre output — already a string) + its viewBox frame.
+ *  precompute (serializePre output, already a string) plus its viewBox frame.
  *  Mirrors the localStorage `:sub:` cache entry so a load restores areas without
  *  re-simulating, exactly like a cache hit. */
 export interface MapSubEntry {
@@ -40,8 +40,8 @@ export interface MapBundle {
    *  detail areas restore instantly instead of re-simulating. */
   subs?: Record<string, MapSubEntry>;
   pre: SmoothedPrecomputed | string;
-  /** Debug-only snapshot of the exact live render inputs (the former "input dump"), plus a
-   *  cropped sub-input per detail area. Captured for offline repro; IGNORED on load. */
+  /** Debug-only snapshot of the exact live render inputs, plus a cropped sub-input
+   *  per detail area. Captured for offline repro; IGNORED on load. */
   inputDump?: unknown;
 }
 
@@ -77,7 +77,7 @@ function rebuildUnproject(ux: number[], uy: number[], w: number, h: number): Smo
 // Just the precompute (Maps + sampled unproject), for the fingerprinted layout
 // cache (mapCache.ts) where only `pre` is stored per city. `unproject` is a
 // function; it's kept as two 256-sample tables and rebuilt on load (the magnifier
-// reads it off the restored pre — drawSmoothedSchematic never does).
+// reads it off the restored pre, which drawSmoothedSchematic never does).
 export function serializePre(pre: SmoothedPrecomputed | string): string {
   const unproj = typeof pre === 'string' ? null : sampleUnproject(pre);
   return JSON.stringify({ pre, unproj }, replacer);
@@ -96,7 +96,7 @@ export function serializeMap(bundle: MapBundle): string {
   return JSON.stringify({ ...bundle, unproj }, replacer);
 }
 
-/** Throws on malformed JSON / wrong shape — callers should try/catch. */
+/** Throws on malformed JSON / wrong shape, so callers should try/catch. */
 export function deserializeMap(json: string): MapBundle {
   const obj = JSON.parse(json, reviver) as MapBundle & { unproj?: { ux: number[]; uy: number[] } | null };
   if (typeof obj.version !== 'number' || obj.pre == null) throw new Error('not an Improved Schematics map file');

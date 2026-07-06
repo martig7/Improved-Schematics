@@ -1301,7 +1301,7 @@ function drawOrder(
     }
 
     // open sinks; unsettled endpoints pay the displacement penalty plus the
-    // turn-cost offset (subtracted from the recorded costs again below)
+    // turn-cost offset, which is subtracted from the recorded costs again below
     let costOffsetFrom = 0;
     let costOffsetTo = 0;
     for (const b of frCands) {
@@ -1455,7 +1455,7 @@ function growthOrder(ctx: CombCtx, key: (nd: string) => number): SupportEdge[] {
 export function octi(h: SupportGraph, opts: OctiOptions): Image {
   blockageStats.reset();
   // grid cell from the ORIGINAL station spacing (LOOM: gridSize = avg adjacent
-  // station distance), but route the planarized, deg-2-collapsed skeleton
+  // station distance), but route the planarized, deg-2-collapsed skeleton.
   let dg = opts.cellSize ?? Math.max(4, medianEdgeLength(h) / (opts.cellDivisor ?? 1.5));
   const pens: Penalties = { ...DEFAULT_PENALTIES, ...(opts.penalties ?? {}) };
   const { hK, merged } = contractShortEdges(h, dg / 2);
@@ -1474,10 +1474,10 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     }
   }
 
-  // Geographic loops (JFK terminal ring, HBLR): detected on the ORIGINAL h
-  // where traversals and edges are consistent — contraction/deg-2 collapse
-  // scramble the edge ids the (shared) traversals reference. tryDraw's
-  // loop-area penalty defends the enclosed area of the surviving nodes.
+  // Geographic loops: detected on the ORIGINAL h where traversals and edges
+  // are consistent. Contraction/deg-2 collapse scramble the edge ids the
+  // (shared) traversals reference. tryDraw's loop-area penalty defends the
+  // enclosed area of the surviving nodes.
   const loopCycles = detectLoopCycles(h, dg);
 
   const finish = (imgP: Image): Image => {
@@ -1485,11 +1485,11 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     const joined = expandContraction(contractSplits(imgP, hK, splits), h, merged);
     // Drawn-level detour excision runs on the REJOINED edge paths: planarize
     // splits edges at crossings into straight sub-paths, so a port-congestion
-    // hook around a saturated junction cluster (the Republican St yellow:
-    // sub-cell node pairs can't be grid-adjacent and detour multi-hop) only
-    // exists once contractSplits stitches them back together. A path that
-    // returns within ~3/4 cell of itself after 1.5+ cells of arc is excised;
-    // the bridge lands inside the cluster, under the interchange marker.
+    // hook around a saturated junction cluster (where sub-cell node pairs can't
+    // be grid-adjacent and detour multi-hop) only exists once contractSplits
+    // stitches them back together. A path that returns within ~3/4 cell of
+    // itself after 1.5+ cells of arc is excised. The bridge lands inside the
+    // cluster, under the interchange marker.
     // Stations are h-level NODES (path endpoints, preserved by the cut).
     const paths = new Map(joined.paths);
     let cuts = 0;
@@ -1498,16 +1498,15 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     let cutsFold = 0;
     for (const [id, p] of paths) {
       if (p.length < 3) continue;
-      // Detoured edge: the routed path is 2x+ its endpoint span — the router
-      // paid a hairpin around blocked ports instead of the direct course
-      // (SEA 66 Pl: a 65px edge routed as a 150px hairpin whose return leg
-      // rode the NEXT edge's course; imageMerge then merged the coincident
-      // stretch and the traversal manufactured an out-and-back wishbone at
-      // the stop). Replace with the octilinear shortcut course. Was gated to
-      // sub-cell spans (span < dg*1.2); the gate is widened, not a new rule —
-      // a 2x wander is pathological at any span this side of a real balloon
-      // (multi-edge terminal loops are untouched: their per-edge paths are
-      // each near-direct).
+      // Detoured edge: the routed path is 2x+ its endpoint span. The router
+      // paid a hairpin around blocked ports instead of the direct course,
+      // whose return leg can ride the NEXT edge's course; imageMerge then
+      // merges the coincident stretch and the traversal manufactures an
+      // out-and-back wishbone at the stop. Replace with the octilinear
+      // shortcut course. The gate covers spans up to a few cells, not just
+      // sub-cell spans, since a 2x wander is pathological at any span this
+      // side of a real balloon. Multi-edge terminal loops are untouched:
+      // their per-edge paths are each near-direct.
       const span = dist(p[0], p[p.length - 1]);
       if (span < dg * 6 && polyLen(p) > Math.max(2 * span, dg * 0.75)) {
         if (span < dg * 1.2) cutsSub++;
@@ -1515,7 +1514,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
         paths.set(
           id,
           span < dg * 1.2
-            ? [p[0], p[p.length - 1]] // sub-cell: plain chord, as before
+            ? [p[0], p[p.length - 1]] // sub-cell: plain chord
             : shortcutCourse(p[0][0], p[0][1], p[p.length - 1][0], p[p.length - 1][1]).map(
                 (c) => [c[0], c[1]] as Pixel,
               ),
@@ -1524,7 +1523,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
         continue;
       }
       // minArc one cell: the return-distance guard (eps = 3/4 cell) already
-      // protects genuine U-turns — any real grid U returns a full cell away
+      // protects genuine U-turns. Any real grid U returns a full cell away.
       const cut = cutDrawnFolds(p, dg);
       if (polyLen(cut) < polyLen(p) - 1e-6) {
         cuts++;
@@ -1557,8 +1556,8 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     if (result) {
       // Drawn-level detour-loop excision: a routed path that returns within
       // ~3/4 cell of itself after 3+ cells of arc is a port-congestion
-      // detour around a saturated junction (the Republican St yellow loop —
-      // the router prefers a multi-cell loop over a SOFT_INF violation).
+      // detour around a saturated junction, where the router prefers a
+      // multi-cell loop over a SOFT_INF violation.
       // Excise it; the short bridge lands at the junction, under its
       // marker, and the line reads as passing straight through. Genuine
       // terminal loops are multi-edge cycles and are untouched.
@@ -1582,8 +1581,8 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
 
 /** Pin degree-1 station nodes to their TRUE (warped geographic) position.
  *  A terminus drawn a grid-quantized cell away can land in water or visually
- *  swallow its last hop; the final stub segment bends slightly off-grid —
- *  geographic truth at line ends beats strict octilinearity (user choice). */
+ *  swallow its last hop; the final stub segment bends slightly off-grid so
+ *  that geographic truth at line ends beats strict octilinearity. */
 function pinStationTermini(img: Image, h: SupportGraph): Image {
   const stationNodes = new Set<string>();
   for (const st of h.stations.values()) stationNodes.add(st.nodeId);
@@ -1802,14 +1801,13 @@ function snapToGrid(grid: OctiGridGraph, p: Pixel): Pixel {
 }
 
 /** Geographic loop cycles from the line traversals: simple cycles of >= 3
- *  distinct nodes that enclose real area in SUPPORT geometry (the JFK AirTrain
- *  terminal ring, HBLR loops). MUST run on the ORIGINAL support graph, where
- *  traversals and edges are consistent — tryDraw's local search runs on the
- *  deg-2-collapsed, short-edge-contracted graph whose edge ids no longer match
- *  the (shared-reference) traversals. An out-and-back retrace is not a simple
- *  cycle and never qualifies; `target` (the drawn area the penalty defends) is
- *  floored below the true area so a large loop that already draws open is
- *  never inflated. */
+ *  distinct nodes that enclose real area in SUPPORT geometry. MUST run on the
+ *  ORIGINAL support graph, where traversals and edges are consistent.
+ *  tryDraw's local search runs on the deg-2-collapsed, short-edge-contracted
+ *  graph whose edge ids no longer match the (shared-reference) traversals. An
+ *  out-and-back retrace is not a simple cycle and never qualifies; `target`
+ *  (the drawn area the penalty defends) is floored below the true area so a
+ *  large loop that already draws open is never inflated. */
 function detectLoopCycles(h: SupportGraph, cellSize: number): Array<{ nds: string[]; target: number }> {
   const cell2 = cellSize * cellSize;
   const LOOP_TARGET_CELLS = 1.5; // minimal-visible enclosed area, in cell^2
@@ -1907,25 +1905,25 @@ function tryDraw(
   // 2. local search: re-place every station among its 9 neighbouring grid
   //    positions, re-routing its incident edges, until convergence
   const iters = opts.locSearchIters ?? 100;
-  // Termination is iteration- and convergence-bounded ONLY. A former wall-clock
-  // budget (Date.now() cutoff) broke the sweep mid-loop at a timing-dependent
-  // point, making node placement — and thus which stations fell back to a mega
-  // box — non-deterministic across machines/load (the in-game "boxes that come
-  // and go with no input change"). iters + CONVERGENCE_THRESHOLD already bound
-  // the work deterministically, so the same input always yields the same map.
-  const t0 = Date.now(); // OCTI_DEBUG timing log only — never gates control flow
+  // Termination is iteration- and convergence-bounded ONLY. A wall-clock
+  // budget (Date.now() cutoff) would break the sweep mid-loop at a
+  // timing-dependent point, making node placement, and thus which stations
+  // fall back to a mega box, non-deterministic across machines and load.
+  // iters + CONVERGENCE_THRESHOLD already bound the work deterministically,
+  // so the same input always yields the same map.
+  const t0 = Date.now(); // OCTI_DEBUG timing log only, never gates control flow
   const nodes = [...h.nodes.keys()].filter((nd) => ctx.deg(nd) > 0);
   const hEdges = [...h.edges.values()];
 
   // COURSE-ECONOMY penalty (general switchback/revisit cost). The placement
   // objective prices bends and crossings per edge, but nothing prices a
-  // line's COURSE — the path through placed nodes. Dense knots then draw as
+  // line's COURSE, the path through placed nodes. Dense knots then draw as
   // switchbacks and staircase revisits even though every per-edge path is
-  // clean: a 117° switchback slips a pure-reversal (dot) test, and a
+  // clean. A shallow switchback slips a pure-reversal (dot) test, and a
   // 90°-cornered staircase revisit slips ANY per-corner test (each corner is
   // individually legitimate). The general measure is windowed arc-over-chord
   // of the course, judged against the SAME window's ratio in support
-  // geometry: the drawn course may not detour meaningfully more than the
+  // geometry. The drawn course may not detour meaningfully more than the
   // true course does. Genuine terminal U-turns and geographic bows have a
   // high reference ratio and stay free; manufactured doubling is priced in
   // proportion to its excess.
@@ -1962,8 +1960,8 @@ function tryDraw(
       if (!ok || arc < 1e-6) return 1;
       const a = posOf(nds[0])!;
       const b = posOf(nds[nds.length - 1])!;
-      // clamp the chord: a window that returns exactly to its origin would
-      // divide by ~0 — treat sub-half-cell chords as half a cell.
+      // clamp the chord. A window that returns exactly to its origin would
+      // divide by ~0, so treat sub-half-cell chords as half a cell.
       const chord = Math.max(dist(a, b), grid.cellSize / 2);
       return arc / chord;
     };
@@ -1989,7 +1987,7 @@ function tryDraw(
     typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_COURSE_PEN === '0'
       ? 0
       : grid.pens.crossingPen * 3; // per unit of excess arc/chord ratio (OCTI_COURSE_PEN=0: diagnostic A/B)
-  const DETOUR_FREE = 1.45; // 90° equal-leg corner = 1.414 — always free
+  const DETOUR_FREE = 1.45; // 90° equal-leg corner = 1.414, always free
   const DETOUR_SLACK = 0.15; // tolerated excess over the support reference
   const DETOUR_CAP = 3; // cap per window (a reversal's ratio is unbounded)
   const courseDetourPenalty = (nd: string, posOf: (id: string) => Pixel | null): number => {
@@ -2016,8 +2014,7 @@ function tryDraw(
 
   // LOOP-AREA penalty (geographic loops collapsing to a line). A line whose
   // traversal forms a simple cycle of >= 3 distinct nodes encloses AREA in
-  // truth — the JFK AirTrain terminal ring (T8->T7->T5->T4->T1->T8), the HBLR
-  // loops. octi's bend-min objective has no term rewarding that area, so a
+  // truth. octi's bend-min objective has no term rewarding that area, so a
   // small loop flattens onto one grid row (all nodes collinear) and draws as
   // an out-and-back band. This term penalizes a cycle whose DRAWN enclosed
   // area falls below a minimal-visible target (~cells), pushing placement to
@@ -2045,8 +2042,8 @@ function tryDraw(
   interface LoopCycle { nds: string[]; target: number }
   const loopsByNode = new Map<string, LoopCycle[]>();
   const allLoops: LoopCycle[] = [];
-  // Cycles were detected on the ORIGINAL support graph (detectLoopCycles);
-  // keep only nodes that SURVIVED contraction / deg-2 collapse into this
+  // Cycles were detected on the ORIGINAL support graph (detectLoopCycles).
+  // Keep only nodes that SURVIVED contraction / deg-2 collapse into this
   // routed graph (stations persist; a sub-cell loop edge may have merged its
   // endpoints). >= 3 survivors still enclose area.
   for (const lc of loopCycles) {
@@ -2073,8 +2070,8 @@ function tryDraw(
   // Geographic quality tie-break (OCTI_TIEBREAK=<eps>, default off). Among grid
   // positions for a node move whose score is within <eps> cost units of the
   // best, prefer the one closest to the node's true (warped) geographic
-  // position. eps=0 is exact-tie-only (rarely fires — ndMovePen already makes
-  // scores continuous); eps>0 lets geography win NEAR-ties, the cheap
+  // position. eps=0 is exact-tie-only (rarely fires, since ndMovePen already
+  // makes scores continuous); eps>0 lets geography win NEAR-ties, the cheap
   // faithfulness the continuous ndMovePen can't buy without jagging junctions.
   // dist() is sqrt-based and the argmin is a total order → deterministic.
   const tieEnv =
@@ -2102,7 +2099,7 @@ function tryDraw(
       // then detours around the whole junction, and the single-edge re-route
       // sweep can never repair it (transiting the stub's turn-closed bases is
       // a violation). Longest-first lets the constrained chain claim its
-      // corridor and the flexible stubs adapt (W-line Lawrence->Burke bug).
+      // corridor and the flexible stubs adapt.
       const adjE = ctx.adjEdges(a).slice().sort((x, y) => {
         const sx = dist(ctx.posOf(x.from), ctx.posOf(x.to));
         const sy = dist(ctx.posOf(y.from), ctx.posOf(y.to));
@@ -2229,16 +2226,15 @@ function tryDraw(
       }
     }
 
-    // NOTE (cost-regime Phase 4, 2026-07-05): a coupled rip-up sweep was
-    // built here (rip a wandering edge PLUS the residents settled across its
-    // direct course, redraw wanderer-first, accept on net score win) and
-    // FALSIFIED: the final-state wander census below reads 2/298 with or
-    // without it, and the accepted rip-ups steered convergence to a slightly
-    // WORSE score (1940.1 -> 1941.2) and zigzag census (36 -> 38) on
-    // SEA-split. The insertion-time blockage census (Phases 1-3's ruler)
-    // counts transient difficulty that the node-move + single-edge sweeps
-    // already repair by convergence — it is NOT a picture of the final map.
-    // Judge any future router work by [blockage:final], not [blockage].
+    // NOTE: a coupled rip-up sweep was tried here (rip a wandering edge PLUS
+    // the residents settled across its direct course, redraw wanderer-first,
+    // accept on net score win) and did not help. The final-state wander
+    // census below is unchanged by it, and the accepted rip-ups steered
+    // convergence to a slightly worse score and zigzag census. The
+    // insertion-time blockage census counts transient difficulty that the
+    // node-move and single-edge sweeps already repair by convergence, so it
+    // is NOT a picture of the final map. Judge any future router work by
+    // [blockage:final], not [blockage].
 
     if (DBG) {
       console.error(
@@ -2251,9 +2247,9 @@ function tryDraw(
   }
 
   // FINAL-state wander census (OCTI_BLOCKAGE=1). The insertion-time census
-  // above counts every routing attempt — the local-search sweeps re-route, so
+  // above counts every routing attempt. The local-search sweeps re-route, so
   // it inflates with the amount of searching done. THIS number is the honest
-  // Phase-4 ruler: how many edges still wander in the state we actually draw.
+  // ruler: how many edges still wander in the state we actually draw.
   if (BLOCKAGE) {
     let wander = 0;
     let total = 0;
@@ -2267,7 +2263,7 @@ function tryDraw(
     }
     console.error(`[blockage:final] wanderers=${wander} of ${total} drawn (worst ratio ${worstR.toFixed(2)})`);
     // Course-economy census: windows whose DRAWN arc/chord exceeds their
-    // support-reference allowance — the manufactured switchback/revisit
+    // support-reference allowance. This is the manufactured switchback/revisit
     // population the course-detour penalty prices. The zigzag census misses
     // 90°-cornered shapes (dot threshold); this is the honest ruler.
     let bad = 0;
@@ -2295,8 +2291,8 @@ function tryDraw(
     }
     console.error(`[blockage:course] detour windows=${bad} of ${allWindows.length} (worst excess ${worstX.toFixed(2)})`);
     // Loop-area census: geographic cycles whose DRAWN enclosed area collapsed
-    // below half their minimal-visible target — the flattened-loop population
-    // (JFK terminal ring, HBLR) the loop-area penalty opens.
+    // below half their minimal-visible target. This is the flattened-loop
+    // population the loop-area penalty opens.
     let collapsed = 0;
     let worstFrac = 1;
     for (const lc of allLoops) {
@@ -2308,9 +2304,9 @@ function tryDraw(
     console.error(`[blockage:loop] collapsed loops=${collapsed} of ${allLoops.length} (worst frac ${worstFrac.toFixed(2)})`);
   }
 
-  // OCTI_DEBUG telemetry: why the local search stopped. No wall-clock budget
-  // (removed) — only convergence or the iters cap — and the search is now
-  // engine-deterministic, so this reads identically for a given input on any
+  // OCTI_DEBUG telemetry: why the local search stopped. There is no wall-clock
+  // budget; the search stops only on convergence or the iters cap. The search
+  // is engine-deterministic, so this reads identically for a given input on any
   // V8 build (offline == in-game).
   if (DBG)
     console.log(
@@ -2334,7 +2330,7 @@ function tryDraw(
 
   // Diagnostic (OCTI_TRACE_GEO=1): per comb edge, what the FINAL routed path
   // actually paid in geographic-course penalty and how far it strays from the
-  // course — the ground truth for "is geoPen inert or just out-bid".
+  // course. This is the ground truth for "is geoPen inert or just out-bid".
   if (
     typeof process !== 'undefined' &&
     (process as { env?: Record<string, string> }).env?.OCTI_TRACE_GEO
@@ -2386,7 +2382,7 @@ function tryDraw(
     }
 
     // OCTI_TRACE_CE=<id,...>: who occupies the grid along this edge's TRUE
-    // course in the final state — the would-be faithful corridor's residents.
+    // course in the final state, the would-be faithful corridor's residents.
     const traceCe = (process as { env?: Record<string, string> }).env?.OCTI_TRACE_CE;
     for (const ceId of (traceCe ?? '').split(',').filter(Boolean)) {
       const ce = h.edges.get(ceId);
@@ -2464,9 +2460,9 @@ function tryDraw(
         for (const r of rows2) console.error(`[octi]     ${r}`);
       }
 
-      // Active experiment: rip the edge up and re-route it under the FINAL
-      // constraints — if this finds a cheaper path, the local-search edge
-      // sweep would have fixed it and simply never got the chance.
+      // Rip the edge up and re-route it under the FINAL constraints. If this
+      // finds a cheaper path, the local-search edge sweep would have fixed it
+      // and simply never got the chance.
       if (drawing.drawn(ce.id)) {
         const before = drawing.score();
         for (const [tag, cutoff] of [['budgeted', before], ['unbounded', Infinity]] as const) {

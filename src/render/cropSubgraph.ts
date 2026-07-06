@@ -3,15 +3,15 @@
 // just that cluster plus one combo-hop of neighbours, so re-simulating it in a
 // full canvas gives the dense cluster room to spread (its mega-boxes resolve).
 //
-// Filtering is at the stNode/stCombo level — the real route↔station linkage:
+// Filtering is at the stNode/stCombo level, the real route↔station linkage:
 // a route's path is a sequence of stCombos (startStNodeId -> endStNodeId), and a
 // station owns stNodeIds. (route.stations is empty in game dumps.)
 //
 // Geography is kept but CLIPPED to the cluster's geographic extent (not dropped,
 // not the whole city): re-simulating projects the backdrop through the same
 // density-warped projection as the network, so the cropped water/parks deform
-// with — and stay aligned to — the spread-out cluster. Clipping keeps the layout
-// bounds + warp re-fit tight on the region instead of the whole city.
+// with the spread-out cluster and stay aligned to it. Clipping keeps the layout
+// bounds and warp re-fit tight on the region instead of the whole city.
 
 import type { SchematicInput } from './schematic';
 import type { Coordinate, BoundingBox } from '../types/core';
@@ -60,8 +60,8 @@ export function clipRingToRect(ring: Coordinate[], minX: number, minY: number, m
   return out;
 }
 
-/** Clip every water/green polygon to `bbox` and stamp the cropped bbox, so the
- *  backdrop — and the layout's framing — cover only the cluster's region. */
+/** Clip every water/green polygon to `bbox` and stamp the cropped bbox, so both
+ *  the backdrop and the layout's framing cover only the cluster's region. */
 function clipGeographyToBox(geo: GeographyData, bbox: BoundingBox): GeographyData {
   const [minX, minY, maxX, maxY] = bbox;
   const clipFeats = (feats: GeoPolyFeature[]): GeoPolyFeature[] => {
@@ -131,7 +131,7 @@ export function cropSubgraph(
 
   // Crop the geography backdrop to EXACTLY the selected region. The caller passes
   // `clipBbox`: the user's drawn box UNPROJECTED back through the warped main
-  // projection into geographic space. That is the correct bounds — the box is a
+  // projection into geographic space. That is the correct bounds. The box is a
   // rectangle in WARPED pixel space, so its true geographic preimage (not the
   // bbox of whichever stations happen to land inside) is what we clip to. The
   // one-hop ring stations sit outside this box, so the cropped geography ends at
@@ -157,8 +157,8 @@ export function cropSubgraph(
     if (box) {
       // Clip with a margin PAST the selection (but stamp the exact selection as
       // the bbox/frame): the popout frames on the stamped bbox, and the margin
-      // lets water/parks continue seamlessly past the frame edge — exactly like
-      // the main map — instead of being amputated at the frame. 0.35 > the
+      // lets water/parks continue seamlessly past the frame edge, exactly like
+      // the main map, instead of being amputated at the frame. 0.35 > the
       // renderer's 0.25 canvas margin (detailCrop), so the margin backdrop
       // covers the whole sub-canvas.
       const PAD = 0.35;
@@ -172,7 +172,7 @@ export function cropSubgraph(
   }
 
   // Detail-crop render options: flag the sub-render (the re-fit pins the clip
-  // rect's corners on-canvas — see SchematicOptions.detailCrop) and shape the
+  // rect's corners on-canvas, see SchematicOptions.detailCrop) and shape the
   // sub-canvas to the drawn box's aspect so the popout frame matches it.
   const baseOpts = (input as { options?: { width?: number; height?: number } }).options;
   let options: typeof baseOpts = { ...baseOpts, detailCrop: true } as typeof baseOpts;

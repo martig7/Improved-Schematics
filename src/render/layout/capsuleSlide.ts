@@ -27,7 +27,7 @@ function ptSeg(px: number, py: number, a: Pixel, b: Pixel): number {
   return Math.sqrt((px - (a[0] + vx * t)) ** 2 + (py - (a[1] + vy * t)) ** 2); // correctly-rounded cross-V8
 }
 
-/** Endpoint-min approximation of the distance between two segments — exact for
+/** Endpoint-min approximation of the distance between two segments. Exact for
  *  non-crossing segments (spine hulls in practice). Verbatim from the render. */
 export function segSegDist(a1: Pixel, b1: Pixel, a2: Pixel, b2: Pixel): number {
   return Math.min(
@@ -53,8 +53,9 @@ export function penBetween(A: Hull, B: Hull): number {
 /** Pick the pair of lane offsets that resolves an overlap. `hullsA[ka]` /
  *  `hullsB[kb]` are each capsule's spine hull at offset index k (k = 0 = rest;
  *  higher k = slid farther apart). Returns the cleared cell (`penBetween ≤
- *  clearAt`) with the least total slide `ka + kb`; if none clears, the cell with
- *  the least residual penetration (tie-break least total slide) — best effort. */
+ *  clearAt`) with the least total slide `ka + kb`. If none clears, returns the
+ *  best-effort cell with the least residual penetration (tie-break least total
+ *  slide). */
 export function chooseMutualSlide(
   hullsA: Hull[],
   hullsB: Hull[],

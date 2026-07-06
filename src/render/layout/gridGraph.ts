@@ -9,7 +9,7 @@
 //  - routing an edge SETTLES the grid edges it uses: their resident-edge sets
 //    are recorded, the touched nodes' bend edges are soft-closed (SOFT_INF =
 //    "topology violation", not just expensive), and the crossing diagonal of
-//    every used diagonal is hard-blocked — this is what kills the X-crossing
+//    every used diagonal is hard-blocked. This is what kills the X-crossing
 //    tangles that a pure penalty model lets through;
 //  - settled station nodes carry node-cost vectors (bend/spacing/topo-block,
 //    written by the octilinearizer) on their sink edges so later edges enter
@@ -33,8 +33,8 @@ export interface Penalties {
    *  path with fewer grid hops than it has stations (Drawing::draw). */
   densityPen: number;
   /** NOT in LOOM: cost of crossing STRAIGHT THROUGH a grid node already
-   *  occupied by another corridor (an overlap crossing — each bundle keeps
-   *  its preferred course). Turning inside another corridor stays
+   *  occupied by another corridor (an overlap crossing, where each bundle
+   *  keeps its preferred course). Turning inside another corridor stays
    *  soft-closed; station nodes stay protected. Keep above ~2x a 90° bend
    *  so corridors don't slice through bundles gratuitously, but well below
    *  the cost of a staircase detour around them. */
@@ -52,11 +52,11 @@ export const DEFAULT_PENALTIES: Penalties = {
   diagonalPen: 0.5,
   ndMovePen: 0.5,
   // LOOM ships 10, but it pairs that with label space requirements: a chain of
-  // k+1 stations is FORCED onto >= k+1 grid hops. On dense downtown chains
+  // k+1 stations is FORCED onto >= k+1 grid hops. On dense station chains
   // that makes the router add switchback zigzags (or worse, giant detours)
-  // purely to lengthen the path. We redistribute stations evenly along the
-  // corridor instead, so cramped chains are merely cosy — keep the pressure
-  // below the cost of a single extra hop so it never buys a switchback.
+  // purely to lengthen the path. This pipeline redistributes stations evenly
+  // along the corridor instead, so cramped chains are merely tight. The value
+  // stays below the cost of a single extra hop so it never buys a switchback.
   densityPen: 0.5,
   crossingPen: 4,
 };
@@ -320,11 +320,10 @@ export class OctiGridGraph {
     if (f & F_SOFT) return SOFT_INF + this.cost0[e];
     if (f & F_CLOSED) return Infinity;
     // Conjugate diagonal of a settled diagonal: an X crossing mid-cell is a
-    // normal drawn crossing — price it (2x a plain crossing), don't ban it.
-    // The SOFT_INF here was LOOM planar-output bookkeeping this pipeline
-    // doesn't need (imageMerge only merges COINCIDENT geometry; an X is just
-    // a crossing). Phase-1 census: 30-40% of classic-mode wanderers were
-    // orbiting these.
+    // normal drawn crossing, so price it (2x a plain crossing) rather than
+    // banning it. The SOFT_INF here was LOOM planar-output bookkeeping this
+    // pipeline doesn't need (imageMerge only merges COINCIDENT geometry; an X
+    // is just a crossing).
     if (f & F_BLOCKED) return this.pens.crossingPen * 2 + this.cost0[e];
     if (f & F_CROSS) return this.pens.crossingPen + this.cost0[e];
     return this.cost0[e];
@@ -372,15 +371,15 @@ export class OctiGridGraph {
       for (let j = 0; j < 8; j++) {
         if (i === j) continue;
         const e = this.bendIdx(b, i, j);
-        // Crossing an occupied node is legal at the finite crossingPen —
-        // including settled (station/junction) bases: the 2026-07-05
-        // blockage census measured 81% of all detour-routed edges orbiting
-        // hard-priced settled bases, the single largest zigzag/loop factory
-        // the excision layers then repaired. STRAIGHT passes are always
-        // purchasable; a TURN is purchasable only through two ports the
-        // resident does not use (a kink ONTO the resident's own port would
-        // tangle its geometry — those stay soft-closed, and occupyPortTurns
-        // re-closes turns as ports fill after this base was first closed).
+        // Crossing an occupied node is legal at the finite crossingPen,
+        // including settled (station/junction) bases. Hard-pricing settled
+        // bases otherwise forces detour routing around them, the single
+        // largest source of zigzags and loops the excision layers then repair.
+        // STRAIGHT passes are always purchasable; a TURN is purchasable only
+        // through two ports the resident does not use. A kink ONTO the
+        // resident's own port would tangle its geometry, so those stay
+        // soft-closed, and occupyPortTurns re-closes turns as ports fill after
+        // this base was first closed.
         if ((i + 4) % 8 === j) this.crossClose(e);
         else if (!occ[i] && !occ[j]) this.crossClose(e);
         else this.softClose(e);
@@ -545,7 +544,7 @@ export class OctiGridGraph {
   }
 
   /** Per direction, the resident support edge incident to origNd (if any) on
-   *  the adjacent grid edge — LOOM GridGraph::getSettledAdjEdgs. */
+   *  the adjacent grid edge (LOOM GridGraph::getSettledAdjEdgs). */
   getSettledAdjEdgs(b: number, isIncident: (ceId: string) => boolean): Array<string | null> {
     const out: Array<string | null> = new Array(8).fill(null);
     for (let d = 0; d < 8; d++) {
@@ -666,7 +665,7 @@ export class OctiGridGraph {
     };
 
     // Binary heap of (f, node). Reuses instance arrays (truncated here) and
-    // swaps via temporaries — array-destructuring swaps allocate a throwaway
+    // swaps via temporaries. Array-destructuring swaps allocate a throwaway
     // array per swap, ruinous in this innermost loop.
     const heapF = this.heapF;
     const heapN = this.heapN;

@@ -83,7 +83,7 @@ test('rotateSchematicInput: rotates every coordinate carrier + rebuilds the bbox
 test('rotateSchematicInput: stamps the data-region hull, crops nothing', () => {
   // ocean covers the WHOLE harvest bbox: after rotation the geography carries
   // the rotated harvest outline as `hull` (the renderer draws land only inside
-  // it), while the polygons themselves are NOT clipped — no data loss.
+  // it), while the polygons themselves are NOT clipped, so there is no data loss.
   const gbb: [number, number, number, number] = [-74.4, 40.4, -73.4, 41.2];
   const ocean = [[[gbb[0], gbb[1]], [gbb[2], gbb[1]], [gbb[2], gbb[3]], [gbb[0], gbb[3]]]] as never;
   const i = {

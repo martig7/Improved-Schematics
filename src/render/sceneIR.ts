@@ -1,18 +1,20 @@
-// Scene IR — a flat, backend-agnostic display list for the rendered schematic.
+// Scene IR. A flat, backend-agnostic display list for the rendered schematic.
 //
 // The renderer (renderRibbons / renderGeographic) still emits an SVG STRING,
 // which stays the byte-exact source of truth for export, persist and the detail
 // insets. For the INTERACTIVE panel we parse that string ONCE per layout change
 // into this typed display list (see sceneFromSvg.ts) and paint it to a <canvas>
 // (see sceneCanvas.ts). Pan/zoom/cutout then become a camera transform + one
-// redraw with no live DOM — no innerHTML reparse, no per-node counter-scale
-// writes, no whole-SVG repaint of thousands of vector nodes per frame.
+// redraw with no live DOM. This avoids an innerHTML reparse, per-node
+// counter-scale writes, and a whole-SVG repaint of thousands of vector nodes
+// per frame.
 //
 // `worldScale` reproduces the panel's existing stroke rule exactly: a stroke
 // counter-scales (stays a constant SCREEN size) UNLESS it lives inside a
 // `.edges` or `.imp-stop` group, in which case it scales WITH the map. Labels
 // (the `.stations` layer) are a third regime: world-anchored, constant screen
-// size — modelled by a world anchor (ax,ay) plus a screen-space offset (x,y).
+// size. This is modelled by a world anchor (ax,ay) plus a screen-space offset
+// (x,y).
 
 export type Layer =
   | 'background'

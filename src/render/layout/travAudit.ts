@@ -12,7 +12,7 @@ export interface AuditEdge {
 }
 
 /** Zigzag census: a REVERSAL is a node where the line's incoming and outgoing
- *  directions oppose (dot < -0.5) — the user-facing "detour" classification
+ *  directions oppose (dot < -0.5). This is the "detour" classification
  *  (out-and-back to a stop, wishbones, down-up-down staircases). Genuine
  *  turnarounds exist in the GRAPH traversal too, so diff stages against the
  *  graph count: new reversals = manufactured artifacts. OCTI_AUDIT=1. */

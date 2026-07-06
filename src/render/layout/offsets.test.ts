@@ -21,7 +21,7 @@ function mkEdge(id: string, order: string[]): LayoutEdge {
 }
 
 test('computeCanonicalOffsets separates co-running lines with colliding global offsets', () => {
-  // A centers on e1 (offset 0), B centers on e2 (offset 0) — their canonical
+  // A centers on e1 (offset 0), B centers on e2 (offset 0). Their canonical
   // edges differ, so both get the same global offset, yet they co-run on e3.
   // Undetected, both would draw at identical coordinates (one invisible).
   const layout: Layout = {

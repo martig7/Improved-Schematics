@@ -1,15 +1,15 @@
 // Rigid-row marker placement (spec: docs/superpowers/specs/
 // 2026-06-12-rigid-row-markers-design.md, v2). The unit of optimization is
-// the bundle ROW — a straight octilinear line whose dots are intersections
+// the bundle ROW, a straight octilinear line whose dots are intersections
 // of the row line with the member lane curves. Collinearity, on-lane-ness
 // and octilinearity hold by construction (R1/R2); the pairing-conditioned
 // chain DP is exact on the discretized state space (R3); the only fallback
-// is the caller's mega box on a null return (R4 — no partial degradation).
+// is the caller's mega box on a null return (R4, no partial degradation).
 
 import type { Pixel } from './types';
 import { type LaneCurve, curvePoint, curveTangent } from './chainPlace';
 
-// sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not), so marker
+// sqrt(a²+b²), correctly-rounded cross-V8 (Math.hypot is not), so marker
 // placement (and the box-vs-row decision it feeds) is bit-identical on any engine.
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
@@ -20,12 +20,12 @@ export interface RowOpts {
   extCap: number;        // max extension per row at a corner (6 * spacing)
   slideW?: number;       // W_S, default 0.05
   rotW?: number;         // W_ROT, default 20 (px per 45-degree step)
-  blocked?: (p: Pixel) => boolean; // spec §6 mask — a row state is infeasible
+  blocked?: (p: Pixel) => boolean; // spec §6 mask: a row state is infeasible
                                    // if ANY of its dots is blocked (never dropped)
-  proximity?: (p: Pixel) => number; // SOFT §6 mask — per-dot proximity penalty
+  proximity?: (p: Pixel) => number; // SOFT §6 mask: per-dot proximity penalty
                                      // (≥0) added to the state cost; biases the
                                      // search toward spacing without vetoing a
-                                     // crowded-but-feasible seat (MASKED hubs)
+                                     // crowded-but-feasible seat
   dbgLabel?: string; // OCTI_PLACE_DEBUG: station id, for the per-box diagnosis log
   /** Per-bundle asymmetric slide bounds [minS, maxS] along the carrier curve
    *  (indexed like `groups`), overriding ±arcLimit for that bundle. The far
@@ -38,12 +38,12 @@ export interface RowOpts {
   latTol?: number;
   /** Soft sub-floor gap band (px, default 0 = hard floor everywhere). Dot
    *  gaps in [minGap − softBand, minGap) are feasible but charged softW per
-   *  px of deficit — replaces the caller's box-rescue slack WALK with one
+   *  px of deficit, replacing the caller's box-rescue slack WALK with one
    *  solve. softW (default 5000/px) dominates the other cost scales AT THE
-   *  DEFAULT BOUNDS (extCap ≤ ~132, slides ≤ ±48): a fully-clear chain then
+   *  DEFAULT BOUNDS: a fully-clear chain then
    *  always outbids an overlapping one, and the least deficit wins among
    *  overlaps (the walk's minimum-slack semantics). With a spread-scaled
-   *  extCap (the far-attach tier) dominance is only vs LOCAL costs — a clear
+   *  extCap (the far-attach tier) dominance is only vs LOCAL costs. A clear
    *  chain paying a very long bridge may lose to a compact chain carrying a
    *  small in-band deficit, which is the intended trade there. */
   softBand?: number;
@@ -78,7 +78,7 @@ interface RowState {
   asc: number[];   // group positions sorted by ascending projection on u
   a: Pixel;        // outermost dot at min projection
   b: Pixel;        // outermost dot at max projection
-  cost: number;    // slideW*|s| + rotW*rot — the unary state cost
+  cost: number;    // slideW*|s| + rotW*rot, the unary state cost
 }
 
 // OCTI_PLACE_DEBUG only: why a bundle's row states all failed (→ mega box).
@@ -87,15 +87,15 @@ interface BundleStat {
   noCross: number;    // states where a member lane never crossed the row line
   pinch: number;      // states where consecutive dots fell below minGap
   blocked: number;    // states vetoed by the §6 mask (already-placed dots)
-  bestMinGap: number; // largest min-gap among states that crossed all lanes
+  bestMinGap: number; // largest min gap among states that crossed all lanes
 }
 
 /** Crossings of the row LINE (A, u) with a lane polyline: walk the vertices
  *  computing the signed lateral offset (pt−A)·n, n = perp(u); a sign change
  *  brackets a crossing (lerp). Returns the crossing nearest `near` (the
  *  member's own anchor), or null when the line misses the windowed lane.
- *  A vertex on the line (|offset| ~ 0) counts as a crossing itself — for a
- *  segment collinear with the row line that admits its endpoints, which is
+ *  A vertex on the line (|offset| ~ 0) counts as a crossing itself, which
+ *  admits the endpoints of a segment collinear with the row line. That is
  *  enough: the truly degenerate row-along-own-lane states either die on the
  *  floor checks or belong to single-member bundles (special-cased below). */
 export const lineCrossNearest = (c: LaneCurve, A: Pixel, u: Pixel, near: Pixel): Pixel | null => {
@@ -104,7 +104,7 @@ export const lineCrossNearest = (c: LaneCurve, A: Pixel, u: Pixel, near: Pixel):
   let best: Pixel | null = null;
   let bestD = Infinity;
   const consider = (p: Pixel) => {
-    // squared distance — monotone-equivalent to the true distance for the
+    // squared distance, monotone-equivalent to the true distance for the
     // nearest-crossing pick, but correctly-rounded (no Math.hypot), so the
     // choice is bit-stable across V8 engines (matters when a folded lane
     // admits two crossings; the collision slide reuses this primitive).
@@ -135,7 +135,7 @@ interface PairRes { cost: number; corner: Pixel; }
 
 /** Exact bundle-level solve per spec v2 §2. groups = mark indices per bundle
  *  in lane order; curves[i] = mark i's lane curve. Returns null when NO
- *  pairing/orientation admits a feasible configuration — caller falls back
+ *  pairing/orientation admits a feasible configuration; caller falls back
  *  to the mega box (spec v2 §3). */
 export function solveRows(
   curves: LaneCurve[],
@@ -148,7 +148,7 @@ export function solveRows(
   // Turn penalty: charge each corner for how much the chain BENDS, so the DP
   // prefers a straighter capsule (a parallel end-to-end join, or the gentlest
   // V) over a sharp elbow when the dots admit it. (1 + o1·o2) ∈ [0,2]: 0 for a
-  // straight join, 1 at 90°, 2 at a reversal — cross-V8-safe (dot only) and ≥0
+  // straight join, 1 at 90°, 2 at a reversal; cross-V8-safe (dot only) and ≥0
   // so the chain-DP pruning stays sound. OCTI_TURNW tunes it (0 = off).
   const turnW = (() => {
     const v =
@@ -167,7 +167,7 @@ export function solveRows(
   // ---- step 1: row states per bundle --------------------------------------
   const buildStates = (group: number[], bi: number, stats?: BundleStat): RowState[] => {
     const carrier = curves[group[0]];
-    // rest axis: octilinear snap of the bundle perpendicular — perp of the
+    // rest axis: octilinear snap of the bundle perpendicular, the perp of the
     // mean SIGN-NORMALIZED member tangent at the anchors (same normalization
     // as the grouping code in renderOctilinear). Math.round half-up breaks
     // the exact-22.5° tie deterministically.
@@ -180,8 +180,8 @@ export function solveRows(
       mx += tg[0] * sgn;
       my += tg[1] * sgn;
     }
-    // Quantize atan2 (not correctly-rounded cross-V8) to 1e-6 rad — absorbs the
-    // engine ULP diff while preserving the rest-axis snap (round below).
+    // Quantize atan2 (not correctly-rounded cross-V8) to 1e-6 rad, which absorbs
+    // the engine ULP diff while preserving the rest-axis snap (round below).
     const perpAng = Math.round(Math.atan2(mx, -my) * 1e6) / 1e6; // angle of the perp vector (-my, mx)
     const restIdx = ((Math.round(perpAng / QUARTER) % 4) + 4) % 4;
     const range = opts.slideRange?.[bi];
@@ -213,9 +213,9 @@ export function solveRows(
           dots = got;
         }
         // lane-order consistency + floor: projections strictly monotone in
-        // the group's lane order (either direction — a reversed row is the
-        // same row) with consecutive gaps ≥ minGap. Dots are collinear, so
-        // the projected gap IS the pair distance.
+        // the group's lane order (either direction, since a reversed row is
+        // the same row) with consecutive gaps ≥ minGap. Dots are collinear,
+        // so the projected gap IS the pair distance.
         const pr = dots.map((p) => p[0] * u[0] + p[1] * u[1]);
         let feas = true;
         let mg = Infinity;
@@ -232,14 +232,14 @@ export function solveRows(
         }
         if (feas && blocked) {
           for (const p of dots) {
-            if (blocked(p)) { feas = false; if (stats) stats.blocked++; break; } // §6 mask — never dropped
+            if (blocked(p)) { feas = false; if (stats) stats.blocked++; break; } // §6 mask, never dropped
           }
         }
         if (!feas) continue;
         // SOFT §6 mask: instead of vetoing crowded dots, charge a per-dot
         // proximity penalty so the chain-DP biases toward states that seat
         // clear of already-placed neighbours but STILL seats a crowded hub
-        // (MASKED boxes) rather than mega-boxing it.
+        // rather than mega-boxing it.
         let proxPen = 0;
         if (proximity) for (const p of dots) proxPen += proximity(p);
         const asc = dots.map((_, gi) => gi).sort((x, y) => (pr[x] - pr[y]) || (x - y)); // total tie-break: index unique (cross-V8 stable)
@@ -278,7 +278,7 @@ export function solveRows(
         const s = statsArr[i];
         const grp = groups[i];
         // Min pairwise separation of member stop-anchors. When two members
-        // coincide here, their lanes are interlined on ONE drawn edge — the
+        // coincide here, their lanes are interlined on ONE drawn edge: the
         // COINCIDENT failure (no spacing can separate them), as opposed to a
         // PINCHED bundle whose lanes are distinct but merely seated too tight.
         let minAnchorSep = Infinity;
@@ -337,7 +337,7 @@ export function solveRows(
   // bit 1 = reversed. The pair joins row p's TAIL to row q's HEAD.
   const pairEval = (P: RowState, op: number, Q: RowState, oq: number): PairRes | null => {
     // cross-row dot floor at PAIR level (spec §2.2: station-level checks cover
-    // NON-adjacent rows — adjacent floors must hold here). Without it the
+    // NON-adjacent rows, so adjacent floors must hold here). Without it the
     // ext-minimizing argmin can pull facing dots of a 45° pair to ~0.77*minGap
     // (corner still clears both), and the station post-check then nulls the
     // whole solve to mega even though feasible configurations exist.
@@ -360,7 +360,7 @@ export function solveRows(
     let ext2: number;
     if (P.axis === Q.axis) {
       // parallel rows (same snapped axis): feasible only if collinear within
-      // sub-pixel lateral offset — they join end-to-end (spec §2.2)
+      // sub-pixel lateral offset, joining end-to-end (spec §2.2)
       const lat = Math.abs((e2[0] - e1[0]) * -P.u[1] + (e2[1] - e1[1]) * P.u[0]);
       if (lat >= latTol) return null;
       // end-to-end means the facing ends point at each other; same-direction
@@ -375,7 +375,7 @@ export function solveRows(
       // V-not-T: the corner = intersection of the two row LINES must lie
       // at-or-beyond the facing end of EACH row along its outward direction
       // (extension only, never poking into a row's side; −0.5px tolerance)
-      const cross = P.u[0] * Q.u[1] - P.u[1] * Q.u[0]; // ≥ sin45° — axes differ
+      const cross = P.u[0] * Q.u[1] - P.u[1] * Q.u[0]; // ≥ sin45°; axes differ
       const t = ((e2[0] - e1[0]) * Q.u[1] - (e2[1] - e1[1]) * Q.u[0]) / cross;
       corner = [e1[0] + t * P.u[0], e1[1] + t * P.u[1]];
       const d1 = (corner[0] - e1[0]) * o1x + (corner[1] - e1[1]) * o1y;
@@ -385,15 +385,15 @@ export function solveRows(
       ext2 = hyp(corner[0] - e2[0], corner[1] - e2[1]);
     }
     // SOFT elbow: the ext1+ext2 cost term already biases the DP toward short
-    // connectors, so extCap is kept only as a LARGE safety bound (a runaway
-    // elbow that reaches across the map is still rejected). Divergent bundles
-    // whose facing ends sit beyond the old hard cap (Beach & Mason ms15,
-    // Columbus ms17) now PAIR — their elbow length is simply paid for in cost.
+    // connectors, so extCap is kept only as a LARGE safety bound. A runaway
+    // elbow that reaches across the map is still rejected. Divergent bundles
+    // whose facing ends sit beyond a short cap still PAIR. Their elbow length
+    // is simply paid for in cost.
     if (ext1 > extCap || ext2 > extCap) return null; // safety bound only (extCap now large)
     // the corner must clear every dot of BOTH rows (spec §2.2). Applied to
     // the parallel join too: its synthetic corner crowds the facing dots as
-    // the gap closes, which the spec's blanket clearance clause forbids —
-    // this also keeps degenerate slid-together joins out of the DP.
+    // the gap closes, which the spec's blanket clearance clause forbids.
+    // This also keeps degenerate slid-together joins out of the DP.
     for (const d of P.dots) {
       const dd = hyp(corner[0] - d[0], corner[1] - d[1]);
       if (dd < hardFloor) return null;
@@ -420,13 +420,13 @@ export function solveRows(
   // clearance; adjacent pairs are already floored in pairEval). Run per
   // (seq,mask) inside runDP (idea ③) so a colliding pairing is rejected and the
   // search keeps going, instead of nulling the whole station after the global
-  // min-cost pairing was chosen (the mn199 / "7 St" box class).
+  // min-cost pairing was chosen.
   // softBand approximation: this check only lowers its reject threshold to the
-  // HARD floor — station-level (non-adjacent) gaps inside the soft band are
+  // HARD floor. Station-level (non-adjacent) gaps inside the soft band are
   // accepted UNPRICED. Deliberate: the DP already prices adjacent-pair/corner
   // deficits (which dominate in practice); pricing the full all-pairs set here
   // would require plumbing softPen through stationFloorsOk's boolean return,
-  // for a case the band was not designed to police (see spec 2026-07-04 §2.1).
+  // for a case the band was not designed to police (see spec §2.1).
   let dbgMinNonAdj = Infinity; // OCTI_PLACE_DEBUG: closest non-adjacent gap seen
   const stationFloorsOk = (states: RowState[], corners: Pixel[]): boolean => {
     for (let i = 0; i < states.length; i++) {
@@ -505,7 +505,7 @@ export function solveRows(
   // Orientation-FOLDED DP: rather than a separate fixed-orientation DP for each of
   // the 2^g masks, fold orientation into the DP STATE (state index × orient bit), so
   // ONE DP per permutation jointly minimizes over all orientation assignments. This
-  // removes the 2^(g-2) cross-mask redundancy by RESTRUCTURING — not by caching
+  // removes the 2^(g-2) cross-mask redundancy by RESTRUCTURING, not by caching
   // (pairEval is ~50ns, too cheap to memoize; see docs/fresh-gen-plan.md). Returns
   // {fallback:true} when the cheapest chain over all orientations violates a station
   // floor: stationFloorsOk is all-pairs (not chain-decomposable), so we then run the
@@ -551,7 +551,7 @@ export function solveRows(
     for (let qIdx = 0; qIdx < prev.length; qIdx++) {
       if (isFinite(prev[qIdx]) && (end < 0 || prev[qIdx] < prev[end])) end = qIdx;
     }
-    if (end < 0) return { r: null, fallback: false }; // no finite chain — no mask can do better
+    if (end < 0) return { r: null, fallback: false }; // no finite chain; no mask can do better
     const chosen = new Array<number>(seq.length);
     chosen[seq.length - 1] = end;
     for (let k = seq.length - 1; k >= 1; k--) chosen[k - 1] = back[k - 1][chosen[k]];
@@ -567,8 +567,8 @@ export function solveRows(
   // dp[mask][i] is the min cost of a chain covering exactly the bundle set `mask`,
   // ending at bundle i in each sub-state; the unique predecessor subset of (mask,i) is
   // mask\{i}. This computes each ordered (bundle-pair, state, orient) transition once
-  // per containing subset — O(2^g·g²·states²) vs the folded permutation enumeration's
-  // O(g!·states²) — so each pairEval combo is evaluated 2^(g-2) times instead of (g-1)!
+  // per containing subset, O(2^g·g²·states²) vs the folded permutation enumeration's
+  // O(g!·states²), so each pairEval combo is evaluated 2^(g-2) times instead of (g-1)!
   // (≈3× fewer at g5). Returns the unconstrained global min chain (floor checked by the
   // caller); null if no finite chain exists.
   const heldKarp = (): DPResult | null => {
@@ -654,11 +654,11 @@ export function solveRows(
   const tryFolded = (seq: number[]) => {
     const f = runDPFolded(seq);
     if (f.r) tryKeep(f.r);
-    else if (f.fallback) fullMaskEnum(seq); // cheapest chain failed a floor — search all orientations
+    else if (f.fallback) fullMaskEnum(seq); // cheapest chain failed a floor; search all orientations
   };
   // Exhaustive fallback: all g! permutations (deterministic lexicographic order), each
   // a folded DP with a per-mask floor fallback. This is the proven feasible-chain search
-  // that fixes the mega-box set — Held-Karp defers to it when its optimum fails a floor.
+  // over the mega-box set. Held-Karp defers to it when its optimum fails a floor.
   const foldedEnum = () => {
     const perm: number[] = [];
     const used = new Array(g).fill(false);
@@ -677,24 +677,23 @@ export function solveRows(
   };
   if (g === 5) {
     // g=5 is the pathological case: the folded enumeration is g!·2^g/2^g = 5! = 120
-    // permutations, each a 776²-wide DP — one such station dominated London (~24s, 80%
-    // of its placement cost). Held-Karp collapses the permutations (each ordered pair
+    // permutations, each a wide DP. One such station can dominate a whole map's
+    // placement cost. Held-Karp collapses the permutations (each ordered pair
     // evaluated 2^(g-2)=8× instead of (g-1)!=24×, ~3× fewer pairEval). Fast PRE-PASS: if
     // its global-min chain clears the all-pairs station floor, take it; else fall back to
     // the exhaustive folded enumeration, preserving the mega-box set exactly.
     //   Gated to g=5 deliberately: at g≤4 the fold is already fast and Held-Karp's gain
     // is marginal, while its fall-back (when the cheapest chain fails a floor, common on
-    // dense/boxy layouts like SF) costs MORE than it saves — measured a 1.4× regression
-    // on SF when applied at g4. g=5 has the opposite profile: huge base cost, optimum
-    // usually feasible.
+    // dense/boxy layouts) costs MORE than it saves, a measured regression when applied
+    // at g4. g=5 has the opposite profile: huge base cost, optimum usually feasible.
     const hk = heldKarp();
     if (hk && stationFloorsOk(hk.states, hk.corners)) best = hk;
     else foldedEnum();
   } else if (g <= 5) {
     foldedEnum(); // g ≤ 4: the orientation-folded permutation enumeration (proven, fast)
   } else {
-    // beyond 5 bundles (unobserved — spec notes g ≤ 4): greedy sequence by
-    // nearest unused head anchor, forward orientations — the solveChain
+    // beyond 5 bundles (unobserved; spec notes g ≤ 4): greedy sequence by
+    // nearest unused head anchor, forward orientations. This is the solveChain
     // enumeration pattern, one level up
     const seq = [0];
     const used = new Array(g).fill(false);
@@ -730,7 +729,7 @@ export function solveRows(
   }
   const win: DPResult = best;
   // station-level non-adjacent + corner floors are now enforced INSIDE runDP per
-  // (seq,mask) (idea ③), so `best` already satisfies them — no post-check here.
+  // (seq,mask) (idea ③), so `best` already satisfies them; no post-check here.
 
   // ---- step 5: output -------------------------------------------------------
   const pos: Pixel[] = new Array(n);

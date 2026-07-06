@@ -1,15 +1,15 @@
 // Detail-area control icons, resolved from the game's bundled Lucide set
-// (window.SubwayBuilderAPI.utils.icons — the same source the panel/menu icons use, e.g.
-// `icon: 'Waypoints'` in main.ts). Using the real Lucide components keeps these controls
+// (window.SubwayBuilderAPI.utils.icons), the same source the panel and menu icons use.
+// Using the real Lucide components keeps these controls
 // visually consistent with the rest of the game UI rather than hand-rolled glyphs/SVGs.
 //
 // Lucide is loaded by stroke="currentColor", so each icon inherits the button's text color
-// (and opacity) for free — exactly what the row's other controls expect.
+// and opacity for free, which is what the row's other controls expect.
 
 export type IconName = 'lock' | 'unlock' | 'edit' | 'check' | 'x' | 'trash' | 'settings';
 
-// Each semantic name → ordered Lucide candidates; the first one present in the game's set
-// wins. Names drift across Lucide versions (Unlock → LockOpen, Edit → SquarePen, etc.), so
+// Each semantic name maps to ordered Lucide candidates; the first one present in the
+// game's set wins. Names drift across Lucide versions, so
 // list the likely aliases and resolve defensively.
 const LUCIDE: Record<IconName, string[]> = {
   lock: ['Lock'],

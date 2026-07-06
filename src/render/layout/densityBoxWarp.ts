@@ -276,17 +276,17 @@ export function findCapsuleBoxes(
 /** Crowd anisotropy of a box: WHICH AXIS is actually crowded, read off the
  *  nearest-neighbour displacement of every node inside the box. If your
  *  nearest neighbour sits BESIDE you (horizontal displacement), horizontal
- *  room is what separates you — so Manhattan's parallel vertical trunks read
- *  x-crowded (avenue pitch < stop pitch), a pinned JFK-style pair reads
- *  crowded along its own displacement, and a mixed cluster reads neutral.
- *  One statistic serves all three demand kinds because growth must always
- *  happen ALONG the displacement of the pairs that lack room. Contributions
- *  are weighted by inverse distance — floored at 1px so a coincident-ish pair
- *  can't hijack the whole box — so the tightest pairs steer the direction the
- *  same way they dominate the demand. Returns r ∈ [0,1]: the fraction of the
- *  box's expansion that belongs on the X axis (0.5 = isotropic).
- *  Deterministic: fixed index order, + − × ÷ √ min max only. O(n²) per box,
- *  run once per build — boxes hold at most a few hundred nodes. */
+ *  room is what separates you. Parallel trunks a fixed pitch apart read
+ *  crowded across that pitch, a pinned pair reads crowded along its own
+ *  displacement, and a mixed cluster reads neutral. One statistic serves all
+ *  three demand kinds because growth must always happen ALONG the displacement
+ *  of the pairs that lack room. Contributions are weighted by inverse distance,
+ *  floored at 1px so a coincident-ish pair can't hijack the whole box, so the
+ *  tightest pairs steer the direction the same way they dominate the demand.
+ *  Returns r ∈ [0,1]: the fraction of the box's expansion that belongs on the
+ *  X axis (0.5 = isotropic). Deterministic: fixed index order, + − × ÷ √ min
+ *  max only. O(n²) per box, run once per build. Boxes hold at most a few
+ *  hundred nodes. */
 export function boxCrowdAnisotropy(b: DenseBox, g: BoxGraph): number {
   const idx: number[] = [];
   for (let i = 0; i < g.nodes.length; i++) {
@@ -302,9 +302,9 @@ export function boxCrowdAnisotropy(b: DenseBox, g: BoxGraph): number {
 }
 
 /** Whole-graph context for the crowding-direction search: edge adjacency as
- *  integer keys (a·N+b both ways) plus each node's CORRIDOR direction — the
- *  length-weighted, sign-normalized mean of its incident edge directions
- *  (unit vector; hasDir=0 for isolated nodes). */
+ *  integer keys (a·N+b both ways) plus each node's CORRIDOR direction. That
+ *  direction is the length-weighted, sign-normalized mean of its incident edge
+ *  directions (unit vector; hasDir=0 for isolated nodes). */
 interface DirContext { N: number; adj: Set<number>; cx: Float64Array; cy: Float64Array; hasDir: Uint8Array }
 function dirContext(g: BoxGraph): DirContext {
   const N = g.nodes.length;
@@ -331,24 +331,24 @@ function dirContext(g: BoxGraph): DirContext {
 }
 
 /** How parallel a displacement may be to the node's corridor before it stops
- *  counting as crowding: |cos| above this (≈ ±32°) = "down my own corridor". */
+ *  counting as crowding: |cos| above this (≈ ±32°) means "down my own
+ *  corridor". */
 const CORRIDOR_COS = 0.85;
 
 /** Per-node crowding-direction weights over the node set `idx`: each node's
  *  nearest OFF-CORRIDOR neighbour (within `idx`) displacement, decomposed per
  *  axis and inverse-distance weighted (floored at 1px). Two exclusions define
- *  "off-corridor": graph-adjacent neighbours (an edge owns its own gap —
- *  octi's contraction machinery manages consecutive stations), and neighbours
- *  whose displacement lies along the node's corridor direction (any-hop
- *  same-line nodes: a trunk's 2-hop stop is nearer than the parallel avenue
- *  and would mask it — along-corridor room is octi's job, not the warp's).
- *  What remains is exactly the crowding only ROOM can fix: parallel trunk
- *  lines an avenue apart (Manhattan reads x-crowded even though its
- *  along-line stops are tighter), colliding interchange rows, brushing
- *  corridors. Shared by boxCrowdAnisotropy (sum → one r) and splitMixedBoxes
- *  (per-node, so a candidate cut is scored in the PARENT's context —
- *  re-measuring a half in isolation lets the cut amputate a node's true
- *  neighbours and flip its direction reading). */
+ *  "off-corridor". Graph-adjacent neighbours are skipped because an edge owns
+ *  its own gap, which octi's contraction machinery manages between consecutive
+ *  stations. Neighbours whose displacement lies along the node's corridor
+ *  direction are skipped too: an any-hop same-line node (a trunk's 2-hop stop)
+ *  can be nearer than the parallel line and would mask it, and along-corridor
+ *  room is octi's job, not the warp's. What remains is exactly the crowding
+ *  only ROOM can fix: parallel trunk lines a fixed pitch apart, colliding
+ *  interchange rows, brushing corridors. Shared by boxCrowdAnisotropy
+ *  (sum → one r) and splitMixedBoxes (per-node, so a candidate cut is scored in
+ *  the PARENT's context; re-measuring a half in isolation lets the cut amputate
+ *  a node's true neighbours and flip its direction reading). */
 function nnDirWeights(idx: readonly number[], g: BoxGraph, ctx: DirContext): { wx: Float64Array; wy: Float64Array } {
   const { N, adj, cx, cy, hasDir } = ctx;
   const wx = new Float64Array(idx.length);
@@ -379,13 +379,13 @@ function nnDirWeights(idx: readonly number[], g: BoxGraph, ctx: DirContext): { w
   return { wx, wy };
 }
 
-/** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox (as
- *  the old mergeIntersectingBoxes). A box fully CONTAINED in a different-kind
- *  box NESTS — both survive; the summed per-axis pushes stay monotone, so
- *  compounding is fold-free, and the inner push only adds a rigid translation
- *  to the outer far field. Cross-kind PARTIAL overlap unions conservatively
- *  (kind precedence capsule > contraction > density; pairs concatenate) so
- *  partial pushes never double-stack. Deterministic fixpoint scan. */
+/** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox. A box
+ *  fully CONTAINED in a different-kind box NESTS: both survive. The summed
+ *  per-axis pushes stay monotone, so compounding is fold-free, and the inner
+ *  push only adds a rigid translation to the outer far field. Cross-kind
+ *  PARTIAL overlap unions conservatively (kind precedence capsule > contraction
+ *  > density; pairs concatenate) so partial pushes never double-stack.
+ *  Deterministic fixpoint scan. */
 export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
   const out = boxes.map((b) => ({ ...b, pairs: [...b.pairs] }));
   const contains = (a: DemandBox, b: DemandBox): boolean =>
@@ -415,23 +415,22 @@ export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
 }
 
 /** Split direction-MIXED boxes into direction-coherent sub-boxes, recursively.
- *  A single per-box direction cannot serve the NYC mega-box: it covers
- *  Manhattan's vertical trunks AND Queens' horizontal ones, and their crowd
- *  anisotropies cancel to neutral (~0.5) under any pair weighting — measured,
- *  not hypothetical. So: try cutting the box at the median inside-node
+ *  A single per-box direction cannot serve a box that covers both vertical and
+ *  horizontal trunks, because their crowd anisotropies cancel to neutral (~0.5)
+ *  under any pair weighting. So: try cutting the box at the median inside-node
  *  coordinate on each axis; keep the cut whose halves DISAGREE most in
- *  anisotropy (a variance-reduction split), tighten each half to its own
- *  nodes (padded, clipped to its side of the cut so halves stay disjoint —
- *  summed pushes never double-stack), and recurse. A direction-coherent box
- *  never splits (gain below MIN_GAIN), so maps without mixed regions are
- *  untouched. Splitting also localizes the DEMAND solve: a borough-spanning
- *  box holds most of the graph, so expanding it drags the global median (and
- *  with it the contraction threshold) up nearly 1:1 and the secant rightly
- *  jumps to the ceiling — sub-boxes each hold a small share and converge.
- *  A cut that would separate a capsule pair's endpoints is vetoed (the pair's
- *  separation push must come from ONE box); surviving pairs land in the half
- *  that contains both endpoints. Deterministic: median cuts, fixed axis order,
- *  fixed thresholds. */
+ *  anisotropy (a variance-reduction split), tighten each half to its own nodes
+ *  (padded, clipped to its side of the cut so halves stay disjoint and summed
+ *  pushes never double-stack), and recurse. A direction-coherent box never
+ *  splits (gain below MIN_GAIN), so maps without mixed regions are untouched.
+ *  Splitting also localizes the DEMAND solve: a region-spanning box holds most
+ *  of the graph, so expanding it drags the global median (and with it the
+ *  contraction threshold) up nearly 1:1 and the secant rightly jumps to the
+ *  ceiling, whereas sub-boxes each hold a small share and converge. A cut that
+ *  would separate a capsule pair's endpoints is vetoed (the pair's separation
+ *  push must come from ONE box); surviving pairs land in the half that contains
+ *  both endpoints. Deterministic: median cuts, fixed axis order, fixed
+ *  thresholds. */
 export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): DemandBox[] {
   const adj = dirContext(g);
   const MIN_NODES = 24; // don't split small clusters — their direction is already coherent-ish
@@ -547,7 +546,7 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
         const wb = { minX: b.x0, minY: b.y0, maxX: b.x1, maxY: b.y1 };
         for (const f of [0.45, 0.55, 0.65]) {
           // Components of a radial fan can have INTERLOCKING bounding boxes
-          // even when their cell sets are disjoint — and a box regrown over a
+          // even when their cell sets are disjoint. A box regrown over a
           // neighbour's nodes double-stacks pushes. Pad, merge overlaps back
           // together, THEN tighten; accept only ≥ 2 disjoint cores that are
           // each strictly smaller than the parent (real progress).
@@ -562,14 +561,14 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
               return n >= MIN_HALF && n < idx.length;
             });
           if (cores.length < 2) continue;
-          // pairs: a core holding an endpoint takes the pair (its push
-          // stretches the interval even when the other endpoint sits outside
-          // — same argument as straddling cut-pairs). A pair NO core touches
-          // gets its own small dedicated box — recreating the capsule box the
-          // bbox-union merge swallowed — rather than expanding a core over
-          // the halo (expansion regrows cores over each other, and recursion
-          // then re-decomposes the overlap into a pile of double-stacked
-          // near-copies; measured on NYC before this rule).
+          // pairs: a core holding an endpoint takes the pair. Its push
+          // stretches the interval even when the other endpoint sits outside,
+          // by the same argument as straddling cut-pairs. A pair NO core
+          // touches gets its own small dedicated box, recreating the capsule
+          // box the bbox-union merge swallowed, rather than expanding a core
+          // over the halo. Expansion regrows cores over each other, and
+          // recursion then re-decomposes the overlap into a pile of
+          // double-stacked near-copies.
           const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [] }));
           const orphans: DemandBox[] = [];
           for (const t of b.pairs) {
@@ -586,7 +585,7 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
               kind: 'capsule', pairs: [t],
             });
           }
-          // overlapping orphan boxes would double-stack — union them
+          // overlapping orphan boxes would double-stack, so union them
           for (const ob of mergeDemandBoxes(orphans)) out.push(ob);
           for (const c of children) rec(c, depth + 1);
           return;
@@ -606,12 +605,12 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
 type DensityWarp2DOptionsLike = DensityWarpOptions & { sigmaPx?: number };
 
 /** Options `findDenseBoxes` reads out of the (larger) `DemandOptions` bag it's
- *  normally called with — kept as its own alias so callers that only want the
+ *  normally called with. Kept as its own alias so callers that only want the
  *  density oracle (no graph, no demand) can pass a minimal bag. */
 type FindDenseBoxesOptions = DensityWarp2DOptionsLike & {
   /** Cutoff as a fraction of the PEAK excess density (0–1): cells above
    *  frac·max are "dense". Threshold on the peak, NOT a percentile over all
-   *  cells — most cells are empty, so a global percentile collapses to "above
+   *  cells. Most cells are empty, so a global percentile collapses to "above
    *  average" and grabs the whole halo. Higher frac = tighter core. Default 0.4. */
   frac?: number;
 };
@@ -625,9 +624,10 @@ export function findDenseBoxes(
   opts: FindDenseBoxesOptions = {},
 ): DenseBox[] {
   if (samples.length === 0) return [];
-  // maxScale 1e9 = NO clip: the density's dynamic range (Manhattan ≈ 55× mean vs
-  // the boroughs ≈ 10×) is exactly the signal we threshold on; densityGrid2D's
-  // default clip (8) would flatten them to the same value and hide the gradient.
+  // maxScale 1e9 = NO clip: the density's wide dynamic range is exactly the
+  // signal we threshold on. densityGrid2D's default clip (8) would flatten a
+  // very dense region and a moderately dense one to the same value and hide
+  // the gradient.
   const grid = densityGrid2D(samples, box, { ...opts, maxScale: 1e9 });
   const { e, bins: B, x0, y0, cw, ch } = grid;
   const frac = opts.frac ?? 0.4;
@@ -692,9 +692,9 @@ export function findDenseBoxes(
 export interface DemandOptions extends DensityWarp2DOptionsLike {
   /** Density-oracle cutoff (fraction of peak), as findDenseBoxes. Default 0.4. */
   frac?: number;
-  /** Saturation margin as a fraction of box half-extent (as before). Default 1. */
+  /** Saturation margin as a fraction of box half-extent. Default 1. */
   marginFrac?: number;
-  /** Derive the octi cellSize estimate ĉ from a median edge length — supplied by
+  /** Derive the octi cellSize estimate ĉ from a median edge length. Supplied by
    *  the caller so the divisor regime matches the real layout. */
   cellFromMedLen: (medLenPx: number) => number;
   /** Safety factor on the contraction threshold ĉ/2 (ĉ is an estimate). Default 1.3. */
@@ -708,14 +708,15 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2.5. */
   maxGrowth?: number;
   /** Direction-intelligence amount, 0–1: how far each box's expansion is
-   *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = legacy
-   *  isotropic split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
+   *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = isotropic
+   *  split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
    *  overrides for dev sweeps. */
   aniso?: number;
-  /** Capsule-demand oracle inputs (optional — omitted by unit-level callers
-   *  and dev tools that have no marker model; the oracle then doesn't run). */
+  /** Capsule-demand oracle inputs. Optional: omitted by unit-level callers
+   *  and dev tools that have no marker model, in which case the oracle
+   *  doesn't run. */
   capsule?: CapsuleOracleOptions & {
-    /** Per-g.nodes-index stopping-line estimate (lines through the node —
+    /** Per-g.nodes-index stopping-line estimate (lines through the node,
      *  an upper bound on stop marks; slack-friendly). */
     lineCounts: readonly number[];
   };
@@ -753,7 +754,7 @@ function boxDemand(
 
 /** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths.
  *  The canvas grows by exactly the (possibly throttled) warp's raw growth per
- *  axis — space stays proportional to the warp granted; past maxGrowth the
+ *  axis, so space stays proportional to the warp granted. Past maxGrowth the
  *  strengths are throttled, never the map squeezed. Top-left anchored:
  *  [minX..maxX] maps to [minX .. minX + W·growthX] (the caller's content
  *  refit re-frames anyway). */
@@ -776,11 +777,11 @@ function buildWarpFromBoxes(
     const cy = (b.y0 + b.y1) / 2;
     const hx = (b.x1 - b.x0) / 2;
     const hy = (b.y1 - b.y0) / 2;
-    // Legacy: one margin from the LONGER half-extent for both axes. With
-    // direction-split boxes that lets an elongated box's push in its THIN axis
-    // ramp across its long extent — bleeding its stretch far into the
-    // neighbouring sub-box and washing the directions back out. Per-axis
-    // margins keep each axis's ramp proportional to that axis's own extent.
+    // One margin from the LONGER half-extent for both axes lets an elongated
+    // box's push in its THIN axis ramp across its long extent, bleeding its
+    // stretch far into the neighbouring sub-box and washing the directions
+    // back out. Per-axis margins keep each axis's ramp proportional to that
+    // axis's own extent.
     const m = Math.max(1, marginFrac * Math.max(hx, hy));
     const mx = perAxisMargin ? Math.max(1, marginFrac * hx) : m;
     const my = perAxisMargin ? Math.max(1, marginFrac * hy) : m;
@@ -809,11 +810,11 @@ function buildWarpFromBoxes(
   // SPACE ∝ WARP: the canvas always grows to exactly what the granted warp
   // produces, and the far field ALWAYS keeps unit scale (a saturated push is
   // a rigid translation out there). When the raw growth would exceed
-  // maxGrowth, the cap THROTTLES the push strengths — proportionally, per
-  // axis — instead of squeezing the whole warped map back into the capped
-  // canvas the way the old global sx<1 rescale did. The squeeze made the
-  // outskirts pay for the core's room (Staten Island crushed into edge
-  // bands); the throttle grants less room instead and leaves the far field
+  // maxGrowth, the cap THROTTLES the push strengths, proportionally and per
+  // axis, instead of squeezing the whole warped map back into the capped
+  // canvas the way a global sx<1 rescale would. The squeeze makes the
+  // outskirts pay for the core's room, crushing them into edge bands. The
+  // throttle grants less room instead and leaves the far field
   // geographically true. Growth is AFFINE in the strengths (corner images
   // are sums of s·push terms), so the throttle factor is exact:
   // λ = (cap−1)/(raw−1) lands growth on the cap in one step.
@@ -854,9 +855,9 @@ function buildWarpFromBoxes(
 }
 
 /** Demand-driven dense-box warp: boxes from density peaks ∪ predicted octi
- *  contraction ∪ predicted capsule collisions (when opts.capsule is supplied),
- *  each expanded by exactly what its own targets need — contraction survival
- *  plus capsule pair separations (× userMult) — growth absorbed by the canvas
+ *  contraction ∪ predicted capsule collisions (when opts.capsule is supplied).
+ *  Each is expanded by exactly what its own targets need (contraction survival
+ *  plus capsule pair separations, × userMult). Growth is absorbed by the canvas
  *  up to maxGrowth. */
 export function buildDemandBoxWarp(
   samples: readonly Pixel[],
@@ -888,11 +889,11 @@ export function buildDemandBoxWarp(
     ...capsule,
   ]);
   const need = (cell / 2) * slack;
-  // Direction intelligence step 1: break direction-mixed boxes (the NYC
-  // borough-spanning mega-box) into coherent sub-boxes so each can take its
-  // room on its OWN crowded axis. anisoAmt 0 = legacy single-box behavior.
+  // Direction intelligence step 1: break direction-mixed boxes into coherent
+  // sub-boxes so each can take its room on its OWN crowded axis. anisoAmt 0
+  // leaves boxes unsplit.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
-  // OCTI_BOX_PROBE diagnostics: box provenance — discovery, merge, split
+  // OCTI_BOX_PROBE diagnostics: box provenance across discovery, merge, split
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_BOX_PROBE) {
     const nIn = (b: DenseBox): number => {
       let n = 0;
@@ -914,7 +915,7 @@ export function buildDemandBoxWarp(
   // Capsule pair targets seed on top of the contraction-floor demand: the
   // expansion that lifts each pair to its required separation (× userMult).
   expands = expands.map((e, i) => {
-    let seed = e; // (not `out` — that's the output-sink parameter used below)
+    let seed = e; // (not `out`, which is the output-sink parameter used below)
     for (const t of boxes[i].pairs) {
       const pa = g.nodes[t.a], pb = g.nodes[t.b];
       const d = Math.sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]));
@@ -923,14 +924,14 @@ export function buildDemandBoxWarp(
     return seed;
   });
   // Direction intelligence: each box's scalar expand is split into per-axis
-  // strengths along its crowd anisotropy — sx = 2r·(e−1), sy = 2(1−r)·(e−1) —
-  // a LINEAR split (no pow: determinism, and node positions stay affine in e,
-  // which the secant refinement's model requires). r is measured once on the
-  // input-space graph (stable under the warp to first order) and softened by
+  // strengths along its crowd anisotropy, sx = 2r·(e−1) and sy = 2(1−r)·(e−1).
+  // This is a LINEAR split (no pow: determinism, and node positions stay affine
+  // in e, which the secant refinement's model requires). r is measured once on
+  // the input-space graph (stable under the warp to first order) and softened by
   // anisoAmt; the [0.1, 0.9] clamp keeps BOTH axes responsive so the secant
   // always has a positive slope on whichever axis the contraction floor
   // measures. Total strength 2(e−1) is conserved, so an isotropic box (r=0.5)
-  // reproduces the legacy split exactly. Per-axis strength is still capped at
+  // reproduces the isotropic split exactly. Per-axis strength is still capped at
   // expandMax−1 (the scalar cap's intent, per axis).
   const rs = boxes.map((b) => {
     const r = 0.5 + (boxCrowdAnisotropy(b, g) - 0.5) * anisoAmt;
@@ -938,8 +939,8 @@ export function buildDemandBoxWarp(
   });
   // Anisotropy is a REALLOCATION luxury, not a survival budget: as a box's
   // demand e approaches the expandMax ceiling, interpolate the split back to
-  // isotropic (t → 1) so both axes can still reach the full ceiling factor —
-  // a starved weak axis must never make an extreme contraction demand
+  // isotropic (t → 1) so both axes can still reach the full ceiling factor.
+  // A starved weak axis must never make an extreme contraction demand
   // unreachable that the isotropic warp could clear. (Mix weights sum to 2 at
   // every t, so total strength is conserved throughout.)
   const axisStrengths = (es: readonly number[]): [number, number][] =>
@@ -954,7 +955,7 @@ export function buildDemandBoxWarp(
     });
   // Refinement needs the output-space boxes even when the caller passed no `out`.
   // It solves against the UNTHROTTLED warp (cap = ∞): the secant's affine model
-  // assumes the room it asks for is granted — throttling inside the loop would
+  // assumes the room it asks for is granted. Throttling inside the loop would
   // undo each raise and jam every box to the ceiling chasing an unreachable
   // target (and the ceiling forces isotropy). The cap is applied ONCE, on the
   // final build: demands = the warp we'd like, throttle = the warp we allow,
@@ -964,18 +965,18 @@ export function buildDemandBoxWarp(
 
   // Refinement: expansion raises the global median edge length, so the real
   // post-warp contraction threshold is HIGHER than the pre-warp estimate the
-  // first-pass demands targeted — and expanding further raises it again (edges
+  // first-pass demands targeted, and expanding further raises it again (edges
   // that straddle a box boundary stretch with the box and can dominate the
   // median), so a proportional bump chases a moving target and converges to the
   // threshold FROM BELOW without ever clearing it. Instead solve for the fixed
   // point: per box, both the inside-gap and the global need are affine in the
   // box's expand while the growth cap is slack (node positions are affine in
   // the push strengths), so a secant step through the last two (expand, gap,
-  // need) states lands where the gap clears the need — with a small margin for
-  // the model error — then rebuild and re-verify. Bounded passes; arithmetic is
+  // need) states lands where the gap clears the need, with a small margin for
+  // the model error, then rebuild and re-verify. Bounded passes; arithmetic is
   // + − × ÷ √ min max only, fixed iteration order → deterministic.
   {
-    // Median gap of edges with BOTH endpoints inside the box — the statistic
+    // Median gap of edges with BOTH endpoints inside the box, the statistic
     // octi contraction acts on (nodeGaps averages straddling edges into it,
     // which would credit a box with room that lies outside it).
     const gapInBox = (b: DenseBox, nodes: readonly Pixel[]): number => {
@@ -993,8 +994,8 @@ export function buildDemandBoxWarp(
     };
     // Worst-of evaluation: every box carries the contraction floor (inside-
     // edge median vs the CURRENT global threshold), and capsule boxes add
-    // pair-separation targets (CONSTANT need — capsule size doesn't move with
-    // the warp). The secant solves each box against its worst violator; the
+    // pair-separation targets (CONSTANT need, since capsule size doesn't move
+    // with the warp). The secant solves each box against its worst violator; the
     // per-box `need` is now part of the secant state because pair needs and
     // the contraction threshold evolve differently.
     const evalBox = (i: number, bbox: DenseBox, nodes: readonly Pixel[], needFloor: number): { gap: number; need: number } => {
@@ -1022,23 +1023,23 @@ export function buildDemandBoxWarp(
         if (!Number.isFinite(gap) || gap >= needV) return e; // cleared
         const margin = needV * 0.05; // headroom for the affine-model error
         // (the two 1e-9 guards below are just "<= 0 with an fp cushion";
-        // scale-independent — the guarded deltas are far above 1e-9 whenever
-        // a real step happened.)
+        // scale-independent, since the guarded deltas are far above 1e-9
+        // whenever a real step happened.)
         const de = e - ePrev[i];
         if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - prev[i].gap) - (needV - prev[i].need);
         // denom <= 0: the secant's LOCAL affine model says the need rises at
-        // least as fast as this box's gap — but the push saturates: as e
+        // least as fast as this box's gap, but the push saturates: as e
         // rises, straddling/outside edges stop stretching, the median stops
         // climbing, and the gap catches up. Jump to the ceiling to exploit
-        // that saturation (measured: keeping e instead leaves pinned clusters
-        // under-need, and the raw-growth saving is negligible).
+        // that saturation; keeping e instead leaves pinned clusters
+        // under-need while the raw-growth saving is negligible.
         if (denom <= 1e-9) return expandMax;
         const target = e + ((needV + margin - gap) * de) / denom;
         return Math.min(expandMax, Math.max(e, target));
       });
-      // No progress — every box either cleared or sits saturated at the
-      // ceiling: another pass would rebuild bit-identically, so stop.
+      // No progress: every box either cleared or sits saturated at the
+      // ceiling, so another pass would rebuild bit-identically. Stop.
       if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; prev = now;
       expands = eNext;
@@ -1046,7 +1047,7 @@ export function buildDemandBoxWarp(
     }
   }
   // The one and only capped build: throttle the solved demands to the allowed
-  // growth budget (see buildWarpFromBoxes — strengths scale, far field stays
+  // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
   result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
   if (out) { out.expands = expands; out.aniso = rs; }
@@ -1063,7 +1064,7 @@ export function buildDemandBoxWarp(
 }
 
 /** Separable warp (global magnification) composed with the demand-driven box
- *  warp (local rectilinear room). Boxes are found — and demands measured — in
+ *  warp (local rectilinear room). Boxes are found, and demands measured, in
  *  SEPARABLE-WARPED space, so both the samples and the graph advect through
  *  `sep` first. Composition of fold-free maps is fold-free; growth comes only
  *  from the box layer (the separable CDF maps the canvas onto itself). */

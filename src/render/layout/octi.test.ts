@@ -33,7 +33,7 @@ test('medianEdgeLength returns the median support-edge length', () => {
 });
 
 test('cutSubCellFolds excises a sub-cell terminal hook, keeping endpoints', () => {
-  // course runs up past the terminus and hooks back: 12 Pl -> 10 St -> 1 Pl
+  // course runs up past the terminus and hooks back within a sub-cell
   const pts: Array<[number, number]> = [[0, 0], [0, 12], [0, 24], [2, 12]];
   const out = cutSubCellFolds(pts, 22);
   assert.deepEqual(out[0], [0, 0], 'from endpoint preserved');
@@ -53,9 +53,9 @@ test('cutSubCellFolds leaves straight courses alone', () => {
 });
 
 test('cutDrawnFolds excises a fold returning onto a segment INTERIOR (SEA he1023)', () => {
-  // The 44 St shape: east 4 cells, back west 2, then south. The return point
-  // (21.2, 0) lies on the INTERIOR of the first segment — no vertex pair is
-  // within eps, so vertex-sampled cutPolylineFolds misses it.
+  // Path goes east 4 cells, back west 2, then south. The return point
+  // (21.2, 0) lies on the INTERIOR of the first segment, so no vertex pair is
+  // within eps and vertex-sampled cutPolylineFolds misses it.
   const dg = 10.6;
   const pts: Array<[number, number]> = [[0, 0], [42.4, 0], [21.2, 0], [21.2, 16.2]];
   const cut = cutDrawnFolds(pts, dg);
@@ -103,8 +103,8 @@ test('grid graph: settling an edge closes turns and blocks the crossing diagonal
   assert.ok(g.isClosed(a));
   assert.ok(g.isClosed(b));
   // crossing diagonal between N-neighbour and E-neighbour is PRICED, not
-  // banned (cost-regime Phase 3): an X mid-cell is a normal drawn crossing.
-  // Dearer than a plain crossing, far below a violation.
+  // banned. An X mid-cell is a normal drawn crossing, dearer than a plain
+  // crossing but far below a violation.
   const na = g.neigh(a, 0);
   const nb = g.neigh(a, 2);
   const cross = g.getNEdg(na, nb);
@@ -150,16 +150,16 @@ test('octi places every node within the displacement radius of its input', () =>
     const placed = img.placement.get(id);
     assert.ok(placed, 'node placed: ' + id);
     // LOOM maxGrDist = 3 grid cells (plus local-search moves of ±1 cell,
-    // which the move penalty makes unattractive on a straight chain)
+    // which the move penalty makes unattractive on a straight chain).
     assert.ok(Math.hypot(placed![0] - node.pos[0], placed![1] - node.pos[1]) <= 4 * dg + 1e-6);
   }
 });
 
 test('octi is deterministic: identical placement + paths across runs', () => {
-  // Regression: a wall-clock local-search budget (Date.now() cutoff) once broke
-  // the sweep mid-loop at a timing-dependent point, so node placement — and thus
-  // which stations fell back to a mega box — flickered across machines/load with
-  // no input change. Termination is now iteration/convergence-bounded only.
+  // A wall-clock local-search budget (Date.now() cutoff) would break the sweep
+  // mid-loop at a timing-dependent point, so node placement, and thus which
+  // stations fell back to a mega box, flickered across machines and load with no
+  // input change. Termination is now iteration/convergence-bounded only.
   const h = chain([[0, 0], [40, 5], [80, -5], [120, 10], [160, 0]]);
   const a = octi(h, DEFAULT_OCTI_OPTIONS);
   const b = octi(h, DEFAULT_OCTI_OPTIONS);

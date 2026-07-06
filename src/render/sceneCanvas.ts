@@ -2,13 +2,13 @@
 // <canvas> under a camera transform: pan/zoom is one setTransform + redraw, with
 // no live DOM, no per-node counter-scale writes, and no whole-SVG repaint.
 //
-// Scale rules mirror the old SVG panel exactly:
+// Scale rules:
 //   - worldScale strokes/fonts scale WITH the map (.edges/.imp-stop content);
 //   - everything else counter-scales to a constant screen size (lineWidth/scale);
 //   - labels (.stations) are world-anchored but drawn at a constant screen size
 //     and position offset, in a final identity-transform pass.
 // The detail-area cutout is an even-odd canvas clip (big rect minus the boxes)
-// applied to the edges + stops layers only, exactly as the SVG clipPath did.
+// applied to the edges + stops layers only.
 
 import type { Scene, Prim, TextPrim, ClipBox } from './sceneIR';
 import { estimateTextWidth } from './labels';
@@ -21,15 +21,15 @@ export interface SceneView {
 
 export interface PreparedScene {
   scene: Scene;
-  /** background + water + grid + unclassed routes — drawn first, unclipped. */
+  /** background, water, grid, and unclassed routes; drawn first, unclipped. */
   base: Prim[];
-  /** route ribbons — clipped to outside the cutout boxes. */
+  /** route ribbons, clipped to outside the cutout boxes. */
   edges: Prim[];
-  /** transfer connectors — drawn between edges and stops, unclipped. */
+  /** transfer connectors, drawn between edges and stops, unclipped. */
   transfers: Prim[];
-  /** station markers — clipped to outside the cutout boxes. */
+  /** station markers, clipped to outside the cutout boxes. */
   stops: Prim[];
-  /** station labels — constant-screen-size pass, hidden when over a cutout box. */
+  /** station labels; constant-screen-size pass, hidden when over a cutout box. */
   labels: TextPrim[];
 }
 
@@ -69,8 +69,8 @@ export function prepareScene(scene: Scene): PreparedScene {
 }
 
 /** WORLD-space box of a label's text. Labels are drawn in world space (constant
- *  relative to the image — they scale with zoom), so the box is world coords too.
- *  `labelScale` multiplies the world size (the user's "label size" setting). Pure. */
+ *  relative to the image, so they scale with zoom), so the box is world coords too.
+ *  `labelScale` multiplies the world size (the "label size" setting). Pure. */
 export function labelWorldBox(
   label: TextPrim,
   labelScale = 1,
@@ -116,9 +116,9 @@ export interface DrawSceneOpts {
   cssHeight: number;
   /** detail-area cutout boxes in world coords (edges/stops clipped to outside). */
   clipBoxes?: ClipBox[];
-  /** multiplier on the constant on-screen label size (user "label size" setting). */
+  /** multiplier on the constant on-screen label size ("label size" setting). */
   labelScale?: number;
-  /** dense box-warp regions in world coords — drawn as a debug overlay on top of
+  /** dense box-warp regions in world coords, drawn as a debug overlay on top of
    *  everything (the "show warp boxes" toggle). Display-only. */
   warpBoxes?: ClipBox[];
 }
@@ -235,8 +235,8 @@ export function drawScene(
   drawList(prepared.transfers);
   withClip(() => drawList(prepared.stops));
 
-  // Labels: WORLD space — constant relative to the image, so they scale with the
-  // map as you zoom (× the user's labelScale). Drawn in the camera pass; font
+  // Labels: WORLD space, constant relative to the image, so they scale with the
+  // map as you zoom (× labelScale). Drawn in the camera pass; font
   // size and offset are in world units. Hidden when over a cutout box.
   const ls = opts.labelScale ?? 1;
   camera();

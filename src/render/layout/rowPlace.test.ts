@@ -15,8 +15,8 @@ const through = (pts: Pixel[], anchor: Pixel) =>
 // horizontal lane at height y, stop anchor at (anchorX, y)
 const lane = (y: number, anchorX: number) => through([[-60, y], [60, y]], [anchorX, y]);
 
-// vertical through-lane at x, spanning ±300px of the anchor (window 400 —
-// far larger than the legacy ±24/±48 solve windows)
+// vertical through-lane at x, spanning ±300px of the anchor (window 400,
+// far larger than the default solve windows)
 const laneVFar = (x: number, ay = 0) =>
   buildLaneCurve(
     [[[x, ay - 300], [x, ay + 300]] as Pixel[], [[x, ay + 300], [x, ay - 300]] as Pixel[]],
@@ -38,7 +38,7 @@ test('perpendicular rest: parallel lanes give a zero-slide, zero-rotation row', 
     assert.ok(Math.abs(sol.pos[k][1] - k * PITCH) < 0.01, `dot off its lane: ${sol.pos[k]}`);
   }
   // zero rotation: a 45°-rotated row would cross pitch-spaced lanes at
-  // pitch/sin45 ≈ 7.78 — gaps ≈ pitch prove the perpendicular rest pose
+  // pitch/sin45 ≈ 7.78, so gaps ≈ pitch prove the perpendicular rest pose
   for (let k = 1; k < 3; k++) {
     const d = Math.hypot(sol.pos[k][0] - sol.pos[k - 1][0], sol.pos[k][1] - sol.pos[k - 1][1]);
     assert.ok(Math.abs(d - PITCH) < 0.6, `pair gap ${d} — row is rotated`);
@@ -74,12 +74,12 @@ test('OCTI_PLACE_DEBUG classifies a pinched box (lanes seated below minGap)', ()
 
 test('OCTI_PLACE_DEBUG classifies a coincident box (lanes interlined / crossed, non-positive best gap)', () => {
   // three horizontal lanes whose group (lane) order does NOT match their
-  // vertical order — the middle group member sits between the outer two, so
+  // vertical order. The middle group member sits between the outer two, so
   // every crossing row projects them out of order and the best achievable
   // consecutive gap is NEGATIVE (lanes crossed/interlined on one edge). The
   // classifier must report COINCIDENT (NOT spacing-fixable), distinct from the
-  // PINCHED case where lanes are distinct but merely seated too close. Mirrors
-  // the mn198 hub (closestGap -1.37px) that minGap-slack can never recover.
+  // PINCHED case where lanes are distinct but merely seated too close. This is
+  // the negative-gap regime that minGap-slack can never recover.
   const curves = [lane(0, 0), lane(2 * PITCH, 0), lane(PITCH, 0)];
   const prev = process.env.OCTI_PLACE_DEBUG;
   process.env.OCTI_PLACE_DEBUG = '1';
@@ -138,11 +138,10 @@ test('V-not-T: corner extends beyond both rows, never pokes a side', () => {
 test('45-degree pair: cross-row dot floor holds at pair level (no false mega)', () => {
   // vertical rest row (horizontal lanes) meets a 135° rest row (45° lanes) at
   // a 45° corner. Minimizing extension alone pulls the facing ends to
-  // ext≈minGap each, where the facing DOTS sit ~0.77*minGap apart — closer
+  // ext≈minGap each, where the facing DOTS sit ~0.77*minGap apart, closer
   // than the floor while the corner still clears both. The pair-level
   // cross-row dot floor must veto those states so the DP lands on a slid-out
   // feasible configuration instead of nulling at the station post-check
-  // (review finding: spurious mega fallbacks on every multi-bundle save)
   const H = PITCH / Math.SQRT2; // perpendicular pitch projected onto 45° lanes
   const curves = [
     lane(0, 0),
@@ -165,7 +164,7 @@ test('parallel-collinear: same-line bundles join end-to-end at the gap midpoint'
   // two single-lane bundles on the SAME horizontal line, anchors 20px apart.
   // arcLimit/extCap pinched so the collinear join is the only feasible
   // pairing: with free sliding a rotated chevron (45/135) or L (90/135)
-  // undercuts the join on rot economics — those need ext > 10 here
+  // undercuts the join on rot economics, and those need ext > 10 here
   const a = through([[-60, 0], [60, 0]], [-10, 0]);
   const b = through([[-60, 0], [60, 0]], [10, 0]);
   const sol = solveRows([a, b], [[0], [1]], { minGap: MINGAP, arcLimit: 2, extCap: 10 });
@@ -186,14 +185,14 @@ test('parallel-collinear: same-line bundles join end-to-end at the gap midpoint'
 
 test('coincident lanes admit no configuration: null (mega signal)', () => {
   // identical 4px-long lanes: every reachable cross-bundle dot pair is closer
-  // than minGap, so no pairing/orientation is feasible — the caller megas
+  // than minGap, so no pairing/orientation is feasible and the caller megas
   const a = through([[-2, 0], [2, 0]], [0, 0]);
   const b = through([[-2, 0], [2, 0]], [0, 0]);
   assert.equal(solveRows([a, b], [[0], [1]], OPTS), null);
 });
 
 test('blocked mask forces a slide off the rest position, never a violation', () => {
-  // rest row sits at x=0; the mask vetoes |x|<3, so the solver must slide —
+  // rest row sits at x=0; the mask vetoes |x|<3, so the solver must slide.
   // dots end up outside the band with floors intact (mask never dropped)
   const curves = [lane(0, 0), lane(PITCH, 0), lane(2 * PITCH, 0)];
   const blocked = (p: Pixel) => Math.abs(p[0]) < 3;
@@ -223,7 +222,7 @@ test('deterministic: identical runs give identical output', () => {
 
 test('slideRange: corridor states beyond arcLimit are reachable', () => {
   // two vertical lanes 5.5px apart; every dot within |y| < 79.5 is vetoed, so
-  // the only feasible rows sit far beyond the ±24 arcLimit window — reachable
+  // the only feasible rows sit far beyond the arcLimit window, reachable
   // only through the per-bundle slideRange override
   const curves = [laneVFar(0), laneVFar(PITCH)];
   const blocked = (p: Pixel) => Math.abs(p[1]) < 79.5;
@@ -248,7 +247,7 @@ test('latTol: far parallel-corridor bundles attach into one aligned chain', () =
   // bundle A: vertical lanes at x=0/5.5 anchored at y=0; bundle B: vertical
   // lanes at x=200/205.5 anchored at y=37. Rows are horizontal; on the 4px
   // far grid the closest the two rows can get to collinear is 1px (37 mod 4),
-  // outside the strict 0.75px tolerance — so strict solves attach via a
+  // outside the strict 0.75px tolerance, so strict solves attach via a
   // rotated/elbow join (rows misaligned), while latTol 3 admits the straight
   // end-to-end bridge and the DP prefers it (shorter ext, no rotation).
   const curves = [laneVFar(0), laneVFar(PITCH), laneVFar(200, 37), laneVFar(200 + PITCH, 37)];
@@ -294,7 +293,7 @@ test('softBand: an in-band pinch seats with the deficit priced into cost', () =>
 
 test('softBand: a clear seat still beats any sub-floor seat', () => {
   // same 3.6px lanes but UNBLOCKED: the 45° row crosses at 3.6/sin45 ≈ 5.09
-  // ≥ minGap — a clear seat exists, so the solver must never pay the band
+  // ≥ minGap, so a clear seat exists and the solver must never pay the band
   const curves = [lane(0, 0), lane(3.6, 0)];
   const sol = solveRows(curves, [[0, 1]], { ...OPTS, softBand: 1.5 });
   assert.ok(sol);
@@ -303,7 +302,7 @@ test('softBand: a clear seat still beats any sub-floor seat', () => {
 });
 
 test('softBand: a true pinch below the hard floor still boxes', () => {
-  // 2px < hardFloor 3.35 — the band must not unbox genuine coincidence
+  // 2px < hardFloor 3.35, so the band must not unbox genuine coincidence
   const curves = [lane(0, 0), lane(2, 0)];
   assert.equal(solveRows(curves, [[0, 1]], { ...OPTS, softBand: 1.5 }), null);
 });

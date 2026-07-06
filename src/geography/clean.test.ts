@@ -62,7 +62,7 @@ test('cleanFeatures: removes a long thin needle spike, keeps the body', () => {
 });
 
 test('cleanFeatures: removes a short backtrack spike (sharp reversal)', () => {
-  // The ring darts out ~330 m and straight back — short edges, but a 180° reversal.
+  // The ring darts out ~330 m and straight back. Short edges, but a 180° reversal.
   const ring = poly([
     [0, 0], [0.01, 0], [0.01, 0.01],
     [0.005, 0.01], [0.005, 0.013], [0.005, 0.01],

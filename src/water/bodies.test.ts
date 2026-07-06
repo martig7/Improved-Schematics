@@ -17,7 +17,7 @@ function rect(x0: number, y0: number, x1: number, y1: number): Coordinate[] {
   ];
 }
 
-/** Same rectangle wound CW (reversed) — for orientation-independence checks. */
+/** Same rectangle wound CW (reversed), for orientation-independence checks. */
 function rectCW(x0: number, y0: number, x1: number, y1: number): Coordinate[] {
   return rect(x0, y0, x1, y1).slice().reverse();
 }
@@ -218,11 +218,11 @@ test('keepLargestWaterBodies: applying twice == applying once', () => {
 // --- 10b. on-boundary hole vertex (pinch point) stays a hole -----------------
 
 test('decomposeWaterBodies: a hole touching the outer boundary at a vertex is still a hole', () => {
-  // Land hole whose FIRST vertex [40,100] sits exactly on the ocean's top edge
-  // (a marching-squares pinch corner). A single-vertex ray-cast is unstable on
-  // that edge; the majority-of-samples vote must still classify it as a hole,
-  // not as its own water body (which the keep threshold could then drop,
-  // leaking the hole so land fills as water).
+  // Land hole whose FIRST vertex sits exactly on the outer ring's edge, a
+  // marching-squares pinch corner. A single-vertex ray-cast is unstable on
+  // that edge. The majority-of-samples vote must still classify it as a hole,
+  // not as its own water body. Were it dropped by the keep threshold, the hole
+  // would leak so land fills as water.
   const ocean = rect(0, 0, 100, 100); // area 10000
   const hole: Coordinate[] = [
     [40, 100], // on the ocean's top edge
@@ -231,7 +231,7 @@ test('decomposeWaterBodies: a hole touching the outer boundary at a vertex is st
     [40, 100],
   ];
   const bodies = decomposeWaterBodies(collection(feature(ocean, hole)));
-  assert.equal(bodies.length, 1); // NOT 2 — the touching triangle is a hole
+  assert.equal(bodies.length, 1); // NOT 2. The touching triangle is a hole
   assert.equal(bodies[0].holes.length, 1);
 
   // And it survives the keep filter attached to its parent (no land-as-water).

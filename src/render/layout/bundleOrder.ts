@@ -1,15 +1,16 @@
-// Bundle-blocks line ordering (spec 2026-07-04-bundle-blocks-rebuild):
-// structural replacement for the LOOM untangle scorer. Corridors carry rigid
+// Bundle-blocks line ordering (spec bundle-blocks-rebuild).
+// Structural replacement for the untangle scorer. Corridors carry rigid
 // recursive Blocks; the only order-changing events are bundle joins (binary
 // side, one-hop pair-ownership lookahead), splits (free when exit-contiguous,
-// else minimal planned crossings AT the split), and cycle-closure residuals
-// (always at a junction — corridor interiors are deg-2 by construction, so
-// every block boundary IS a junction). Same-corridor open-track reorders are
-// unrepresentable. Deterministic: sorted iteration, quantized atan2 angular
-// ranks, sqrt-only distances, total tie-breaks.
+// else minimal planned crossings AT the split), and cycle-closure residuals.
+// Residuals always land at a junction. Corridor interiors are deg-2 by
+// construction, so every block boundary IS a junction. Same-corridor
+// open-track reorders are unrepresentable. Deterministic: sorted iteration,
+// quantized atan2 angular ranks, sqrt-only distances, total tie-breaks.
 //
-// Writes edge.lineOrder in place — drop-in alternative to untangleLineOrder,
-// selected by OCTI_ORDER=blocks|loom at the renderGeographic call site.
+// Writes edge.lineOrder in place, as a drop-in alternative to
+// untangleLineOrder. Selected by OCTI_ORDER=blocks|loom at the
+// renderGeographic call site.
 
 import type { Layout, LayoutEdge } from './types';
 import {
@@ -44,8 +45,8 @@ export interface CorridorSet {
 const lineSetKey = (e: LayoutEdge): string => e.lines.map((l) => l.id).sort().join(' ');
 
 /** Maximal runs of layout edges through degree-2 nodes with IDENTICAL line
- *  sets (the OptGraph contraction, minus any Y rewriting — joins are native
- *  here). Self-loops and line-less edges are excluded, like untangle. */
+ *  sets (the OptGraph contraction, minus any Y rewriting; joins are native
+ *  here). Self-loops and line-less edges are excluded. */
 export function buildCorridors(layout: Layout): CorridorSet {
   const edges = layout.edges
     .filter((e) => e.from !== e.to && e.lines.length > 0)
@@ -116,18 +117,17 @@ export interface LineFlow {
 }
 
 /** Per junction node: each line's corridor→corridor transition, derived from
- *  lineTraversals (the same flow derivation as untangle's connOccurs). Only
- *  corridor ENDPOINT nodes appear — interiors are through nodes. */
+ *  lineTraversals. Only corridor ENDPOINT nodes appear; interiors are through
+ *  nodes. */
 export function classifyFlows(
   layout: Layout,
   cs: CorridorSet,
 ): Map<string, Map<string, LineFlow>> {
   const flows = new Map<string, Map<string, LineFlow>>();
-  // FIRST-write-wins: game routes are ROUND TRIPS — the return leg revisits
-  // every node with from/to swapped, and last-write-wins made lines look
-  // like they enter a corridor at BOTH ends (the CPW B/D duplication: a
-  // join re-added lines the corridor already carried, drawing a 7-slot
-  // bundle for 5 lines that weaved at every seam). The outbound leg defines
+  // FIRST-write-wins: game routes are ROUND TRIPS. The return leg revisits
+  // every node with from/to swapped, and last-write-wins would make lines
+  // look like they enter a corridor at BOTH ends, drawing a bundle wider
+  // than the line count that weaves at every seam. The outbound leg defines
   // each line's direction consistently; later passes must not flip it.
   const at = (nd: string, line: string): LineFlow => {
     let m = flows.get(nd);
@@ -176,8 +176,8 @@ export function classifyFlows(
 }
 
 // quantized atan2 angular rank (cross-V8): direction of `c` departing `nd`,
-// sampled over ~12px of arc (corridor-scale, immune to seam micro-jogs —
-// same hardening as untangle's tangentAt).
+// sampled over ~12px of arc. Corridor-scale sampling is immune to seam
+// micro-jogs.
 const angleAt = (c: Corridor, nd: string): number => {
   const part = c.endA === nd ? c.parts[0] : c.parts[c.parts.length - 1];
   const path = part.edge.path;
@@ -193,16 +193,16 @@ const angleAt = (c: Corridor, nd: string): number => {
   return Math.round(Math.atan2(dy, dx) * 1e6) / 1e6;
 };
 
-// normalize to (-pi, pi], quantized — the wrap-safe frame for relative ranks
+// normalize to (-pi, pi], quantized. The wrap-safe frame for relative ranks
 const normAngle = (a: number): number => {
   while (a <= -Math.PI) a += 2 * Math.PI;
   while (a > Math.PI) a -= 2 * Math.PI;
   return Math.round(a * 1e6) / 1e6;
 };
 
-// bearing of `c` departing `nd`, RELATIVE to the walker's facing direction —
-// absolute atan2 mis-ranks exits across the ±pi wrap (review finding #4);
-// every left/right decision at a junction ranks in this relative frame.
+// bearing of `c` departing `nd`, RELATIVE to the walker's facing direction.
+// Absolute atan2 mis-ranks exits across the ±pi wrap, so every left/right
+// decision at a junction ranks in this relative frame.
 const relAngleAt = (c: Corridor, nd: string, facing: number): number =>
   normAngle(angleAt(c, nd) - facing);
 
@@ -213,7 +213,7 @@ const facingAfter = (arrived: Corridor, nd: string): number =>
 
 /** Comparable exit key for a line: walk-relative angular rank of each
  *  successive exit corridor, bounded depth, with the facing carried hop to
- *  hop (structural destination grouping — spec §2.4). Walk-relative keys
+ *  hop (structural destination grouping, spec §2.4). Walk-relative keys
  *  make the seed frame-invariant: absolute angles would encode the
  *  corridor's arbitrary endA/endB labeling into the order. */
 const exitKeyOf = (
@@ -264,8 +264,8 @@ export function orderByBlocks(layout: Layout): void {
   let residualSwaps = 0; // cycle-closure disagreements (at junctions)
 
   // OCTI_BLOCKS_TRACE=<lineId>: log every derivation event touching a
-  // corridor that carries the line — root seeds, slice handoffs, join sides,
-  // back-edge disagreements — the blocks-mode analogue of OCTI_TRACE1.
+  // corridor that carries the line (root seeds, slice handoffs, join sides,
+  // back-edge disagreements), the blocks-mode analogue of OCTI_TRACE1.
   const traceLine =
     typeof process !== 'undefined'
       ? (process as { env?: Record<string, string> }).env?.OCTI_BLOCKS_TRACE
@@ -278,12 +278,12 @@ export function orderByBlocks(layout: Layout): void {
   };
 
   // seed: flat order by walk-relative exit keys in the LINES' TRAVEL frame
-  // (structural destination grouping — no colors, no barycenter), stored
+  // (structural destination grouping, no colors, no barycenter), stored
   // mirrored into the corridor's canonical frame when travel opposes it.
   // Keying "toward endB" would bake the arbitrary endA/endB labeling into
-  // the physical drawing (a reversed corridor definition would flip the
-  // map). Survives only where propagation never reaches (roots, isolated
-  // corridors); majority entry-end decides the frame, ties → canonical.
+  // the physical drawing, so a reversed corridor definition would flip the
+  // map. Survives only where propagation never reaches (roots, isolated
+  // corridors); majority entry-end decides the frame, ties fall to canonical.
   const seedBlock = (c: Corridor): Block => {
     const ls = [...c.lines];
     let enterA = 0;
@@ -308,9 +308,9 @@ export function orderByBlocks(layout: Layout): void {
   /** Join side by pair-ownership lookahead (spec §2.1). The WALK reasons
    *  entirely in the travel frame (walking away from the join); the single
    *  travel→canonical conversion happens at the outer return so the
-   *  deterministic fallback is frame-invariant too (an "a-first" verdict
+   *  deterministic fallback is frame-invariant too. An "a-first" verdict
    *  must describe the same PHYSICAL side regardless of which end of the
-   *  joined corridor the join landed on). */
+   *  joined corridor the join landed on. */
   const joinSideLookahead = (
     a: Block,
     b: Block,
@@ -359,7 +359,7 @@ export function orderByBlocks(layout: Layout): void {
         };
         const ra = rank(aExits);
         const rb = rank(bExits);
-        if (ra === rb) break; // tie (mixing split) — fall to the a-first default
+        if (ra === rb) break; // tie (mixing split); fall to the a-first default
         return rb < ra; // TRAVEL-frame verdict; canonical conversion at the wrapper
       }
       const nextArr = [...union];
@@ -392,9 +392,9 @@ export function orderByBlocks(layout: Layout): void {
     if (exits.size === 0) return;
 
     // SPLIT-FIRST: contiguity plan over the continuing lines. Only when the
-    // junction actually DERIVES something (some exit target unvisited) — a
-    // pure look-back at already-settled neighbours must not resort or count
-    // (review finding #5: phantom planned-crossings).
+    // junction actually DERIVES something (some exit target unvisited). A
+    // pure look-back at already-settled neighbours must not resort or count,
+    // to avoid phantom planned-crossings.
     let ordered = atNd.filter((l) => {
       const f = ndFlows.get(l);
       if (!f) return false;
@@ -405,7 +405,7 @@ export function orderByBlocks(layout: Layout): void {
     if (exits.size >= 2 && anyUnvisited) {
       const groupOf = new Map<string, number>();
       for (const [gid, ls] of exits) for (const l of ls) groupOf.set(l, gid);
-      // exits ranked RELATIVE to the walker's facing (wrap-safe; finding #4)
+      // exits ranked RELATIVE to the walker's facing (wrap-safe)
       const facing = facingAfter(from, nd);
       const ranked = [...exits.keys()].sort(
         (x, y) => relAngleAt(cs.corridors[x], nd, facing) - relAngleAt(cs.corridors[y], nd, facing) || x - y,
@@ -420,10 +420,10 @@ export function orderByBlocks(layout: Layout): void {
       const to = cs.corridors[gid];
       const lsSet = new Set(ls);
       const slice: Block = ordered.filter((l) => lsSet.has(l));
-      // frame rule (review finding #1): `ordered`/`slice` are ALREADY in the
-      // node walking frame — atNd normalized the from side. Only the TO side
-      // remains: its canonical frame reads endA→endB, so mirror exactly when
-      // the corridor departs nd via its endB (canonical points INTO nd).
+      // frame rule: `ordered`/`slice` are ALREADY in the node walking frame,
+      // since atNd normalized the from side. Only the TO side remains: its
+      // canonical frame reads endA→endB, so mirror exactly when the corridor
+      // departs nd via its endB (canonical points INTO nd).
       const rev = to.endB === nd;
       const finalSlice: Block = rev ? mirrorBlock(slice) : slice;
       if (!visited.has(to.id)) {
@@ -433,10 +433,10 @@ export function orderByBlocks(layout: Layout): void {
           tlog(to, `SLICE from ${cinfo(from)} @ ${nd}"${lbl(nd)}" rev=${rev} -> [${flattenBlock(finalSlice).map((l) => l.slice(0, 8)).join(',')}]`);
         } else {
           // Overlap guard: a line already contributed to this block must
-          // NEVER join again — a duplicate slot draws a phantom lane (the
-          // CPW B/D weave). Overlaps arise from round-trip flow artifacts
-          // and partially-overlapping feeders; only genuinely NEW lines
-          // join, and a fully-known slice is a pure consistency constraint
+          // NEVER join again, because a duplicate slot draws a phantom lane.
+          // Overlaps arise from round-trip flow artifacts and
+          // partially-overlapping feeders; only genuinely NEW lines join,
+          // and a fully-known slice is a pure consistency constraint
           // (disagreements count as residuals, same as a back-edge).
           const have = blockLines(existing);
           const newLines: Block = flattenBlock(finalSlice).filter((l) => !have.has(l));
@@ -467,9 +467,9 @@ export function orderByBlocks(layout: Layout): void {
           queue.push(to);
         }
       } else {
-        // cycle back-edge: count the disagreement, leave blocks alone (the
-        // flip draws across nd — a junction, allowed by construction).
-        // BOTH sides compared in the NODE walking frame (review finding #3):
+        // cycle back-edge: count the disagreement, leave blocks alone. The
+        // flip draws across nd, which is a junction, allowed by construction.
+        // BOTH sides compared in the NODE walking frame:
         // `slice` is node-frame by construction; `to`'s stored block reads
         // node-frame when flattened canonically at an endA departure and
         // mirrored at an endB departure.
@@ -493,7 +493,7 @@ export function orderByBlocks(layout: Layout): void {
   };
 
   // A corridor must not be force-seeded as a fresh root while it still has a
-  // real, unvisited feeder waiting to join into it — otherwise the seed wins
+  // real, unvisited feeder waiting to join into it. Otherwise the seed wins
   // by accident (this corridor gets marked visited before the join arrives),
   // and the genuine feeder is later shunted into the cycle-residual branch
   // instead of the join path (pair-ownership theorem, spec §2.1). A corridor
@@ -507,8 +507,8 @@ export function orderByBlocks(layout: Layout): void {
         const f = ndFlows.get(l);
         if (!f || f.to !== c.id) continue; // not an inbound edge of c at nd
         // f.from === c.id is a round-trip turnaround artifact (the return
-        // leg re-enters the corridor it just left at the route origin) — a
-        // corridor is never its own feeder.
+        // leg re-enters the corridor it just left at the route origin);
+        // a corridor is never its own feeder.
         if (f.from !== null && f.from !== undefined && f.from !== c.id && !visited.has(f.from)) return true;
       }
     }
@@ -551,11 +551,11 @@ export function orderByBlocks(layout: Layout): void {
   }
 }
 
-/** A/B measuring stick (matches untangle's DBG line format exactly): count
+/** A/B measuring stick (matches untangle's DBG line format): count
  *  same-segment pair FLIPS on the final written-back orders at nodes where
  *  the two edges continue near-collinear. `scored` = both lines genuinely
  *  flow between the two corridors at the node (a drawn through-braid);
- *  `diverge` = at least one line leaves the corridor pair there. free/
+ *  `diverge` = at least one line leaves the corridor pair there. free and
  *  interior classes don't exist in blocks mode (no freeCross concept;
  *  corridor interiors carry one order by construction) and print 0. */
 function reportStraightFlips(

@@ -9,7 +9,7 @@ test('straight line: no loop', () => {
   assert.equal(detectPaintedLoops([{ lineId: 'a', pts }]).length, 0);
 });
 
-// An out-and-back retrace is coincident, not crossing — must NOT be a loop.
+// An out-and-back retrace is coincident, not crossing. It must NOT be a loop.
 test('out-and-back retrace: no loop (coincident, not crossing)', () => {
   const pts: Pixel[] = [];
   for (let x = 0; x <= 200; x += 10) pts.push([x, 0]);

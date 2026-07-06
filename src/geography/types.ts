@@ -22,7 +22,7 @@ export interface GeographyData {
   /** Outline of the harvested DATA REGION in the current coordinate frame
    *  (closed polygon, no repeated end point). Absent = the bbox rect. Set by
    *  rotateSchematicInput: the rotated harvest rect is a diamond in the render
-   *  frame, and the renderer draws LAND only inside this hull — the canvas
+   *  frame. The renderer draws LAND only inside this hull. The canvas
    *  outside it is data void and paints as background, never as fake land. */
   hull?: Coordinate[];
 }

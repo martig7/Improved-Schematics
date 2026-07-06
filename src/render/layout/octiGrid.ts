@@ -18,18 +18,18 @@ const OFFSET: ReadonlyArray<[number, number]> = [
 // Base bend penalty indexed by turn-step distance (1..4) between two port
 // directions. A bend edge joins the port facing the incoming neighbour to the
 // port facing the outgoing neighbour, so the *interior* path angle through the
-// node is steps·45°: steps=4 (opposite ports) is a straight pass-through
+// node is steps·45°. steps=4 (opposite ports) is a straight pass-through
 // (180°, free) and steps=1 is the sharpest 45° turn (most penalised). steps=0
 // (same port, a U-turn) cannot occur between two distinct ports.
 // The A-correction (= BEND_BASE[1] - BEND_BASE[3]) is subtracted from every
 // grid edge so the per-node bend correction does not double-count along a
 // path. It must stay BELOW the minimum grid-edge weight (1.0 for axis) so the
-// corrected grid edge cost is non-negative — Dijkstra requires it.
-// Tuning: 45° turns are bumped relative to gentle turns so the router prefers
-// a single long straight run over a stair of cheap small bends. 0.95 - 0.05 =
-// 0.9 keeps A < 1.0 for safety.
+// corrected grid edge cost is non-negative, which Dijkstra requires.
+// 45° turns are bumped relative to gentle turns so the router prefers
+// a single long straight run over a stair of cheap small bends. The chosen
+// values keep A < 1.0 for safety.
 const BEND_BASE = [Infinity, 0.95, 0.6, 0.05, 0];
-/** No-shortcut correction a = w_45 − w_135 (Bast 2020); added to every bend and
+/** No-shortcut correction a = w_45 − w_135 (Bast 2020). Added to every bend and
  *  subtracted from every grid edge so a sharp turn is never cheaper as a chain
  *  of gentler turns, without distorting the edge-length penalty. */
 const A = BEND_BASE[1] - BEND_BASE[3];
@@ -101,7 +101,7 @@ const PORT_OFFSET = 0.01; // ports sit a hair off the centre, along their dir.
 // Base sink-edge cost (centre <-> port). Must exceed the most expensive bend so
 // that a path can never "dip" port→sink→centre→sink→port to turn for free
 // (which would bypass all bend penalties and make axis staircases beat
-// diagonals). A real route touches exactly two sinks — one at each endpoint —
+// diagonals). A real route touches exactly two sinks, one at each endpoint,
 // so this only adds a constant and does not affect routing choices. Per-endpoint
 // displacement is applied separately via the Dijkstra source/target costs.
 const SINK_BASE = 2.0;

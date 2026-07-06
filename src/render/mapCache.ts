@@ -1,14 +1,14 @@
-// Plan B: a fingerprint-gated layout cache. One entry per city in localStorage:
-//   :fp:<city>  = "v<VERSION>:<fingerprint>"   (tiny — the cache key/guard)
-//   :pre:<city> = serializePre(pre)            (heavy — the octi precompute)
+// A fingerprint-gated layout cache. One entry per city in localStorage:
+//   :fp:<city>  = "v<VERSION>:<fingerprint>"   (tiny; the cache key/guard)
+//   :pre:<city> = serializePre(pre)            (heavy; the octi precompute)
 //
 // Read at Generate: if the stored fp equals the fingerprint of the LIVE inputs,
-// deserialize and reuse the precompute (skips the 3.7s-158s octi run); otherwise
+// deserialize and reuse the precompute (skips the octi run); otherwise
 // it's a miss and the caller runs octi + writes a fresh entry. Because the key IS
 // the input fingerprint (see cacheFingerprint.ts), a stale layout (geography
-// arrived late, network/settings changed) can never be restored — the fp simply
-// won't match. There is no auto-restore and no second in-memory store, so the
-// stale-render bugs that killed the old cache can't recur.
+// arrived late, network/settings changed) can never be restored, since the fp simply
+// won't match. There is no auto-restore and no second in-memory store, so a
+// stale render can't be served.
 
 import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
@@ -16,23 +16,23 @@ import { serializePre, deserializePre } from './persist';
 const KEY = 'improvedschematics:mapcache';
 const VERSION = 8; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
-// the 80-90% draw cost — bumped so pre-geometry entries refresh on next Generate.
-// v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it —
-// purge all pre-stamp entries (kills any zombie pre poisoned under a foreign
-// fingerprint by the old save→load reseed; see SmoothedPrecomputed.builtFp).
+// most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
+// v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
+// Purge all pre-stamp entries to kill any zombie pre poisoned under a foreign
+// fingerprint by the old save→load reseed (see SmoothedPrecomputed.builtFp).
 // v5: frame/geoBboxFrame were clamped to the PRE-GROWTH canvas (the composed proj
-// inherited baseProj's width/height) — cached pres carry truncated frames on any
+// inherited baseProj's width/height). Cached pres carry truncated frames on any
 // grown canvas, so exports/area popouts cropped the wrong region. Layouts are
 // unchanged; only the frame metadata needed recomputing.
-// v6: detail-area sub-renders changed shape (box-aspect canvas + the clip rect
-// pinned on-canvas via options.detailCrop) — purge cached subPres computed under
+// v6: detail-area sub-renders changed shape (box-aspect canvas plus the clip rect
+// pinned on-canvas via options.detailCrop). Purge cached subPres computed under
 // the old square/truncated framing.
 // v7: pres carry projected geography rings (geoRingsPx) and gridOverlay no longer
-// bakes the water in — the backdrop is built at draw time so the landmass style
+// bakes the water in. The backdrop is built at draw time so the landmass style
 // (simplified/rounded blobs) re-renders as a repaint. Old pres would draw
 // faithfully but couldn't restyle; purge so every pre gains its rings.
 // v8: rotated-city pres gain geoHullPx (land drawn only inside the data hull) and
-// geoBleedPx (boundary categories bleed past the hull to the canvas edge) — purge
+// geoBleedPx (boundary categories bleed past the hull to the canvas edge). Purge
 // so cached rotated maps pick up the void/bleed presentation.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
@@ -60,7 +60,7 @@ const subKey = (city: string) => `${KEY}:sub:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
 /** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
- *  `fp`? Reads only the tiny `:fp:` key — no deserialize. For UI that wants to
+ *  `fp`? Reads only the tiny `:fp:` key, with no deserialize. For UI that wants to
  *  show "cache hit" before paying the full read. */
 export function peekCache(city: string, fp: string, store: KVStore | null = defaultStore()): boolean {
   if (!store || !city) return false;
@@ -72,7 +72,7 @@ export function peekCache(city: string, fp: string, store: KVStore | null = defa
 }
 
 /** Deserialized precompute for `city` IFF a cached entry's fingerprint matches
- *  `fp` (the digest of the current live inputs). Null on miss / absent / error. */
+ *  `fp` (the digest of the current live inputs). Null on miss, absent, or error. */
 export function readCachedPre(
   city: string,
   fp: string,
@@ -85,9 +85,9 @@ export function readCachedPre(
     if (!preStr) return null;
     const pre = deserializePre(preStr);
     // Provenance guard: an object pre must have been BUILT under the fp it's
-    // filed under — a mismatch means a stale layout was filed under a live
-    // fingerprint (the zombie-pre bug); treat as a miss so the caller re-sims.
-    // String pres (the degenerate no-layout SVG fallback) carry no stamp — pass.
+    // filed under. A mismatch means a stale layout was filed under a live
+    // fingerprint, so treat it as a miss and let the caller re-sim.
+    // String pres (the degenerate no-layout SVG fallback) carry no stamp; pass.
     if (typeof pre !== 'string' && pre.builtFp !== fp) return null;
     return pre;
   } catch {
@@ -106,8 +106,8 @@ export function writeCachedPre(
 ): boolean {
   if (!store || !city) return false;
   // Provenance guard (write side): never FILE a layout under a fingerprint it
-  // wasn't built from — this is the exact write that poisoned the cache when a
-  // loaded file's stale pre was reseeded under a freshly computed fp.
+  // wasn't built from. Filing a loaded file's stale pre under a freshly computed
+  // fp would poison the cache.
   if (typeof pre !== 'string' && pre.builtFp !== fp) return false;
   const preStr = serializePre(pre);
   const write = (): boolean => {
@@ -130,7 +130,7 @@ export function writeCachedPre(
       }
       return write();
     } catch {
-      // give up — drop a half-written entry so a partial pre can't be read back
+      // give up; drop a half-written entry so a partial pre can't be read back
       try {
         store.removeItem(fpKey(city));
         store.removeItem(preKey(city));
@@ -142,8 +142,8 @@ export function writeCachedPre(
   }
 }
 
-/** Persist the detail-area selections the user drew on the layout fingerprinted by
- *  `fp`. Tiny + synchronous (unlike `:pre:`) — best-effort; a write failure just means
+/** Persist the detail-area selections drawn on the layout fingerprinted by
+ *  `fp`. Tiny and synchronous (unlike `:pre:`); best-effort, so a write failure just means
  *  the areas won't auto-restore next time. Stamped with VERSION+fp so they can only be
  *  restored against the exact layout they were drawn on (see readSelections). */
 export function writeSelections(
@@ -156,11 +156,11 @@ export function writeSelections(
   try {
     // An EMPTY write must not clobber another LAYOUT's saved areas. There is one `:sel:`
     // entry per city, so a write replaces whatever fp was stored. A generate under a
-    // *transient* fingerprint (classically before geography finishes loading → a `nogeo`
-    // fp) clears the live selections, and that empty write would otherwise overwrite the
-    // real `{geo-fp, [areas]}` — so the areas vanish even though the layout cache later
+    // transient fingerprint (for example before geography finishes loading) clears the
+    // live selections, and that empty write would otherwise overwrite the real
+    // `{fp, [areas]}`, so the areas vanish even though the layout cache later
     // hits. If the stored entry belongs to a DIFFERENT fp, preserve it. (A non-empty write
-    // always wins: the user is actively drawing on THIS layout.)
+    // always wins, since it is actively drawn on THIS layout.)
     if (selections.length === 0) {
       const raw = store.getItem(selKey(city));
       if (raw) {
@@ -168,21 +168,21 @@ export function writeSelections(
           const prev = JSON.parse(raw) as { stamp?: string };
           if (prev.stamp && prev.stamp !== stamp(fp)) return; // preserve another layout's areas
         } catch {
-          /* corrupt entry — fall through and overwrite */
+          /* corrupt entry; fall through and overwrite */
         }
       }
     }
     store.setItem(selKey(city), JSON.stringify({ stamp: stamp(fp), selections }));
   } catch {
-    /* ignore — areas are non-critical UI state */
+    /* ignore; areas are non-critical UI state */
   }
 }
 
 /** The detail-area selections saved for `city` IFF they were drawn on the SAME layout
- *  (the stored fingerprint matches `fp`). Returns null on miss / absent / format change /
+ *  (the stored fingerprint matches `fp`). Returns null on miss, absent entry, format change, or
  *  error. Gating on the fingerprint is what makes restore safe: the boxes are in render-
  *  pixel coords, so they're only valid against the byte-identical layout they were drawn
- *  on — a different network/geography/settings produces a different fp and no restore. */
+ *  on. A different network/geography/settings produces a different fp and no restore. */
 export function readSelections(
   city: string,
   fp: string,
@@ -206,7 +206,7 @@ export interface SubEntry { pre: string; selFrame: SubFrame }
 
 /** The cached sub-layout (a detail area's octi precompute of its cropped region) for
  *  `boxKey` on the layout fingerprinted by `fp`, or null on miss. Lets a DetailInset skip
- *  the heavy re-simulation on remount/reload — restoring the area instantly, like the main
+ *  the heavy re-simulation on remount/reload, restoring the area instantly, like the main
  *  map cache. fp-gated (the sub-layout is derived from the main inputs, so a changed layout
  *  invalidates it) and box-keyed (each region is its own entry; editing the bounds is a new
  *  key). Safe by the same argument as the main pre cache: same (fp, box) ⇒ deterministic
@@ -234,7 +234,7 @@ export function readSubPre(
 /** Persist a freshly-computed sub-layout under (fp, boxKey). One `:sub:` entry per city
  *  holds a boxKey→sub-layout map stamped with the layout fp; a write under a NEW fp starts a
  *  fresh map (the old regions are stale). Best-effort: on quota it drops the whole sub-cache
- *  for the city and gives up (the area just re-simulates next time — never wrong, only slower). */
+ *  for the city and gives up (the area just re-simulates next time, never wrong, only slower). */
 export function writeSubPre(
   city: string,
   fp: string,
@@ -253,7 +253,7 @@ export function writeSubPre(
         const prev = JSON.parse(raw) as { stamp?: string; subs?: Record<string, SubEntry> };
         if (prev.stamp === stamp(fp) && prev.subs) o.subs = prev.subs; // same layout → merge in
       } catch {
-        /* corrupt entry — start fresh */
+        /* corrupt entry; start fresh */
       }
     }
     o.subs[boxKey] = { pre: preStr, selFrame };
@@ -265,8 +265,8 @@ export function writeSubPre(
 }
 
 /** Every cached sub-layout for (`city`, `fp`) as a raw boxKey→entry map (the serialized
- *  sub strings, untouched), or null on miss / format change. Lets the panel bake the whole
- *  sub-layout cache into a saved map file so a load restores each area instantly — exactly
+ *  sub strings, untouched), or null on miss or format change. Lets the panel bake the whole
+ *  sub-layout cache into a saved map file so a load restores each area instantly, exactly
  *  like a localStorage cache hit. */
 export function readAllSubPres(
   city: string,
@@ -302,7 +302,7 @@ export function writeAllSubPres(
   }
 }
 
-/** Drop cached sub-layouts for `city`/`fp` whose box isn't in `keepBoxKeys` — keeps the
+/** Drop cached sub-layouts for `city`/`fp` whose box isn't in `keepBoxKeys`. Keeps the
  *  sub-cache aligned with the live areas, so a deleted or bounds-edited area's old region
  *  doesn't linger and waste quota. No-op when the stored stamp is for a different fp. */
 export function pruneSubPres(
@@ -328,21 +328,21 @@ export function pruneSubPres(
   }
 }
 
-/** Persist the user's appearance settings (the applied layout sliders + draw prefs)
+/** Persist the appearance settings (the applied layout sliders plus draw prefs)
  *  for `city`. UNVERSIONED on purpose: a renderer/pre format bump (VERSION) shouldn't
  *  wipe benign UI prefs, and the panel reads each field defensively (`?? default`), so a
- *  shape change degrades gracefully rather than discarding the user's customizations. */
+ *  shape change degrades gracefully rather than discarding the customizations. */
 export function writeSettings(city: string, settings: unknown, store: KVStore | null = defaultStore()): void {
   if (!store || !city) return;
   try {
     store.setItem(setKey(city), JSON.stringify({ settings }));
   } catch {
-    /* ignore — settings are non-critical UI state */
+    /* ignore; settings are non-critical UI state */
   }
 }
 
 /** The saved appearance settings for `city` (or null). Read SYNCHRONOUSLY at mount to
- *  seed the slider/toggle initializers BEFORE first render — so a customized layout's
+ *  seed the slider/toggle initializers BEFORE first render, so a customized layout's
  *  fingerprint matches its cached `pre` and Generate hits (which in turn lets its detail
  *  areas restore). Unconditional (no fp gate): settings are benign and the `pre` itself
  *  stays fingerprint-gated, so a stale layout can still never be served. */
@@ -368,7 +368,7 @@ export function writeModeSettings(city: string, mode: string, settings: unknown,
   try {
     store.setItem(setModeKey(city, mode), JSON.stringify({ settings }));
   } catch {
-    /* ignore — settings are non-critical UI state */
+    /* ignore; settings are non-critical UI state */
   }
 }
 

@@ -1,13 +1,13 @@
-// Suppress zero-progress synthetic hooks (LON pink-triangle / hairpin fix).
+// Suppress zero-progress synthetic hooks (closed triangles and hairpins).
 //
 // After supportToLayout + the spur-step cleanup, the topo merge can route a
 // line's whole bundle down a shared lane to a SYNTHETIC (non-station) junction
 // and fan back, so a geographically collinear line draws a closed triangle and
-// out-and-back lines draw hairpins — purely through synthetic layout nodes.
+// out-and-back lines draw hairpins, purely through synthetic layout nodes.
 //
 // This pass detects, per line, maximal traversal runs whose INTERIOR nodes are
-// all synthetic, and — when the run detours (pathLen/chordLen > ratio) AND
-// genuinely folds (min consecutive-segment dot < fold) — splices in a short
+// all synthetic. When the run detours (pathLen/chordLen > ratio) AND
+// genuinely folds (min consecutive-segment dot < fold), it splices in a short
 // octilinear two-segment shortcut edge A->E carrying the line, dropping the
 // line from the hook run's edges.
 //
@@ -52,10 +52,10 @@ function unit(ax: number, ay: number, bx: number, by: number): [number, number] 
 }
 
 /** Octilinear two-segment shortcut course A..E through the layout cells.
- *  One axis-aligned leg + one 45° leg; corner chosen nearest the chord.
+ *  One axis-aligned leg plus one 45° leg; corner chosen nearest the chord.
  *  Degenerates to a single segment when the chord is already octilinear.
- *  (Also used by octi's drawn-level detour excision as the replacement
- *  course for hairpin-routed edges.) */
+ *  Also used by octi's drawn-level detour excision as the replacement
+ *  course for hairpin-routed edges. */
 export function shortcutCourse(ax: number, ay: number, ex: number, ey: number): Cell[] {
   const dx = ex - ax;
   const dy = ey - ay;
@@ -129,17 +129,16 @@ export function suppressHooks(
 
     // Plan ALL fold runs from the pristine step list, then apply. Game routes
     // traverse their edges out-and-back, so a fold appears TWICE in one
-    // traversal (mirrored); splicing one run must not corrupt the detection or
+    // traversal (mirrored). Splicing one run must not corrupt the detection or
     // the edges of its mirror. Runs are index-disjoint, so the plans compose.
     const steps = resolveSteps(trav, edgeById);
     if (steps.length < 2) continue;
 
     // Run boundaries are THIS LINE's own stops (read from edge stop flags),
-    // not the global station set: a fold that threads other lines' stations
-    // without serving them is still a fold (SEA line 2 bowed down the 50 St
-    // column — stops it never serves — and the old station-segmented scan
-    // could never span it). The interior-stop guard in planRun stays as the
-    // correctness backstop.
+    // not the global station set. A fold that threads other lines' stations
+    // without serving them is still a fold, so a station-segmented scan keyed
+    // on the global set could never span it. The interior-stop guard in planRun
+    // stays as the correctness backstop.
     const stopsAtSeam = (a: Runstep, b: Runstep | undefined): boolean => {
       const sa = a.edge.stops.get(lineId);
       if (sa && (a.reversed ? sa.atFrom : sa.atTo)) return true;
@@ -172,7 +171,7 @@ export function suppressHooks(
 
     // Strip the line from run edges its rewritten traversal no longer visits.
     // (An edge can sit inside one run yet still carry the line elsewhere in
-    // the same traversal — the mirror leg — so membership follows usage.)
+    // the same traversal, on the mirror leg, so membership follows usage.)
     if (capped.length > 0) {
       const used = new Set(trav.map((s) => s.edgeId));
       for (const p of capped) {
@@ -317,8 +316,8 @@ function applyPlan(
   edgeById: Map<string, LayoutEdge>,
 ): void {
   // The mirror leg of an out-and-back fold produces the same shortcut with A/E
-  // swapped — reuse the forward edge with a reversed step instead of minting a
-  // second, coincident edge.
+  // swapped, so reuse the forward edge with a reversed step instead of minting
+  // a second, coincident edge.
   const fwdId = `hook:${p.A}:${p.E}`;
   const revId = `hook:${p.E}:${p.A}`;
   let shortcut = edgeById.get(fwdId);

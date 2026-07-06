@@ -30,7 +30,7 @@ export interface SchematicInput {
   /**
    * The game's `state.stationGroups` (via `api.gameState.getStationGroups()`).
    * Preferred over deriving groups from `Station.trackGroupId`, since the game
-   * merges overlapping platforms by spatial proximity — what shows as an
+   * merges overlapping platforms by spatial proximity. This is what shows as an
    * interchange in the UI. Omit or pass empty to fall back to derived groups.
    */
   stationGroups?: unknown[];

@@ -7,7 +7,7 @@
 //   - pre-baked OSM geojson (sea_water.geojson): many Polygon features, one
 //     body each.
 // Both are handled uniformly by flattening every ring and reconstructing the
-// containment hierarchy geometrically — ring nesting depth (even = water body
+// containment hierarchy geometrically. Ring nesting depth (even = water body
 // outline, odd = land hole) comes from point-in-polygon tests, not from the
 // input's feature grouping.
 
@@ -88,7 +88,7 @@ function ringInside(inner: Ring, outer: Ring): boolean {
 export interface WaterBody {
   outer: Ring;
   holes: Ring[];
-  /** Outer-ring area (the body's footprint) — the ranking metric. */
+  /** Outer-ring area (the body's footprint). The ranking metric. */
   area: number;
 }
 

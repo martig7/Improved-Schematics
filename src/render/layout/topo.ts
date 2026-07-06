@@ -80,8 +80,8 @@ export function pointAtDistance(pts: Pixel[], d: number): Pixel {
 
 /** Paper's line-creep mitigation. With p1/pl the first/last samples of the
  *  edge being densified, reject candidate node `v` when it sits too far from
- *  the current sample relative to that sample's distance to either endpoint —
- *  this prevents two edges meeting at an obtuse angle from interlacing. */
+ *  the current sample relative to that sample's distance to either endpoint.
+ *  This prevents two edges meeting at an obtuse angle from interlacing. */
 export function creepBlocked(vPos: Pixel, pk: Pixel, samples: Pixel[]): boolean {
   const p1 = samples[0];
   const pl = samples[samples.length - 1];
@@ -333,12 +333,12 @@ export class HBuilder {
   /** LOOM removeEdgeArtifacts: contract edges shorter than `maxLen` even when
    *  an endpoint is a junction fork, folding any parallel edges the rewiring
    *  creates (line-set union, like LOOM's foldEdges). The merge can strand a
-   *  micro-mesh of near-coincident nodes around a multi-line junction — each
+   *  micro-mesh of near-coincident nodes around a multi-line junction, each
    *  within dHat of the others, but never collapsed because degree-2
    *  contraction is blocked at forks. Octi then inflates every micro-node to
-   *  its own grid cell, turning a 5px mesh into full-cell phantom loops.
+   *  its own grid cell, turning a small mesh into full-cell phantom loops.
    *
-   *  Must run AFTER contractDegree2WithMatchingLines has joined the 4px sample
+   *  Must run AFTER contractDegree2WithMatchingLines has joined the short sample
    *  chains into long corridor edges, otherwise it would eat real corridors. */
   contractShortEdges(maxLen: number): void {
     let changed = true;
@@ -347,10 +347,10 @@ export class HBuilder {
       for (const e of this.edges.values()) {
         // Degeneracy metric is NODE distance, not polyline length: a wiggly
         // sub-maxLen-span connector can carry >= maxLen of sampled geometry
-        // and shield itself from contraction (the RCA Bundle-A STN<->h twins
-        // — sub-cell node pairs the router cannot route cleanly). Geometry
-        // that genuinely LEAVES the neighbourhood (a balloon spur) is a real
-        // course, not a degenerate connector — the extent test keeps it.
+        // and shield itself from contraction. These are sub-cell node pairs
+        // the router cannot route cleanly. Geometry that genuinely LEAVES the
+        // neighbourhood (a balloon spur) is a real course, not a degenerate
+        // connector, so the extent test keeps it.
         const na = this.nodes.get(e.a)!;
         if (dist(na, this.nodes.get(e.b)!) >= maxLen) continue;
         if (polylineLength(e.points) >= maxLen) {
@@ -501,15 +501,14 @@ interface MergeInput {
  * within `eps` of an earlier point after a substantial arc (a lasso loop or
  * an out-and-back retrace baked into one edge's geometry). Degree-2
  * contraction welds chains straight through 180-degree turnaround nodes, so a
- * terminal balloon loop ends up INSIDE a single edge polyline — its length
+ * terminal balloon loop ends up INSIDE a single edge polyline. Its length
  * then vastly exceeds its endpoint span, and octi's spring cost manufactures
- * a phantom grid detour ("candy cane") to honor the extra length. LOOM never
+ * a phantom grid detour to honor the extra length. LOOM never
  * meets this because its merge re-walks all geometry each iteration, zipping
  * intra-edge folds; our merge rounds re-feed endpoint chords only.
  *
  * Endpoints are always preserved. Genuine V-corners survive: the cut needs
- * the legs to stay within eps after `minArc` of travel, not merely touch.
- */
+ * the legs to stay within eps after `minArc` of travel, not merely touch. */
 export function cutPolylineFolds(pts: Pixel[], eps: number, minArcOverride?: number): Pixel[] {
   if (pts.length < 4) return pts;
   const minArc = minArcOverride ?? Math.max(4 * eps, 24);
@@ -654,12 +653,11 @@ function lateralToTravel(prev: Pixel | null, pk: Pixel, next: Pixel | null, vPos
   return perp > along;
 }
 
-/** LOOM MapConstructor::ndCollapseCand — nearest node within dCut, or create.
- *  (Bundle-A note: a "reuse the nearest protected anchor instead of minting"
- *  fallback here was tried and REVERTED — a reused anchor lands in myNds and
- *  the very next sample mints a twin anyway. Walk-time twins are fine; the
- *  spacing invariant is enforced by contraction, which must simply not be
- *  undone afterwards.) */
+/** LOOM MapConstructor::ndCollapseCand. Returns the nearest node within dCut,
+ *  or creates one. Reusing the nearest protected anchor instead of minting is
+ *  not done here: a reused anchor lands in myNds and the very next sample mints
+ *  a twin anyway. Walk-time twins are fine; the spacing invariant is enforced
+ *  by contraction, which must simply not be undone afterwards. */
 function ndCollapseCand(
   h: HBuilder,
   myNds: Set<string>,
@@ -700,8 +698,8 @@ export function collapseSharedSegments(
   }
 
   // TOTAL tie-break (fromId|toId|lineSig is unique per merge edge): mirrored
-  // corridors have equal length, so without this the seed order — and thus the
-  // merged topology — depends on the engine's sort tie behavior (cross-V8).
+  // corridors have equal length, so without this the seed order, and thus the
+  // merged topology, depends on the engine's sort tie behavior (cross-V8).
   const ekey = (e: { fromId: string; toId: string; lineSig: string }) =>
     e.fromId + '|' + e.toId + '|' + e.lineSig;
   const sorted = [...input.edges].sort(
@@ -729,16 +727,14 @@ export function collapseSharedSegments(
     for (let i = 0; i < samples.length; i++) {
       const pk = samples[i];
       // ENDPOINT samples bind the edge's identity (imgNds below) and sit
-      // exactly ON a graph-node position — they must reuse the nearest
+      // exactly ON a graph-node position. They must reuse the nearest
       // PROTECTED node within dHat (the seed-dedupe policy applied at bind
       // time), even when this walk already consumed it mid-course (myNds)
       // or a snap guard would refuse. Otherwise the walk mints a twin a
       // couple of px from the seed, the endpoint binds to the TWIN, and
       // contraction later dissolves it and slides the corridor's attachment
-      // to a neighbouring protected node (NYC jul-5: the B/D 155 St branch
-      // re-attached at 135 St, drawing every B trip as an out-and-back hook
-      // through 145 St; the B/D 145 platform sits 2px from the A/C twin
-      // whose seed won the dedupe).
+      // to a neighbouring protected node, drawing the branch as an
+      // out-and-back hook.
       const isEnd = i === 0 || i === samples.length - 1;
       const seed = isEnd ? h.nearestProtectedNode(pk, dHat) : null;
       const cur = seed ?? ndCollapseCand(h, myNds, pk, dHat, samples, i);
@@ -813,18 +809,16 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
   let h: HBuilder | null = null;
   let prevLen = Infinity;
   let prevEdges = Infinity;
-  // Junction/terminus anchors are protected UNCONDITIONALLY (was gated on
-  // preserveStations, which the smoothed path never sets): rounds >= 2 re-feed
-  // averaged geometry, so node drift COMPOUNDS dHat per round — round-1
-  // averaging crept two genuinely ~24px-apart legs within dHat of each other
-  // and round 2 zipped them into a phantom shared trunk, demoting a real
-  // degree-4 junction and manufacturing a fake one a corridor away.
-  // STOP nodes are protected too (RCA Fix 1 full form, 2026-07-05): the merge
-  // used to contract every degree-2 same-lines stop away and anchorGraphStops
-  // re-split corridors afterwards — a re-derivation that loses which corridor
-  // the stop was ON (the twin-platform strandings). Protecting stops keeps
-  // them at their exact positions with correct per-side paint, so downstream
-  // seating/snapping is identity, not proximity search.
+  // Junction/terminus anchors are protected UNCONDITIONALLY. Rounds >= 2
+  // re-feed averaged geometry, so node drift COMPOUNDS dHat per round. Without
+  // protection, round-1 averaging can creep two genuinely distinct legs within
+  // dHat of each other and round 2 zips them into a phantom shared trunk,
+  // demoting a real junction and manufacturing a fake one a corridor away.
+  // STOP nodes are protected too. Otherwise the merge contracts every degree-2
+  // same-lines stop away and a later pass re-splits corridors, a re-derivation
+  // that loses which corridor the stop was ON (stranding twin platforms).
+  // Protecting stops keeps them at their exact positions with correct per-side
+  // paint, so downstream seating/snapping is identity, not proximity search.
   const stopNodeIds = new Set<string>();
   for (const e of g.edges) {
     for (const flags of e.stops.values()) {
@@ -832,13 +826,11 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
       if (flags.atTo) stopNodeIds.add(e.to);
     }
   }
-  // Spacing floor at the SOURCE (Bundle A's invariant, relocated from the
-  // anchor pass): a stop within dHat of an already-protected position gets NO
-  // seed of its own — its walk samples snap onto the neighbour and the stops
-  // share a node, as the old anchor floor + re-home produced. Without this,
-  // dense maps grow sub-cell station twins the router must ping-pong around
-  // (NYC/SF zigzag census +14/+24). Anchors seed first (junctions stay put);
-  // stop seeding order is sorted by node id — deterministic.
+  // Spacing floor at the SOURCE: a stop within dHat of an already-protected
+  // position gets NO seed of its own. Its walk samples snap onto the neighbour
+  // and the stops share a node. Without this, dense maps grow sub-cell station
+  // twins the router must ping-pong around. Anchors seed first (junctions stay
+  // put); stop seeding order is sorted by node id, so it is deterministic.
   const protectedPositions = [...g.nodes.values()]
     .filter((n) => isMergeAnchor(g, n.id))
     .map((n) => n.pos.slice() as Pixel);
@@ -877,7 +869,7 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
 function groupPixel(group: StationGroup, g: TransitGraph): Pixel {
   const n = g.nodes.get(group.id);
   if (n) return n.pos;
-  // Per-station-node mode: the group has no node of its own — average its
+  // Per-station-node mode: the group has no node of its own, so average its
   // member platform nodes (already projected/warped like every graph node).
   let sx = 0;
   let sy = 0;
@@ -921,14 +913,13 @@ function freezeBuilder(h: HBuilder, g: TransitGraph): {
 /** Shortest path BY LENGTH over support edges carrying `lineId` (Dijkstra,
  *  same structure as shortestAnyPath). Returns ordered steps or null.
  *
- *  This replaced a hop-count BFS (RCA Fix 2, increment 1): fewest merged
- *  edges is NOT the schematic course. The direct corridor between two
- *  consecutive stops is chopped into many small anchor-split edges, while a
- *  V-shaped detour through a stop column the line never serves can be fewer
- *  (longer) hops — hop-count BFS routed SEA's 2 down the 50 St column and
- *  back (13 manufactured zigzags on one line). Length restores the obvious
- *  choice; the input tracks are near-straight (max perp 0.2x chord), so the
- *  shortest painted course is the faithful one. */
+ *  Length rather than hop-count is deliberate: fewest merged edges is NOT the
+ *  schematic course. The direct corridor between two consecutive stops is
+ *  chopped into many small anchor-split edges, while a V-shaped detour through
+ *  a stop column the line never serves can be fewer (longer) hops, so hop-count
+ *  routing manufactures zigzags. Length restores the obvious choice; the input
+ *  tracks are near-straight (max perp 0.2x chord), so the shortest painted
+ *  course is the faithful one. */
 export function linePathByLength(
   src: string,
   dst: string,
@@ -1070,16 +1061,16 @@ function projectArcOnPolyline(
   return best;
 }
 
-/** Weld redundant retrace stubs onto their corridor. A terminus 10-15px
- *  behind the previous stop yields: corridor edge `f` passing exactly THROUGH
- *  the terminus position (no node there) plus a short stub edge `e` doubling
- *  back over `f`'s own geometry. Left alone, octi's planarize treats the
- *  coincident overlap as a CROSSING and inserts an intersection node — the
- *  fold becomes graph structure and draws as a phantom hub with spokes (the
- *  1 Pl / 12 Av terminus "branch" artifact). Fix the structure: split `f` at
- *  the stub's far node and fold the stub's lines into the now exactly-parallel
- *  half. The line then renders as an inline collapsed out-and-back and the
- *  stations sit in geographic order on one straight corridor. */
+/** Weld redundant retrace stubs onto their corridor. A terminus a short
+ *  distance behind the previous stop yields: corridor edge `f` passing exactly
+ *  THROUGH the terminus position (no node there) plus a short stub edge `e`
+ *  doubling back over `f`'s own geometry. Left alone, octi's planarize treats
+ *  the coincident overlap as a CROSSING and inserts an intersection node, so
+ *  the fold becomes graph structure and draws as a phantom hub with spokes.
+ *  Fix the structure: split `f` at the stub's far node and fold the stub's
+ *  lines into the now exactly-parallel half. The line then renders as an
+ *  inline collapsed out-and-back and the stations sit in geographic order on
+ *  one straight corridor. */
 function weldRedundantStubs(
   nodes: Map<string, SupportNode>,
   edges: Map<string, SupportEdge>,
@@ -1127,7 +1118,7 @@ function weldRedundantStubs(
           const id2 = nextEdgeId();
           const f1: SupportEdge = { id: id1, from: f.from, to: A, points: head, lineIds: new Set(f.lineIds) };
           const f2: SupportEdge = { id: id2, from: A, to: f.to, points: tail, lineIds: new Set(f.lineIds) };
-          const half = f.from === B ? f1 : f2; // the exactly-parallel A↔B half
+          const half = f.from === B ? f1 : f2; // the exactly-parallel A to B half
           for (const l of e.lineIds) half.lineIds.add(l);
 
           edges.delete(fid);
@@ -1157,14 +1148,13 @@ function weldRedundantStubs(
 }
 
 /** Absorb sub-dHat degree-1 stubs hanging off junctions (degree >= 3 with
- *  the stub). A station 10-15px from a junction it detours from draws as a
- *  boxy in-and-out knot: the lane bundle is WIDER than the stub is long, and
- *  every serving line hooks 90° in and out (Harvey Rd). The station re-maps
- *  to the junction node — within the agreed <= dHat fusion tolerance, and
+ *  the stub). A station a short distance from a junction it detours from draws
+ *  as a boxy in-and-out knot: the lane bundle is WIDER than the stub is long,
+ *  and every serving line hooks 90° in and out. The station re-maps to the
+ *  junction node, within the <= dHat fusion tolerance, and
  *  separateFusedStations re-splits if it ever lands on another station with
  *  true separation > dHat. Real termini keep their stubs: their neighbor is
- *  the degree-2 corridor through the previous station (320 Pl class), not a
- *  junction. */
+ *  the degree-2 corridor through the previous station, not a junction. */
 function absorbJunctionStubs(
   nodes: Map<string, SupportNode>,
   edges: Map<string, SupportEdge>,
@@ -1179,11 +1169,11 @@ function absorbJunctionStubs(
     const e = edges.get(eid);
     if (!e) continue;
     // Short stubs absorb outright. Additionally, near-zero-span stubs whose
-    // polyline is a merge-noise zigzag (nodes 2px apart under a 20px fold —
-    // Harvey Rd) absorb despite the inflated length: that footprint is what
-    // octi blows up to a full drawn cell. Wider-span stubs with long
-    // geometry are genuinely extended structures — absorbing them measurably
-    // degraded NYC's interchange layout, so they keep their nodes.
+    // polyline is a merge-noise zigzag (endpoints close together under a much
+    // longer fold) absorb despite the inflated length: that footprint is what
+    // octi blows up to a full drawn cell. Wider-span stubs with long geometry
+    // are genuinely extended structures, so they keep their nodes; absorbing
+    // them degrades dense interchange layouts.
     const span = dist(e.points[0], e.points[e.points.length - 1]);
     const len = polylineLength(e.points);
     if (len >= dHat && !(span < dHat / 2 && len < 2 * dHat)) continue;
@@ -1192,7 +1182,7 @@ function absorbJunctionStubs(
       if ((adj.get(B)?.length ?? 0) < 3) continue;
       // Only absorb DETOUR stops: every line on the stub must continue
       // through the junction (arrive + depart on other edges at B). A line
-      // that ends in the stub marks a real terminus — keep its node.
+      // that ends in the stub marks a real terminus, so keep its node.
       let allContinue = true;
       for (const l of e.lineIds) {
         let cnt = 0;
@@ -1228,17 +1218,17 @@ function absorbJunctionStubs(
 
 /**
  * Weld support nodes that would fight for the SAME octi grid cell into one
- * node (spec: SEA-split simplification, 2026-07-05). Merge guards can still
- * mint a synthetic twin inside a protected stop's cell (Stevens Way: an 11px edge whose
- * endpoints need distinct cells — the router paid a 170px detour, drawn as a
- * closed loop). Collapsing sub-cell clusters removes the degenerate inputs
- * instead of teaching the router/merge/draw new edge cases.
+ * node. Merge guards can still mint a synthetic twin inside a protected stop's
+ * cell, leaving a tiny edge whose endpoints need distinct cells, which forces
+ * the router into a long detour drawn as a closed loop. Collapsing sub-cell
+ * clusters removes the degenerate inputs instead of teaching the
+ * router/merge/draw new edge cases.
  *
  * Components are transitive closures of pairs closer than `minDist`.
  * Survivor priority: station node > higher degree > smaller id (deterministic).
  * Weld edges (zero-span after remap) are deleted; their traversal steps drop
  * out without breaking the chain (both endpoints became the survivor).
- * Distinct station groups welded onto one node stay separate SupportStations —
+ * Distinct station groups welded onto one node stay separate SupportStations;
  * the existing separateFusedStations pass re-splits or capsules them.
  */
 export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
@@ -1273,8 +1263,8 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
       addNg(nid, gid);
     }
   }
-  // Same-GROUP platform twins may fuse: the group draws ONE capsule either
-  // way, so welding them changes nothing the map says — it removes the
+  // Same-GROUP platform twins may fuse. The group draws ONE capsule either
+  // way, so welding them changes nothing the map says. It removes the
   // sub-cell ping-pong between sibling platforms. DISTINCT groups never fuse.
   const sameGroup = (a: string, b: string): boolean => {
     const sa = nodeGroups.get(a);
@@ -1301,9 +1291,9 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
       for (let oy = -1; oy <= 1; oy++) {
         for (const other of bucket.get(cx + ox + ',' + (cy + oy)) ?? []) {
           if (other <= id) continue;
-          // Two distinct-GROUP station nodes never weld: that would change
-          // what the map says (two stops become one). Same-group twins and
-          // synthetics are fair game.
+          // Two distinct-GROUP station nodes never weld, because that would
+          // change what the map says (two stops become one). Same-group twins
+          // and synthetics are fair game.
           if (stationNodes.has(id) && stationNodes.has(other) && !sameGroup(id, other)) continue;
           if (dist(p, h.nodes.get(other)!.pos) < minDist) union(id, other);
         }
@@ -1325,9 +1315,9 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     const stationsIn = members.filter((m) => stationNodes.has(m));
     if (stationsIn.length > 1) {
       // A synthetic can chain stations of DIFFERENT groups into one component.
-      // Cluster the stations by shared group: same-group twins weld to one
+      // Cluster the stations by shared group. Same-group twins weld to one
       // survivor per cluster (a group's primary marker node wins, then
-      // degree, then id); distinct-group clusters stay separate; synthetics
+      // degree, then id). Distinct-group clusters stay separate. Synthetics
       // weld into their NEAREST surviving station (deterministic ties by id).
       const sPar = new Map(stationsIn.map((s) => [s, s]));
       const sFind = (a: string): string => { while (sPar.get(a) !== a) a = sPar.get(a)!; return a; };
@@ -1409,7 +1399,7 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     if (nf === nt) {
       // Self-loop after weld: keep only a REAL balloon (terminal loop with
       // extent beyond a cell). A curly sub-cell connector can carry lots of
-      // polyline length while never leaving the node's neighbourhood — drawn,
+      // polyline length while never leaving the node's neighbourhood. Drawn,
       // it's a curl blob at the station.
       const pos = h.nodes.get(nf)!.pos;
       let extent = 0;
@@ -1437,7 +1427,7 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     h.adj.get(e.to)!.push(e.id);
   }
 
-  // traversals: drop steps over removed weld edges — the chain stays intact
+  // traversals: drop steps over removed weld edges. The chain stays intact
   // because a removed edge's endpoints are the same survivor node.
   if (removedEdges.size > 0) {
     for (const [lineId, steps] of h.lineTraversals) {
@@ -1477,24 +1467,23 @@ export function buildSupportGraph(
   builder.contractShortEdges(params.dHat);
   builder.contractDegree2WithMatchingLines();
   // Degree-2 joins weld chains through 180-degree turnarounds, baking new
-  // folds into the joined polylines — sanitize again so octi's spring cost
+  // folds into the joined polylines. Sanitize again so octi's spring cost
   // never sees phantom length (it pays it back as candy-cane grid detours).
   builder.sanitizeEdgeGeometry(params.dHat);
   if (!params.preserveStations) builder.intersectionSmoothing(params.dHat);
   // Smoothing MOVES nodes (each to the average of its cropped edge endpoints)
   // and can pull a pair inside the spacing floor with no contraction pass left
-  // to repair it — the last writer of node positions must re-enforce the
-  // invariant, or octi receives sub-cell pairs it cannot route (RCA Bundle A).
+  // to repair it. The last writer of node positions must re-enforce the
+  // invariant, or octi receives sub-cell pairs it cannot route.
   builder.contractShortEdges(params.dHat);
   const { nodes, edges, adj } = freezeBuilder(builder, g);
 
   let edgeSeq = edges.size;
   {
     // Stops survive the merge as protected nodes (runMergeRounds), so no
-    // re-anchoring pass runs here — anchorGraphStops measured minted=0 across
-    // a 6-config corpus after protection landed and was deleted (old/).
+    // re-anchoring pass runs here.
     // adj normalization: deterministic edge-id insertion order for every
-    // node — downstream tie-breaks iterate adj arrays.
+    // node, because downstream tie-breaks iterate adj arrays.
     for (const ids of adj.values()) ids.length = 0;
     for (const id of nodes.keys()) if (!adj.has(id)) adj.set(id, []);
     for (const e of edges.values()) {
@@ -1504,7 +1493,7 @@ export function buildSupportGraph(
       adj.get(e.to)!.push(e.id);
     }
     // Terminus retrace stubs duplicate corridor geometry the protected stops
-    // keep split — weld them in before traversal reconstruction sees the fold.
+    // keep split. Weld them in before traversal reconstruction sees the fold.
     weldRedundantStubs(nodes, edges, adj, params.dHat, () => 'he' + edgeSeq++);
     // Sub-dHat stubs at junctions fold into the junction node entirely.
     absorbJunctionStubs(nodes, edges, adj, params.dHat);
@@ -1528,7 +1517,7 @@ export function buildSupportGraph(
 
   // Heal-ladder census (dev, OCTI_AUDIT=1): how often traversal reconstruction
   // falls past the line-constrained BFS. Sizes the prize of carrying line
-  // paths THROUGH the merge instead of re-deriving them (RCA Fix 2).
+  // paths THROUGH the merge instead of re-deriving them.
   const healStats = { bfs: 0, anyPath: 0, miss: 0, stallJump: 0 };
 
   const appendTraversalSteps = (steps: TraversalStep[], seg: TraversalStep[]): void => {
@@ -1550,8 +1539,8 @@ export function buildSupportGraph(
     // Self-heal an under-painted merge: the walk can miss unioning a line
     // onto corridors its geometry rides (then the line-constrained BFS finds
     // nothing and the line would silently vanish from the map). Route over
-    // ANY support edges instead — shortest by length, capped so a mis-mapped
-    // node can't commit a wild detour — and paint the line onto the edges
+    // ANY support edges instead, shortest by length, capped so a mis-mapped
+    // node can't commit a wild detour, and paint the line onto the edges
     // used so offsets, stops, and later segments see it.
     const fa = nodes.get(fromS);
     const fb = nodes.get(toS);
@@ -1563,11 +1552,9 @@ export function buildSupportGraph(
       for (const s of any) edges.get(s.edgeId)!.lineIds.add(lineId);
       return any;
     }
-    // No path at all. A synthetic "__heal" bridge edge used to be minted here
-    // — deleted 2026-07-05 after measuring ZERO fires across a 6-config corpus
-    // (SEA split+classic, NYC-XD, NYC-Jul4, LON-3, SF). If it ever HAD fired
-    // it would have drawn a fabricated straight track across the map; the
-    // caller's stall/service-break handling below is the honest failure mode.
+    // No path at all. No synthetic bridge edge is minted here. Minting one
+    // would draw a fabricated straight track across the map. The caller's
+    // stall/service-break handling below is the honest failure mode.
     healStats.miss++;
     return null;
   };
@@ -1575,7 +1562,7 @@ export function buildSupportGraph(
   // Line-aware node mapping: snap a graph node to the nearest support node
   // whose incident edges actually CARRY the line. Pure nearest-by-position
   // snapping (mapToSupport) can land on a parallel corridor a few pixels
-  // away that the line never touches — then every line-constrained BFS
+  // away that the line never touches, and then every line-constrained BFS
   // segment fails and the whole line silently vanishes from the map.
   const mapToSupportForLine = (nid: string, lineId: string): string | null => {
     const gp = g.nodes.get(nid);
@@ -1601,8 +1588,8 @@ export function buildSupportGraph(
   const lineTraversals = new Map<string, TraversalStep[]>();
   for (const [lineId, origSteps] of g.lineTraversals) {
     // null = deliberate service break (a suppressed loop-closure leg left a
-    // discontinuity in the graph traversal) — each run reconstructs on its
-    // own; pathing or heal-bridging ACROSS a break would resurrect the
+    // discontinuity in the graph traversal). Each run reconstructs on its
+    // own. Pathing or heal-bridging ACROSS a break would resurrect the
     // suppressed deadhead ink.
     const graphNodes: (string | null)[] = [];
     for (const step of origSteps) {
@@ -1692,7 +1679,7 @@ export function buildSupportGraph(
   // One schematic station marker per station group. In per-station-node mode
   // a group spans several platform nodes; the SupportStation stays singular
   // (one label, one capsule) and its per-line stopNodes land on the platform
-  // nodes — the capsule placer joins them via stopNodes.
+  // nodes. The capsule placer joins them via stopNodes.
   const stations = new Map<string, SupportStation>();
   const groupSupportNode = new Map<string, string>();
   const nodeToGroup = new Map<string, string>();
@@ -1725,12 +1712,11 @@ export function buildSupportGraph(
     for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
 
     const centroid = groupPixel(group, g);
-    // Nearest line-serving node wins (tie-break: more served). The previous
-    // most-served-wins rule let a busy junction steal a group from its own
-    // terminus stub / anchor node (two groups one marker — "320 Pl missing"),
-    // erasing the line's last hop visually. anchorGraphStops creates a node
-    // at every stop position, so nearest-with-service maps each group to its
-    // own node.
+    // Nearest line-serving node wins (tie-break: more served). A
+    // most-served-wins rule would let a busy junction steal a group from its
+    // own terminus stub / anchor node, collapsing two groups onto one marker
+    // and erasing the line's last hop visually. A node exists at every stop
+    // position, so nearest-with-service maps each group to its own node.
     let best: { id: string; served: number; d: number } | null = null;
     const consider = (nid: string, node: SupportNode, radius: number) => {
       const d = dist(node.pos, centroid);
@@ -1738,8 +1724,8 @@ export function buildSupportGraph(
       let served = 0;
       for (const eid of adj.get(nid) ?? []) {
         // adj can hold a stale edge id that edges no longer has (a merge/collapse
-        // that didn't prune adj). A non-existent edge serves nothing — skip it
-        // rather than crash on `.lineIds` of undefined (2D-warp geometry hits this).
+        // that didn't prune adj). A non-existent edge serves nothing, so skip it
+        // rather than crash on `.lineIds` of undefined.
         const e = edges.get(eid);
         if (!e) continue;
         for (const l of e.lineIds) if (wantLines.has(l)) served++;
@@ -1789,17 +1775,17 @@ export function buildSupportGraph(
         if (!isStop) return;
         const groupId = nodeToGroup.get(nodeId) ?? nodeId;
         // Per-station-node mode: a platform node anchors its own stop, so
-        // the flag lands on the platform's support node, not the group's —
-        // the SupportStation still gathers all platforms via stopNodes.
+        // the flag lands on the platform's support node, not the group's.
+        // The SupportStation still gathers all platforms via stopNodes.
         let sn =
           nodeId !== groupId
             ? mapToSupport(nodeId) ?? groupSupportNode.get(groupId)
             : groupSupportNode.get(groupId) ?? mapToSupport(groupId);
         if (!sn) return;
         // Lines through one station can ride DIVERGED corridors: the group's
-        // node may sit on a segment this line never reaches (307 Pl: the
-        // anchor is on the green-only corridor; the cyan terminates at the
-        // junction next to it). A flag on a line-less node can never render —
+        // node may sit on a segment this line never reaches (its anchor lands
+        // on one line's corridor while another line terminates at the junction
+        // next to it). A flag on a line-less node can never render, so
         // re-home it to the nearest node the line actually serves.
         if (!nodeServesLine(sn, lineId)) {
           const gp = g.nodes.get(nodeId)?.pos ?? nodes.get(sn)?.pos;

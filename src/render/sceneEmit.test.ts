@@ -1,11 +1,11 @@
-// Phase 3 oracle: renderRibbons emits the Scene IR directly (via sceneOut). The
-// proven SVG parser (sceneFromSvg, Phase 1/2) is the ORACLE — for every layer the
-// direct emitter produces, its prims must match what parsing the SAME svg yields.
+// renderRibbons emits the Scene IR directly (via sceneOut). The SVG parser
+// (sceneFromSvg) is the oracle. For every layer the direct emitter produces, its
+// prims must match what parsing the SAME svg yields.
 // Plus the additivity invariant: passing sceneOut must not change the svg string.
 //
-// As each Phase-3 part adds a layer's direct emission (transfers, stops, labels),
-// `presentLayers` grows and this test automatically covers it. The final part
-// flips `EXPECT_FULL_COVERAGE` to assert the direct scene covers every drawn layer.
+// As each layer's direct emission is added (transfers, stops, labels), the set of
+// present layers grows and this test automatically covers it. `EXPECT_FULL_COVERAGE`
+// asserts the direct scene covers every drawn layer.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +15,7 @@ import { sceneFromSvg } from './sceneFromSvg';
 import type { Prim, Scene, Layer } from './sceneIR';
 import type { GeographyData } from '../geography/types';
 
-// Set true once transfers + stops + labels are all direct-emitted (final part).
+// True once transfers + stops + labels are all direct-emitted.
 const EXPECT_FULL_COVERAGE = true;
 
 const STATIONS = [
@@ -115,7 +115,7 @@ test('Phase 3 oracle: every layer the direct emitter produces matches the parser
   const { svg, scene } = render();
   const parsed = sceneFromSvg(svg);
   const present = new Set(scene.prims.map((p) => p.layer));
-  // Foundation must at minimum cover these; parts add stops/stations/transfers.
+  // The foundation must at minimum cover these; other layers cover stops/stations/transfers.
   for (const required of ['background', 'edges'] as Layer[]) {
     assert.ok(present.has(required), `direct scene should emit ${required}`);
   }
@@ -151,7 +151,7 @@ test('Phase 3: transfers fragment maps to a transfers-layer prim (worldScale fal
 });
 
 test('Phase 3: direct scene covers every drawn layer (final part flips this on)', () => {
-  if (!EXPECT_FULL_COVERAGE) return; // enabled by the integration part once complete
+  if (!EXPECT_FULL_COVERAGE) return; // skip until full coverage is expected
   const { svg, scene } = render();
   const parsed = sceneFromSvg(svg);
   const parsedLayers = new Set(parsed.prims.map((p) => p.layer));

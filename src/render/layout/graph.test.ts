@@ -66,9 +66,9 @@ test('buildTransitGraph does not collapse blank-bullet routes together', () => {
 });
 
 test('buildTransitGraph keeps a BRANCH (same bullet+colour, DIVERGENT edges) as distinct lines', () => {
-  // A trunk T→J that diverges to two terminals A and B, modelled (like the game does) as two
-  // same-bullet+colour routes. Their edge sets differ, so they must NOT collapse — else one arm
-  // would be dropped (the DAL "Ross Av" bug). True loop directions (equal edge sets) still collapse.
+  // A trunk T→J that diverges to two terminals A and B, modelled as two
+  // same-bullet+colour routes. Their edge sets differ, so they must NOT collapse. Otherwise one arm
+  // would be dropped. True loop directions (equal edge sets) still collapse.
   const mk = (id: string, tg: string, node: string, lng: number, lat: number) =>
     ({ id, name: id, coords: [lng, lat], trackIds: ['tk-' + id], trackGroupId: tg, buildType: 'constructed', stNodeIds: [node], routeIds: [], createdAt: 0, nearbyStations: [] });
   const brStations = [mk('sT', 'gT', 'nT', -96.0, 32.0), mk('sJ', 'gJ', 'nJ', -96.1, 32.0), mk('sA', 'gA', 'nA', -96.2, 32.1), mk('sB', 'gB', 'nB', -96.2, 31.9)] as unknown as Station[];
@@ -197,8 +197,8 @@ test('walkRouteVisits suppresses redundant positioning legs', () => {
 });
 
 test('walkRouteVisits keeps a long leg that is the sole link (safety guard)', () => {
-  // Y->Z is 60km with no reverse, but it is the ONLY leg serving Z —
-  // suppressing it would lose the station, so it must be kept.
+  // Y->Z is 60km with no reverse, but it is the ONLY leg serving Z.
+  // Suppressing it would lose the station, so it must be kept.
   const routes = [
     {
       id: 'rp',

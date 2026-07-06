@@ -40,7 +40,7 @@ test('blockLines: set of all leaf lines', () => {
 });
 
 test('splitPlan: contiguous exits are free (zero swaps)', () => {
-  // order [A,B,C,D]; exits: {A,B} -> g0, {C,D} -> g1 — already contiguous
+  // order [A,B,C,D]; exits: {A,B} -> g0, {C,D} -> g1, already contiguous
   const groupOf = new Map([['A', 0], ['B', 0], ['C', 1], ['D', 1]]);
   const plan = splitPlan(['A', 'B', 'C', 'D'], groupOf);
   assert.equal(plan.swaps, 0);
@@ -60,7 +60,7 @@ test('splitPlan: group order follows first-appearance when targets tie', () => {
   const groupOf = new Map([['A', 0], ['B', 0], ['C', 1], ['D', 1]]);
   const plan = splitPlan(['C', 'A', 'D', 'B'], groupOf);
   assert.deepEqual(plan.order, ['C', 'D', 'A', 'B']);
-  assert.equal(plan.swaps, 1); // hand-verified: from [C,A,D,B] to [C,D,A,B] only pair (A,D) inverts
+  assert.equal(plan.swaps, 1); // from [C,A,D,B] to [C,D,A,B] only pair (A,D) inverts
 });
 
 test('reorderToGroups: inversion count equals adjacent-transposition distance', () => {

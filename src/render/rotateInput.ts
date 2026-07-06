@@ -1,25 +1,23 @@
-// Rotate the schematic input into the GAME's map orientation. The game shows
-// each city with a per-city default bearing (cities.d.ts ViewState.bearing —
-// e.g. NYC is rotated so Manhattan runs vertically, the classic MTA trick);
-// the mod previously rendered true-north-up regardless. Rotating the INPUT
-// COORDINATES once, at assembly, is the only safe seam: every downstream
-// mechanism (separable warp, per-axis unproject bisection, axis-aligned
-// detail-crop rects) assumes the geo↔px mapping is axis-aligned, so a
-// rotation inside the projection would break them all — whereas in a rotated
-// coordinate frame they all hold verbatim.
+// Rotate the schematic input into the game's map orientation. The game shows
+// each city with a per-city default bearing (cities.d.ts ViewState.bearing).
+// Rotating the INPUT COORDINATES once, at assembly, is the only safe seam.
+// Every downstream mechanism (separable warp, per-axis unproject bisection,
+// axis-aligned detail-crop rects) assumes the geo↔px mapping is axis-aligned,
+// so a rotation inside the projection would break them all, whereas in a
+// rotated coordinate frame they all hold verbatim.
 //
 // Geometry: bearing B means "compass direction B is screen-up" (MapLibre
 // convention). The rotation runs in the local METRIC frame (east = Δlng·cosφ0,
-// north = Δlat) so it is an isometry — angles and distances (transfer radii!)
-// are preserved — then maps back to pseudo-lng/lat by dividing east by cosφ0.
+// north = Δlat) so it is an isometry. Angles and distances (transfer radii)
+// are preserved, then it maps back to pseudo-lng/lat by dividing east by cosφ0.
 // A compass-B street becomes exactly vertical, and stays vertical under the
-// renderer's (historically cos-less) display stretch.
+// renderer's display stretch.
 //
-// Determinism: sin/cos of the bearing are quantized to 1e-9 (the same
-// convention as transfers.ts) and applied with + − × ÷ only, so rotated
-// coordinates — and therefore the layout fingerprint — are bit-identical
-// across engines. The fingerprint picks the rotation up automatically through
-// the rotated station/track coordinates; no schema field needed.
+// Determinism: sin/cos of the bearing are quantized to 1e-9 and applied with
+// + − × ÷ only, so rotated coordinates, and therefore the layout fingerprint,
+// are bit-identical across engines. The fingerprint picks the rotation up
+// automatically through the rotated station/track coordinates; no schema
+// field needed.
 
 import type { Coordinate } from '../types/core';
 import type { GeographyData, GeoPolyFeature } from '../geography/types';
@@ -110,8 +108,8 @@ export function rotateSchematicInput<T extends {
   );
   let geography: GeographyData | undefined = input.geography;
   if (geography) {
-    // Track the tight AABB of the ROTATED polygon vertices while rotating —
-    // rotating the old bbox's corners instead would inflate the stamped frame
+    // Track the tight AABB of the ROTATED polygon vertices while rotating.
+    // Rotating the old bbox's corners instead would inflate the stamped frame
     // with empty diamond corners and loosen every fit that reads it.
     let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
     const rotFeats = (feats: GeoPolyFeature[]): GeoPolyFeature[] =>
@@ -133,9 +131,9 @@ export function rotateSchematicInput<T extends {
     const green = rotFeats(geography.green);
     // The rotated harvest rect is a DIAMOND in the new frame; the square canvas
     // fitted to its extremes has data-void triangles at the corners. NOTHING is
-    // cropped (cropping cut real network + backdrop) — instead the region
-    // outline is stamped as `hull`, and the renderer draws LAND only inside it:
-    // the void paints as background, never as fake land mid-ocean.
+    // cropped, since cropping would cut real network and backdrop. Instead the
+    // region outline is stamped as `hull`, and the renderer draws LAND only
+    // inside it, so the void paints as background, never as fake land mid-ocean.
     const [b0, b1, b2, b3] = geography.bbox;
     const hull: Coordinate[] = [rot([b0, b1], f), rot([b2, b1], f), rot([b2, b3], f), rot([b0, b3], f)];
     let bbox: [number, number, number, number];

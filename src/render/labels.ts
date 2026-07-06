@@ -30,7 +30,7 @@ export function boxesOverlap(a: Box, b: Box): boolean {
 }
 
 /** Euclidean gap between two axis-aligned boxes (0 when they overlap/touch).
- *  sqrt-based → correctly rounded cross-V8 (engine-stable for the tie-break). */
+ *  sqrt-based so it is correctly rounded cross-V8 (engine-stable for the tie-break). */
 export function boxGap(a: Box, b: Box): number {
   const dx = Math.max(0, b.x - (a.x + a.w), a.x - (b.x + b.w));
   const dy = Math.max(0, b.y - (a.y + a.h), a.y - (b.y + b.h));
@@ -87,27 +87,27 @@ export interface LabelNode {
   label: string;
 }
 
-/** A capsule is "slid" — its centre stranded in empty space — only when its
- *  nearest dot is at least this far from the node centre. Below it the centre
- *  still sits on/among the dots, so the label hangs off the centre as before.
- *  Pitched above a normal capsule's half-dot-spacing (~LINE_WIDTH) so ordinary
- *  interchanges keep the centre anchor (and don't perturb the greedy label
- *  packer); only genuinely displaced capsules re-seat. */
+/** A capsule counts as "slid", with its centre stranded in empty space, only when
+ *  its nearest dot is at least this far from the node centre. Below it the centre
+ *  still sits on/among the dots, so the label hangs off the centre. Pitched above
+ *  a normal capsule's half-dot-spacing (~LINE_WIDTH) so ordinary interchanges keep
+ *  the centre anchor (and don't perturb the greedy label packer); only genuinely
+ *  displaced capsules re-seat. */
 const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
 
 /**
  * The pixel point a station's label should hang off. Defaults to the node
  * centre. Only a MULTI-dot capsule whose dots have been slid well off the centre
- * (by the collision passes — capsuleSlide etc.) re-anchors, to the dot CLOSEST
+ * (by the collision passes such as capsuleSlide) re-anchors, to the dot CLOSEST
  * to the centre, so a label that would otherwise float in empty space stays
  * attached to a real marker. Single stops and tightly-packed capsules keep the
- * centre — identical to the pre-fix behaviour — so the fix is confined to the
- * capsules that actually drift and doesn't churn the rest of the label layout.
+ * centre, so re-anchoring is confined to the capsules that actually drift and
+ * doesn't churn the rest of the label layout.
  * Closest by squared distance; first mark wins exact ties (deterministic).
  */
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
-  // Diagnostic A/B switch: OCTI_NO_LABEL_REANCHOR=1 forces the pre-fix behaviour
-  // (label hangs off the bare node centre) for before/after comparison.
+  // Diagnostic switch: OCTI_NO_LABEL_REANCHOR=1 disables re-anchoring, so the
+  // label always hangs off the bare node centre.
   if (typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_NO_LABEL_REANCHOR === '1') {
     return center;
   }
@@ -137,13 +137,13 @@ export function placeLabels(
   const stationBoxes: Box[] = [];
   const markerR = LINE_WIDTH * 0.7;
   // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
-  // counts only HARD overlaps (integers), so many labels tie — most commonly the
-  // left/right pair at an isolated stop, today resolved to 'right' by enumeration
-  // order. Among cost-tied placements, prefer the one with the most open space
-  // around it (largest summed clearance to nearby markers + already-placed
-  // labels), nudging labels off crowded flanks into white space. Clearance is an
-  // unscored dimension (cost ignores near-misses); boxGap is sqrt-based and the
-  // argmin is a total order (cost → −clearance → enumeration), so deterministic.
+  // counts only HARD overlaps (integers), so many labels tie; without the tie-break
+  // those ties resolve by enumeration order. Among cost-tied placements, prefer the
+  // one with the most open space around it (largest summed clearance to nearby
+  // markers and already-placed labels), nudging labels off crowded flanks into
+  // white space. Clearance is an unscored dimension (cost ignores near-misses);
+  // boxGap is sqrt-based and the argmin is a total order (cost, then -clearance,
+  // then enumeration), so deterministic.
   const LABEL_TIEBREAK =
     typeof process !== 'undefined' &&
     (process as { env?: Record<string, string> }).env?.OCTI_LABEL_TIEBREAK === '1';
@@ -231,7 +231,7 @@ export function placeLabels(
  * A label pinned to its dot. The outer group translates to the dot (so it moves
  * with the map under viewBox zoom); the inner `imp-lbl-s` group is counter-scaled
  * by the panel (transform=scale(1/zoom)) so the text AND its offset stay a
- * constant on-screen size — no drift as you zoom. `anchor` is the dot's pixel
+ * constant on-screen size, with no drift as you zoom. `anchor` is the dot's pixel
  * position; the placement offset is emitted relative to it.
  */
 export function renderLabel(
@@ -245,7 +245,7 @@ export function renderLabel(
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
   // Translate the group to the TEXT position (placement) with the text at the
   // origin, so size scaling (panel/export/canvas) pivots around the text's own
-  // anchor — the gap from the dot stays CONSTANT as label size changes; only the
+  // anchor. The gap from the dot stays CONSTANT as label size changes; only the
   // glyphs grow. (Translating to the dot + offsetting the text would make a
   // larger label drift away from its station.)
   if (prims) {
@@ -259,7 +259,7 @@ export function renderLabel(
       fontSize: LABEL_FONT_SIZE,
       // 500, not "medium": "medium" is NOT a valid CSS/canvas font-weight, so a
       // canvas ctx.font = "medium ..." is rejected (Chromium ignores the whole
-      // assignment, leaving the prior tiny font) — which made canvas labels far
+      // assignment, leaving the prior tiny font), which makes canvas labels far
       // smaller than the SVG export. 500 is the numeric medium weight, valid in
       // canvas, CSS and SVG, so both backends render identically.
       fontWeight: '500',

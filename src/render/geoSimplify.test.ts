@@ -20,7 +20,7 @@ test('ringArea: 100x100 square has |area| 10000', () => {
 });
 
 test('simplifyVW: drops a tiny wiggle, keeps the silhouette', () => {
-  // square with a 2px-deep notch on the top edge (effective area ~ few px²)
+  // square with a 2px-deep notch on the top edge (effective area is a few px²)
   const ring: Pt[] = [[0, 0], [48, 0], [50, 2], [52, 0], [100, 0], [100, 100], [0, 100]];
   const out = simplifyVW(ring, 100); // threshold 10px-scale wiggles
   assert.equal(out.length, 4, `expected the square back, got ${JSON.stringify(out)}`);
@@ -46,7 +46,7 @@ test('snapOcti: an already-octilinear ring stays put (closure preserved)', () =>
 });
 
 test('snapOcti: near-axis edges snap to the axis and the ring closes', () => {
-  // slightly sheared square: edges within ~6° of the axes
+  // slightly sheared square with edges within ~6° of the axes
   const ring: Pt[] = [[0, 0], [100, 10], [90, 110], [-10, 100]];
   const out = snapOcti(ring);
   assert.ok(out.length >= 3);
@@ -62,10 +62,10 @@ test('snapOcti: near-axis edges snap to the axis and the ring closes', () => {
 });
 
 test('snapOcti: NO positional drift on a long wiggly ring (anchored solve)', () => {
-  // a long near-rectangular coastline with per-edge wiggle — the old
-  // walk-and-snap accumulated error along the ring (dead reckoning) and
-  // drifted mid-ring vertices arbitrarily far; the anchored solve must keep
-  // every vertex near its true position.
+  // a long near-rectangular coastline with per-edge wiggle. A walk-and-snap
+  // approach accumulates error along the ring (dead reckoning) and drifts
+  // mid-ring vertices arbitrarily far. The anchored solve must keep every
+  // vertex near its true position.
   const ring: Pt[] = [];
   for (let i = 0; i < 60; i++) ring.push([i * 20, (i * 7) % 3 === 0 ? 4 : -4]);
   for (let i = 0; i < 10; i++) ring.push([1200, 20 + i * 20]);
@@ -146,7 +146,7 @@ test('stylizeRingsPathD: empty when everything is culled', () => {
 });
 
 test('simplifyVW: weighted vertices resist removal', () => {
-  // same 2px notch as the unweighted test — protect its apex 16x and it survives
+  // a 2px notch whose apex is protected 16x, so it survives simplification
   const ring: Pt[] = [[0, 0], [48, 0], [50, 2], [52, 0], [100, 0], [100, 100], [0, 100]];
   const unprotected = simplifyVW(ring, 100);
   assert.equal(unprotected.length, 4);
@@ -193,7 +193,7 @@ test('stylizeRingsPathD: dryPoints are never inside the styled output', () => {
 
 test('enforceContinuity: a severed river is reconnected along its course', async () => {
   const { rasterizeRings, morphOpen, enforceContinuity, traceRaster } = await import('./geoSimplify');
-  // dumbbell: two 100px lakes joined by a 12px channel — an opening at r=20 severs it
+  // dumbbell: two 100px lakes joined by a 12px channel. An opening at r=20 severs it
   const dumbbell: Pt[][] = [[
     [20, 20], [120, 20], [120, 94], [280, 94], [280, 20], [380, 20],
     [380, 120], [280, 120], [280, 106], [120, 106], [120, 120], [20, 120],

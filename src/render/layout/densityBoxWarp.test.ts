@@ -56,7 +56,7 @@ test('findDenseBoxes: higher cutoff selects a smaller (or equal) dense area', ()
 
 // Empty graph → findContractionBoxes contributes nothing, so these tests
 // exercise the density oracle + per-box demand in isolation (userMult acts as
-// pure aesthetic magnification, same role `expand` played in the old builder).
+// pure aesthetic magnification).
 const EMPTY_GRAPH: BoxGraph = { nodes: [], edges: [] };
 
 test('buildDemandBoxWarp: magnifies the core relative to its surround, with no localized thinning', () => {
@@ -66,8 +66,8 @@ test('buildDemandBoxWarp: magnifies the core relative to its surround, with no l
   const jFar = jacDet(r.warp, [96, 4]); // far corner → the global scale (1 when growth fits)
   assert.ok(jCore > jFar * 1.05, `core magnified vs surround, core=${jCore.toFixed(3)} far=${jFar.toFixed(3)}`);
   // No LOCALIZED thinning: the only compression anywhere is the global scale
-  // sx/sy (1 here — maxGrowth defaults to 2, well above what this demand needs).
-  // Nothing is thinner than that — no compression ring, no localized dip.
+  // sx/sy (1 here, since maxGrowth defaults to 2, well above what this demand needs).
+  // Nothing is thinner than that: no compression ring, no localized dip.
   for (let y = 2; y < 100; y += 4) for (let x = 2; x < 100; x += 4) {
     assert.ok(jacDet(r.warp, [x, y]) > jFar - 0.03, `no point thinner than the global scale at (${x},${y}), J=${jacDet(r.warp, [x, y]).toFixed(3)} vs ${jFar.toFixed(3)}`);
   }
@@ -91,7 +91,7 @@ test('buildDemandBoxWarp: out.boxes empty with no cluster and no contraction dem
 });
 
 test('findContractionBoxes: pinned sub-threshold cluster gets a box, spread nodes do not', () => {
-  // 5 nodes 8px apart (JFK-shaped) + 3 well-spread nodes.
+  // 5 nodes 8px apart (a tight pinned cluster) + 3 well-spread nodes.
   const nodes: Pixel[] = [[50, 50], [58, 50], [66, 50], [58, 58], [50, 58], [200, 200], [400, 200], [400, 400]];
   const edges: [number, number][] = [[0, 1], [1, 2], [1, 3], [3, 4], [5, 6], [6, 7]];
   const boxes = findContractionBoxes({ nodes, edges }, 20);
@@ -130,7 +130,7 @@ test('mergeIntersectingBoxes: empty and singleton inputs pass through', () => {
   assert.deepEqual(mergeIntersectingBoxes([{ x0: 1, y0: 2, x1: 3, y1: 4 }]), [{ x0: 1, y0: 2, x1: 3, y1: 4 }]);
 });
 
-// Helper: a JFK-shaped pinned cluster (gaps ~8px) connected off to a sparse line.
+// Helper: a tight pinned cluster (gaps ~8px) connected off to a sparse line.
 function pinnedGraph(): BoxGraph {
   const nodes: Pixel[] = [
     [50, 50], [58, 50], [66, 50], [58, 58], [50, 58], // cluster
@@ -206,8 +206,8 @@ test('buildDemandBoxWarp: deterministic; out reports boxes (output space) and pe
   const p = r1.warp([58, 54]);
   assert.ok(o1.boxes!.some((b) => p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1));
   // out.boxes are EXACTLY the pre-warp boxes' corners mapped through the final
-  // warp. No density samples here, so the pre-warp boxes are contraction-only —
-  // recompute them the same way the builder does (both paths are deterministic).
+  // warp. No density samples here, so the pre-warp boxes are contraction-only.
+  // Recompute them the same way the builder does (both paths are deterministic).
   const pre = mergeIntersectingBoxes(
     findContractionBoxes(g, (DOPTS.cellFromMedLen(medianEdgeLenPx(g)) / 2) * DOPTS.safety),
   );
@@ -245,7 +245,7 @@ test('buildDemandBoxWarp: two clusters with different demands get different expa
   const r = buildDemandBoxWarp([], g, DBOX, DOPTS, o);
   // (a) exactly two boxes; A (tighter) demands at least as much as B, and the
   // demands stay DISTINCT unless both are clamped at the expandMax ceiling
-  // (tuning-robust: joint saturation is the only way they may legally collide).
+  // (joint saturation is the only way they may legally collide).
   assert.equal(o.boxes!.length, 2);
   assert.equal(o.expands!.length, 2);
   const iA = o.boxes![0].x0 < o.boxes![1].x0 ? 0 : 1; // A's box is the left one
@@ -314,8 +314,8 @@ test('buildSepDemandBoxWarp: composes separable + demand warp; growth passes thr
   };
   assert.ok(span(r.warp) > span((p) => sep(p)), `composed expands cluster more than separable alone: ${span(r.warp).toFixed(2)} > ${span((p) => sep(p)).toFixed(2)}`);
   // (b) fold-free: the composed warp is monotone per axis (x' strictly increases
-  // along +x at any fixed y, y' along +y at any fixed x) — equivalent to det>0
-  // for this separable-per-axis family, and cheaper than a Jacobian scan.
+  // along +x at any fixed y, y' along +y at any fixed x). This is equivalent to
+  // det>0 for this separable-per-axis family, and cheaper than a Jacobian scan.
   const N = 20;
   const step = (DBOX.maxX - DBOX.minX) / N;
   for (let j = 0; j <= N; j++) {
@@ -426,7 +426,7 @@ test('buildDemandBoxWarp: capsule oracle lifts a close interchange pair to its r
   };
   const lineCounts = [7, 6, 1, 1, 1, 1];
   // Small fixed cell so the CONTRACTION oracle boxes nothing here (30px pair is
-  // above its ~8px threshold) — the capsule oracle is the sole driver, so the
+  // above its ~8px threshold). The capsule oracle is then the sole driver, so the
   // assertion actually exercises the capsule path (not the contraction path).
   const opts = { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: 8, capsule: { spacing: 5.5, lineCounts, margin: 4, casing: 8 } };
   const o: { boxes?: DenseBox[]; expands?: number[] } = {};
@@ -474,11 +474,11 @@ test('buildDemandBoxWarp: capsule box nested in a density box compounds fold-fre
   }
 });
 
-// ————— direction-aware expansion (crowd anisotropy) —————
+// direction-aware expansion (crowd anisotropy)
 
 // Parallel vertical "avenue" lines: inter-line spacing 8px in x, station
-// spacing 25px in y — the Manhattan shape. Nearest neighbours lie ACROSS the
-// lines (8 < 25), so the crowding is horizontal and the box should stretch in x.
+// spacing 25px in y. Nearest neighbours lie ACROSS the lines (8 < 25), so the
+// crowding is horizontal and the box should stretch in x.
 function verticalLinesGraph(transpose = false): { g: BoxGraph; samples: Pixel[] } {
   const nodes: Pixel[] = [];
   const edges: [number, number][] = [];
@@ -537,7 +537,7 @@ test('buildDemandBoxWarp: aniso 0 → isotropic (both axes of a box grow equally
 test('buildDemandBoxWarp: pinned pair expands along its displacement axis and still clears need', () => {
   // Horizontal 8px pair + a 60px chain: median edge 60 → need ≈ 24, well
   // within the pair's reachable expansion (the chain must not be so long that
-  // need outruns expandMax — that regime can't clear regardless of direction).
+  // need outruns expandMax, a regime that can't clear regardless of direction).
   const g: BoxGraph = {
     nodes: [[100, 100], [108, 100], [100, 160], [100, 220], [160, 220]],
     edges: [[0, 1], [0, 2], [2, 3], [3, 4]],
@@ -565,10 +565,10 @@ test('buildDemandBoxWarp: anisotropy is deterministic and reported via out.aniso
   assert.ok(o1.aniso!.every((a) => a >= 0.1 && a <= 0.9));
 });
 
-// ————— direction-coherent box splitting —————
+// direction-coherent box splitting
 
-// A direction-MIXED region: vertical "Manhattan" trunks on the west, horizontal
-// "Queens" trunks on the east, inside one covering box. No single r serves both.
+// A direction-MIXED region: vertical trunks on the west, horizontal trunks on
+// the east, inside one covering box. No single r serves both.
 function mixedRegion(): { g: BoxGraph; parent: DemandBox } {
   const nodes: Pixel[] = [];
   const edges: [number, number][] = [];
@@ -609,7 +609,7 @@ test('splitMixedBoxes: a direction-mixed box splits into direction-coherent halv
 
 test('splitMixedBoxes: pairs survive splitting — every pair lands in a half holding one of its endpoints', () => {
   const { g, parent } = mixedRegion();
-  // a capsule pair bridging the two regions — a cut between them puts it in BOTH halves
+  // a capsule pair bridging the two regions, so a cut between them puts it in BOTH halves
   const pairs: PairTarget[] = [{ a: 11, b: 60, required: 40 }];
   const split = splitMixedBoxes([{ ...parent, pairs }], g, 5);
   const holders = split.filter((b) => b.pairs.some((t) => t.a === 11 && t.b === 60));
@@ -647,12 +647,12 @@ test('buildDemandBoxWarp: mixed region — west stretches horizontally, east ver
   assert.ok(eastY > eastX * 2, `east spreads across its lines: y=${eastY.toFixed(2)} x=${eastX.toFixed(2)}`);
 });
 
-// ————— hierarchical density decomposition (big boxes with no direction cut) —————
+// hierarchical density decomposition (big boxes with no direction cut)
 
 // Two dense, internally-isotropic cores separated by an empty 120px channel,
 // all inside one covering box. Both cores read r≈0.5 (grids), so NO straight
-// quantile cut clears the direction-gain bar — only the density valley
-// between them can split the box.
+// quantile cut clears the direction-gain bar. Only the density valley between
+// them can split the box.
 function twoCoreRegion(): { g: BoxGraph; parent: DemandBox } {
   const nodes: Pixel[] = [];
   const edges: [number, number][] = [];
@@ -715,7 +715,7 @@ test('splitMixedBoxes: small boxes never density-decompose (below the size gate)
   assert.equal(splitMixedBoxes([parent], { nodes, edges }, 5).length, 1);
 });
 
-// ————— growth = space proportional to warp (throttle, never squeeze) —————
+// growth = space proportional to warp (throttle, never squeeze)
 
 test('buildDemandBoxWarp: the growth cap THROTTLES the warp — far field keeps unit scale, never squeezed', () => {
   const g = pinnedGraph();
@@ -724,7 +724,7 @@ test('buildDemandBoxWarp: the growth cap THROTTLES the warp — far field keeps 
   const r = buildDemandBoxWarp([], g, DBOX, opts);
   assert.ok(r.growthX <= 1.3 + 1e-9 && r.growthY <= 1.3 + 1e-9, 'cap respected');
   // far field (away from the cluster) is a rigid translation: unit jacobian,
-  // NOT the old global shrink — Staten-Island-style outskirts keep true scale
+  // not a global shrink, so the sparse outskirts keep true scale
   const J = jacDet(r.warp, [520, 520]);
   assert.ok(Math.abs(J - 1) < 0.02, `far-field J=1, got ${J.toFixed(3)}`);
   // and the canvas is exactly what the (throttled) warp produced

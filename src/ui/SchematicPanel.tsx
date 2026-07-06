@@ -993,8 +993,8 @@ export function SchematicPanel() {
     const settings = { mode, showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
-    // the displayed pre across load/generate sequences (the zombie-pre bug:
-    // LON-2 carried a fresh v9 fp on a byte-identical morning-old layout).
+    // the displayed pre across load/generate sequences (a remembered ref can
+    // pair a fresh fp with an unchanged older layout).
     // Legacy fallback (string pre / pre-stamp layouts): the old ref.
     const fp = (typeof pre !== 'string' ? pre.builtFp : undefined) ?? currentFpRef.current ?? undefined;
     // Mirror the rest of the per-city cache: per-mode visual settings + the sub-layout cache
@@ -1041,10 +1041,10 @@ export function SchematicPanel() {
       labelScale?: number;
     };
     // Clamp every loaded numeric to its slider's LIVE range before applying it. An older
-    // (or hand-edited) file can carry a value outside the current bounds — e.g. a labelScale
-    // saved before the [0.2, 1.5] range existed, or an out-of-range warp position — which
-    // would otherwise render a broken control and a distorted layout. A non-finite/absent
-    // field (a pre-boxWarpPos legacy file, or a truncated hand-edit) falls back to its default
+    // (or hand-edited) file can carry a value outside the current bounds, such as a scale
+    // saved before its range existed, or an out-of-range warp position. That would
+    // otherwise render a broken control and a distorted layout. A non-finite/absent
+    // field (a legacy file missing the field, or a truncated hand-edit) falls back to its default
     // rather than clamping to NaN (clamp(undefined) → NaN → a broken controlled slider).
     const num = (v: unknown, lo: number, hi: number, def: number) =>
       Number.isFinite(v as number) ? clamp(v as number, lo, hi) : def;
@@ -1090,12 +1090,12 @@ export function SchematicPanel() {
     // Adopt-as-cache-hit ONLY when the file provably matches the LIVE game. A saved file
     // carries the fingerprint (`fp`) its layout was built under; recompute that same
     // fingerprint from the live game network + backdrop combined with the file's own
-    // (clamped) render settings, and adopt the saved city/fp — reseeding the per-city cache
-    // so detail areas restore from their saved sub-layouts and a later Generate hits — ONLY
-    // if it matches. On ANY mismatch (the network or geography changed since the save, a
+    // (clamped) render settings, and adopt the saved city/fp only if it matches. Adoption
+    // reseeds the per-city cache so detail areas restore from their saved sub-layouts and
+    // a later Generate hits. On ANY mismatch (the network or geography changed since the save, a
     // different city, or the backdrop hasn't loaded yet so the live fp reads `nogeo`) fall
     // back to the legacy null-fp path: the map still DISPLAYS from the in-memory `pre`, but
-    // currentFpRef stays null so getSubCacheKey returns null — areas re-simulate locally and
+    // currentFpRef stays null so getSubCacheKey returns null. Areas re-simulate locally and
     // nothing is written under a fingerprint that may not match the live inputs. This keeps
     // the in-memory layer as fp-honest as the (already fp-gated) localStorage layer.
     const loadCity = bundle.city || currentCityRef.current;
@@ -1132,8 +1132,8 @@ export function SchematicPanel() {
         } as never).fp
       : null;
     // Adoption additionally requires the PRE'S OWN provenance stamp to match:
-    // bundle.fp alone proved forgeable (a save can pair a stale pre with a
-    // freshly computed fp — the zombie-pre bug), so the layout itself must
+    // bundle.fp alone proved forgeable, since a save can pair a stale pre with a
+    // freshly computed fp, so the layout itself must
     // attest it was built under the fingerprint we're about to cache it as.
     // Legacy files (pre-stamp pres) fall to the display-only path below.
     const preBuiltFp = typeof bundle.pre !== 'string' ? bundle.pre.builtFp : undefined;
@@ -1183,8 +1183,8 @@ export function SchematicPanel() {
     reader.readAsText(file);
   }, [applyBundle]);
 
-  // Wipe the current city's cached LAYOUT (the localStorage :fp:/:pre:/:sel:/:sub: entries) —
-  // an escape hatch when a city's cached layout is stale or wrong. Keeps the saved appearance
+  // Wipe the current city's cached LAYOUT (the localStorage :fp:/:pre:/:sel:/:sub: entries).
+  // This is an escape hatch when a city's cached layout is stale or wrong. Keeps the saved appearance
   // settings (:set:) so clearing doesn't reset the user's preferences. Non-destructive to the
   // current session: the on-screen map stays, but a reload (or the next Generate) now starts
   // fresh. We also drop the in-memory layout fingerprint so the area-persist and cache-write
@@ -1249,15 +1249,15 @@ export function SchematicPanel() {
     exportFns.current.delete(id);
     setSelections((xs) => xs.filter((s) => s.id !== id));
   }, []);
-  // Edit a selection's color/name in place. Spreads `s` so `box` keeps its identity
-  // — the DetailInset re-sim effect keys on `box`, so this never re-simulates.
+  // Edit a selection's color/name in place. Spreads `s` so `box` keeps its identity;
+  // the DetailInset re-sim effect keys on `box`, so this never re-simulates.
   const updateSelection = useCallback((id: string, patch: Partial<Selection>) => {
     setSelections((xs) => xs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
   // Bounds-edit: the DetailInset reports its in-progress (working) box here on each corner
   // drag; ✓ applies it (a new `box` → one re-sim), ✗ discards. Kept in a ref so per-drag
   // updates don't re-render. The draft is cleared when entering edit, so a no-drag ✓ is a
-  // no-op (id won't match / no draft).
+  // no-op (id won't match, or no draft).
   const boundsDraftRef = useRef<{ id: string; box: Box } | null>(null);
   const onBoundsChange = useCallback((id: string, box: Box) => {
     boundsDraftRef.current = { id, box };
@@ -1287,19 +1287,19 @@ export function SchematicPanel() {
   }, []);
 
   // Drop bounds-edit mode if the edited area is gone (deleted, cleared, or a layout
-  // change restored/cleared the set) — otherwise the ✓/✗ row would point at nothing.
+  // change restored/cleared the set), otherwise the ✓/✗ row would point at nothing.
   useEffect(() => {
     if (editingId && !selections.some((s) => s.id === editingId)) setEditingId(null);
   }, [selections, editingId]);
 
   // Mirror of `selections` for the imperative (dep-[]) paths below.
   selectionsRef.current = selections;
-  // (Label-overlap hiding — labels in/over a detail area — is done by the canvas
+  // (Label-overlap hiding, for labels in or over a detail area, is done by the canvas
   // renderer in drawScene/isLabelHidden, covering both the station-inside-box and
   // text-spill-over-box cases; no separate DOM pass needed.)
 
   // Repaint the canvas at the current view. Pan/zoom in canvas mode is exactly
-  // this: a camera transform + one redraw — no viewBox, no per-node counter-scale
+  // this: a camera transform + one redraw, with no viewBox, no per-node counter-scale
   // writes, no whole-SVG repaint. Sizes the backing store to the viewport × DPR.
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1341,7 +1341,7 @@ export function SchematicPanel() {
   }, []);
 
   // Repaint at the current view: a single drawCanvas + keep the overlays glued.
-  // (`_updateSizes` is vestigial from the old SVG path's counter-scale pass — canvas
+  // (`_updateSizes` is vestigial from the old SVG path's counter-scale pass. Canvas
   // redraws everything each frame, so it's ignored; kept so the rAF callers' signature
   // is unchanged.)
   const applyToDom = useCallback((_updateSizes: boolean) => {
@@ -1374,7 +1374,7 @@ export function SchematicPanel() {
     const VPH = vp.clientHeight;
     if (!VPW || !VPH) return;
     // Frame the fit box (geography water/green extent, or full canvas as
-    // fallback), not the whole canvas — so the default view hugs the map.
+    // fallback), not the whole canvas, so the default view hugs the map.
     const { x: FX, y: FY, w: FW, h: FH } = fitBoxRef.current;
     const scale = clamp(Math.min(VPW / FW, VPH / FH) || 1, MIN_SCALE, MAX_SCALE);
     viewRef.current = {
@@ -1421,19 +1421,19 @@ export function SchematicPanel() {
     }
     // Preserve the current pan/zoom when only the SVG CONTENT changed (a
     // label/station toggle redraws the SAME layout). Re-fit only when the
-    // layout identity changes — mode switch, (re)generation, or water reframe.
+    // layout identity changes: mode switch, (re)generation, or water reframe.
     if (viewRef.current && layoutIdRef.current === lastLayoutIdRef.current) {
       applyToDom(true); // keep the current view, repaint the new content
     } else {
       fit();
     }
     lastLayoutIdRef.current = layoutIdRef.current;
-    // Detail-area lifecycle — DECOUPLED from the view branch above (areas live in render-
+    // Detail-area lifecycle, DECOUPLED from the view branch above (areas live in render-
     // pixel coords; the cache OBJECT churns on every (re)generate and viewRef is briefly
     // null on first paint, so keying the area reset on those wiped freshly-drawn areas and
     // clobbered the durable store). The decision is a pure, unit-tested function keyed on
-    // the layout FINGERPRINT plus a queued restore and the in-memory smoothed snapshot —
-    // see areaLifecycle.ts for the full case analysis (round-trip, file-load, delete-all,
+    // the layout FINGERPRINT plus a queued restore and the in-memory smoothed snapshot.
+    // See areaLifecycle.ts for the full case analysis (round-trip, file-load, delete-all,
     // genuine fp change, spurious re-render).
     const areaKey = mode === 'smoothed' ? `s:${currentFpRef.current ?? ''}` : `m:${mode}`;
     const restore = restoreSelectionsRef.current;
@@ -1451,13 +1451,13 @@ export function SchematicPanel() {
     lastAreaKeyRef.current = areaKey;
     // Surface the smoothed build time (geographic renders are cheap + auto).
     setGenMs(mode === 'smoothed' ? genMsRef.current : null);
-    // The map is in the DOM now — drop the generating spinner.
+    // The map is in the DOM now, so drop the generating spinner.
     if (svg) setGenerating(false);
   }, [svg, mode, restoreNonce, fit, applyToDom, clearSelections]);
 
-  // The cutout depends only on the box GEOMETRY, so key the effect on that — not
-  // the whole `selections` array — so editing a color/name doesn't rebuild (and
-  // briefly flash) the clip on every keystroke.
+  // The cutout depends only on the box GEOMETRY, so key the effect on that
+  // rather than the whole `selections` array. This keeps editing a color/name
+  // from rebuilding (and briefly flashing) the clip on every keystroke.
   const cutoutKey = selections.map((s) => `${s.box.x0},${s.box.y0},${s.box.x1},${s.box.y1}`).join('|');
   // Repaint when the detail-area boxes change: the cut-out (edges/stops clipped to
   // outside the boxes, backdrop left visible) and the label hiding (labels in/over a
@@ -1592,8 +1592,8 @@ export function SchematicPanel() {
   };
 
   // Labels/stations toggles recompute the SVG synchronously. Flash the small
-  // spinner first — the double rAF guarantees a composited frame before the
-  // redraw blocks the thread — then apply the toggle.
+  // spinner first, then apply the toggle. The double rAF guarantees a
+  // composited frame before the redraw blocks the thread.
   const rerenderStartRef = useRef(0);
   const requestToggle = useCallback((apply: () => void) => {
     rerenderStartRef.current = performance.now();
@@ -1622,13 +1622,14 @@ export function SchematicPanel() {
     return () => document.removeEventListener('mousedown', onDown);
   }, [settingsOpen]);
 
-  // Same for the detail-areas manager popover — EXCEPT while editing an area's bounds:
-  // the corner-handle drags land on the map (outside the menu), which would otherwise
-  // close it, stranding the ✓/✗ controls. Keep it open until the edit is committed/cancelled.
+  // Same for the detail-areas manager popover, EXCEPT while editing an area's bounds.
+  // In that mode the corner-handle drags land on the map (outside the menu), which would
+  // otherwise close it, stranding the ✓/✗ controls. Keep it open until the edit is
+  // committed/cancelled.
   useEffect(() => {
     if (!areasOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (editingId) return; // bounds-edit in progress — keep the menu open
+      if (editingId) return; // bounds-edit in progress, so keep the menu open
       if (!areasRef.current?.contains(e.target as Node)) setAreasOpen(false);
     };
     document.addEventListener('mousedown', onDown);
@@ -1674,7 +1675,7 @@ export function SchematicPanel() {
       {/* position+zIndex so the toolbar (and its popovers) always stack above the
           map layer's detail-area panels. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
-        {/* Spinner keyframes — defined once here so both the small rerender
+        {/* Spinner keyframes, defined once here so both the small rerender
             spinner and the generating overlay can use it regardless of mode. */}
         <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
         <div style={{ display: 'flex', gap: 4 }}>
@@ -1928,8 +1929,8 @@ export function SchematicPanel() {
                 boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
               }}
             >
-              {/* Appearance — feeds the renderer live in Geographic mode;
-                  applies to Smoothed on the next Regenerate. */}
+              {/* Appearance. Feeds the renderer live in Geographic mode.
+                  Applies to Smoothed on the next Regenerate. */}
               <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
                 Appearance
               </span>
@@ -1961,7 +1962,7 @@ export function SchematicPanel() {
                 onChange={setMapMargin}
               />
               {/* Label size is display-time (world size × this; labels scale with
-                  the map), so it applies LIVE — no Save/redraw, unlike the above. */}
+                  the map), so it applies LIVE with no Save/redraw, unlike the above. */}
               <Slider
                 label="Label size"
                 value={labelScale}
@@ -2019,7 +2020,7 @@ export function SchematicPanel() {
 
                   {/* Per-station complex split. Bakes into the layout
                       (fingerprinted), so it rides the same draft→Save flow as
-                      the realism sliders — Save regenerates. */}
+                      the realism sliders. Save regenerates. */}
                   <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
                     <span>Split station complexes</span>
                     <input
@@ -2030,8 +2031,8 @@ export function SchematicPanel() {
                     />
                   </label>
 
-                  {/* Map shape: the landmass backdrop style. Draw-time (like
-                      Label size) — the dropdown + slider apply instantly with a
+                  {/* Map shape: the landmass backdrop style. Draw-time, like
+                      Label size. The dropdown and slider apply instantly with a
                       repaint, no Save/regenerate. */}
                   <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55, marginTop: 2 }}>
                     Map shape
@@ -2241,8 +2242,8 @@ export function SchematicPanel() {
                     ⭱ Load map
                   </button>
                 </div>
-                {/* Clear the saved layout cache for this city — escape hatch for a stale/wrong
-                    cached layout; the on-screen map stays, but reload/next Generate rebuilds. */}
+                {/* Clear the saved layout cache for this city, an escape hatch for a stale or
+                    wrong cached layout. The on-screen map stays, but reload/next Generate rebuilds. */}
                 <button
                   onClick={clearCache}
                   title="Delete this city's saved layout cache (forces a fresh rebuild on next Generate or reload)"
@@ -2302,12 +2303,13 @@ export function SchematicPanel() {
           }}
         />
         {/* One persistent, color-coded detail area per committed selection: a
-            colored outline over its map region + a draggable re-sim panel. Gated on a
+            colored outline over its map region plus a draggable re-sim panel. Gated on a
             SHOWN smoothed map: `selections` can be non-empty before the map is generated
             (the restore repopulates it while a mode switch has blanked smoothedReady) and
-            briefly during a switch to geographic (before the clear lands). Rendering then
-            painted areas over the Generate button and re-simulated against a missing pre,
-            and flickered on geographic — so only mount the insets when the map is up. */}
+            briefly during a switch to geographic (before the clear lands). Mounting the
+            insets in those states would paint areas over the Generate button, re-simulate
+            against a missing pre, and flicker on geographic, so only mount them when the
+            map is up. */}
         {mode === 'smoothed' && smoothedReady && selections.map((s) => (
           <DetailInset
             key={s.id}

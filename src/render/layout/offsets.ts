@@ -5,7 +5,7 @@
 import type { Layout, Pixel } from './types';
 import { LINE_WIDTH, LINE_GAP } from '../constants';
 
-// sqrt(a²+b²) — correctly-rounded cross-V8 (Math.hypot is not); used for the
+// sqrt(a²+b²), correctly-rounded cross-V8 where Math.hypot is not. Used for the
 // ribbon-offset geometry so the rendered paths are bit-identical on any engine.
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 function unit(a: Pixel, b: Pixel): Pixel {
@@ -26,13 +26,13 @@ export interface LaneJoin {
 }
 
 /**
- * Curve-join two lane polylines that meet at a node: trim both ends back
- * from the intersection of their end segments and report the apex, so the
- * renderer can bridge them with a quadratic through the corner — a lane
- * continuing around a corner sweeps like an interior fillet instead of
+ * Curve-join two lane polylines that meet at a node. Trims both ends back
+ * from the intersection of their end segments and reports the apex, so the
+ * renderer can bridge them with a quadratic through the corner. A lane
+ * continuing around a corner then sweeps like an interior fillet instead of
  * snapping to a sharp miter point. Mutates the endpoint points in place.
  * Returns null (and leaves both untouched) when the segments are
- * near-parallel (a genuine lateral lane jog — the S connector is right),
+ * near-parallel (a genuine lateral lane jog, where the S connector is right),
  * when the apex lies beyond `limit` from either endpoint (too-sharp
  * corner), or when trimming would fold a segment back on itself.
  */
@@ -57,9 +57,9 @@ export function curveLaneJoin(
   const scale = hyp(d1[0], d1[1]) * hyp(d2[0], d2[1]);
   if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return null; // parallel
   // regressive turn (> ~107°): the lane-line intersection lies BEHIND the
-  // corner and the "join" would loop out and back (the Republican St yellow
-  // hook). d1 points INTO the node, d2 points INTO the node from the other
-  // side — alignment means the line nearly reverses. Leave it to the chord.
+  // corner and the "join" would loop out and back. d1 points INTO the node,
+  // d2 points INTO the node from the other side. Alignment means the line
+  // nearly reverses. Leave it to the chord.
   // allowRegressive lets a DRAW-TIME caller fillet a sharp fused-station bend
   // (post-marker, so the cut-back can't starve the rigid-row solver); the
   // on-lane cutBackTo + limit checks below still reject genuine reversals.
@@ -73,14 +73,12 @@ export function curveLaneJoin(
   if (hyp(x - qb[0], y - qb[1]) > limit) return null;
 
   // Inner-corner overshoot: a lane drawn PAST the corner leaves the apex
-  // behind its end (possibly behind several vertices) — rejecting here
-  // drops the join to the connector bezier, which balloons 270 degrees
-  // (the 13 St "5 loop"). If the apex lies ON the lane behind the end, cut
-  // the lane back so it ends at the apex, then join normally. Apexes that
-  // are NOT on the lane (genuine reversals) still bail to the chord.
-  // (Reintroduced for v0.2.23: its v0.2.21 spike side-effects came from
-  // sliver/spur edges that traversal pruning + sliver suppression now
-  // remove upstream.)
+  // behind its end (possibly behind several vertices). Rejecting here would
+  // drop the join to the connector bezier, which balloons into a large loop.
+  // If the apex lies ON the lane behind the end, cut the lane back so it ends
+  // at the apex, then join normally. Apexes that are NOT on the lane (genuine
+  // reversals) still bail to the chord. This relies on sliver/spur edges
+  // being removed upstream by traversal pruning and sliver suppression.
   const cutBackTo = (poly: Pixel[], atStart: boolean, px: number, py: number): boolean => {
     const n = poly.length;
     const maxSegs = Math.min(4, n - 1);
@@ -191,7 +189,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
   }
 
   // De-collision: two lines that co-run on SOME edge but take their offsets
-  // from DIFFERENT canonical edges can land on the same global offset — they
+  // from DIFFERENT canonical edges can land on the same global offset. They
   // then draw at identical coordinates and one hides the other entirely.
   // Process lines from most- to least-authoritative; each line keeps its slot
   // unless it sits (effectively) on top of an already-fixed co-running line,
@@ -212,7 +210,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
     return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0); // raw compare (localeCompare is engine-dependent)
   });
   const fixed = new Set<string>();
-  const COINCIDENT = 1.0; // px — only true overdraw counts as a collision
+  const COINCIDENT = 1.0; // px; only true overdraw counts as a collision
   for (const lineId of order) {
     const base = offsets.get(lineId)!;
     const taken: number[] = [];
@@ -254,14 +252,14 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
 
 /** Drop consecutive points that sit within `eps` of the previous one. Also
  *  drop a middle vertex whose two adjacent edges undo each other (an A→B→A
- *  ping-pong) — these produce a zero-bisector at B and turn into visible
+ *  ping-pong); these produce a zero-bisector at B and turn into visible
  *  spike artifacts when offset.
  *
  *  Co-linear vertices are deliberately KEPT: stops are placed at specific
  *  centerline vertices and downstream code relies on the input-to-output
  *  index correspondence holding (modulo U-turn/dup drops). Dropping straight-
- *  line vertices broke that mapping and caused station dots to land off the
- *  drawn line entirely. */
+ *  line vertices breaks that mapping and lands station dots off the drawn
+ *  line entirely. */
 export function simplifyPolyline(points: Pixel[], eps = 0.5): Pixel[] {
   if (points.length < 2) return points.slice();
   const dedup: Pixel[] = [points[0]];
@@ -292,7 +290,7 @@ export function simplifyPolyline(points: Pixel[], eps = 0.5): Pixel[] {
  *  don't collapse the bisector into a zero-length normal (which would
  *  otherwise produce visible "spike" artifacts on offset bundles). Pass
  *  `simplify=false` when the caller needs the output indices to correspond
- *  1:1 with the input indices — e.g. when computing stop positions that must
+ *  1:1 with the input indices, e.g. when computing stop positions that must
  *  sit on the same drawn ribbon. The miter floor caps the lateral overshoot
  *  at sharp turns so an acute corner can't extend the offset polyline more
  *  than ~sqrt(1/0.5) ≈ 1.41× the offset distance. */
@@ -316,14 +314,14 @@ export function offsetPolyline(points: Pixel[], offset: number, simplify = true)
       const sumLen = hyp(sum[0], sum[1]);
       if (sumLen < 1e-6) {
         // U-turn slipped past simplifyPolyline (degenerate after dedup).
-        // Use the incoming normal directly — better than a NaN/0 vector.
+        // Use the incoming normal directly, which beats a NaN/0 vector.
         normal = n1;
       } else {
-        // Miter floor raised from 0.3 → 0.5: limits the perpendicular over-
-        // shoot at acute turns to ~sqrt(1/0.5) = 1.41× the offset distance.
-        // The previous 0.3 floor allowed ~1.83× extension, which produced
-        // visible spike/Z-triangle artifacts at bundle joints where yellow
-        // and similar lines made sharp lateral transitions.
+        // Miter floor of 0.5 limits the perpendicular overshoot at acute
+        // turns to ~sqrt(1/0.5) = 1.41× the offset distance. A lower floor
+        // allows more extension and produces visible spike/Z-triangle
+        // artifacts at bundle joints where lines make sharp lateral
+        // transitions.
         const miter = Math.max(0.5, (n1[0] * n2[0] + n1[1] * n2[1] + 1) / 2);
         normal = [sum[0] / sumLen / Math.sqrt(miter), sum[1] / sumLen / Math.sqrt(miter)];
       }

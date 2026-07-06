@@ -48,20 +48,20 @@ export function projectGeoRings(
   };
 }
 
-/** Build the backdrop groups from pre-projected rings — the faithful polygons
- *  when `style` is absent, the simplified/rounded landmass blobs when set.
- *  Mirrors geographyBackdrop's structure (green under water, one path per
+/** Build the backdrop groups from pre-projected rings. Emits the faithful
+ *  polygons when `style` is absent, the simplified/rounded landmass blobs when
+ *  set. Mirrors geographyBackdrop's structure (green under water, one path per
  *  category, nonzero fill). */
 export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: number }, style?: LandmassStyle): string {
-  // Parks claim importance far more weakly than water: a lake in the dense
-  // core is a landmark, a pocket park is clutter — full green protection was
-  // the main source of mid-map speckle in the diagram modes.
+  // Parks claim importance far more weakly than water. A lake in the dense
+  // core is a landmark; a pocket park is clutter. Full green protection is a
+  // major source of mid-map speckle in the diagram modes.
   const GREEN_IMP = 0.5;
   const group = (rs: Pt[][], fill: string, cls: string): string => {
     let d = '';
     if (style) {
       const imp = style.importance;
-      // dryPoints + continuity are WATER constraints — a station sitting on a
+      // dryPoints + continuity are WATER constraints. A station sitting on a
       // park is fine, and fragmented parks don't read as "created lakes".
       const catStyle = cls === 'green'
         ? {
@@ -113,9 +113,9 @@ export function polyGroup(
   }
   d = d.trim();
   if (!d) return '';
-  // The class lets the canvas backend (sceneFromSvg → prepareScene) bucket the backdrop
-  // into its dedicated layer (z below the routes) BY DESIGN — without it the unclassed
-  // group fell into 'other' and sat under the routes only by emit-order accident.
+  // The class lets the canvas backend (sceneFromSvg then prepareScene) bucket the backdrop
+  // into its dedicated layer (z below the routes) BY DESIGN. Without it the unclassed
+  // group falls into 'other' and sits under the routes only by emit-order accident.
   const classAttr = cls ? `class="${cls}" ` : '';
   return `<g ${classAttr}fill="${fill}" fill-rule="${fillRule}" stroke="none"><path d="${d}"/></g>`;
 }
@@ -123,7 +123,7 @@ export function polyGroup(
 /**
  * Tile-derived geography backdrop: green first, then water on top (cleaner coast
  * where generalized land-use bleeds into water). Returns '' when geography is
- * absent — the single "no background" fallback. Rendered through whatever `proj`
+ * absent, the single "no background" fallback. Rendered through whatever `proj`
  * the caller passes, so in smoothed mode it rides the density warp for free.
  */
 export function geographyBackdrop(

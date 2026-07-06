@@ -41,7 +41,7 @@ interface Run {
 /** Split a polyline at absolute lattice crossings (multiples of `s` in x and
  *  y). Two paths drawn over the SAME grid stretch can carry vertices at
  *  different positions along it (grid nodes vs expandImage's interpolated
- *  slice points) — then vertex-pair segment keys never align and the shared
+ *  slice points). Then vertex-pair segment keys never align and the shared
  *  run goes undetected, leaving two lines drawn at identical coordinates with
  *  zero lane offset (one invisible under the other). Absolute crossings align
  *  coincident geometry regardless of vertex phase and need no grid origin. */
@@ -318,14 +318,13 @@ export function mergeCoincidentPaths(
 }
 
 // ---- per-group station separation ------------------------------------------
-// Distinct station groups can end up fused onto ONE drawn node: corridors that
+// Distinct station groups can end up fused onto ONE drawn node. Corridors that
 // genuinely converge below the merge radius put their anchor nodes within a
 // couple of pixels, octi's short-edge contraction folds them into one grid
 // node, and the vertex fusion above keeps them as a single mn. Drawn that way,
-// two real stations become one marker and one label. Rule (user-agreed):
-// groups fused at one drawn node whose TRUE separation exceeds ~the merge
-// radius must render as separate markers; closer pairs are a legitimate
-// shared interchange capsule (e.g. Union Av + Cedar St at 10px).
+// two real stations become one marker and one label. Groups fused at one drawn
+// node whose TRUE separation exceeds roughly the merge radius must render as
+// separate markers. Closer pairs are a legitimate shared interchange capsule.
 //
 // Mechanism: the station closest to the drawn node keeps it; each other
 // station is split onto a new node placed at the projection of its true
@@ -365,10 +364,10 @@ export function separateFusedStations(
     const keeper = withTrue[0];
 
     for (const st of withTrue.slice(1)) {
-      // Distinct station groups ALWAYS get their own markers (user rule:
-      // one marker per station; capsule-ness comes from the group itself) —
-      // even close pairs split, with the min-arc guard keeping the dots
-      // visually apart on the bundled corridor.
+      // Distinct station groups ALWAYS get their own markers: one marker per
+      // station, with capsule-ness coming from the group itself. Even close
+      // pairs split, with the min-arc guard keeping the dots visually apart on
+      // the bundled corridor.
       void minSep;
 
       // best projection of the true position onto the adjacent drawn edges
@@ -382,13 +381,13 @@ export function separateFusedStations(
         arcTotal: number;
       } | null = null;
       // Candidate edges: those at the node, HOPPING OVER edges too short to
-      // split (a 9px hop to an adjacent junction must not win "best" and then
-      // bail — the true position usually projects cleanly onto the corridor
-      // just past it; Lake Av sits beyond the 83 Av junction 9px away).
+      // split. A short hop to an adjacent junction must not win "best" and then
+      // bail, because the true position usually projects cleanly onto the
+      // corridor just past it.
       // A candidate must CARRY one of the station's serving lines: the stop
       // flag only renders on an edge that carries the line, so splitting onto
       // a foreign corridor makes the station vanish entirely (no marker, no
-      // label). With no valid candidate the pair stays fused — a shared
+      // label). With no valid candidate the pair stays fused, since a shared
       // capsule beats a disappeared station.
       const serves = (e: SupportEdge): boolean => {
         const lines = st.stopLines;
@@ -564,10 +563,9 @@ export function separateFusedStations(
       // Lines that STOPPED at the fused node and moved with the split must
       // also stop TRAVERSING to it: reconstruction ran before the split, so a
       // line TERMINATING here retraces through the keeper node and its drawn
-      // lanes overshoot the new marker by the split distance (Court's grays
-      // pierced their capsule). Remove immediate out-and-back step pairs over
-      // the keeper-side half; lines genuinely continuing past the keeper
-      // traverse it once and are untouched.
+      // lanes overshoot the new marker by the split distance. Remove immediate
+      // out-and-back step pairs over the keeper-side half; lines genuinely
+      // continuing past the keeper traverse it once and are untouched.
       const keeperHalf = e.from === nid ? idA : e.to === nid ? idB : null;
       if (keeperHalf) {
         for (const l of movedLines) {
@@ -589,7 +587,7 @@ export function separateFusedStations(
             out.push(s1);
           }
           // routes that START or END at the old fused node leave a single
-          // keeper-half step at the boundary — trim it as well
+          // keeper-half step at the boundary; trim it as well
           const eH = h.edges.get(keeperHalf);
           if (eH && out.length && out[0].edgeId === keeperHalf) {
             const startNode = out[0].reversed ? eH.to : eH.from;

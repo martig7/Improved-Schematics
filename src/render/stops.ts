@@ -1,11 +1,10 @@
-// Per-station markers, NYC-subway-map style: EVERY stopping line gets a dot
-// on its own lane in all cases, and the capsule is an outline that SURROUNDS
-// the dots (real-map Canal St model) rather than replacing them — so a
-// capsule can never mislead about which lines actually stop. Capsule iff
-// MULTIPLE stopping lines share the station (express/local pairs,
-// interchanges); a single-route station is always a plain dot, even when its
-// group has several member stations. Each dot prints its line's name (route
-// bullet) inside, upright, toggled by the stations toggle.
+// Per-station markers: EVERY stopping line gets a dot on its own lane in all
+// cases, and the capsule is an outline that SURROUNDS the dots rather than
+// replacing them, so a capsule can never mislead about which lines actually
+// stop. Capsule iff MULTIPLE stopping lines share the station (express/local
+// pairs, interchanges); a single-route station is always a plain dot, even
+// when its group has several member stations. Each dot prints its line's name
+// (route bullet) inside, upright, toggled by the stations toggle.
 
 import type { Pixel, StopMark } from './layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
@@ -24,14 +23,14 @@ export function renderStops(
 ): string[] {
   const out: string[] = [];
   const r = LINE_WIDTH * 0.7;
-  // Option C — shrink the rendered marker ONLY inside capsules (multi-line
-  // stations), where corner-flanking / multi-arm bullet rings overlap; single
-  // standalone dots stay full size. Layout/spacing is unchanged — only the
-  // rendered dot radius + ring stroke + capsule width + font shrink. The rigid-
-  // row solver floors intra-capsule dot gaps at this SAME scaled ring diameter
+  // Shrink the rendered marker ONLY inside capsules (multi-line stations),
+  // where corner-flanking / multi-arm bullet rings overlap; single standalone
+  // dots stay full size. Layout/spacing is unchanged. Only the rendered dot
+  // radius + ring stroke + capsule width + font shrink. The rigid-row solver
+  // floors intra-capsule dot gaps at this SAME scaled ring diameter
   // (MARKER_SCALE lives in constants.ts so the two can't drift).
   const rCap = r * MARKER_SCALE; // dot/capsule radius INSIDE a capsule
-  const spacing = LINE_WIDTH + LINE_GAP; // lane pitch — a compact capsule is ~markCount·spacing
+  const spacing = LINE_WIDTH + LINE_GAP; // lane pitch; a compact capsule is ~markCount·spacing
   const fill = dark ? '#18181b' : '#ffffff';
   const stroke = dark ? '#e4e4e7' : '#111111';
   const nameFill = dark ? '#ffffff' : '#111111';
@@ -46,7 +45,7 @@ export function renderStops(
   // One dot per stopping line: hollow disc on the line's own lane, ring in
   // the line's color, route bullet centered inside (always upright/north-up).
   // Scene prims (when a sink is passed) accumulate into `dotPrims` so the caller
-  // can flush them at the EXACT concatenation point of the dots string — the
+  // can flush them at the EXACT concatenation point of the dots string. The
   // dots come AFTER the capsule/ring border in the markup, and the mega branch
   // emits no dots at all, so pushing eagerly would mis-order or over-emit.
   const dotPrims: Prim[] = [];
@@ -96,9 +95,9 @@ export function renderStops(
     const members = membersByNode?.get(nodeId);
     // Capsule iff MULTIPLE ROUTES stop here (one dot per stopping line). A
     // multi-member group served by a single route reads better as a plain
-    // dot — the capsule added bulk without information (user call, 2026-07-04;
-    // platform-split units with one line get bare dots the same way, and the
-    // taxicab connectors attach to dots just as well).
+    // dot, since the capsule would add bulk without information. Platform-split
+    // units with one line get bare dots the same way, and the taxicab
+    // connectors attach to dots just as well.
     const capsule = marks.length > 1;
 
     // Farthest pair of marks defines the marker axis (marks per station are
@@ -135,12 +134,12 @@ export function renderStops(
     // mega fires per-station when the rigid-row solver found no feasible
     // configuration (spec v2 §3), or via the dormant global MEGA_BOXES rule
     if (marks.some((m) => m.mega) || (MEGA_BOXES && megaEligible && (degByNode?.get(nodeId) ?? 0) >= 12)) {
-      // Mega capsule for huge interchanges (user rule): the junction's whole
-      // footprint becomes the marker — a rounded rectangle covering the
-      // marks with padding — so lines may reverse/cross/weave freely
-      // underneath it and read as passing straight through the station.
+      // Mega capsule for huge interchanges: the junction's whole footprint
+      // becomes the marker, a rounded rectangle covering the marks with
+      // padding, so lines may reverse/cross/weave freely underneath it and
+      // read as passing straight through the station.
       // generous padding: connector chords and lane reversals at the junction
-      // happen within ~half a grid cell of the marks — cover them
+      // happen within ~half a grid cell of the marks, so cover them
       const pad = r + 7;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const mk of marks) {
@@ -149,9 +148,9 @@ export function renderStops(
       }
       // Cap the box to the compact size its marks would occupy seated (~markCount
       // lanes), centered on the per-axis MEDIAN of the marks (robust to a stray
-      // far stop). A boxed station's marks can fling far apart — two stops beyond
-      // the chain extent become a slab spanning the gap — ballooning the rect over
-      // its neighbours. Mega draws NO dots, so clamping the bound only shrinks the
+      // far stop). A boxed station's marks can fling far apart: stops beyond the
+      // chain extent become a slab spanning the gap, ballooning the rect over its
+      // neighbours. Mega draws NO dots, so clamping the bound only shrinks the
       // cover, never hides a marker.
       const cap = Math.max(2 * r, marks.length * spacing * 1.5);
       const medOf = (vals: number[]) => { const s = vals.slice().sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -171,13 +170,12 @@ export function renderStops(
       }
       // No internal bullet circles: a boxed station is a genuine crossing where
       // the stops converge at the crossing point, so the per-line dots overlap
-      // into an unreadable cluster (user: "leave them as boxes but remove the
-      // station circles"). The box alone marks the interchange; the crossing
-      // lines read through it.
+      // into an unreadable cluster. The box alone marks the interchange; the
+      // crossing lines read through it.
       if (megaFallback === 'curve') {
         // Curve fallback: render this un-seatable crossing like a normal multi-line
-        // capsule — border + fill at capsule width, with the per-line dots drawn ON
-        // TOP — but follow a SMOOTH spline through the marks instead of the octilinear
+        // capsule, with border + fill at capsule width and the per-line dots drawn ON
+        // TOP, but follow a SMOOTH spline through the marks instead of the octilinear
         // polyline. Boxed marks have no solved chain order, so order them along the
         // bundle's principal axis (farthest pair). Dots may overlap freely here (the
         // bundle boxed precisely because they couldn't be seated apart).
@@ -212,7 +210,7 @@ export function renderStops(
             dCurve += ' C ' + f(c1x) + ' ' + f(c1y) + ' ' + f(c2x) + ' ' + f(c2y) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
           }
         }
-        // Border then fill at the SAME widths a normal capsule uses, both round — the
+        // Border then fill at the SAME widths a normal capsule uses, both round; the
         // d string is shared by markup + prim. (Mirrors the capsule branch below.)
         const capPath = (color: string, w: number, withAttrs: boolean): string => {
           prims?.push({
@@ -238,7 +236,7 @@ export function renderStops(
         '" rx="' + (r + 1.5).toFixed(1) + '" fill="' + fill +
         '" stroke="' + stroke + '" stroke-width="3"' + attrs + '/>',
       ));
-      // Mega draws NO dots — emit only the rect prim; dotPrims are discarded.
+      // Mega draws NO dots, so emit only the rect prim; dotPrims are discarded.
       prims?.push({
         kind: 'rect',
         x: +x0.toFixed(1), y: +y0.toFixed(1),
@@ -267,11 +265,11 @@ export function renderStops(
       continue;
     }
 
-    // Spine capsule (dots-on-lanes model, spec 2026-06-12): the marker is
-    // the chain of dots in solved order; the capsule is the RDP-simplified
-    // polyline through the dot centers, stroked round — border then fill.
-    // Dots are on the spine by construction (P3), so containment is
-    // structural and lateral widening no longer exists.
+    // Spine capsule (dots-on-lanes model): the marker is the chain of dots in
+    // solved order; the capsule is the RDP-simplified polyline through the dot
+    // centers, stroked round, border then fill. Dots are on the spine by
+    // construction (P3), so containment is structural and lateral widening no
+    // longer exists.
     const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
     // rigid-row model: pair boundaries contribute a derived elbow vertex
     // between the facing end-dots; RDP keeps corners (genuine bends)

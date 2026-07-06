@@ -26,10 +26,10 @@ export const {
 
 // JSX runtime shim for the automatic transform. The runtime calls
 //   jsx(type, { children, ...props }, key)
-// with `children` INSIDE the props object and `key` as a separate third arg —
-// which is NOT createElement's (type, config, ...children) shape. Forwarding
+// with `children` INSIDE the props object and `key` as a separate third arg.
+// That is NOT createElement's (type, config, ...children) shape. Forwarding
 // straight to createElement makes the `key` land as the element's only child,
-// so any KEYED host element renders its key (e.g. "sel-0") instead of its real
+// so any KEYED host element renders its key string instead of its real
 // children. Translate properly: lift children out to trailing args, fold key in.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function h(type: any, config: any, maybeKey?: any): any {

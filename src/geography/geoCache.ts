@@ -1,12 +1,11 @@
 // Persistent, geography-specific cache (separate from the smoothed-layout mapCache).
 //
-// Geography (water/parks) is harvested once per city from the game's vector tiles — a slow,
-// flaky, async step. It used to live only in an in-memory Map (geography.ts), so every game
-// reload re-harvested it: a delay before the backdrop appears, and the well-known
-// first-open misses. Persisting the harvest to localStorage makes geographic mode show
-// instantly on reload, and (because geography feeds the smoothed fingerprint) stabilizes the
-// :pre: cache's hit rate. Its own KEY namespace so it's independent of the layout cache —
-// a layout-cache eviction never drops geography, and vice-versa.
+// Geography (water/parks) is harvested once per city from the game's vector tiles in a slow,
+// flaky, async step. Persisting the harvest to localStorage makes geographic mode show
+// instantly on reload instead of re-harvesting, and, because geography feeds the smoothed
+// fingerprint, stabilizes the :pre: cache's hit rate. It uses its own KEY namespace so it's
+// independent of the layout cache. A layout-cache eviction never drops geography, and
+// vice-versa.
 //
 // Keyed by city only: geography is geographic truth at the (fixed) demand extent, so it's
 // deterministic and reused across reloads. Only DEMAND-based harvests are persisted (see
@@ -53,7 +52,7 @@ export function readGeoCache(city: string, store: KVStore | null = defaultStore(
 
 /** Persist a harvested geography for `city` together with the extent it was harvested at.
  *  Best-effort: on quota it evicts OTHER cities' geography and retries once; if it still
- *  can't fit it gives up (the next open just re-harvests — slower, never wrong). */
+ *  can't fit it gives up, and the next open just re-harvests. */
 export function writeGeoCache(city: string, bbox: BoundingBox, geography: GeographyData, store: KVStore | null = defaultStore()): void {
   if (!store || !city) return;
   const payload = JSON.stringify({ v: VERSION, bbox, geography });
@@ -67,7 +66,7 @@ export function writeGeoCache(city: string, bbox: BoundingBox, geography: Geogra
       }
       store.setItem(key(city), payload);
     } catch {
-      /* give up — re-harvest next time */
+      /* give up and re-harvest next time */
     }
   }
 }

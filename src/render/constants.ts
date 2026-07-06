@@ -1,5 +1,5 @@
 // Octilinear layout + render constants, ported verbatim from the game
-// (dev/reference/_constants.txt). Do not change values.
+// (dev/reference/_constants.txt). Values must match the source. Do not change them.
 
 export const STEP_SIZE = 3;
 export const TARGET_EDGE_CELLS = 2.2;
@@ -14,9 +14,8 @@ export const CELL_PX = 36;
 /** Diagnostic override for the corridor-spacing sweep (IS_LINE_WIDTH env);
  *  the literal default is the production value. Browser-safe guard: process
  *  is undefined inside the game's renderer.
- *  3.5 (was 5): chosen by the 2026-06-10 spacing sweep on the live Seattle
- *  dump — with grid divisor 1.6 it puts adjacent corridors ~6.6 line-widths
- *  apart (spec target >= 6) and reads closer to LOOM's proportions. */
+ *  The default is tuned so adjacent corridors sit at least the spec target of
+ *  6 line-widths apart. */
 const LINE_WIDTH_DEFAULT = 3.5;
 export const LINE_WIDTH =
   (typeof process !== 'undefined' &&
@@ -24,11 +23,11 @@ export const LINE_WIDTH =
   LINE_WIDTH_DEFAULT;
 export const LINE_GAP = 2;
 
-/** Capsule markers render at this fraction of full radius (commit 8f1a5e5) so
- *  bullet rings inside a capsule clear each other. SHARED so the rigid-row
- *  solver's intra-capsule gap floor (renderOctilinear) uses the SAME scale the
- *  markers are drawn at — flooring at the full radius boxed stations whose
- *  scaled rings actually clear (the nyc/chi false-negative boxes).
+/** Capsule markers render at this fraction of full radius so bullet rings
+ *  inside a capsule clear each other. SHARED so the rigid-row solver's
+ *  intra-capsule gap floor (renderOctilinear) uses the SAME scale the markers
+ *  are drawn at. Flooring at the full radius would box stations whose scaled
+ *  rings actually clear.
  *  IS_MARKER_SCALE overrides (1 = no shrink). Browser-safe: process is
  *  undefined inside the game renderer. */
 export const MARKER_SCALE = (() => {
@@ -58,7 +57,7 @@ export const OCT_UNIT: Vec2[] = OCT_DIRS.map(([x, y]) => {
 });
 
 /** Mega-station boxes (rounded-rect markers over huge interchanges).
- *  OFF since v0.2.28: corner-prioritized crossings + the Y/dogbone opt-graph
+ *  OFF because corner-prioritized crossings and the Y/dogbone opt-graph
  *  rewrites order junctions well enough that boxes are no longer needed to
  *  hide weaves. Flip back on to restore the boxes (threshold lives at the
  *  two use sites). */

@@ -34,8 +34,8 @@ export function createProjection(
   // rounded across V8 builds, and this single scalar multiplies into every
   // projected x (toSVG below), so a 1-ULP cross-engine diff in it perturbs all
   // coordinates and the chaotic octi search amplifies it into a different
-  // layout. Rounding to 1e-9 (far sub-pixel at 2700px) makes k — and thus the
-  // whole projected coordinate field — bit-identical on every engine.
+  // layout. Rounding to 1e-9 (far sub-pixel at canvas scale) makes k, and thus
+  // the whole projected coordinate field, bit-identical on every engine.
   const k = (Math.round(Math.cos((centerLat * Math.PI) / 180) * 1e9) / 1e9) || 1;
 
   // Projected-space extents (px = lng * k, py = lat).
@@ -77,9 +77,9 @@ export interface FrameRect {
  * through `proj`, clamped to the viewport. Returns null when `coords` is empty.
  *
  * Unlike `frameRect` (which projects only a bbox's 4 corners and so assumes an
- * axis-aligned projection), this projects EVERY point — correct under the
- * smoothed mode's non-axis-aligned density-warp projection, where the furthest
- * pixel can come from a non-corner vertex.
+ * axis-aligned projection), this projects EVERY point. That is correct under
+ * the smoothed mode's non-axis-aligned density-warp projection, where the
+ * furthest pixel can come from a non-corner vertex.
  */
 export function projectedBounds(proj: Projection, coords: Coordinate[]): FrameRect | null {
   let minX = Infinity;
@@ -105,7 +105,7 @@ export function projectedBounds(proj: Projection, coords: Coordinate[]): FrameRe
 /**
  * Project a geographic bbox through `proj` into an axis-aligned pixel rect,
  * clamped to the projection's viewport. This is the projected bbox WITHOUT the
- * projection's padding margin — used to frame fit-to-view and SVG export on a
+ * projection's padding margin. It frames fit-to-view and SVG export on a
  * specific extent (e.g. the demand bbox) rather than the whole padded canvas.
  */
 export function frameRect(proj: Projection, bbox: BoundingBox): FrameRect {

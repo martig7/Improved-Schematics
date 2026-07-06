@@ -103,10 +103,10 @@ test('contractDegree2 does NOT collapse when line sets differ', () => {
 });
 
 test('contractShortEdges merges a junction micro-mesh and folds the spur legs', () => {
-  // Seattle NW hairpin shape in miniature: a balloon spur whose up-pass and
-  // down-pass corridors land on two near-coincident base nodes joined by a
-  // tiny mesh edge that degree-2 contraction cannot remove because junction
-  // edges (E) keep the nodes above degree 2.
+  // A balloon spur whose up-pass and down-pass corridors land on two
+  // near-coincident base nodes joined by a tiny mesh edge that degree-2
+  // contraction cannot remove because junction edges (E) keep the nodes
+  // above degree 2.
   const h = new HBuilder(5);
   const baseUp = h.addNode([0, 0]);
   const baseDn = h.addNode([3, 4]);
@@ -172,8 +172,8 @@ test('contractShortEdges keeps protected endpoints anchored', () => {
 });
 
 test('contractShortEdges leaves terminal stubs alone', () => {
-  // A 6px dead-end stub off a junction: contracting it would delete a real
-  // terminus station's corridor (the 320 Pl bug).
+  // A 6px dead-end stub off a junction. Contracting it would delete a real
+  // terminus station's corridor.
   const h = new HBuilder(5);
   const j = h.addNode([0, 0]);
   const tip = h.addNode([6, 0]);
@@ -187,7 +187,7 @@ test('contractShortEdges leaves terminal stubs alone', () => {
   assert.deepEqual(h.nodePos(tip), [6, 0]);
 });
 
-// --- Fix 2 increment 1: length-weighted line pathing --------------------------
+// --- length-weighted line pathing --------------------------------------------
 
 import { linePathByLength } from './topo';
 
@@ -217,11 +217,11 @@ test('linePathByLength stays on line-carrying edges and reports unreachable as n
   assert.equal(linePathByLength('S', 'T', 'L', edges as never, adj), null);
 });
 
-// --- Bundle A: contraction metric + anchor floor ------------------------------
+// --- contraction metric + anchor floor ----------------------------------------
 
 test('contractShortEdges contracts a wiggly sub-span connector (node distance, not polyline length)', () => {
-  // A and B are 8px apart but joined by 20+px of sampled wiggle — the old
-  // polyline-length metric shielded exactly these (the STN<->h twins).
+  // A and B are 8px apart but joined by 20+px of sampled wiggle. Node
+  // distance contracts these; a polyline-length metric would shield them.
   const h = new HBuilder(5);
   const w = h.addNode([-100, 0]);
   const a = h.addNode([0, 0]);
@@ -255,13 +255,13 @@ test('contractShortEdges keeps a balloon spur (geometry leaves the neighbourhood
   assert.equal(h.edgeList().length, 3, 'balloon kept');
 });
 
-// --- stop protection through the merge (replaced the deleted anchor pass) ---
+// --- stop protection through the merge ---
 
 test('a mid-corridor stop survives the merge as a node at its own position', () => {
-  // Degree-2 same-lines stop: contraction used to remove it and the deleted
-  // anchorGraphStops pass re-split the corridor afterwards (losing WHICH
-  // corridor the stop was on — the 191 Pl twin-platform strandings). Stop
-  // protection in runMergeRounds must keep a node at the stop position.
+  // Degree-2 same-lines stop. Without protection, contraction removes it and
+  // re-splitting the corridor afterwards loses which corridor the stop was on,
+  // stranding twin platforms. Stop protection in runMergeRounds must keep a
+  // node at the stop position.
   const g = graphFrom(
     { a: [0, 0], s: [100, 0], b: [200, 0] },
     [
@@ -287,10 +287,9 @@ test('a mid-corridor stop survives the merge as a node at its own position', () 
 });
 
 test('stops inside another stop\'s dHat cell share one node (spacing floor at the seed)', () => {
-  // Two parallel lines with twin platforms 8px apart (< dHat=20): only one
+  // Two parallel lines with twin platforms 8px apart (< dHat=20). Only one
   // protected seed is placed, both corridors zip onto it, and no sub-cell
-  // station pair reaches the router (RCA Bundle A's floor, moved to the
-  // source when the anchor pass was deleted).
+  // station pair reaches the router (the spacing floor applied at the seed).
   const g = graphFrom(
     { a0: [0, 0], s1: [100, 0], a1: [200, 0], b0: [0, 8], s2: [100, 8], b1: [200, 8] },
     [
@@ -371,9 +370,9 @@ test('weldSubCellNodes welds a sub-cell junction INTO the station and keeps trav
 test('weldSubCellNodes deletes a curly self-loop (long polyline, sub-cell extent)', () => {
   const h = weldFixture();
   // Replace the straight 8px weld edge with a CURLY one: 8px node span but
-  // ~36px of polyline that never leaves the node neighbourhood. The old
-  // polyline-LENGTH keep-rule spared these as "balloons"; drawn, they are
-  // curl blobs at the station. Extent is what distinguishes a real balloon.
+  // ~36px of polyline that never leaves the node neighbourhood. Drawn, these
+  // are curl blobs at the station. Extent, not polyline length, is what
+  // distinguishes a real balloon.
   h.edges.get('eJA')!.points = [[100, 0], [104, 9], [110, 0], [104, -9], [108, 0]] as Pixel[];
   weldSubCellNodes(h, 10);
   assert.ok(!h.edges.has('eJA'), 'curly self-loop deleted');
@@ -397,7 +396,7 @@ test('weldSubCellNodes leaves nodes a cell apart alone', () => {
 
 test('weldSubCellNodes remaps station anchors when the SURVIVOR is the other node', () => {
   const h = weldFixture();
-  // make the junction the survivor magnet: not possible — station always wins.
+  // Making the junction the survivor magnet is not possible. A station always wins.
   // Instead check a synthetic-synthetic weld: add nK 4px from nJ.
   h.nodes.set('nK', { id: 'nK', pos: [104, 3] } as never);
   h.adj.set('nK', []);
@@ -673,9 +672,9 @@ test('topo derives d̂ from line width and corridor capacity', () => {
 });
 
 test('merge rounds keep bowed parallel corridors separate (no chord-refeed weld)', () => {
-  // Two routes between the same junction pair, bowing 120px apart mid-span —
-  // far beyond dHat=20. Round 1 keeps them apart; the old endpoint-chord
-  // refeed welded them in round 2.
+  // Two routes between the same junction pair, bowing 120px apart mid-span,
+  // far beyond dHat=20. Both rounds must keep them apart; an endpoint-chord
+  // refeed would incorrectly weld them.
   const g = graphFrom(
     {
       J1: [0, 0],
@@ -705,7 +704,7 @@ test('merge rounds keep bowed parallel corridors separate (no chord-refeed weld)
 });
 
 test('merge rounds still weld genuinely close parallels', () => {
-  // Same shape but the corridors run 8px apart — inside dHat=20. These MUST
+  // Same shape but the corridors run 8px apart, inside dHat=20. These MUST
   // merge into one corridor carrying both lines.
   const g = graphFrom(
     {

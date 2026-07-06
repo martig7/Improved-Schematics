@@ -200,8 +200,8 @@ test('labelWorldBox + isLabelHidden: world-space overlap (labels scale with the 
 
 test('sceneFromSvg: geographic backdrop (water/green groups) classifies to the water layer', () => {
   // The geographic backdrop groups carry class="green"/"water" so the canvas backend
-  // buckets them into the dedicated backdrop layer (z BELOW the routes) by design — not
-  // into 'other' alongside routes, where the order held only by emit-order accident.
+  // buckets them into the dedicated backdrop layer (z BELOW the routes) by design. They
+  // do not land in 'other' alongside routes, where the order would hold only by emit-order accident.
   const svg =
     '<svg viewBox="0 0 100 100" width="100" height="100">' +
     '<g class="green" fill="#0f0" fill-rule="nonzero" stroke="none"><path d="M0 0 L1 0 L1 1 Z"/></g>' +

@@ -1,11 +1,11 @@
 // Taxicab transfer connectors between the platform-split units of one
-// station group (spec 2026-07-04 escalation-ladder-rewrite §2.4): when a
-// far-apart group cannot be one capsule (far-attach failed → platform
-// split), thin axis-aligned connectors join its capsules so the complex
-// still reads as one station. Pure geometry: MST over unit centroids,
-// nearest-dot endpoints, single-elbow L paths whose corner grazes foreign
-// markers least. Deterministic (sorted inputs, total tie-breaks, sqrt-only
-// arithmetic) — offline==in-game holds.
+// station group (spec escalation-ladder-rewrite §2.4). When a far-apart
+// group cannot be one capsule and far-attach fails, it is platform split;
+// thin axis-aligned connectors join its capsules so the complex still reads
+// as one station. Pure geometry: MST over unit centroids, nearest-dot
+// endpoints, single-elbow L paths whose corner grazes foreign markers least.
+// Deterministic (sorted inputs, total tie-breaks, sqrt-only arithmetic), so
+// offline==in-game holds.
 
 import type { Pixel } from './types';
 

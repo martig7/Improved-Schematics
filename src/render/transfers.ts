@@ -1,7 +1,7 @@
 // Transfer connectors: short U-brackets drawn between distinct station groups that
-// are close enough to walk between (NYC-map-style). The game's
-// MAX_TRANSFER_WALKING_TIME / WALKING_SPEED gives ~900m which is too loose for
-// a visual cue, so we use a tighter default threshold.
+// are close enough to walk between. The game's walking-time budget yields a
+// distance that is too loose for a visual cue, so a tighter default threshold is
+// used.
 
 import type { Coordinate } from '../types/core';
 import type { StationGroup, TransitGraph } from './layout/types';
@@ -20,7 +20,7 @@ export interface TransferPair {
   meters: number;
 }
 
-/** Default visual-transfer threshold; a couple of NYC blocks. */
+/** Default visual-transfer threshold, in metres. */
 export const DEFAULT_TRANSFER_METERS = 400;
 
 /** How far (px) the staple crossbar sits beyond the dot edge so it hugs without touching. */

@@ -1,10 +1,10 @@
 // Loop detector for the PAINTED track (what's actually drawn). A loop is where
-// a route's painted track crosses itself — a balloon loop, hairpin wrap, or the
-// fused-station hook octi can manufacture at a station group (Chicago's Blue A
-// at Chestnut St). Self-INTERSECTION (a proper crossing) is the right signal,
-// not self-proximity: an out-and-back route retraces itself, so its two legs
-// are COINCIDENT (not crossing) over most of their length — proximity drowns in
-// that overlap, but a real loop crosses at a point the overlap never does.
+// a route's painted track crosses itself. This can be a balloon loop, a hairpin
+// wrap, or the fused-station hook octi can manufacture at a station group.
+// Self-INTERSECTION (a proper crossing) is the right signal, not self-proximity.
+// An out-and-back route retraces itself, so its two legs are COINCIDENT (not
+// crossing) over most of their length. Proximity drowns in that overlap, but a
+// real loop crosses at a point the overlap never does.
 // Coincident/collinear segments are not proper crossings, so the retrace is
 // correctly ignored while the loop is caught.
 
@@ -21,9 +21,9 @@ const num = (k: string, d: number): number => {
 const MERGE = num('OCTI_LOOP_MERGE', 12); // crossings within this px are one loop
 const ARTIFACT_DIAM = num('OCTI_LOOP_ARTDIAM', 300); // enclosed diameter ≥ this = likely a genuine route loop
 
-/** artifact = a small self-crossing loop (the actionable kind — fused-station
- *  hooks, balloon loops). bigloop = a map-scale self-crossing, usually a
- *  genuine near-circular route rather than an artifact. */
+/** artifact = a small self-crossing loop (the actionable kind, such as
+ *  fused-station hooks and balloon loops). bigloop = a map-scale self-crossing,
+ *  usually a genuine near-circular route rather than an artifact. */
 export type LoopKind = 'artifact' | 'bigloop';
 
 export interface PaintedLoop {
@@ -71,7 +71,7 @@ function crossingsOf(pts: Pixel[]): Array<{ at: Pixel; loopArc: number; diameter
     const ay0 = Math.min(pts[i][1], pts[i + 1][1]);
     const ay1 = Math.max(pts[i][1], pts[i + 1][1]);
     for (let j = i + 2; j + 1 < n; j++) {
-      if (i === 0 && j + 1 === n - 1) continue; // closed loop shares endpoints — not a crossing
+      if (i === 0 && j + 1 === n - 1) continue; // closed loop shares endpoints, not a crossing
       // AABB reject
       if (Math.max(pts[j][0], pts[j + 1][0]) < ax0 || Math.min(pts[j][0], pts[j + 1][0]) > ax1) continue;
       if (Math.max(pts[j][1], pts[j + 1][1]) < ay0 || Math.min(pts[j][1], pts[j + 1][1]) > ay1) continue;

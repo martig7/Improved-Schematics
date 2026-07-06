@@ -34,7 +34,7 @@ test('probeVectorSchema: recognizes a Protomaps-style source by its natural laye
 });
 
 test('probeVectorSchema: recognizes the Subway Builder general-tiles schema', () => {
-  // Real shape captured from a running game (map://SEA/tiles/{z}/{x}/{y}.mvt).
+  // Real shape captured from a running game.
   const style = {
     sources: {
       'general-tiles': { type: 'vector', tiles: ['map://SEA/tiles/{z}/{x}/{y}.mvt'] },
@@ -59,7 +59,7 @@ test('probeVectorSchema: recognizes the Subway Builder general-tiles schema', ()
 });
 
 test('probeVectorSchema: modded Subway Builder map (green in landuse, parks empty)', () => {
-  // Real shape from a modded LIV map (http tile server; parks layer present but empty).
+  // Real shape from a modded map served over http, where the parks layer is present but empty.
   const style = {
     sources: { 'general-tiles': { type: 'vector', tiles: ['http://127.0.0.1:51534/LIV/{x}/{y}/{z}.mvt'] } },
     layers: [

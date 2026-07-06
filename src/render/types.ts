@@ -22,7 +22,7 @@ export interface StationPoint {
   coords: Coordinate;
 }
 
-/** GeoJSON water input — Polygon features whose first ring is the exterior and the rest are holes. */
+/** GeoJSON water input. Polygon features whose first ring is the exterior and the rest are holes. */
 export interface WaterFeature {
   type: 'Feature';
   properties: Record<string, unknown>;
@@ -65,75 +65,75 @@ export interface SchematicOptions {
   showStations: boolean;
   showLabels: boolean;
   /** How to render the fallback marker for an over-dense bundle that can't seat
-   *  octilinearly (a "megabox"): 'box' = the opaque rounded rectangle (default),
-   *  'curve' = a soft squircle blob of the same footprint. DRAW-TIME only — it
+   *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
+   *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It
    *  does not change the layout, so it's excluded from the cache fingerprint and
-   *  toggling it just repaints. Default 'box' (byte-identical to before). */
+   *  toggling it just repaints. Default 'box'. */
   megaFallback?: 'box' | 'curve';
-  /** Diagnostic: overlay the Hanan routing grid underneath the routes
-   *  (Smoothed mode only — that's the only renderer that uses one). */
+  /** Diagnostic: overlay the Hanan routing grid underneath the routes.
+   *  Smoothed mode only, since that's the only renderer that uses one. */
   showGrid?: boolean;
   /** When true, geographic + smoothed modes run the LOOM topo merge so
-   *  parallel corridors bundle in the graph. Default off until tuned. */
+   *  parallel corridors bundle in the graph. Default off. */
   useTopoMerge?: boolean;
   /** Which render mode to use. Defaults to 'geographic'. */
   mode: RenderMode;
   /** Smoothed mode only: density-warp strength (LOOM warp alpha). 0 disables
-   *  the warp (geography stays faithful); higher magnifies dense cores more.
+   *  the warp, keeping geography faithful. Higher magnifies dense cores more.
    *  Default 0.8. Ignored by the geographic/schematic renderers. */
   warpAlpha?: number;
   /** Smoothed mode only: how strongly octi keeps each line on its true
-   *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher = more
-   *  realistic courses; 0 = freely octilinear. Default 0.05. */
+   *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher gives more
+   *  realistic courses; 0 is freely octilinear. Default 0.05. */
   geographicAffinity?: number;
-  /** Smoothed mode only: box-warp strength — the demand MULTIPLIER on top of
-   *  each dense box's survival need (densityBoxWarp `userMult`, ≥0). 1 = expand
-   *  each box by exactly what its edges need to clear the octi contraction
-   *  threshold, no more; higher adds aesthetic magnification (more rectilinear
+  /** Smoothed mode only: box-warp strength, the demand MULTIPLIER on top of
+   *  each dense box's survival need (densityBoxWarp `userMult`, ≥0). At 1 each
+   *  box expands by exactly what its edges need to clear the octi contraction
+   *  threshold and no more. Higher adds aesthetic magnification (more rectilinear
    *  room, decluttering dense hubs) at the cost of geographic faithfulness near
-   *  them; the demand formula clamps at >= 1 internally, so values below 1 only
-   *  soften the aesthetic headroom, never revoke survival room. Default 1.
+   *  them. The demand formula clamps at >= 1 internally, so values below 1 only
+   *  soften the aesthetic headroom and never revoke survival room. Default 1.
    *  Pairs with boxGrowth (below) so the expanded cores grow the map rather
    *  than compress the surround. */
   boxExpand?: number;
   /** Smoothed mode only: the MAX per-axis canvas growth the box warp may use to
    *  absorb its demanded expansion (≥1; densityBoxWarp `maxGrowth`). Demand
    *  beyond this cap shrinks back globally instead of growing the canvas
-   *  further. Raised alongside boxExpand so stronger core expansion adds room
+   *  further. Raise alongside boxExpand so stronger core expansion adds room
    *  instead of crushing the far field. Default 2. */
   boxGrowth?: number;
-  /** Smoothed mode only: the box-warp density CUTOFF (densityBoxWarp `frac`, 0–1) —
-   *  a cell counts as "dense" (and joins a warp box) when its smoothed density is at
-   *  least this fraction of the peak. Lower = looser cutoff → more/larger boxes
-   *  (broader warping); higher = only the densest cores → fewer/smaller boxes.
-   *  Default 0.4. */
+  /** Smoothed mode only: the box-warp density CUTOFF (densityBoxWarp `frac`, 0–1).
+   *  A cell counts as "dense" (and joins a warp box) when its smoothed density is at
+   *  least this fraction of the peak. Lower is a looser cutoff, giving more/larger
+   *  boxes (broader warping); higher keeps only the densest cores, giving
+   *  fewer/smaller boxes. Default 0.4. */
   boxFrac?: number;
   /** Smoothed mode only (BETA): build one graph node per member STATION of a
    *  multi-station complex (platforms at their real coordinates) instead of one
-   *  node per station group — parallel trunks through a complex (Times Sq) stay
+   *  node per station group. Parallel trunks through a complex stay
    *  distinct corridors, and the capsule placer joins the platforms back into
    *  one marker via stopNodes. Off (default) keeps the classic group-center
-   *  nodes. Bakes into the layout → in the cache fingerprint; toggling
+   *  nodes. Bakes into the layout, so it's in the cache fingerprint and toggling
    *  regenerates. Default false. */
   stationSplit?: boolean;
-  /** Landmass style for the geography backdrop (smoothed mode). DRAW-TIME only —
-   *  like megaFallback it never changes the layout, is excluded from the cache
+  /** Landmass style for the geography backdrop (smoothed mode). Draw-time only.
+   *  Like megaFallback it never changes the layout, is excluded from the cache
    *  fingerprint, and toggling it just repaints. 'faithful' (default) draws the
    *  raw projected polygons; 'rounded' culls small features, simplifies each
-   *  coastline to few segments and rounds every corner (MTA-style blobs);
-   *  'diagram' additionally snaps edges to the octilinear grid (TfL/Sound
-   *  Transit look). */
+   *  coastline to few segments and rounds every corner into soft blobs;
+   *  'diagram' additionally snaps edges to the octilinear grid for a
+   *  straight-edged schematic look. */
   landmass?: 'faithful' | 'rounded' | 'diagram';
   /** Landmass simplification strength, 0..1 (0 = subtle, 1 = full diagram
    *  blobs). Scales the wiggle-erase tolerance, corner radius and the
    *  small-feature cull floor together. Default 0.5. */
   landmassDetail?: number;
-  /** Detail-area sub-render (set by cropSubgraph, never on a main render): the
-   *  cropped geography's bbox is the drawn box's geographic preimage — the
+  /** Detail-area sub-render (set by cropSubgraph, never on a main render). The
+   *  cropped geography's bbox is the drawn box's geographic preimage, the
    *  region the popout must show. Treat its four corners as CONTENT in the
-   *  post-warp re-fit so the whole drawn region stays on-canvas; otherwise a
+   *  post-warp re-fit so the whole drawn region stays on-canvas. Otherwise a
    *  box with empty margins (no water crossing, no stations) projects past the
-   *  content-fitted canvas and geoBboxFrame gets clamped — the popout then
+   *  content-fitted canvas and geoBboxFrame gets clamped, so the popout then
    *  shows a truncated, wrong-aspect region. Not for main renders: the city
    *  bbox has slack past the real polygons and would shrink the content fit. */
   detailCrop?: boolean;

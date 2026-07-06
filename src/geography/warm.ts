@@ -1,11 +1,10 @@
-// Background geography warm-up — decoupled from the panel.
+// Background geography warm-up, decoupled from the panel.
 //
 // The harvest's inputs (the game map, the city code, and the demand/stations used for
-// the bbox) aren't all ready the instant the game loads. The panel used to drive the
-// retry itself, but that retry died the moment the panel closed — so a too-early first
-// open left no backdrop and only a reopen (with the inputs now ready) recovered. Here we
-// run the retry at the module level, kicked off from city load, so the per-city cache is
-// warm by the time the panel opens AND the work survives the panel being closed/reopened.
+// the bbox) aren't all ready the instant the game loads, so the harvest must retry until
+// they are. The retry runs at the module level, kicked off from city load, so the
+// per-city cache is warm by the time the panel opens and the work survives the panel
+// being closed and reopened.
 
 import { generateGeography, peekGeography } from './geography';
 import { computeHarvestBbox } from './harvestBbox';
@@ -16,13 +15,13 @@ const warming = new Set<string>(); // cities with an in-flight warm-up loop (ded
 /** Kick off (or no-op if already running) a background harvest+cache for `cityCode`,
  *  retrying until the map + city + demand/stations are all ready. Fire-and-forget;
  *  generateGeography caches success, so the panel's peekGeography picks it up. Safe to
- *  call repeatedly (from city load AND panel open) — the `warming` guard dedupes. */
+ *  call repeatedly (from city load and panel open); the `warming` guard dedupes. */
 export function warmGeography(cityCode: string | null | undefined): void {
   if (!cityCode || warming.has(cityCode)) return;
   if (peekGeography(cityCode)) return; // already harvested earlier this session
   warming.add(cityCode);
   let attempts = 0;
-  const MAX_ATTEMPTS = 180; // generous — covers slow first loads / a late-servable tile backend
+  const MAX_ATTEMPTS = 180; // generous cap covering slow first loads and a late-servable tile backend
   const DELAY = 2000; // gentle cadence: harvesting spins up a throwaway offscreen map each try
   const stop = (): void => { warming.delete(cityCode); };
   const schedule = (): void => { if (attempts++ < MAX_ATTEMPTS) setTimeout(tick, DELAY); else stop(); };

@@ -229,9 +229,9 @@ test('blocks: endB-side join — same geometry, same drawn sides', () => {
 });
 
 test('blocks: look-back junctions add zero phantom counts', () => {
-  // Original lookahead fixture under OCTI_DEBUG: exactly ONE planned
+  // Lookahead fixture under OCTI_DEBUG: exactly ONE planned
   // crossing (the s-split is structurally non-contiguous) and ZERO cycle
-  // residuals — the trunk's look-back at its own settled feeders must not
+  // residuals. The trunk's look-back at its own settled feeders must not
   // inflate either counter.
   const layout = makeLayout(
     [['a0', 0, -10], ['b0', 0, 10], ['j', 10, 0], ['s', 30, 0], ['n1', 40, -10], ['n2', 40, 10]],
@@ -321,7 +321,7 @@ test('blocks: write-back parity — idempotent and membership-preserving', () =>
 
 test('blocks: mirrored parts — opposed edge orientations mirror the order', () => {
   // ea: a->n, eb: b->n (both INTO n), same set: one corridor; written orders
-  // must mirror across the flip exactly like untangle's contraction test
+  // must mirror across the flip
   const layout = makeLayout(
     [['a', 0, 0], ['n', 10, 0], ['b', 20, 0]],
     [
@@ -340,11 +340,11 @@ test('blocks: mirrored parts — opposed edge orientations mirror the order', ()
 });
 
 test('blocks: round-trip traversals never duplicate lines in a block (CPW regression)', () => {
-  // The in-game defect (NYC CPW 96-145 St): every game route is a ROUND
-  // TRIP, and last-write-wins flow classification made B/D look like they
-  // enter the shared corridor at BOTH ends — the 103 St join then re-added
-  // them, drawing a 7-slot bundle for 5 lines that weaved at every seam.
-  // Shape: bronx feeder {B,D} joins at `top`; north stub {A,C} feeds too;
+  // Every game route is a ROUND TRIP. Under last-write-wins flow
+  // classification a line looks like it enters the shared corridor at
+  // BOTH ends, so a downstream join re-adds it and inflates the bundle
+  // to more slots than there are lines, weaving at every seam.
+  // Shape: one feeder {B,D} joins at `top`; a second stub {A,C} feeds too;
   // shared trunk top->bot carries {A,B,C,D}; split at `bot` into {A,B} and
   // {C,D}. ALL traversals ride out AND back.
   const rt = (steps: TraversalStep[]): TraversalStep[] => [

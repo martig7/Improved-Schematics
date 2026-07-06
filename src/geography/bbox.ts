@@ -2,9 +2,9 @@ import type { BoundingBox } from '../types/core';
 import type { GeoPolyFeature } from './types';
 
 /** Axis-aligned [minLng,minLat,maxLng,maxLat] over every coordinate in the given
- *  polygon features, or null if there are none. This is the real data extent —
- *  ≈ the city extent, since the city's tiles only carry features inside it — so
- *  it frames the map without needing a separately-known city bbox. */
+ *  polygon features, or null if there are none. This is the real data extent. It
+ *  approximates the city extent because the input features are confined to the city,
+ *  so it frames the map without needing a separately-known city bbox. */
 export function featuresBbox(features: GeoPolyFeature[]): BoundingBox | null {
   let minLng = Infinity;
   let minLat = Infinity;

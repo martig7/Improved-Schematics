@@ -1,11 +1,11 @@
 // Parse the renderer's SVG-string output into a Scene display list (sceneIR.ts).
 //
-// This runs ONCE per layout change (the same cadence as the panel's old
-// `innerHTML = svg`), but the result drives a canvas instead of the live DOM, so
-// pan/zoom/cutout afterwards cost nothing in the DOM. The renderer's markup is
-// generated and regular (see renderOctilinear.ts / renderGeographic.ts /
-// stops.ts / labels.ts / geographyBackdrop.ts), so a focused, dependency-free
-// tokenizer is sufficient and — unlike DOMParser — runs in node for tests.
+// This runs ONCE per layout change, but the result drives a canvas instead of
+// the live DOM, so pan/zoom/cutout afterwards cost nothing in the DOM. The
+// renderer's markup is generated and regular (see renderOctilinear.ts /
+// renderGeographic.ts / stops.ts / labels.ts / geographyBackdrop.ts), so a
+// focused, dependency-free tokenizer is sufficient. Unlike DOMParser, it also
+// runs in node for tests.
 //
 // Layer + worldScale are derived from the enclosing `<g class="...">` chain,
 // reproducing the panel's stroke-scaling rule (constant screen size unless

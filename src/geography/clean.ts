@@ -5,7 +5,7 @@ import { ringArea } from '../water/bodies';
 
 export interface CleanOptions {
   /** Drop a polygon whose outer ring is smaller than this fraction of the total
-   *  map (bbox) area. Scale-invariant — trims proportionally on any city size. */
+   *  map (bbox) area. Scale-invariant, so it trims proportionally at any map size. */
   minAreaFrac: number;
   /** Douglas–Peucker tolerance in meters (0 = no simplification). */
   simplifyM: number;
@@ -55,7 +55,7 @@ export function cleanFeatures(features: GeoPolyFeature[], bbox: BoundingBox, opt
 }
 
 // A ring that nearly reverses (turns > ~150°) at a vertex is doubling back on
-// itself — a needle tip or backtrack. Kept conservative (real corners turn less)
+// itself, a needle tip or backtrack. Kept conservative (real corners turn less)
 // because the renderer's nonzero fill already absorbs self-overlap. cos(150°)≈-0.87.
 const DESPIKE_COS_TURN = -0.85;
 

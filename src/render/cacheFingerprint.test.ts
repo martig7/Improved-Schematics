@@ -48,7 +48,7 @@ test('fingerprint changes on each layout-affecting input', () => {
 test('fingerprint ignores draw-only changes (none of station name... wait, name IS in it)', () => {
   // Draw-time toggles are NOT in FingerprintInput at all (showLabels/labelScale/
   // stationRadius), so they cannot affect the fp by construction. Confirm a pure
-  // geography-bbox drift (same feature counts) does NOT change the fp — bbox is
+  // geography-bbox drift (same feature counts) does NOT change the fp. bbox is
   // intentionally excluded as it drifts with demand.
   const ref = fingerprintInputs(base()).fp;
   const drift = base();

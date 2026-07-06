@@ -121,8 +121,8 @@ test('buildDensityWarp2D: empty samples or alpha<=0 → identity', () => {
 });
 
 test('buildDensityWarp2D: iterating expands more than single-pass (beats global-α starvation), still fold-free', () => {
-  // an EXTREME spike that, single-pass, starves the global fold-clamp (mirrors
-  // real data) + a secondary modest cluster we want to expand.
+  // an EXTREME spike that, single-pass, starves the global fold-clamp, plus a
+  // secondary modest cluster we want to expand.
   const samples: Pixel[] = [];
   for (let k = 0; k < 400; k++) samples.push([50, 50]); // extreme spike
   for (let k = 0; k < 60; k++) samples.push([20 + (k % 8), 75 + ((k / 8) | 0)]); // secondary cluster

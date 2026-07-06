@@ -1,37 +1,37 @@
 // Simplified-landmass stylizer: turns projected water/park rings into the
-// rounded, low-detail blobs real metro diagrams use (MTA / TfL / Sound Transit
-// style). Three tunable primitives, applied per ring at DRAW time (pixel space,
-// after projection+warp — never touches the layout):
+// rounded, low-detail blobs real metro diagrams use. Three tunable primitives,
+// applied per ring at DRAW time (pixel space, after projection and warp). It
+// never touches the layout.
 //
-//   1. CULL    — rings whose |area| is below `minAreaPx2` vanish outright
-//                (ponds, islets, sliver parks — diagram maps don't show them).
-//   2. SIMPLIFY— Visvalingam–Whyatt: repeatedly drop the vertex whose "effective
-//                triangle" (with its two neighbours) has the smallest area,
-//                until every remaining vertex matters by at least
+//   1. CULL    is where rings whose |area| is below `minAreaPx2` vanish
+//                outright (ponds, islets, sliver parks that diagram maps omit).
+//   2. SIMPLIFY runs Visvalingam–Whyatt: repeatedly drop the vertex whose
+//                "effective triangle" (with its two neighbours) has the smallest
+//                area, until every remaining vertex matters by at least
 //                `simplifyPx²`. VW eats coastline wiggles while keeping the
-//                blob's silhouette — much blobbier than Douglas-Peucker at the
-//                same vertex count. A cheap radial pre-filter bounds the O(n²)
+//                blob's silhouette, blobbier than Douglas-Peucker at the same
+//                vertex count. A cheap radial pre-filter bounds the O(n²)
 //                min-scan on tile-resolution rings.
-//   3. ROUND   — every remaining corner becomes a quadratic fillet of radius
+//   3. ROUND    turns every remaining corner into a quadratic fillet of radius
 //                `roundPx` (clamped to half of each adjacent segment), so the
 //                minimal polygon reads as a soft blob, not a shard.
 //
-// Optional `octi`: snap edge directions to 45° multiples before rounding (the
-// TfL/Sound-Transit signature). The greedy resnap accumulates a closure error;
-// it is distributed linearly over the vertices (a slight shear nobody sees at
-// fillet radii) so the ring stays closed.
+// Optional `octi`: snap edge directions to 45° multiples before rounding. The
+// greedy resnap accumulates a closure error; it is distributed linearly over
+// the vertices (a slight shear invisible at fillet radii) so the ring stays
+// closed.
 //
 // All arithmetic is + − × ÷ √ min max on plain numbers in fixed iteration
-// order — deterministic across engines, same as the layout pipeline.
+// order, deterministic across engines, same as the layout pipeline.
 
 export type Pt = [number, number];
 
 /** UI-level landmass style: 'faithful' = the raw projected polygons,
  *  'rounded' = culled + simplified + filleted blobs, 'diagram' = rounded with
- *  edges snapped to the octilinear grid (the TfL/Sound-Transit look). */
+ *  edges snapped to the octilinear grid. */
 export type LandmassMode = 'faithful' | 'rounded' | 'diagram';
 
-/** Landmass knobs in BASE-CANVAS units (px at a 2700-wide render) — the draw
+/** Landmass knobs in BASE-CANVAS units (px at a 2700-wide render). The draw
  *  layer rescales them by the actual canvas so a grown map keeps the same look. */
 export interface LandmassParams {
   simplify: number;
@@ -46,10 +46,10 @@ export function landmassParams(mode: LandmassMode, strength: number): LandmassPa
   if (mode === 'faithful') return undefined;
   const s = Math.max(0, Math.min(1, strength));
   const octi = mode === 'diagram';
-  // The octi snap reads clean only on very generalized outlines — the diagram
-  // mode simplifies ~1.7x harder at the same slider spot. (No extra cull
+  // The octi snap reads clean only on very generalized outlines, so diagram
+  // mode simplifies ~1.7x harder at the same slider spot. No extra cull
   // multiplier: the morphological opening already erases peripheral slivers,
-  // and an inflated floor was what ate protected landmarks in diagram mode.)
+  // and an inflated floor can eat protected landmarks in diagram mode.
   const tol = (6 + 44 * s) * (octi ? 1.7 : 1);
   return {
     simplify: tol,
@@ -71,21 +71,21 @@ export interface LandmassStyle {
   octi?: boolean;
   /** Local importance 0..1 at a render-px point. Where it's high (the warp's
    *  dense boxes, station clusters) the simplify/cull thresholds are divided by
-   *  (1 + PROTECT·imp)² — heavily-used areas keep their geography (Lake-Union
-   *  class landmarks) while the periphery generalizes to blobs. Absent = the
-   *  uniform thresholds everywhere. */
+   *  (1 + PROTECT·imp)². Heavily-used areas keep their geography while the
+   *  periphery generalizes to blobs. Absent = the uniform thresholds
+   *  everywhere. */
   importance?: (x: number, y: number) => number;
   /** Points that must stay OUTSIDE the styled polygons (station markers that
    *  are on land in the faithful geography). After the full pipeline, any of
-   *  these caught inside gets a notch carved around it — simplification may
+   *  these caught inside gets a notch carved around it. Simplification may
    *  reshape a shoreline but may never move a station into the water. */
   dryPoints?: readonly Pt[];
-  /** Water only: never CREATE lakes — each originally-connected water body
+  /** Water only: never CREATE lakes. Each originally-connected water body
    *  either survives connected (severed channels are reconnected by geodesic
    *  corridors along the real course) or is swallowed entirely. */
   keepConnected?: boolean;
   /** The harvested data region's outline in render px (rotated cities). Ring
-   *  vertices near it are the DATA CUTOFF, not shapes to stylize — they get
+   *  vertices near it are the DATA CUTOFF, not shapes to stylize. They get
    *  pinned exactly like the canvas rim, so the styled water always meets the
    *  drawn land hull instead of swinging across it. */
   hullPx?: readonly Pt[];
@@ -98,13 +98,13 @@ export interface LandmassStyle {
  *  raster's staircase triangles have area cell²/2, and the weighted threshold
  *  must stay above them or protected regions expose raw raster stairs
  *  (cell <= tol/5 ⇒ stair area <= tol²/50; the cap keeps the threshold at
- *  tol²/6, far above). The CULL doesn't use this gain at all — see cullOk:
+ *  tol²/6, far above). The CULL doesn't use this gain at all (see cullOk):
  *  protected regions trust the morphological opening instead of an area floor. */
 const PROTECT = 3;
 const PROTECT_MAX_VW = 6;
 
 /** Signed shoelace area (px²): >0 counter-clockwise in SVG's y-down space is
- *  negative — callers only use |area|, winding is preserved untouched. */
+ *  negative. Callers only use |area|, winding is preserved untouched. */
 export function ringArea(ring: readonly Pt[]): number {
   let s = 0;
   for (let i = 0; i < ring.length; i++) {
@@ -122,9 +122,9 @@ const triArea = (a: Pt, b: Pt, c: Pt): number => {
 
 /** Visvalingam–Whyatt on a CLOSED ring: drop the globally-least-significant
  *  vertex until every survivor's effective area >= areaThresh, or `minVerts`
- *  remain. Linked-list + full min-scan per removal — O(k·n) for k removals,
+ *  remain. Linked-list + full min-scan per removal, O(k·n) for k removals,
  *  fine on union-traced rings. `weight` (>= 1) multiplies a vertex's effective
- *  area — protected (important-area) vertices resist removal proportionally. */
+ *  area, so protected (important-area) vertices resist removal proportionally. */
 export function simplifyVW(
   ring: readonly Pt[],
   areaThresh: number,
@@ -133,7 +133,7 @@ export function simplifyVW(
   /** Points that must never change sides: removing a vertex flips EXACTLY the
    *  triangle (prev, i, next) between inside and outside, so a removal whose
    *  triangle contains one of these is vetoed. This is what keeps a styled
-   *  shoreline from flooding a land station — a peninsula narrower than the
+   *  shoreline from flooding a land station, since a peninsula narrower than the
    *  tolerance is one removal away from becoming water. */
   avoidPoints?: readonly Pt[],
 ): Pt[] {
@@ -200,7 +200,7 @@ export function simplifyVW(
 }
 
 /** Drop near-degenerate edges and straight-through vertices (incoming and
- *  outgoing edges colinear, same direction) — fewer corners for the fillets. */
+ *  outgoing edges colinear, same direction) for fewer corners at the fillets. */
 function cleanRing(pts: readonly Pt[]): Pt[] {
   const merged: Pt[] = [];
   for (const p of pts) {
@@ -231,11 +231,11 @@ function cleanRing(pts: readonly Pt[]): Pt[] {
  *  schematization): each edge is assigned its nearest 45° direction, then
  *  vertex positions solve
  *      min Σ w_i·|p_i − v_i|²  +  λ Σ_edges ((p_{i+1} − p_i)·n_e)²
- *  where n_e is the assigned direction's normal — edges become octilinear
+ *  where n_e is the assigned direction's normal. Edges become octilinear
  *  (their off-axis component is crushed) while every vertex stays pulled to
  *  its TRUE position. Unlike a walk-and-snap (dead reckoning), positional
- *  error CANNOT accumulate along the ring — the previous snap drifted
- *  coastlines by hundreds of px mid-ring and put stations in the water.
+ *  error CANNOT accumulate along the ring, which otherwise drifts coastlines
+ *  far mid-ring and can put stations in the water.
  *  `anchor` adds per-vertex anchor weight on top of the base 1 (importance:
  *  dense-core shorelines barely move at all). Deterministic: fixed rounds of
  *  direction assignment, fixed Gauss–Seidel sweeps in index order. */
@@ -421,10 +421,10 @@ export function rasterizeRings(
 
 /** Spatially-varying morphological OPENING on the raster (in place): erode by
  *  radius(x,y), then dilate the survivors back by the same local radius. This
- *  is the feature-scale generalization step — anything thinner than 2·radius
- *  vanishes, everything else keeps its footprint — and because the radius
- *  shrinks where importance is high, a narrow-but-important channel (the Lake
- *  Union class) survives while peripheral slivers are wiped. Chebyshev chamfer
+ *  is the feature-scale generalization step. Anything thinner than 2·radius
+ *  vanishes; everything else keeps its footprint. Because the radius
+ *  shrinks where importance is high, a narrow-but-important channel
+ *  survives while peripheral slivers are wiped. Chebyshev chamfer
  *  distance (two passes each way), deterministic. */
 export function morphOpen(r: GeoRaster, radiusPx: (x: number, y: number) => number): void {
   const { grid, W, H, gx0, gy0, cell } = r;
@@ -561,7 +561,7 @@ export function windingAt(rings: readonly (readonly Pt[])[], x: number, y: numbe
 
 /** Final dry-point guarantee (mutates `rings`): for every dry point the styled
  *  polygons swallowed, carve a triangular notch around it in the nearest ring
- *  edge — with the fillet pass after, it reads as a small bay. Simplification
+ *  edge. With the fillet pass after, it reads as a small bay. Simplification
  *  and the octilinear solve keep positions CLOSE, but a long straight edge can
  *  still cut across a curving shore between anchored vertices; this pass turns
  *  "stations stay on land" from likely into guaranteed. Deterministic: points
@@ -615,7 +615,7 @@ function repairOne(rings: Pt[][], s: Pt, margin: number, round: number): void {
       const b = ring[(bEdge + 1) % ring.length];
       const d = Math.sqrt(bD2);
       // direction from the boundary toward (and past) the point; when the
-      // point sits ON the boundary, fall back to the edge normal — the retry
+      // point sits ON the boundary, fall back to the edge normal. The retry
       // flips it via the winding re-test if the first side was wrong
       let ux: number;
       let uy: number;
@@ -708,15 +708,15 @@ export function filletPathD(ring: readonly Pt[], r: number): string {
   return d + 'Z ';
 }
 
-/** Continuity constraint (water): the stylizer must not CREATE lakes — a
+/** Continuity constraint (water): the stylizer must not CREATE lakes. A
  *  connected body of water either survives CONNECTED or vanishes entirely.
  *  The morphological opening severs channels narrower than its local radius,
  *  which would leave a river as a chain of disconnected "lakes". After the
  *  opening (mutates `post` in place):
  *    1. label the connected components of the ORIGINAL raster and of the
  *       survivor (4-connectivity);
- *    2. survivor pieces that couldn't justify themselves alone (pieceOk —
- *       mirrors the ring cull) are dropped;
+ *    2. survivor pieces that couldn't justify themselves alone are dropped
+ *       (pieceOk mirrors the ring cull);
  *    3. per original component, if >= 2 worthy pieces remain they are
  *       RECONNECTED by geodesic corridors: BFS shortest paths INSIDE the
  *       original water mask (so a corridor can never invent water where
@@ -820,8 +820,8 @@ export function enforceContinuity(
       connected.add(hitPiece);
       // backtrack: fill a 3-wide corridor along the path, CLAMPED to the
       // original water so reconnection never floods faithful land. Veto
-      // keep-points are emitted ONLY for genuinely re-filled (throat) cells:
-      // most of a path runs through wide surviving water, and blanketing it
+      // keep-points are emitted ONLY for genuinely re-filled (throat) cells.
+      // Most of a path runs through wide surviving water, and blanketing it
       // with veto points would freeze VW along every river system.
       const path: number[] = [];
       const wasEmpty: boolean[] = [];
@@ -865,20 +865,20 @@ export function stylizeRingsPathD(
   const areaThresh = style.simplifyPx * style.simplifyPx;
   const imp = style.importance;
   // Raster resolution: fine enough that the morphological opening's SMALL radii
-  // (protected regions) are resolvable — cell ≈ tol/5, floor 3, cap 8.
+  // (protected regions) are resolvable. cell ≈ tol/5, floor 3, cap 8.
   const cell = Math.min(8, Math.max(3, style.simplifyPx / 5));
   const raster = rasterizeRings(rings, extent, cell);
   if (!raster) return '';
   // Feature-scale generalization: opening with radius tol/2, scaled DOWN by
-  // importance to ZERO at full importance — thin peripheral slivers vanish,
+  // importance to ZERO at full importance. Thin peripheral slivers vanish,
   // while inside the dense core the geography's true shape stands (the VW pass
   // still smooths its outline). QUADRATIC falloff: station kernels peak on the
-  // shores, so the middle of an important lake only sees imp ~0.5-0.7 — a
-  // linear falloff still erodes its 40-60px arms at strong sliders, and losing
-  // the arms fragments (then loses) the lake. (1-imp)² keeps mid-importance
-  // water intact and concentrates the full radius on the true periphery. This
-  // (not the cull) is what preserves Lake-Union-class water through the
-  // diagram modes.
+  // shores, so the middle of an important body of water sees only moderate
+  // importance. A linear falloff still erodes its arms at strong sliders, and
+  // losing the arms fragments (then loses) the body. (1-imp)² keeps
+  // mid-importance water intact and concentrates the full radius on the true
+  // periphery. This (not the cull) is what preserves landmark-scale water
+  // through the diagram modes.
   const sf0 = Math.min(extent.w, extent.h) / 2700;
   const dust0 = Math.max(9 * cell * cell, Math.min(0.36 * areaThresh, 2600 * sf0 * sf0));
   const pieceOk = (areaPx2: number, bestImp: number): boolean => {
@@ -898,13 +898,13 @@ export function stylizeRingsPathD(
   const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];
   const unified = traceRaster(raster);
   // Canvas-edge pin: the geography's outer boundary at the canvas rim is the
-  // DATA cutoff (the harvest region's edge), not a shape to stylize. With the
-  // map rotated into the game's bearing that cutoff crosses the canvas as an
-  // off-axis diagonal — the octi snap quantizing it to 45° (and VW cutting its
-  // corners) swung the ocean's edge across the canvas (fake land wedges in
-  // the water, paint past the canvas). Vertices in the rim band are pinned
-  // hard in both passes; the band is invisible (the viewBox ends at the
-  // canvas), so nothing octilinear is lost.
+  // DATA cutoff (the harvest region's edge), not a shape to stylize. When the
+  // map is rotated into a bearing that cutoff crosses the canvas as an
+  // off-axis diagonal. The octi snap quantizing it to 45° (and VW cutting its
+  // corners) would swing the water's edge across the canvas, painting fake
+  // land wedges in the water and paint past the canvas. Vertices in the rim
+  // band are pinned hard in both passes; the band is invisible (the viewBox
+  // ends at the canvas), so nothing octilinear is lost.
   const edgeM = cell * 2;
   const hullPts = style.hullPx;
   const hullNear = (x: number, y: number): boolean => {
@@ -939,13 +939,13 @@ export function stylizeRingsPathD(
   };
   // Cull floor, importance-aware: at imp 0 the full minArea floor (isolated
   // small blobs are noise); as the BEST importance along the ring rises the
-  // floor falls off quadratically to a dust floor — whatever the opening kept
-  // in the dense core IS the landmark set, and a lake system the opening
+  // floor falls off quadratically to a dust floor. Whatever the opening kept
+  // in the dense core IS the landmark set, and a water system the opening
   // fragmented at its channels must not lose its pieces one by one to an area
-  // test. One shore in the core keeps the lake. The dust floor scales with the
+  // test. One shore in the core keeps the body. The dust floor scales with the
   // tolerance ((0.6·tol)², so sub-landmark specks don't ride along) but is
-  // CAPPED at a canvas-relative landmark size — full importance must keep a
-  // Lake-Union-scale feature at EVERY slider position, or the strength slider
+  // CAPPED at a canvas-relative landmark size. Full importance must keep a
+  // landmark-scale feature at EVERY slider position, or the strength slider
   // quietly erases the exact landmarks the field exists to protect.
   const sf = Math.min(extent.w, extent.h) / 2700;
   const dust = Math.max(9 * cell * cell, Math.min(0.36 * areaThresh, 2600 * sf * sf));
@@ -977,7 +977,7 @@ export function stylizeRingsPathD(
     // Anchor weight rides importance: dense-core shorelines (where stations
     // sit near the water) get an 8x pull to their true position, so the
     // octilinear solve reshapes them without MOVING them. Rim vertices (the
-    // harvest-boundary cutoff) are pinned outright — see `pinned` above.
+    // harvest-boundary cutoff) are pinned outright; see `pinned` above.
     // Long edges are SUBDIVIDED first: the solve's direction penalty grows
     // with edge length², so a single long off-axis edge rotates wholesale and
     // sweeps water across hundreds of px of land (or vice versa). Sub-vertices
@@ -995,7 +995,7 @@ export function stylizeRingsPathD(
   }
   // LAST, so nothing downstream can undo it: no dry point may end up inside.
   // The fillet pass still runs after and rounds a notch apex back toward the
-  // water by ~0.35·radius — bake that into the clearance.
+  // water by ~0.35·radius, so that is baked into the clearance.
   if (style.dryPoints && style.dryPoints.length > 0) {
     repairDryPoints(finals, style.dryPoints, (style.dryMarginPx ?? 14) + style.roundPx * 0.35);
   }

@@ -1,10 +1,9 @@
 // Lane-curve geometry for marker placement (spec: docs/superpowers/specs/
-// 2026-06-12-dots-on-lanes-chain-dp-design.md §2.1, retained by the v2
-// rigid-row model). A dot's position is an arc parameter on its own lane
-// curve; the curve is the line's incident lane polylines chained through
-// the station and windowed to ±arcLimit of the stop anchor. The per-dot
-// chain solver that once lived here is superseded by rowPlace.ts
-// (2026-06-12-rigid-row-markers-design.md) and deleted.
+// 2026-06-12-dots-on-lanes-chain-dp-design.md §2.1). A dot's position is an
+// arc parameter on its own lane curve; the curve is the line's incident lane
+// polylines chained through the station and windowed to ±arcLimit of the stop
+// anchor. The per-dot chain solver lives in rowPlace.ts
+// (2026-06-12-rigid-row-markers-design.md).
 
 import type { Pixel } from './types';
 
@@ -51,9 +50,9 @@ export const curveTangent = (c: LaneCurve, t: number): Pixel => {
     else hi = mid;
   }
   // Expand past degenerate near-coincident vertices: join-curve bridging and
-  // arc clipping can leave sub-pixel micro-segments (e.g. a 8e-6 px jog at a
-  // seam) whose normalized direction is pure noise — a vertical lane then
-  // reads as horizontal, corrupting octilinear snaps and group ordering.
+  // arc clipping can leave sub-pixel micro-segments whose normalized direction
+  // is pure noise. Without this, a vertical lane can read as horizontal,
+  // corrupting octilinear snaps and group ordering.
   let dx = c.pts[hi][0] - c.pts[lo][0];
   let dy = c.pts[hi][1] - c.pts[lo][1];
   while (dx * dx + dy * dy < 0.25 && (lo > 0 || hi < c.pts.length - 1)) {
@@ -116,7 +115,7 @@ export const buildLaneCurve = (
   else if (sides.length === 1) pts = [...sides[0]].reverse();
   // orientation convention: the curve runs shorter-side → node → longer
   // side, so t increases toward the LONGER side. Consumers must not assume
-  // a geographic direction — curveTangent users sign-normalize, and group
+  // a geographic direction. curveTangent users sign-normalize, and group
   // reversal is explored by the solver's orientation mask.
   // (sides[0] is the longest side — reversing the shorter keeps that true)
   else pts = [...sides[1]].reverse().concat(sides[0]);

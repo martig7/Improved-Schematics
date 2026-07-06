@@ -4,11 +4,11 @@
  * A newspaper article template for in-game newspapers.
  *
  * Template variables available in `headline` and `content`:
- * - `{{STATIONS}}` — current station count
- * - `{{ROUTES}}` — current route count
- * - `{{CITY}}` — current city name
- * - `{{PASSENGERS}}` — total passenger count
- * - `{{RIDERSHIP}}` — ridership percentage
+ * - `{{STATIONS}}` is the current station count
+ * - `{{ROUTES}}` is the current route count
+ * - `{{CITY}}` is the current city name
+ * - `{{PASSENGERS}}` is the total passenger count
+ * - `{{RIDERSHIP}}` is the ridership percentage
  */
 export interface NewspaperTemplate {
   /** Article headline. Supports template variables. */
@@ -36,11 +36,11 @@ export interface NewspaperTemplate {
  * A social media tweet template for in-game tweets.
  *
  * Template variables available in `text`:
- * - `{{STATIONS}}` — current station count
- * - `{{ROUTES}}` — current route count
- * - `{{CITY}}` — current city name
- * - `{{PASSENGERS}}` — total passenger count
- * - `{{RIDERSHIP}}` — ridership percentage
+ * - `{{STATIONS}}` is the current station count
+ * - `{{ROUTES}}` is the current route count
+ * - `{{CITY}}` is the current city name
+ * - `{{PASSENGERS}}` is the total passenger count
+ * - `{{RIDERSHIP}}` is the ridership percentage
  */
 export interface TweetTemplate {
   /** Tweet text. Supports template variables. */

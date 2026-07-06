@@ -1,5 +1,5 @@
 /**
- * Improved Schematics — entry point.
+ * Improved Schematics entry point.
  *
  * Registers a floating panel that renders a geographic schematic of the
  * player's transit system with land/water context, plus an escape-menu button
@@ -27,11 +27,11 @@ if (!api) {
     /* localStorage may be unavailable in some embeddings; ignore. */
   }
 
-  // Track the current city so the panel can load that city's water layer. (Geography is
-  // harvested lazily — see geography/warm.ts, kicked off when the panel first opens, NOT
-  // at city load: harvesting during the game's heavy first-load gets "Unusable"/404 tiles
-  // and contends with the basemap. The warm-up still runs module-level, so it survives the
-  // panel being closed and a reopen picks up the cached result.)
+  // Track the current city so the panel can load that city's water layer. Geography is
+  // harvested lazily (see geography/warm.ts), kicked off when the panel first opens rather
+  // than at city load. Harvesting during the game's heavy first-load yields unusable/404
+  // tiles and contends with the basemap. The warm-up still runs module-level, so it survives
+  // the panel being closed and a reopen picks up the cached result.
   api.hooks.onCityLoad((cityCode) => {
     modState.cityCode = cityCode;
   });

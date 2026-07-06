@@ -67,8 +67,8 @@ export function resolveStationGroupsFromGameState(gameState: unknown): unknown[]
 }
 
 /**
- * Get the game's real `stationGroups` from the store — the same data the
- * in-game SchematicMapMenu uses (spatial proximity merges overlapping platforms,
+ * Get the game's real `stationGroups` from the store. This is the same data the
+ * in-game schematic menu uses (spatial proximity merges overlapping platforms,
  * not just shared trackGroupId). Normalizes each group's shape into our
  * StationGroup interface; computes `center` from member stations when absent.
  * Falls back to `buildStationGroups(stations)` if the API method isn't exposed
@@ -157,10 +157,9 @@ export function buildGroupMaps(
 }
 
 /** Station ids touched by at least one real route's stop nodes. Stations
- *  with no service must not count toward a group's member tally (a phantom
- *  routeless platform otherwise turns its group into an "interchange" and
- *  draws a capsule — Emerson St). Mirrors buildGroupMaps' constructed-only
- *  filter. */
+ *  with no service must not count toward a group's member tally. A phantom
+ *  routeless platform would otherwise turn its group into an "interchange" and
+ *  draw a capsule. Mirrors buildGroupMaps' constructed-only filter. */
 export function servedStationIds(stations: Station[], routes: Route[]): Set<string> {
   const stNodeToStation = new Map<string, string>();
   for (const s of stations) {
@@ -196,8 +195,8 @@ function groupEdgeKey(a: string, b: string): string {
 /** Equirectangular meters projection centered at `lat0` (degrees). */
 function projectFactory(lat0: number): (lng: number, lat: number) => [number, number] {
   const R = 6371e3;
-  // Quantize cos (see projection.ts): the single transcendental scaling every
-  // projected x; rounding makes the meters projection bit-identical cross-V8.
+  // Quantize cos (see projection.ts): it is the single transcendental scaling
+  // every projected x. Rounding makes the meters projection bit-identical cross-V8.
   const cosLat = Math.round(Math.cos((lat0 * Math.PI) / 180) * 1e9) / 1e9;
   return (lng, lat) => [(R * lng * Math.PI * cosLat) / 180, (R * lat * Math.PI) / 180];
 }
@@ -300,15 +299,14 @@ export function walkRouteVisits(
   const combos = route.stCombos ?? [];
   if (combos.length > 0) {
     // Positioning-leg suppression: a route cycle can contain non-revenue
-    // style hops — the NYC H's RETURN path detours 50km back across the
-    // city (Library Av -> Park Av, 45 scheduled minutes non-stop), painting
-    // the line through dozens of stations it never serves. Candidates are
-    // screened hard (way longer than the route's median leg, no reverse
-    // counterpart at group level — every genuine round-trip service leg has
-    // one), and then a SAFETY GUARD applies: a leg is only suppressed if
-    // the route's remaining legs still serve every station group and stay
-    // CONNECTED — the worst failure mode is extra ink, never a lost station
-    // or a broken line. Suppression marks a service break so no edge is
+    // style hops, a long return path detouring back across the map non-stop
+    // that would paint the line through many stations it never serves.
+    // Candidates are screened hard: way longer than the route's median leg,
+    // with no reverse counterpart at group level (every genuine round-trip
+    // service leg has one). A safety guard then applies: a leg is only
+    // suppressed if the route's remaining legs still serve every station group
+    // and stay CONNECTED. The worst failure mode is extra ink, never a lost
+    // station or a broken line. Suppression marks a service break so no edge is
     // painted across the gap.
     const dists = combos.map((c) => c.distance ?? 0).sort((x, y) => x - y);
     const median = dists[Math.floor(dists.length / 2)] ?? 0;
@@ -377,7 +375,7 @@ export function walkRouteVisits(
   return visits;
 }
 
-/** Collapse to stop visits only — matches how geographic mode connects stations. */
+/** Collapse to stop visits only. Matches how geographic mode connects stations. */
 export function stopOnlyVisits(visits: Visit[]): Visit[] {
   const out: Visit[] = [];
   for (const v of visits) {
@@ -421,8 +419,8 @@ export function buildTransitGraph(
      *  group survives as capsule/label metadata: insertStations aggregates
      *  the platform nodes back into ONE SupportStation whose per-line
      *  stopNodes land on the platforms, so parallel trunks through a complex
-     *  (Times Sq) enter the pipeline as genuinely distinct points and never
-     *  get warped into one artificial hairball point. */
+     *  enter the pipeline as genuinely distinct points and never
+     *  get warped into one artificial point. */
     perStationNodes?: boolean;
   },
 ): TransitGraph {
@@ -474,13 +472,13 @@ export function buildTransitGraph(
 
   // Routes that share a (non-empty) bullet AND colour MIGHT be one logical line the game
   // models as two routes (e.g. a loop's clockwise + counter-clockwise directions). Collapse
-  // such a pair onto ONE line id so it bundles as a single ribbon — but ONLY when they are
+  // such a pair onto ONE line id so it bundles as a single ribbon, but ONLY when they are
   // genuinely the same line: a loop's two directions cover the SAME undirected edge set, while
   // a BRANCH (a trunk diverging to two terminals, also two same-bullet+colour routes) covers
   // DIFFERENT edges. The line model is single-path, so collapsing a branch forces a tree into
   // it and silently drops the divergent arm (the other terminal goes non-contiguous). So
   // collapse only EQUAL-edge-set routes; a divergent route seeds its OWN line id and draws as a
-  // proper branch (the trunk edge carries both ids, which the LOOM/untangle layer Y-splits).
+  // proper branch. The trunk edge carries both ids, which a later ordering layer Y-splits.
   // Blank-bullet / edge-less routes never collapse.
   const canonLineId = new Map<string, string>(); // route.id -> canonical line id
   {
@@ -530,7 +528,7 @@ export function buildTransitGraph(
     for (let i = 0; i < visits.length - 1; i++) {
       const a = visits[i];
       const b = visits[i + 1];
-      if (a.breakAfter) continue; // service break — no edge across the gap
+      if (a.breakAfter) continue; // service break, no edge across the gap
       if (a.groupId === b.groupId) continue;
       const key = groupEdgeKey(a.groupId, b.groupId);
       let edge = edgeMap.get(key);

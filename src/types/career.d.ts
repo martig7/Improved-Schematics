@@ -30,9 +30,9 @@ export type MissionOperator = '>=' | '>' | '<=' | '<' | '==' | '!=';
 
 /**
  * Mission difficulty tier.
- * - `starter` — unlocked immediately (0 stars required)
- * - `growth` — unlocked at 4+ stars
- * - `mega` — unlocked at 10+ stars
+ * - `starter` unlocks immediately (0 stars required)
+ * - `growth` unlocks at 4+ stars
+ * - `mega` unlocks at 10+ stars
  */
 export type MissionTier = 'starter' | 'growth' | 'mega';
 
@@ -89,9 +89,9 @@ export interface MissionConfig {
   description: string;
   /**
    * Difficulty tier that controls when the mission is unlocked.
-   * - `starter` — 0 stars required
-   * - `growth` — 4+ stars required
-   * - `mega` — 10+ stars required
+   * - `starter` requires 0 stars
+   * - `growth` requires 4+ stars
+   * - `mega` requires 10+ stars
    */
   tier: MissionTier;
   /** Star objectives (1-3 entries). */
@@ -154,13 +154,8 @@ export interface CareerOperators {
 }
 
 /**
- * Pre-defined geographic regions with bounding boxes.
- *
- * **NYC regions:**
- * - Brooklyn: `BUSHWICK`, `WILLIAMSBURG`, `BEDSTUY`, `GREENPOINT`, `DUMBO`, `DOWNTOWN_BROOKLYN`
- * - Manhattan: `LOWER_MANHATTAN`, `FINANCIAL_DISTRICT`, `TRIBECA`, `SOHO`, `EAST_VILLAGE`,
- *   `MIDTOWN`, `TIMES_SQUARE`, `UPPER_EAST_SIDE`, `UPPER_WEST_SIDE`, `HARLEM`
- * - Queens: `LONG_ISLAND_CITY`, `ASTORIA`
+ * Pre-defined geographic regions with bounding boxes, keyed by city.
+ * Each city maps to a set of named neighborhood regions.
  */
 export interface CareerRegions {
   readonly NYC: RegionDefinition;

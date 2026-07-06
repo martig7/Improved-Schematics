@@ -1,13 +1,13 @@
 // Density-equalizing spatial warp (Tobler pseudo-cartogram style): expand
-// dense parts of the map at the expense of empty ones, the way hand-drawn NYC
-// subway maps enlarge Manhattan relative to the outer boroughs. Applied to
-// pixel space BEFORE octilinearization so the uniform grid effectively gets
-// finer where the network is crowded — and to the water polygons through the
-// same function so the geography deforms coherently.
+// dense parts of the map at the expense of empty ones, the way hand-drawn
+// transit maps enlarge a crowded central area relative to sparse outskirts.
+// Applied to pixel space BEFORE octilinearization so the uniform grid
+// effectively gets finer where the network is crowded. The water polygons run
+// through the same function so the geography deforms coherently.
 //
 // LOOM's authors list exactly this as future work (EuroVis 2020, §7: "It may
 // be interesting to locally enlarge areas of the input line graph (for
-// example, the city center) prior to octilinearization") — their Enlarger.cpp
+// example, the city center) prior to octilinearization"). Their Enlarger.cpp
 // is an unfinished stub, so this is our own design.
 //
 // Method: per axis, build a Gaussian-smoothed histogram of station positions,
@@ -15,9 +15,10 @@
 //   x' = (1-alpha)·x + alpha·(x0 + W·F(x))
 // independently for x and y. Each axis map is strictly increasing (the floor
 // guarantees a positive derivative), so the 2D warp is a product of two 1D
-// homeomorphisms: unconditionally fold-free — no polygon can self-intersect,
-// no ordering ever inverts, for ANY parameter values. It is also exactly
-// invertible (piecewise linear), and O(1) per point after O(N+B) setup.
+// homeomorphisms. It is unconditionally fold-free: no polygon can
+// self-intersect and no ordering ever inverts, for ANY parameter values. It is
+// also exactly invertible (piecewise linear), and O(1) per point after O(N+B)
+// setup.
 
 import type { Pixel } from './types';
 
@@ -31,20 +32,20 @@ export interface DensityWarpOptions {
   /** Warp strength: 0 = identity, 1 = full equalization. Default 0.6. */
   alpha?: number;
   /**
-   * Clamp on local linear magnification. Default 8 (raised from the original 3
-   * so line-rich hubs may dilate harder). The warp stays unconditionally
-   * fold-free at any value, so set this very high to effectively remove the
-   * ceiling — distortion is then bounded only by the density of the input.
+   * Clamp on local linear magnification. Default 8, high enough that line-rich
+   * hubs may dilate hard. The warp stays unconditionally fold-free at any value,
+   * so set this very high to effectively remove the ceiling. Distortion is then
+   * bounded only by the density of the input.
    */
   maxScale?: number;
   /**
-   * Floor on local linear scale — the symmetric counterpart of maxScale. The
+   * Floor on local linear scale, the symmetric counterpart of maxScale. The
    * warp magnifies the dense core by COMPRESSING the sparse periphery; left
    * unbounded that compression crushes peripheral station spacing below the octi
    * grid cell, so octi contracts the (now sub-cell) edges and strands terminus
-   * markers off their line (the Newark/Queens edge-terminus disconnections).
-   * Clamping the local scale >= minScale keeps peripheral gaps wide enough to
-   * survive octilinearization. The natural unclamped minimum is 1 - alpha*beta
+   * markers off their line. Clamping the local scale >= minScale keeps
+   * peripheral gaps wide enough to survive octilinearization. The natural
+   * unclamped minimum is 1 - alpha*beta
    * (~0.58 at the defaults), so any minScale at or below that is a no-op.
    * Default 0 (no extra floor). Raising it trades a little core magnification
    * for peripheral spacing (the canvas budget is fixed).

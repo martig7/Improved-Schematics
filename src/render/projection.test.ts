@@ -4,12 +4,12 @@ import { createProjection, frameRect, projectedBounds } from './projection';
 import type { BoundingBox, Coordinate } from '../types/core';
 
 // Equator-centered bounds keep cos(centerLat) = 1 (k = 1), so the projection
-// math is exact and hand-checkable. 1000×1000 canvas, 10% padding → content is
+// math is exact and hand-checkable. 1000×1000 canvas, 10% padding, so content is
 // centered in an 800×800 box (100px margin on every side).
 const BOUNDS: BoundingBox = [-5, -5, 5, 5];
 const proj = createProjection(BOUNDS, 1000, 1000, 0.1);
 
-// Framing the WHOLE projection bounds yields the inset content rectangle — i.e.
+// Framing the WHOLE projection bounds yields the inset content rectangle, i.e.
 // the projected bbox WITHOUT the padding margin. This is the core promise: fit
 // to the demand bbox, not the padded canvas.
 test('frameRect of full bounds = the padding-free content rect', () => {
@@ -32,8 +32,8 @@ test('frameRect clamps a bbox that overflows the canvas', () => {
 });
 
 // projectedBounds frames the EXTENT of an arbitrary point set (e.g. every
-// water/green vertex), projecting each point — correct even under a non-axis-
-// aligned (warped) projection, unlike frameRect's corner-only assumption.
+// water/green vertex), projecting each point. This is correct even under a
+// non-axis-aligned (warped) projection, unlike frameRect's corner-only assumption.
 test('projectedBounds = pixel bbox of the projected points', () => {
   const f = projectedBounds(proj, [
     [-2.5, -2.5],

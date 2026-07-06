@@ -139,7 +139,7 @@ test('geographyFrame is null when there is no geography', () => {
 
 test('smoothed and schematic modes emit a content data-frame within the canvas', () => {
   // Octi-based modes have no geographic demand bbox to project, so they frame on
-  // the rendered network's pixel extent instead — fit/export hug the map, not
+  // the rendered network's pixel extent instead. Fit/export hug the map, not
   // the padded canvas.
   for (const mode of ['smoothed', 'schematic'] as RenderMode[]) {
     const svg = generateSchematicSVG({
@@ -175,8 +175,8 @@ test('geographic mode omits data-frame when there is no geography', () => {
 });
 
 test('geographic mode does not draw transfer brackets', () => {
-  // Two routes whose stations sit ~70m apart on different routes → a transfer
-  // pair the geographic renderer used to draw as a U-bracket staple.
+  // Two routes whose stations sit ~70m apart on different routes form a transfer
+  // pair, which the geographic renderer must not draw as a U-bracket staple.
   const st = (id: string, g: string, n: string, lng: number, lat: number, r: string) =>
     ({ id, name: id, coords: [lng, lat], trackIds: [], trackGroupId: g,
        buildType: 'constructed', stNodeIds: [n], routeIds: [r], createdAt: 0, nearbyStations: [] });
@@ -232,7 +232,7 @@ test('redrawing a cached layout is stable (no mutation across toggles)', () => {
   assert.notEqual(typeof pre, 'string');
   if (typeof pre === 'string') return;
   // Toggle labels on, off, on again from the SAME cached layout. Each draw must
-  // depend only on its own args — the first draw must not corrupt the layout.
+  // depend only on its own args. The first draw must not corrupt the layout.
   const withLabels = drawSmoothedSchematic(pre, { showLabels: true });
   const noLabels = drawSmoothedSchematic(pre, { showLabels: false });
   const withLabelsAgain = drawSmoothedSchematic(pre, { showLabels: true });
@@ -241,10 +241,10 @@ test('redrawing a cached layout is stable (no mutation across toggles)', () => {
 });
 
 test('route lines do not poke past a terminal capsule (terminus overshoot / "nub")', () => {
-  // N single-letter lines all TERMINATE at one node A -> a terminal capsule.
-  // A -> (track at T) -> A makes T a pass-through so A is the sole capsule; the
-  // edge is slightly slanted after octi, which used to leave the outermost
-  // lanes' round caps poking past the pill on the far side (the "nub").
+  // N single-letter lines all TERMINATE at one node A, forming a terminal capsule.
+  // A -> (track at T) -> A makes T a pass-through so A is the sole capsule. The
+  // edge is slightly slanted after octi, which can leave the outermost
+  // lanes' round caps poking past the pill on the far side.
   const N = 6;
   const stations = [
     { id: 'A', name: 'word', coords: [0, 0], trackIds: [], trackGroupId: 'gA',
@@ -283,7 +283,7 @@ test('route lines do not poke past a terminal capsule (terminus overshoot / "nub
   const pillHalf = +pm![1] / 2;
 
   // Farthest any route line's INK (endpoint + its round cap) reaches past the
-  // row on the non-tail (far) side — that cap is what pokes past the pill.
+  // row on the non-tail (far) side. That cap is what pokes past the pill.
   let maxInk = 0;
   for (const p of svg.matchAll(/<path d="([^"]*)" fill="none" stroke="#[0-9a-fA-F]{6}" stroke-width="([\d.]+)"[^>]*data-line-id="[^"]*"/g)) {
     const nums = p[1].match(/-?[\d.]+/g)?.map(Number) ?? [];
@@ -293,8 +293,7 @@ test('route lines do not poke past a terminal capsule (terminus overshoot / "nub
     maxInk = Math.max(maxInk, beyond + capR);
   }
   // The terminating lane must stop at its stop: its ink must not reach past the
-  // pill edge. Pre-fix the outermost lane's cap poked ~5px past the row (well
-  // beyond the pill); trimming the lane to the seated bullet keeps it inside.
+  // pill edge. Trimming the lane to the seated bullet keeps it inside.
   assert.ok(
     maxInk <= pillHalf + 0.5,
     `route line ink reaches ${maxInk.toFixed(1)}px past the capsule row; pill half=${pillHalf.toFixed(1)} — terminus overshoot not trimmed`,

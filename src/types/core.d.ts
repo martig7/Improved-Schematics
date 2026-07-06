@@ -19,11 +19,11 @@ export type DisplayType = 'blueprint' | 'constructed';
  * Elevation classification for track segments.
  *
  * Thresholds:
- * - `DEEP_BORE` — below -30m
- * - `STANDARD_TUNNEL` — -30m to -8m
- * - `CUT_AND_COVER` — -8m to -3m
- * - `AT_GRADE` — -3m to 4.5m
- * - `ELEVATED` — above 4.5m
+ * - `DEEP_BORE` is below -30m
+ * - `STANDARD_TUNNEL` is -30m to -8m
+ * - `CUT_AND_COVER` is -8m to -3m
+ * - `AT_GRADE` is -3m to 4.5m
+ * - `ELEVATED` is above 4.5m
  */
 export type ElevationType = 'DEEP_BORE' | 'STANDARD_TUNNEL' | 'CUT_AND_COVER' | 'AT_GRADE' | 'ELEVATED';
 

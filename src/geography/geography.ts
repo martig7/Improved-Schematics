@@ -44,8 +44,8 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
   try {
     const map = deps.getMap();
     if (!map) return null;
-    // Don't probe before the basemap style exists — early in the game `getStyle()` is empty
-    // (0 sources) or undefined, which crashed the probe (reading 'sources' of undefined).
+    // Don't probe before the basemap style exists. Early on `getStyle()` is empty
+    // (0 sources) or undefined, which the probe cannot read.
     // Defer; the caller retries once the style is in. (Guarded for the injectable test map.)
     const m = map as unknown as { isStyleLoaded?: () => boolean };
     if (typeof m.isStyleLoaded === 'function' && !m.isStyleLoaded()) {
@@ -67,8 +67,8 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
 
     // Declutter + smooth: drop sub-threshold polygons and round the MVT
     // stair-steps. Tunable via env (set before launching, like the OCTI_* knobs):
-    //   GEO_MIN_WATER_M2 / GEO_MIN_PARK_M2 — min area to keep (m²)
-    //   GEO_SIMPLIFY_M — Douglas–Peucker tolerance (m); GEO_SMOOTH — Chaikin iters
+    //   GEO_MIN_WATER_M2 / GEO_MIN_PARK_M2 set min area to keep (m²)
+    //   GEO_SIMPLIFY_M sets Douglas–Peucker tolerance (m); GEO_SMOOTH sets Chaikin iters
     const simplifyM = envNum('GEO_SIMPLIFY_M', 30);
     const smoothIters = envNum('GEO_SMOOTH', 2);
     // Merge extremely-close park fragments BEFORE the size filter (morphological
@@ -76,11 +76,11 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
     // one. GEO_PARK_GAP_M = bridge distance in meters (0 disables).
     const mergedGreen = combineClose(rawGreen, { gapM: envNum('GEO_PARK_GAP_M', 50) });
     // Min area to keep as a fraction of total map area (scale-invariant). Thin
-    // rivers fall below it and get dropped — accepted trade-off.
-    // smoothIters: 0 for water — Chaikin rounds the corner where a per-tile ocean
+    // features below it are dropped, an accepted trade-off.
+    // smoothIters is 0 for water. Chaikin rounds the corner where a per-tile ocean
     // piece's seam meets the coastline, pulling that seam edge off the shared tile
-    // boundary so adjacent pieces no longer align → a thin gap (the mid-ocean
-    // "spike"). DP alone keeps the seam edges straight, so the tiles stay flush.
+    // boundary so adjacent pieces no longer align, producing a thin mid-ocean gap.
+    // DP alone keeps the seam edges straight, so the tiles stay flush.
     const water = cleanFeatures(rawWater, bbox, { minAreaFrac: envNum('GEO_MIN_WATER_FRAC', 0.00004), simplifyM, smoothIters: 0 });
     const green = cleanFeatures(mergedGreen, bbox, { minAreaFrac: envNum('GEO_MIN_PARK_FRAC', 0.0001), simplifyM, smoothIters, dropHoles: true });
 
@@ -97,8 +97,8 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
 }
 
 /** Synchronous read of the per-city cache (no harvest). Returns the geography if a
- *  prior generateGeography for this city already succeeded — this session (in-memory) or a
- *  previous one (localStorage, hydrated into memory here) — else null. Lets the panel pick
+ *  prior generateGeography for this city already succeeded, either this session (in-memory) or a
+ *  previous one (localStorage, hydrated into memory here); otherwise null. Lets the panel pick
  *  up a background warm-up's result, OR a prior session's persisted harvest, instantly on
  *  open without re-harvesting. */
 export function peekGeography(cityCode: string): GeographyData | null {
@@ -119,7 +119,7 @@ export function peekGeography(cityCode: string): GeographyData | null {
 /** Cached per city: a SUCCESSFUL harvest is reused for the rest of the session.
  *  A null result (map/tiles not ready yet, or a transient failure) is deliberately
  *  NOT cached, so an early call before the basemap is ready doesn't poison the
- *  city for the session — the caller (panel) retries until it succeeds. */
+ *  city for the session. The caller (panel) retries until it succeeds. */
 export async function generateGeography(
   cityCode: string,
   harvestBbox: BoundingBox,

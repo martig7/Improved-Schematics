@@ -60,8 +60,8 @@ test('mapCache: clearCityLayout drops the layout but KEEPS the saved settings', 
   assert.deepEqual(readModeSettings('nyc', 'smoothed', s), { labelScale: 1.2 }, 'per-mode settings kept');
 });
 
-// Minimal OBJECT pre for the provenance tests (string pres carry no stamp and
-// bypass the guard by design — the degenerate no-layout SVG fallback).
+// Minimal OBJECT pre for the provenance tests. String pres carry no stamp and
+// bypass the guard by design (the degenerate no-layout SVG fallback).
 // serializePre samples `unproject` and needs width/height; everything else can
 // be structurally empty.
 const fakePre = (builtFp?: string) =>
@@ -92,13 +92,13 @@ test('mapCache: provenance — filing a layout under a FOREIGN fp is refused (zo
   const s = fakeStore();
   assert.equal(writeCachedPre('nyc', 'fpFRESH', fakePre('fpSTALE'), s), false, 'mismatched write refused');
   assert.equal(readCachedPre('nyc', 'fpFRESH', s), null, 'nothing cached');
-  // legacy object pre (no stamp) is refused too — every fresh precompute now stamps
+  // legacy object pre (no stamp) is refused too. Every fresh precompute stamps.
   assert.equal(writeCachedPre('nyc', 'fpFRESH', fakePre(), s), false, 'stampless write refused');
 });
 
 test('mapCache: provenance — a poisoned entry (written by the OLD path) reads as a miss', () => {
   const s = fakeStore();
-  // simulate the pre-v4 poisoning: raw-write a stale-provenance pre under a live fp
+  // simulate a poisoned cache: raw-write a stale-provenance pre under a live fp
   writeCachedPre('nyc', 'fpSTALE', fakePre('fpSTALE'), s); // legitimate entry...
   s.setItem('improvedschematics:mapcache:fp:nyc', 'v4:fpFRESH'); // ...re-stamped by hand
   assert.equal(readCachedPre('nyc', 'fpFRESH', s), null, 'provenance mismatch → miss, caller re-sims');

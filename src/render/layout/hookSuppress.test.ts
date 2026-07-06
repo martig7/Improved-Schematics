@@ -4,8 +4,8 @@ import { suppressHooks } from './hookSuppress';
 import type { Layout, LayoutNode, LayoutEdge, LineRef, TraversalStep, EdgeStop, Cell } from './types';
 
 // --- synthetic Layout builders --------------------------------------------
-// Mirror the LON pink-triangle numerically: A(2244,1980) -> s1(2244,2112) ->
-// s2(2288,2068). A and E (=s2) are real stations; s1 is synthetic (interior).
+// A folded three-node run: A -> s1 -> s2, with s1 an interior synthetic node.
+// A and s2 are real stations; s1 is synthetic (interior).
 
 function node(id: string, x: number, y: number): LayoutNode {
   return { id, cell: [x, y] as Cell, label: id, lngLat: [x / 1e5, y / 1e5] };
@@ -58,11 +58,11 @@ function makeLayout(
   };
 }
 
-// The LON triangle: A -> s1 -> s2, s1 synthetic. Line "mag" traverses e0 then e1.
+// The folded triangle: A -> s1 -> s2, s1 synthetic. Line "mag" traverses e0 then e1.
 function triangleLayout(opts?: {
   stopAtS1?: boolean; // put a station stop for mag at interior s1
   extraLine?: boolean; // add a second line sharing the same hook
-  straight?: boolean; // s1 collinear (yellow shape, no fold)
+  straight?: boolean; // s1 collinear (no fold)
 }): { layout: Layout; stations: Set<string> } {
   const A = node('A', 2244, 1980);
   // straight variant: s1 midway on the A->s2 chord (dot ~ +1, no fold)
@@ -102,7 +102,7 @@ test('suppressHooks: LON triangle splices — new A<->s2 edge, traversal rewritt
     'shortcut carries mag',
   );
 
-  // e0 and e1 (the hook run) no longer carry mag — and being emptied, are gone
+  // e0 and e1 (the hook run) no longer carry mag, and being emptied, are gone
   const e0 = layout.edges.find((e) => e.id === 'e0');
   const e1 = layout.edges.find((e) => e.id === 'e1');
   assert.ok(!e0, 'e0 deleted (emptied)');
@@ -159,9 +159,9 @@ test('suppressHooks: A==E closed loop is untouched', () => {
   assert.ok(layout.edges.find((e) => e.id === 'e1'));
 });
 
-// Reversed-step fixture: same LON triangle geometry, but every edge is
-// oriented BACKWARDS relative to travel — e0: s1->A, e1: s2->s1 — and the
-// traversal reaches the hook via {reversed: true} steps, so the node sequence
+// Reversed-step fixture: same folded triangle geometry, but every edge is
+// oriented BACKWARDS relative to travel. Here e0 goes s1->A and e1 goes s2->s1.
+// The traversal reaches the hook via {reversed: true} steps, so the node sequence
 // [to, from] must be used and stop flags must be read through the reversed
 // orientation (stopAtTo = reversed ? atFrom : atTo).
 function reversedTriangleLayout(opts?: { stopAtS1?: boolean }): {
@@ -215,10 +215,10 @@ test('suppressHooks: reversed-step run with an interior stop (reversed flag read
   assert.ok(layout.edges.find((e) => e.id === 'e1'), 'e1 kept');
 });
 
-// Out-and-back fixture (SEA E@44St): every game route traverses its edges in
-// BOTH directions, so a fold appears twice in one traversal — outbound and
-// mirrored return. The splice of the outbound run must not corrupt the return
-// run (which references the same edges).
+// Out-and-back fixture: a route that traverses its edges in BOTH
+// directions, so a fold appears twice in one traversal. It shows up once
+// outbound and once on the mirrored return. The splice of the outbound run
+// must not corrupt the return run, which references the same edges.
 function outAndBackLayout(): { layout: Layout; stations: Set<string> } {
   const A = node('A', 2244, 1980);
   const s1 = node('s1', 2244, 2112);
@@ -253,7 +253,7 @@ test('suppressHooks: out-and-back fold — BOTH directions spliced, no traversal
   for (const s of trav) {
     assert.ok(edgeIds.has(s.edgeId), `traversal step references missing edge ${s.edgeId}`);
   }
-  // consecutive steps must chain (share a node) — no graph-level breaks
+  // consecutive steps must chain (share a node), with no graph-level breaks
   const eById = new Map(layout.edges.map((e) => [e.id, e]));
   for (let i = 0; i + 1 < trav.length; i++) {
     const a = eById.get(trav[i].edgeId)!;

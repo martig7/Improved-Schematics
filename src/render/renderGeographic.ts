@@ -412,7 +412,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 }
 
 /** Everything renderRibbons needs to draw a smoothed map except the
- *  label/station toggles — i.e. the cacheable output of the heavy pipeline. */
+ *  label/station toggles, i.e. the cacheable output of the heavy pipeline. */
 export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
@@ -822,16 +822,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (p[1] > mxY) mxY = p[1];
     }
     // Detail-area crops: the stamped bbox IS the deliverable frame (the drawn
-    // box's geographic preimage). Frame the canvas on THAT rect (padded by a
-    // proportional margin) instead of the content bbox — the one-hop ring
+    // box's geographic preimage). Frame the canvas on THAT rect, padded by a
+    // proportional margin, instead of the content bbox. The one-hop ring
     // stations and their track courses reach arbitrarily far outside the drawn
     // region and would otherwise squash the frame to a sliver of the canvas
-    // (wrong aspect) or push it off-canvas entirely (clamped frame = popout
-    // shows a truncated region). Proportional per-axis padding keeps
+    // (wrong aspect) or push it off-canvas entirely (a clamped frame makes the
+    // popout show a truncated region). Proportional per-axis padding keeps
     // frame aspect == canvas aspect == the drawn box's aspect, and the margin
-    // shows the (margin-clipped) geography continuing past the frame edge just
-    // like the main map. Ring content beyond the margin draws off-canvas —
-    // harmless, the popout's viewBox is the frame. (See SchematicOptions.detailCrop.)
+    // shows the margin-clipped geography continuing past the frame edge just
+    // like the main map. Ring content beyond the margin draws off-canvas, which
+    // is harmless: the popout's viewBox is the frame. (See SchematicOptions.detailCrop.)
     if (opts.detailCrop && input.geography) {
       const [g0, g1, g2, g3] = input.geography.bbox;
       let fx0 = Infinity, fy0 = Infinity, fx1 = -Infinity, fy1 = -Infinity;
@@ -851,7 +851,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       }
     }
     if (mnX < mxX && mnY < mxY) {
-      const m = 0; // flush fill — content reaches the canvas edge (the panel zooms for labels)
+      const m = 0; // flush fill: content reaches the canvas edge (the panel zooms for labels)
       const sx = (outW * (1 - 2 * m)) / (mxX - mnX);
       const sy = (outH * (1 - 2 * m)) / (mxY - mnY);
       const ox = outW * m - mnX * sx;
@@ -862,7 +862,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     }
   }
   // Map the captured warp boxes (warp-output px) through the same refit to final
-  // render px (the space stationPx live in). Per-axis monotone → stays axis-aligned.
+  // render px (the space stationPx live in). Per-axis monotone, so it stays axis-aligned.
   const denseBoxesPx: DenseBox[] = (warpOut.boxes ?? []).map((b) => {
     const a = refitPx([b.x0, b.y0]);
     const c = refitPx([b.x1, b.y1]);
@@ -871,13 +871,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
 
   // Inverse of the warped projection (render pixel -> geographic coord). The whole
-  // chain — equirect base -> separable density warp -> per-axis box-expand ->
-  // per-axis refit rescale — is separable and strictly increasing per axis, so
+  // chain (equirect base -> separable density warp -> per-axis box-expand ->
+  // per-axis refit rescale) is separable and strictly increasing per axis, so
   // invert each axis independently by bisection: render-x depends only on lng
   // (increasing), render-y only on lat (decreasing, north at the top). The search
   // brackets a ±100%-padded `bounds` so any on-canvas pixel is covered (the
   // projection extrapolates monotonically past the bounds). The magnifier inset
-  // uses this to turn the user's drawn box into the geographic region to crop on.
+  // uses this to turn the drawn box into the geographic region to crop on.
   const unproject = ((): ((p: Pixel) => Coordinate) => {
     const [lo0, la0, lo1, la1] = bounds;
     const dLo = lo1 - lo0 || 1e-6;
@@ -893,7 +893,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       return [(a + b) / 2, (c + d) / 2];
     };
   })();
-  // Where the geography bbox lands in this render — frames the inset on exactly
+  // Where the geography bbox lands in this render. Frames the inset on exactly
   // the selected region. Separable warp => the four bbox corners give the extent.
   const gbb = input.geography?.bbox;
   const geoBboxFrame = gbb
@@ -910,7 +910,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       .map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined])
       .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
     __warpDebug = { warp, width: outW, height: outH, nodes, nodesRaw, edges, samples: warpSamples.map((s) => [s[0], s[1]] as Pixel) };
-    // Skip the ~70s octi pass: dev/warp-preview.ts only needs the captured warp
+    // Skip the octi pass: dev/warp-preview.ts only needs the captured warp
     // inputs to render a fast no-octi preview while tuning the warp.
     if (env?.OCTI_WARP_CAPTURE_ONLY) return 'CAPTURE_ONLY';
   }
@@ -920,15 +920,15 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // 2024 §"Network Topology Extraction"). With bundling solved at the GRAPH
   // level, octi routes each merged corridor as ONE octilinear path and the
   // per-edge offset model (orderLines + computeCanonicalOffsets) lanes the
-  // co-running lines into parallel ribbons — no post-hoc grid-segment fix-up.
+  // co-running lines into parallel ribbons, with no post-hoc grid-segment fix-up.
   //
   // dHat (the merge-distance threshold) is fixed at 4× line width in pixels.
-  // The paper's 2.5·w·c formula explodes at NYC-scale line counts and
-  // collapses the map; a fixed pixel target reliably catches geographically
-  // parallel corridors (yellow+purple+pink along Lex, etc.) without merging
-  // unrelated nearby edges. See dev/_diag-topo-octi.ts for the sweep.
+  // The paper's 2.5·w·c formula explodes at high line counts and
+  // collapses the map. A fixed pixel target reliably catches geographically
+  // parallel corridors without merging unrelated nearby edges. See
+  // dev/_diag-topo-octi.ts for the sweep.
   // (dev diagnostic, default off: OCTI_DHAT=<px> overrides the fixed merge
-  // radius for LOOM-parity sweeps — see dev/_parity-dhat-sweep.ts. Unset in
+  // radius for LOOM-parity sweeps, see dev/_parity-dhat-sweep.ts. Unset in
   // production, so behavior is unchanged.)
   const dHatEnv =
     typeof process !== 'undefined'
@@ -938,7 +938,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // thinner theme line widths don't shrink the tuned merge radius.
   const dHat =
     Number.isFinite(dHatEnv) && dHatEnv > 0 ? dHatEnv : Math.max(16, theme.lineWidth * 4);
-  // (dev diagnostic, default off: OCTI_ROUNDS=<n> caps the merge rounds —
+  // (dev diagnostic, default off: OCTI_ROUNDS=<n> caps the merge rounds. It
   // isolates round-2+ drift zips (averaged geometry creeping corridors within
   // dHat of each other between rounds) from round-1 geometry-true collapses.)
   const roundsEnv =
@@ -968,7 +968,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => graph.nodes.get(nid)?.pos,
     (lid) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
   );
-  // dev: OCTI_AUDIT_BOX also dumps the TRANSIT graph (pre-merge) in the box —
+  // dev: OCTI_AUDIT_BOX also dumps the TRANSIT graph (pre-merge) in the box:
   // original node ids, stop flags, and each incident edge's lines + geometry,
   // so support-stage defects can be diffed against what the merge was given.
   if (env?.OCTI_AUDIT_BOX) {
@@ -1009,20 +1009,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // than half a cell, so a coarser grid both merges noisy station clusters
   // into single skeleton nodes AND leaves each surviving node more breathing
   // room per cell. Two regimes:
-  //  - metro-scale (hundreds of support edges, NYC saves): finer grid
-  //    (divisor 2.5) resolves congested downtowns without detours;
-  //  - bus-scale (thousands of edges, Seattle-like, mega-hubs): a fine grid
+  //  - metro-scale (hundreds of support edges): a finer grid
+  //    (divisor 1.6) resolves congested downtowns without detours;
+  //  - bus-scale (thousands of edges, mega-hubs): a fine grid
   //    lets corridors NEST in concentric rings around hubs and explodes
-  //    routing time. LOOM defaults to ~100% of station spacing — coarse
+  //    routing time. LOOM defaults to ~100% of station spacing. Coarse
   //    grids force clean radial fans and are fast.
   // (dev override: OCTI_DIVISOR for tuning sweeps)
-  // Divisor 1.6 (was 2.5) for metro-scale graphs: chosen by the 2026-06-10
-  // spacing sweep on the live Seattle dump — spreads adjacent corridors to
-  // >= 1 cell ~= 6.6 line-widths (at lineWidth 3.5) so unmerged parallels
-  // read as separate lines instead of a crammed band; 2.5 stayed compressed,
-  // 1.0 reintroduced spiral wraps at terminal loops.
-  // NOTE: mirrored pre-warp as `divisorEst` (box-warp contraction oracle,
-  // ~line 685) — keep the threshold + constants in sync if tuned here.
+  // Divisor 1.6 for metro-scale graphs spreads adjacent corridors to
+  // >= 1 cell so unmerged parallels read as separate lines instead of a
+  // crammed band. Larger divisors stay compressed; too small a divisor
+  // reintroduces spiral wraps at terminal loops.
+  // NOTE: mirrored pre-warp as `divisorEst` (box-warp contraction oracle).
+  // Keep the threshold + constants in sync if tuned here.
   const divisor =
     (typeof process !== 'undefined' && Number((process as { env?: Record<string, string> }).env?.OCTI_DIVISOR)) ||
     (support.edges.size > 800 ? 1.2 : 1.6);
@@ -1041,13 +1040,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   ) {
     octiOpts.combineDeg2 = false;
   }
-  // Geographic-course enforcement (LOOM's -G enfGeoPen). 0.05 chosen by the
-  // 2026-06-10 warp x affinity sweep on the live Seattle dump: with zero
-  // affinity octi pays nothing for abandoning real corridor courses and bent
-  // Tacoma's radial fan into nested parallel U-wraps; 0.05 restores the
-  // diverging branches at identical violation count and runtime, while 0.15
-  // over-constrains (terminal rings return). The density warp was exonerated
-  // (and is load-bearing: disabling it snarls the core, 35-57 violations).
+  // Geographic-course enforcement (LOOM's -G enfGeoPen). With zero
+  // affinity octi pays nothing for abandoning real corridor courses and bends
+  // radial fans into nested parallel U-wraps. 0.05 restores the
+  // diverging branches at identical violation count and runtime, while larger
+  // values over-constrain (terminal rings return). The density warp is
+  // load-bearing: disabling it snarls the core.
   // (dev override: OCTI_AFFINITY=<n> for sweeps)
   octiOpts.geographicAffinity =
     typeof opts.geographicAffinity === 'number' && Number.isFinite(opts.geographicAffinity)
@@ -1060,7 +1058,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   if (Number.isFinite(affEnv) && affEnv > 0) {
     octiOpts.geographicAffinity = affEnv; // dev sweep override wins
   }
-  // (dev override: OCTI_DENSITY=<n> for sweeps — the chain spring weight that
+  // (dev override: OCTI_DENSITY=<n> for sweeps. The chain spring weight that
   // resists drawing a deg-2 station chain on fewer grid hops than it has
   // stations. Default 0.5; higher resists vertical corridor compression but
   // risks switchback zigzags.)
@@ -1072,13 +1070,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     octiOpts.penalties = { ...(octiOpts.penalties ?? {}), densityPen: denEnv };
   }
   // Node-displacement penalty (LOOM default 0.5). Raising it DOES preserve the
-  // density warp's vertical spread that octi otherwise compresses out
-  // (St Lukes/Watts/Howard piled together) — but ndMovePen tethers ABSOLUTE
-  // positions, so it equally forces geographic ANGLES, which staircases dense
-  // junctions: at 3, Flatbush's mn59->mn147 edge snaps horizontal and the
-  // gray×green band-exchange jams onto a 30px stub (jagged sawtooth). No global
-  // value threads both (every value ≥1 that spreads Watts/Howard also jags
-  // Flatbush). The real fix is a longitudinal length-preservation term —
+  // density warp's vertical spread that octi otherwise compresses out,
+  // but ndMovePen tethers ABSOLUTE positions, so it equally forces geographic
+  // ANGLES, which staircases dense junctions: high values snap edges horizontal
+  // and jam band-exchanges onto short stubs (jagged sawtooth). No global
+  // value threads both (every value that spreads piled stations also jags
+  // dense junctions). The real fix is a longitudinal length-preservation term:
   // preserve corridor LENGTHS / relative spacing, leave angles free (TODO).
   // Left at default; OCTI_NDMOVE=<n> stays as a dev override for experiments.
   const ndmEnv =
@@ -1090,21 +1087,20 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   // Length preservation: penalize a drawn corridor whose endpoint chord
   // undershoots its warped geographic chord, so octi keeps the density warp's
-  // spacing where it would otherwise compress it out (St Lukes/Watts/Howard
-  // piled together). Unlike ndMovePen it preserves spacing without pinning
-  // absolute positions, giving the user-preferred more-vertical layout.
-  // Weight 8 (spacing benefit saturates ≥1). OCTI_LENPRES=<n> overrides.
+  // spacing where it would otherwise compress it out. Unlike ndMovePen it
+  // preserves spacing without pinning absolute positions, giving a
+  // more-vertical layout. Weight saturates at low values. OCTI_LENPRES=<n> overrides.
   octiOpts.lenPresW = 1.5;
   // Same-cell collapse: anchorGraphStops re-splits corridors at stop positions
   // AFTER the merge's short-edge contraction, so synthetic junctions can land
-  // inside a station's grid cell — sub-cell edges whose endpoints then need
-  // DISTINCT cells force the router into multi-cell detours (SEA-split
-  // Stevens Way: an 11px edge drawn as a 170px C — a closed-loop artifact).
+  // inside a station's grid cell. Sub-cell edges whose endpoints then need
+  // DISTINCT cells force the router into multi-cell detours (a short edge drawn
+  // as a long C, a closed-loop artifact).
   // Weld sub-cell node clusters into one node (station survives) before octi
   // sees them. Threshold = half a cell, the same resolution the octi
   // contraction uses. (dev override: OCTI_WELD=<px>, 0 disables)
-  // dev: OCTI_AUDIT=1 — short-edge census at the octi seam (the router-facing
-  // degeneracy picture: edges below half a cell cannot get distinct cells).
+  // dev: OCTI_AUDIT=1 gives a short-edge census at the octi seam (the
+  // router-facing degeneracy picture: edges below half a cell cannot get distinct cells).
   const shortEdgeCensus = (tag: string): void => {
     if (!env?.OCTI_AUDIT) return;
     const half = octiOpts.cellSize / 2;
@@ -1138,9 +1134,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (welds > 0 && (env?.OCTI_TRACE || env?.OCTI_AUDIT)) console.error(`[weld] sub-cell welds=${welds} (dist=${weldDist.toFixed(1)})`);
       if (welds > 0) {
         shortEdgeCensus('post-weld');
-        // The weld remaps traversals over fused nodes — chord reversals born
-        // HERE were previously invisible (no census between weld and octi)
-        // and got mis-attributed to the drawn-level merge.
+        // The weld remaps traversals over fused nodes. Chord reversals born
+        // HERE would be invisible without a census between weld and octi
+        // and could get mis-attributed to the drawn-level merge.
         auditZigzags(
           'postWeld',
           support.lineTraversals,
@@ -1153,7 +1149,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   lap('octiSetup');
   // dev: OCTI_AUDIT_BOX="x0,y0,x1,y1" dumps pre-octi support nodes in the box
-  // (id, position, station?, degree) plus sub-cell node pairs — the router
+  // (id, position, station?, degree) plus sub-cell node pairs, the router
   // congestion picture octi actually faces.
   if (env?.OCTI_AUDIT_BOX) {
     const [bx0, by0, bx1, by1] = env.OCTI_AUDIT_BOX.split(',').map(Number);
@@ -1209,7 +1205,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   lap('octi');
   // 'placed' census: the SAME traversals as postWeld, measured at octi's
   // node placements. A reversal appearing here (and not at postWeld) is
-  // PLACEMENT-born — a real curve flattened into degenerate angles — while
+  // PLACEMENT-born, a real curve flattened into degenerate angles, while
   // one appearing only at mergeOnly is manufactured by the merge remap.
   auditZigzags(
     'placed',
@@ -1287,10 +1283,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   // Remove mid-route out-and-back spur steps from line traversals: the merge
   // can pin a line's course onto a neighbouring corridor it merely crosses
-  // for a few px (the 9 poking into the red trunk south of Butler St),
-  // leaving an immediate edge+reverse pair in the traversal whose drawn lane
-  // dead-ends as a stub. Drop such pairs when the line has no stop at the
-  // spur's far node — a terminus retrace keeps its steps (its flag is set).
+  // for a few px, leaving an immediate edge+reverse pair in the traversal
+  // whose drawn lane dead-ends as a stub. Drop such pairs when the line has no
+  // stop at the spur's far node. A terminus retrace keeps its steps (its flag
+  // is set).
   {
     const eById = new Map(layout.edges.map((e) => [e.id, e]));
     let spurDrops = 0;
@@ -1323,7 +1319,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (nid) => nodePx.get(nid),
     (lid) => { for (const e of layout.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
   );
-  // Suppress zero-progress synthetic hooks (LON pink-triangle / hairpins): the
+  // Suppress zero-progress synthetic hooks (triangles / hairpins): the
   // topo merge can route a line's bundle down a shared lane to a synthetic
   // junction and fan back, drawing a closed triangle / hairpin purely through
   // non-station nodes. Splice an octilinear shortcut past such folds. Runs
@@ -1362,14 +1358,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   for (const g of groups) {
     servedMembers.set(g.id, g.stationIds.filter((id) => served.has(id)).length);
   }
-  // Line ordering: bundle-blocks structural ordering (bundleOrder.ts, spec
-  // 2026-07-04 bundle-blocks rebuild) — corridors carry rigid recursive
-  // blocks; order changes exist only at bundle joins/splits and cycle
-  // residuals, all at junctions by construction. The LOOM untangle scorer
-  // it replaced (and its OCTI_ORDER=loom A/B knob) lives in
-  // old/src/render/layout/untangle.ts — sign-off 2026-07-05, A/B results in
-  // the spec appendix. OCTI_NO_UNTANGLE=1 skips ordering entirely
-  // (barycenter seed only, legacy diagnostic).
+  // Line ordering: bundle-blocks structural ordering (bundleOrder.ts).
+  // Corridors carry rigid recursive blocks. Order changes exist only at
+  // bundle joins/splits and cycle residuals, all at junctions by
+  // construction. The prior untangle scorer it replaced lives in
+  // old/src/render/layout/untangle.ts. OCTI_NO_UNTANGLE=1 skips ordering
+  // entirely (barycenter seed only, diagnostic).
   if (
     !(
       typeof process !== 'undefined' &&
@@ -1383,13 +1377,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
 
   // The support graph carries no lngLat for renderRibbons' affine map, so
-  // project the geography rings here through the real (warped) projection — so
-  // water + parks deform with the network — and store them on the pre: the
+  // project the geography rings here through the real (warped) projection, so
+  // water + parks deform with the network, and store them on the pre. The
   // BACKDROP is built from them at draw time (drawSmoothed), which is what lets
   // the landmass style re-render as a cheap repaint instead of a re-sim.
   const geoRingsPx = projectGeoRings(input.geography, proj, theme, dark);
-  // Data-region hull → render px: sample each hull edge densely (the warp bends
-  // straight edges into curves) through the final projection.
+  // Data-region hull to render px: sample each hull edge densely (the warp
+  // bends straight edges into curves) through the final projection.
   let geoHullPx: Pixel[] | undefined;
   const hull = input.geography?.hull;
   if (hull && hull.length >= 3) {
@@ -1412,9 +1406,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     stopNodes: st.stopNodes ?? new Map<string, string>(),
   }));
 
-  // Frame on the furthest water/green through the WARPED proj — so smoothed fit/
-  // export hug the same backdrop extent geographic does. Undefined (no geography)
-  // → renderRibbons frames on the rendered network instead.
+  // Frame on the furthest water/green through the WARPED proj, so smoothed
+  // fit/export hug the same backdrop extent geographic does. When undefined (no
+  // geography), renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
   return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
@@ -1426,7 +1420,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
 const lmBackdropCache = new WeakMap<SmoothedPrecomputed, { key: string; svg: string }>();
 
 /** Station markers that sit on LAND in the faithful geography (checked against
- *  a fine raster of the raw water rings) — the landmass stylizer must never
+ *  a fine raster of the raw water rings). The landmass stylizer must never
  *  move a shoreline over one of these (LandmassStyle.dryPoints). Stations
  *  already on water in the faithful render are the network's own doing and are
  *  left alone. Memoized per pre. */
@@ -1443,7 +1437,7 @@ function dryStations(pre: SmoothedPrecomputed): Pixel[] {
         const cx = Math.floor((p[0] - r.gx0) / r.cell);
         const cy = Math.floor((p[1] - r.gy0) / r.cell);
         // Protection-biased: a station is WET only when its whole 3x3 cell
-        // neighbourhood is water — markers a few px inside a faithful shore
+        // neighbourhood is water. Markers a few px inside a faithful shore
         // still count dry, so the raster quantization can't leak one into the
         // styled water. Genuinely mid-water stations stay wet (untouched).
         let wet = true;
@@ -1454,7 +1448,7 @@ function dryStations(pre: SmoothedPrecomputed): Pixel[] {
             if (x < 0 || y < 0 || x >= r.W || y >= r.H || r.grid[y * r.W + x] !== 1) { wet = false; break; }
           }
         }
-        // The raster fills over sub-cell islands — a station on a tiny island
+        // The raster fills over sub-cell islands: a station on a tiny island
         // reads wet here but is really on land. The wet set is small, so
         // confirm each with an exact winding test over the raw rings.
         if (wet && windingAt(water, p[0], p[1]) === 0) wet = false;
@@ -1467,13 +1461,13 @@ function dryStations(pre: SmoothedPrecomputed): Pixel[] {
 }
 
 /** Local-importance field for the landmass stylizer: 1 inside the warp's own
- *  demand boxes (density ∪ contraction ∪ capsule — the regions the warp judged
+ *  demand boxes (density ∪ contraction ∪ capsule, the regions the warp judged
  *  heavily used and magnified), plus a station-density kernel so clusters of
  *  stops protect their surroundings even when no box fired there. The stylizer
  *  divides its simplify/cull thresholds by (1+3·imp)², so geography inside the
- *  dense core (a Lake-Union-class landmark) keeps its shape while the far
- *  periphery generalizes to blobs. Coarse grid lookup — built once per styled
- *  draw (memoized with the backdrop). */
+ *  dense core keeps its shape while the far periphery generalizes to blobs.
+ *  Coarse grid lookup, built once per styled draw (memoized with the
+ *  backdrop). */
 export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number) => number {
   const scale = Math.min(pre.width, pre.height) / 2700;
   const cell = 48 * scale;
@@ -1521,15 +1515,15 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
 }
 
 /** Light half of smoothed mode: draw a precomputed layout. Cheap relative to
- *  precomputeSmoothed — this is what re-runs when labels/stations toggle. */
+ *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
   opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
-  // when the style is on. Params come in base-2700 px — rescale to this canvas
-  // so a grown map keeps the same visual character. Legacy pres (no geoRingsPx)
+  // when the style is on. Params come in base-2700 px, rescaled to this canvas
+  // so a grown map keeps the same visual character. Older pres (no geoRingsPx)
   // still carry the water baked inside gridOverlay and just skip the style.
   const lm = opts.landmass;
   const scale = Math.min(pre.width, pre.height) / 2700;
@@ -1546,7 +1540,7 @@ export function drawSmoothed(
       }
     : undefined;
   // The styled build unions + retraces the whole geography (~100ms on a big
-  // city) — memoize per (pre, style) so label/station toggles just repaint.
+  // city), so memoize per (pre, style) so label/station toggles just repaint.
   const lmKey = style ? JSON.stringify(style) : '';
   const cached = lmBackdropCache.get(pre);
   let backdrop: string;
@@ -1572,8 +1566,8 @@ export function drawSmoothed(
     frame: pre.frame,
   };
   // The expensive marker-placement geometry is toggle-independent: compute it once
-  // and memoize on `pre`, so label/station toggles — and cache reads that restore a
-  // pre with geometry already attached — skip it and only paint. See cache-read-perf.md.
+  // and memoize on `pre`, so label/station toggles (and cache reads that restore a
+  // pre with geometry already attached) skip it and only paint. See cache-read-perf.md.
   const geom = pre.geometry ?? (pre.geometry = computeRibbonGeometry(args));
   return paintRibbons(args, geom, sceneOut);
 }
