@@ -49,7 +49,8 @@
 // (local room), finding boxes and measuring demand in separable-warped space.
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
-import { envStr, envNum } from '../../env';
+import { envNum } from '../../env';
+import { probeDensity, probeBoxes, debugBoxWarp } from './debug/densityBoxWarp.debug';
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
 import { densityGrid2D } from './densityWarp2d';
@@ -639,25 +640,7 @@ export function findDenseBoxes(
   for (let i = 0; i < B * B; i++) if (e[i] > emax) emax = e[i];
   const cutoff = frac * emax;
 
-  // OCTI_BOX_PROBE diagnostics: density surface + cutoff (tuning aid)
-  if (envStr('OCTI_BOX_PROBE')) {
-    let above = 0;
-    let pos = 0;
-    for (let i = 0; i < B * B; i++) { if (e[i] > 0) pos++; if (e[i] >= cutoff && e[i] > 0) above++; }
-    console.error(`[densprobe] bins=${B} cells+=${pos} emax=${emax.toFixed(2)} cutoff=${cutoff.toFixed(2)} above=${above} samples=${samples.length}`);
-    const D = 32; // downsampled ASCII heatmap, log scale, X = above cutoff
-    for (let dy = 0; dy < D; dy++) {
-      let row = '';
-      for (let dx = 0; dx < D; dx++) {
-        let m = 0;
-        for (let yy = (dy * B / D) | 0; yy < Math.max((dy * B / D | 0) + 1, ((dy + 1) * B / D) | 0); yy++)
-          for (let xx = (dx * B / D) | 0; xx < Math.max((dx * B / D | 0) + 1, ((dx + 1) * B / D) | 0); xx++)
-            if (e[yy * B + xx] > m) m = e[yy * B + xx];
-        row += m >= cutoff ? 'X' : m <= 0 ? '.' : String(Math.min(9, Math.max(0, Math.round((9 * Math.log(1 + m)) / Math.log(1 + emax)))));
-      }
-      console.error('[densprobe] ' + row);
-    }
-  }
+  probeDensity(B, e, cutoff, emax, samples.length);
 
   const dense = new Uint8Array(B * B);
   for (let i = 0; i < B * B; i++) dense[i] = e[i] >= cutoff && e[i] > 0 ? 1 : 0;
@@ -894,18 +877,7 @@ export function buildDemandBoxWarp(
   // sub-boxes so each can take its room on its OWN crowded axis. anisoAmt 0
   // leaves boxes unsplit.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
-  // OCTI_BOX_PROBE diagnostics: box provenance across discovery, merge, split
-  if (envStr('OCTI_BOX_PROBE')) {
-    const nIn = (b: DenseBox): number => {
-      let n = 0;
-      for (const p of g.nodes) if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) n++;
-      return n;
-    };
-    const fmt = (b: DenseBox): string => `[${b.x0.toFixed(0)},${b.y0.toFixed(0)}..${b.x1.toFixed(0)},${b.y1.toFixed(0)} ${(b.x1 - b.x0).toFixed(0)}x${(b.y1 - b.y0).toFixed(0)} n=${nIn(b)}]`;
-    console.error(`[boxprobe] density boxes: ${density.map(fmt).join(' ')}`);
-    console.error(`[boxprobe] merged: ${merged.map((b) => b.kind[0] + fmt(b)).join(' ')}`);
-    console.error(`[boxprobe] split:  ${boxes.map((b) => `${b.kind[0]}${fmt(b)} r=${boxCrowdAnisotropy(b, g).toFixed(2)}`).join(' ')}`);
-  }
+  probeBoxes(density, merged, boxes, g.nodes, (b) => boxCrowdAnisotropy(b, g));
   if (boxes.length === 0) {
     if (out) { out.boxes = []; out.expands = []; }
     return { warp: (p) => [p[0], p[1]], growthX: 1, growthY: 1 };
@@ -1053,14 +1025,11 @@ export function buildDemandBoxWarp(
   result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
   if (out) { out.expands = expands; out.aniso = rs; }
 
-  if (envStr('OCTI_WARP_DEBUG')) {
-    const ex = expands.map((e) => e.toFixed(2)).join(',');
-    const an = rs.map((r) => r.toFixed(2)).join(',');
-    console.error(
-      `[boxwarp] boxes=${boxes.length} (density=${density.length} contraction=${contraction.length} capsule=${capsule.length} merged=${merged.length}) ` +
-      `cell=${cell.toFixed(1)} need=${need.toFixed(1)} expands=[${ex}] aniso=[${an}] (amt=${anisoAmt}) growth=${result.growthX.toFixed(2)},${result.growthY.toFixed(2)} (cap=${maxGrowth})`,
-    );
-  }
+  debugBoxWarp({
+    boxCount: boxes.length, densityCount: density.length, contractionCount: contraction.length,
+    capsuleCount: capsule.length, mergedCount: merged.length, cell, need, expands, rs, anisoAmt,
+    growthX: result.growthX, growthY: result.growthY, maxGrowth,
+  });
   return result;
 }
 

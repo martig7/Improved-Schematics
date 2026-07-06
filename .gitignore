@@ -1,6 +1,6 @@
 node_modules/
 dist/
-debug/
+/debug/
 *.log
 .DS_Store
 .claude/
