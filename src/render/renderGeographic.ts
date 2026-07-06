@@ -938,11 +938,18 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // thinner theme line widths don't shrink the tuned merge radius.
   const dHat =
     Number.isFinite(dHatEnv) && dHatEnv > 0 ? dHatEnv : Math.max(16, theme.lineWidth * 4);
+  // (dev diagnostic, default off: OCTI_ROUNDS=<n> caps the merge rounds —
+  // isolates round-2+ drift zips (averaged geometry creeping corridors within
+  // dHat of each other between rounds) from round-1 geometry-true collapses.)
+  const roundsEnv =
+    typeof process !== 'undefined'
+      ? Number((process as { env?: Record<string, string> }).env?.OCTI_ROUNDS)
+      : NaN;
   const topoParams: TopoParams = {
     dHat,
     step: Math.max(2, dHat / 4),
     convergenceEpsilon: 0.002,
-    maxRounds: 8,
+    maxRounds: Number.isFinite(roundsEnv) && roundsEnv > 0 ? roundsEnv : 8,
     stationCandidateRadius: 2 * dHat,
     preserveStations: false,
   };

@@ -1873,6 +1873,11 @@ function tryDraw(
     }
   }
   const REVERSAL_PEN = grid.pens.crossingPen * 3;
+  // Threshold -0.3, deliberately WIDER than the census's -0.5: a 45°+90°
+  // switchback (NYC jul-5-2, the A's loop at the Nevins fan: corners at
+  // cos -0.45) doubles back visually but slips a pure-reversal test. The
+  // penalty prices any turn sharper than ~107°; genuine octilinear course
+  // bends (45°/90°, cos >= 0) stay free.
   const reversalsTouching = (nd: string, posOf: (id: string) => Pixel | null): number => {
     let n = 0;
     for (const [p, c, q] of courseTriples.get(nd) ?? []) {
@@ -1884,7 +1889,7 @@ function tryDraw(
       const vx = pq[0] - pc[0], vy = pq[1] - pc[1];
       const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
       if (lu < 1e-6 || lv < 1e-6) continue;
-      if ((ux * vx + uy * vy) / (lu * lv) < -0.5) n++;
+      if ((ux * vx + uy * vy) / (lu * lv) < -0.3) n++;
     }
     return n;
   };
