@@ -21,7 +21,6 @@ export type Layer =
   | 'water'
   | 'grid'
   | 'edges'
-  | 'transfers'
   | 'stops'
   | 'stations'
   | 'other';

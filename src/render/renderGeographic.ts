@@ -33,12 +33,6 @@ import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox
 import { LINE_WIDTH, LINE_GAP } from './constants';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
-import {
-  findTransferPairs,
-  routedGroupsOnly,
-  DEFAULT_TRANSFER_METERS,
-  type TransferPair,
-} from './transfers';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
@@ -405,8 +399,6 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   // the gridOverlay slot, which draws between the background and routes.
   const waterOverlay = geographyBackdrop(input.geography, proj, theme, dark);
 
-  // Geographic mode (incl. topo) draws no transfer-connector brackets, so no
-  // `transfers` is passed to renderRibbons.
   return renderRibbons({
     layout,
     nodePx,
@@ -430,7 +422,6 @@ export interface SmoothedPrecomputed {
   nodePx: Map<string, Pixel>;
   /** input station id -> render position (px), for the magnifier's box hit-test. */
   stationPx: Map<string, Pixel>;
-  transfers: TransferPair[];
   stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
   /** Static overlay drawn between water and routes (the optional Γ' grid; on
    *  legacy pres this also carried the baked water polygons — new pres carry
@@ -1269,8 +1260,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   }
   lap('untangle');
 
-  const transfers = findTransferPairs(routedGroupsOnly(groups, graph), DEFAULT_TRANSFER_METERS);
-
   // The support graph carries no lngLat for renderRibbons' affine map, so
   // project the geography rings here through the real (warped) projection, so
   // water + parks deform with the network, and store them on the pre. The
@@ -1306,7 +1295,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // geography), renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, transfers, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
@@ -1454,7 +1443,6 @@ export function drawSmoothed(
     showLabels: opts.showLabels,
     showStations: opts.showStations,
     megaFallback: opts.megaFallback ?? 'curve',
-    transfers: pre.transfers,
     backdrop,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,

@@ -27,8 +27,6 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { renderStops } from './stops';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
-import type { TransferPair } from './transfers';
-import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
 import type { FrameRect } from './projection';
 import type { Scene, Prim } from './sceneIR';
 import { sceneFromSvg } from './sceneFromSvg';
@@ -126,7 +124,6 @@ export interface RenderRibbonsArgs {
    *  Draw-time only — consumed in paintRibbons, never in computeRibbonGeometry. */
   megaFallback?: 'box' | 'curve';
   water?: WaterCollection;
-  transfers?: TransferPair[];
   /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
    *  labels for these — the ghost is invisible by design (lines pass through
    *  it but no circle is drawn). */
@@ -3110,42 +3107,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
 
-  let transferPart = '';
-  if (args.transfers && args.transfers.length > 0) {
-    const excludeKeys = edgeKeysFromGraph(layout.edges);
-    const dotR = LINE_WIDTH * 0.7;
-    const dotOf = (id: string): { center: Pixel; radius: number } | null => {
-      const marks = stopsByNode.get(id);
-      if (!marks || marks.length === 0) {
-        const p = nodePx.get(id);
-        return p ? { center: p, radius: dotR } : null;
-      }
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (const m of marks) {
-        if (m.pos[0] < minX) minX = m.pos[0];
-        if (m.pos[0] > maxX) maxX = m.pos[0];
-        if (m.pos[1] < minY) minY = m.pos[1];
-        if (m.pos[1] > maxY) maxY = m.pos[1];
-      }
-      const center: Pixel = [(minX + maxX) / 2, (minY + maxY) / 2];
-      const radius = hyp(maxX - minX, maxY - minY) / 2 + dotR;
-      return { center, radius };
-    };
-    transferPart = renderTransferConnectors(
-      args.transfers,
-      (p) => {
-        const a = dotOf(p.fromId);
-        const b = dotOf(p.toId);
-        if (!a || !b) return null;
-        return { from: a.center, to: b.center, radius: Math.max(a.radius, b.radius) };
-      },
-      excludeKeys,
-      { dark, strokeWidth: LINE_WIDTH * 0.35 },
-    );
-  }
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.
@@ -3158,7 +3119,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // so the panel can paint a canvas without re-parsing the SVG. ADDITIVE: emit
   // nothing unless a sink is passed, and never touch the string-building above.
   // Layers are emitted in the same source order as the markup. The big DYNAMIC
-  // layers (edges here; stops/labels/transfers below) are emitted directly; the
+  // layers (edges here; stops/labels below) are emitted directly; the
   // tiny STATIC backdrop/grid fragment reuses the proven parser.
   if (sceneOut) {
     const prims: Prim[] = [];
@@ -3180,11 +3141,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     }
     for (const p of casingPrims) prims.push(p);
     for (const p of strokePrims) prims.push(p);
-    // transfers: a tiny `<g class="transfers">…</g>` fragment with FEW staple
-    // paths. Reuse the proven parser (consistent with the static water/grid
-    // above). worldScale is correctly FALSE since transfers sits outside
-    // .edges/.imp-stop.
-    if (transferPart) for (const p of sceneFromSvg(transferPart).prims) prims.push(p);
     // stops: station markers (dots/capsules/rings/mega rects + bullet text),
     // built alongside the markup by renderStops in source/concatenation order.
     for (const p of stopsPrims) prims.push(p);
@@ -3202,7 +3158,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
-    (transferPart ? transferPart + '\n' : '') +
     '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
   );

@@ -9,8 +9,8 @@ import type { GeographyData } from '../../geography/types';
 
 // A representative slice of renderRibbons' output: svg header + data-frame, land
 // rect, an unclassed geography backdrop group, an .edges bundle (casing+stroke),
-// a .transfers connector, a .stops marker (imp-stop > inner g > circle + bullet
-// text), and a .stations label (imp-lbl translate > imp-lbl-s > text).
+// a .stops marker (imp-stop > inner g > circle + bullet text), and a .stations
+// label (imp-lbl translate > imp-lbl-s > text).
 const SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2700 2700" width="2700" height="2700" data-frame="100.0 200.0 1000.0 800.0">\n' +
   '<rect width="2700" height="2700" fill="#ffffff"/>\n' +
@@ -19,7 +19,6 @@ const SVG =
   '<path d="M1,2L3,4" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>\n' +
   '<path d="M1,2L3,4" fill="none" stroke="#ff0000" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" data-line-id="r1"/>\n' +
   '</g>\n' +
-  '<g class="transfers"><path d="M5 5 L6 6" fill="none" stroke="#888888" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/></g>\n' +
   '<g class="stops">\n' +
   '<g class="imp-stop" data-ax="10.0" data-ay="20.0"><g data-stops="r1" data-station-id="n1"><circle cx="10.0" cy="20.0" r="2.8" fill="#fff" stroke="#ff0000" stroke-width="1.50" data-line="r1"/><text x="10.0" y="21.6" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="4.50" font-weight="bold" fill="#111111">A</text></g></g>\n' +
   '</g>\n' +
@@ -60,14 +59,6 @@ test('sceneFromSvg: geography backdrop is unclassed/world-positioned (other)', (
   assert.equal(water!.worldScale, false);
 });
 
-test('sceneFromSvg: transfers carry opacity and counter-scale', () => {
-  const s = sceneFromSvg(SVG);
-  const t = s.prims.find((p) => p.layer === 'transfers');
-  assert.ok(t);
-  assert.equal(t!.opacity, 0.85);
-  assert.equal(t!.worldScale, false);
-});
-
 test('sceneFromSvg: stop marker dot + route bullet are worldScale at world pos', () => {
   const s = sceneFromSvg(SVG);
   const stops = s.prims.filter((p) => p.layer === 'stops');
@@ -101,7 +92,6 @@ test('prepareScene buckets into draw-order layers', () => {
   const s = sceneFromSvg(SVG);
   const p = prepareScene(s);
   assert.equal(p.edges.length, 2);
-  assert.equal(p.transfers.length, 1);
   assert.equal(p.labels.length, 1);
   // base = background rect + geography backdrop path, background first.
   assert.ok(p.base.length >= 2);

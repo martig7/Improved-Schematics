@@ -25,8 +25,6 @@ export interface PreparedScene {
   base: Prim[];
   /** route ribbons, clipped to outside the cutout boxes. */
   edges: Prim[];
-  /** transfer connectors, drawn between edges and stops, unclipped. */
-  transfers: Prim[];
   /** station markers, clipped to outside the cutout boxes. */
   stops: Prim[];
   /** station labels; constant-screen-size pass, hidden when over a cutout box. */
@@ -37,7 +35,6 @@ export interface PreparedScene {
 export function prepareScene(scene: Scene): PreparedScene {
   const base: Prim[] = [];
   const edges: Prim[] = [];
-  const transfers: Prim[] = [];
   const stops: Prim[] = [];
   const labels: TextPrim[] = [];
   // First pass: everything that draws under/around the routes, in source order
@@ -49,9 +46,6 @@ export function prepareScene(scene: Scene): PreparedScene {
     switch (p.layer) {
       case 'edges':
         edges.push(p);
-        break;
-      case 'transfers':
-        transfers.push(p);
         break;
       case 'stops':
         stops.push(p);
@@ -65,7 +59,7 @@ export function prepareScene(scene: Scene): PreparedScene {
     }
   }
   base.sort((a, b) => order(a.layer) - order(b.layer)); // stable in modern engines
-  return { scene, base, edges, transfers, stops, labels };
+  return { scene, base, edges, stops, labels };
 }
 
 /** WORLD-space box of a label's text. Labels are drawn in world space (constant
@@ -232,7 +226,6 @@ export function drawScene(
   camera();
   drawList(prepared.base);
   withClip(() => drawList(prepared.edges));
-  drawList(prepared.transfers);
   withClip(() => drawList(prepared.stops));
 
   // Labels: WORLD space, constant relative to the image, so they scale with the

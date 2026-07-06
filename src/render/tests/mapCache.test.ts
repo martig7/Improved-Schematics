@@ -69,7 +69,6 @@ const fakePre = (builtFp?: string) =>
     layout: { cellSize: 1, nodes: new Map(), edges: [], lineTraversals: new Map() },
     nodePx: new Map(),
     stationPx: new Map(),
-    transfers: [],
     stations: [],
     gridOverlay: '',
     width: 100,
