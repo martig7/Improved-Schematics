@@ -1844,54 +1844,98 @@ function tryDraw(
   const nodes = [...h.nodes.keys()].filter((nd) => ctx.deg(nd) > 0);
   const hEdges = [...h.edges.values()];
 
-  // Course triples per node, from the line traversals octi received. The
-  // placement objective prices bends and crossings, but nothing prices a
-  // node placed OUT OF ORDER along its line's course — dense station knots
-  // then draw as chord reversals even though every per-edge path is clean
-  // (the 'placed' zigzag-census family: NYC-Jul4 +28, SF +22). The node-move
-  // sweep below charges REVERSAL_PEN per course reversal touching the moved
-  // node, so order-restoring moves win and order-breaking moves lose.
-  const courseTriples = new Map<string, Array<[string, string, string]>>();
-  for (const steps of h.lineTraversals.values()) {
-    let prev: string | null = null;
-    let cur: string | null = null;
-    for (const s of steps) {
-      const e = h.edges.get(s.edgeId);
-      if (!e) { prev = null; cur = null; continue; }
-      const a = s.reversed ? e.to : e.from;
-      const b = s.reversed ? e.from : e.to;
-      if (cur !== a) { prev = null; cur = a; }
-      if (prev && prev !== cur && cur !== b && prev !== b) {
-        for (const nd of [prev, cur, b]) {
-          let arr = courseTriples.get(nd);
-          if (!arr) courseTriples.set(nd, (arr = []));
-          arr.push([prev, cur, b]);
+  // COURSE-ECONOMY penalty (general switchback/revisit cost). The placement
+  // objective prices bends and crossings per edge, but nothing prices a
+  // line's COURSE — the path through placed nodes. Dense knots then draw as
+  // switchbacks and staircase revisits even though every per-edge path is
+  // clean: a 117° switchback slips a pure-reversal (dot) test, and a
+  // 90°-cornered staircase revisit slips ANY per-corner test (each corner is
+  // individually legitimate). The general measure is windowed arc-over-chord
+  // of the course, judged against the SAME window's ratio in support
+  // geometry: the drawn course may not detour meaningfully more than the
+  // true course does. Genuine terminal U-turns and geographic bows have a
+  // high reference ratio and stay free; manufactured doubling is priced in
+  // proportion to its excess.
+  interface CourseWindow { nds: string[]; ref: number }
+  const courseWindows = new Map<string, CourseWindow[]>(); // node -> windows touching it
+  const allWindows: CourseWindow[] = []; // deduped, for the final census
+  {
+    const SPANS = [2, 3]; // hops per window: 2 = switchbacks, 3 = staircases
+    const seqs: string[][] = [];
+    for (const steps of h.lineTraversals.values()) {
+      let seq: string[] = [];
+      let prevEnd: string | null = null;
+      for (const s of steps) {
+        const e = h.edges.get(s.edgeId);
+        if (!e) { if (seq.length > 2) seqs.push(seq); seq = []; prevEnd = null; continue; }
+        const a = s.reversed ? e.to : e.from;
+        const b = s.reversed ? e.from : e.to;
+        if (prevEnd !== a) { if (seq.length > 2) seqs.push(seq); seq = [a]; }
+        seq.push(b);
+        prevEnd = b;
+      }
+      if (seq.length > 2) seqs.push(seq);
+    }
+    const ratioOf = (nds: string[], posOf: (id: string) => Pixel | null): number => {
+      let arc = 0;
+      let ok = true;
+      let pPrev: Pixel | null = null;
+      for (const nd of nds) {
+        const p = posOf(nd);
+        if (!p) { ok = false; break; }
+        if (pPrev) arc += dist(pPrev, p);
+        pPrev = p;
+      }
+      if (!ok || arc < 1e-6) return 1;
+      const a = posOf(nds[0])!;
+      const b = posOf(nds[nds.length - 1])!;
+      // clamp the chord: a window that returns exactly to its origin would
+      // divide by ~0 — treat sub-half-cell chords as half a cell.
+      const chord = Math.max(dist(a, b), grid.cellSize / 2);
+      return arc / chord;
+    };
+    const supportPos = (nd: string): Pixel | null => h.nodes.get(nd)?.pos ?? null;
+    for (const seq of seqs) {
+      for (const span of SPANS) {
+        for (let i = 0; i + span < seq.length; i++) {
+          const nds = seq.slice(i, i + span + 1);
+          if (new Set(nds).size !== nds.length) continue; // literal revisits are graph truth (termini)
+          const ref = ratioOf(nds, supportPos);
+          const w: CourseWindow = { nds, ref };
+          allWindows.push(w);
+          for (const nd of nds) {
+            let arr = courseWindows.get(nd);
+            if (!arr) courseWindows.set(nd, (arr = []));
+            arr.push(w);
+          }
         }
       }
-      prev = cur;
-      cur = b;
     }
   }
-  const REVERSAL_PEN = grid.pens.crossingPen * 3;
-  // Threshold -0.3, deliberately WIDER than the census's -0.5: a 45°+90°
-  // switchback (NYC jul-5-2, the A's loop at the Nevins fan: corners at
-  // cos -0.45) doubles back visually but slips a pure-reversal test. The
-  // penalty prices any turn sharper than ~107°; genuine octilinear course
-  // bends (45°/90°, cos >= 0) stay free.
-  const reversalsTouching = (nd: string, posOf: (id: string) => Pixel | null): number => {
-    let n = 0;
-    for (const [p, c, q] of courseTriples.get(nd) ?? []) {
-      const pp = posOf(p);
-      const pc = posOf(c);
-      const pq = posOf(q);
-      if (!pp || !pc || !pq) continue;
-      const ux = pc[0] - pp[0], uy = pc[1] - pp[1];
-      const vx = pq[0] - pc[0], vy = pq[1] - pc[1];
-      const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
-      if (lu < 1e-6 || lv < 1e-6) continue;
-      if ((ux * vx + uy * vy) / (lu * lv) < -0.3) n++;
+  const COURSE_DETOUR_PEN = grid.pens.crossingPen * 3; // per unit of excess arc/chord ratio
+  const DETOUR_FREE = 1.45; // 90° equal-leg corner = 1.414 — always free
+  const DETOUR_SLACK = 0.15; // tolerated excess over the support reference
+  const DETOUR_CAP = 3; // cap per window (a reversal's ratio is unbounded)
+  const courseDetourPenalty = (nd: string, posOf: (id: string) => Pixel | null): number => {
+    let pen = 0;
+    for (const w of courseWindows.get(nd) ?? []) {
+      let arc = 0;
+      let ok = true;
+      let pPrev: Pixel | null = null;
+      for (const m of w.nds) {
+        const p = posOf(m);
+        if (!p) { ok = false; break; }
+        if (pPrev) arc += dist(pPrev, p);
+        pPrev = p;
+      }
+      if (!ok || arc < 1e-6) continue;
+      const a = posOf(w.nds[0])!;
+      const b = posOf(w.nds[w.nds.length - 1])!;
+      const chord = Math.max(dist(a, b), grid.cellSize / 2);
+      const excess = arc / chord - Math.max(w.ref + DETOUR_SLACK, DETOUR_FREE);
+      if (excess > 0) pen += Math.min(excess, DETOUR_CAP);
     }
-    return n;
+    return pen;
   };
   // Geographic quality tie-break (OCTI_TIEBREAK=<eps>, default off). Among grid
   // positions for a node move whose score is within <eps> cost units of the
@@ -1949,7 +1993,7 @@ function tryDraw(
         const b = run?.nds.get(id) ?? drawing.nds.get(id);
         return b === undefined ? null : grid.basePos(b);
       };
-      const revPen = (run: Drawing | null): number => REVERSAL_PEN * reversalsTouching(a, posInRun(run));
+      const revPen = (run: Drawing | null): number => COURSE_DETOUR_PEN * courseDetourPenalty(a, posInRun(run));
       const statusQuoEff = drawing.score() + revPen(null);
       let bestEff = statusQuoEff; // a move must beat the status quo
 
@@ -2088,6 +2132,34 @@ function tryDraw(
       if (r > worstR) worstR = r;
     }
     console.error(`[blockage:final] wanderers=${wander} of ${total} drawn (worst ratio ${worstR.toFixed(2)})`);
+    // Course-economy census: windows whose DRAWN arc/chord exceeds their
+    // support-reference allowance — the manufactured switchback/revisit
+    // population the course-detour penalty prices. The zigzag census misses
+    // 90°-cornered shapes (dot threshold); this is the honest ruler.
+    let bad = 0;
+    let worstX = 0;
+    const posAt = (id: string): Pixel | null => {
+      const bIdx = drawing.nds.get(id);
+      return bIdx === undefined ? null : grid.basePos(bIdx);
+    };
+    for (const w of allWindows) {
+      let arc = 0;
+      let ok = true;
+      let pPrev: Pixel | null = null;
+      for (const m of w.nds) {
+        const p = posAt(m);
+        if (!p) { ok = false; break; }
+        if (pPrev) arc += dist(pPrev, p);
+        pPrev = p;
+      }
+      if (!ok || arc < 1e-6) continue;
+      const a = posAt(w.nds[0])!;
+      const b = posAt(w.nds[w.nds.length - 1])!;
+      const chord = Math.max(dist(a, b), grid.cellSize / 2);
+      const excess = arc / chord - Math.max(w.ref + DETOUR_SLACK, DETOUR_FREE);
+      if (excess > 0) { bad++; if (excess > worstX) worstX = excess; }
+    }
+    console.error(`[blockage:course] detour windows=${bad} of ${allWindows.length} (worst excess ${worstX.toFixed(2)})`);
   }
 
   // OCTI_DEBUG telemetry: why the local search stopped. No wall-clock budget
