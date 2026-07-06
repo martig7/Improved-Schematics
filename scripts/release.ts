@@ -11,8 +11,10 @@
 //   2. bump MOD_VERSION in src/version.ts, run `pnpm build` (which syncs the value
 //      into package.json + manifest.json), and commit  (the workflow verifies the
 //      tag matches those two versions)
-//   3. `git tag -a v<version>` and paste the notes as the tag message body (its
-//      first line is the tag subject and is dropped from the release body)
+//   3. `git tag -a v<version> --cleanup=verbatim -F docs/releases/v<version>-draft.md`
+//      (--cleanup=verbatim is REQUIRED: the default strips the markdown "#" headers
+//      as git comments. The notes' first "# v<version>" line is the tag subject and
+//      is dropped from the release body.)
 //   4. `git push origin v<version>`  ->  the workflow builds, zips, and publishes
 import { execSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
