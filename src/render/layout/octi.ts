@@ -1912,7 +1912,10 @@ function tryDraw(
       }
     }
   }
-  const COURSE_DETOUR_PEN = grid.pens.crossingPen * 3; // per unit of excess arc/chord ratio
+  const COURSE_DETOUR_PEN =
+    typeof process !== 'undefined' && (process as { env?: Record<string, string> }).env?.OCTI_COURSE_PEN === '0'
+      ? 0
+      : grid.pens.crossingPen * 3; // per unit of excess arc/chord ratio (OCTI_COURSE_PEN=0: diagnostic A/B)
   const DETOUR_FREE = 1.45; // 90° equal-leg corner = 1.414 — always free
   const DETOUR_SLACK = 0.15; // tolerated excess over the support reference
   const DETOUR_CAP = 3; // cap per window (a reversal's ratio is unbounded)
