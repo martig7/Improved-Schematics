@@ -42,7 +42,7 @@ import {
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
-import { auditTraversals, auditZigzags } from './layout/travAudit';
+import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';

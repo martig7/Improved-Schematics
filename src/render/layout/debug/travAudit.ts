@@ -4,8 +4,8 @@
 // breaks a traversal identifies itself. Enable with OCTI_AUDIT=1 (all lines)
 // or OCTI_AUDIT=<lineId-prefix>.
 
-import { envStr } from '../../env';
-import type { TraversalStep } from './types';
+import { envStr } from '../../../env';
+import type { TraversalStep } from '../types';
 
 export interface AuditEdge {
   from: string;
