@@ -1,9 +1,9 @@
+import { logHarvestFit, logHarvestCounts, logHarvestFailed, logHarvestDisposed } from './debug/harvest.debug';
 import type { Map as MlMap, StyleSpecification, SourceSpecification } from 'maplibre-gl';
 import type { TaggedFeature } from './types';
 import type { BoundingBox } from '../types/core';
 import type { ProbeResult } from './schemaProbe';
 
-const TAG = '[ImprovedSchematics] geography:';
 // Offscreen canvas size. Tiles-to-cover-the-viewport scales with this, so keep
 // it small: halving the dimension loads ~4× fewer tiles (less GPU and less
 // contention with the real map's tile worker during the one-time harvest), at a
@@ -94,7 +94,7 @@ export async function harvestTaggedFeatures(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },
     );
-    console.info(`${TAG} fit to [${bbox.map((n) => n.toFixed(3)).join(', ')}] → offscreen zoom ${map.getZoom().toFixed(1)}`);
+    logHarvestFit(bbox, map.getZoom());
     await waitForTiles(map);
 
     const out: TaggedFeature[] = [];
@@ -111,15 +111,10 @@ export async function harvestTaggedFeatures(
         });
       }
     }
-    console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded}, tileErrors=${tileErrors})`);
-    if (out.length === 0 && tileErrors > 0) {
-      console.warn(`${TAG} 0 features with ${tileErrors} tile error(s) — basemap not serving tiles yet; caller will retry`);
-    } else if (!loaded) {
-      console.warn(`${TAG} tiles still loading after ${TILE_WAIT_MS}ms — harvest may be partial; caller will retry`);
-    }
+    logHarvestCounts(counts, loaded, tileErrors, out.length, TILE_WAIT_MS);
     return out;
   } catch (err) {
-    console.warn(`${TAG} offscreen harvest failed:`, err);
+    logHarvestFailed(err);
     return [];
   } finally {
     // Tear the offscreen map down immediately so it stops contending with the
@@ -146,6 +141,6 @@ export async function harvestTaggedFeatures(
     }
     container.remove();
     const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0);
-    console.info(`${TAG} offscreen map disposed (lived ${ms}ms)`);
+    logHarvestDisposed(ms);
   }
 }

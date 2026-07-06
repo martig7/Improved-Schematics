@@ -2,7 +2,7 @@
 // edge. Ported from the game (dev/reference/computeCanonicalOffsets.js,
 // offsetPolyline.js, unit.js, perp.js).
 
-import { envStr } from '../../env';
+import { debugCanonicalOffsets } from './debug/offsets.debug';
 import type { Layout, Pixel } from './types';
 import { LINE_WIDTH, LINE_GAP } from '../constants';
 
@@ -233,20 +233,7 @@ export function computeCanonicalOffsets(layout: Layout): Map<string, number> {
     offsets.set(lineId, chosen);
     fixed.add(lineId);
   }
-  if (
-    envStr('OCTI_DEBUG')
-  ) {
-    for (const [lineId, off] of offsets) {
-      console.error(`[offsets] ${lineId.slice(0, 6)} -> ${off}`);
-    }
-    for (const [a, ns] of neighbors) {
-      for (const b of ns) {
-        if (a < b && Math.abs(offsets.get(a)! - offsets.get(b)!) < COINCIDENT) {
-          console.error(`[offsets] RESIDUAL COINCIDENCE ${a.slice(0, 6)} ~ ${b.slice(0, 6)} @ ${offsets.get(a)}`);
-        }
-      }
-    }
-  }
+  debugCanonicalOffsets(offsets, neighbors, COINCIDENT);
   return offsets;
 }
 

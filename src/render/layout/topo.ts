@@ -3,7 +3,18 @@
 // ids, then re-insert stations at the best-scoring support nodes.
 // Reference: Brosi & Bast 2024, "Network Topology Extraction".
 
-import { envStr } from '../../env';
+import {
+  traceContractStale,
+  traceWalk,
+  traceContractCount,
+  auditWeldStubs,
+  absorbDebugEnabled,
+  debugAbsorb,
+  auditAbsorb,
+  traceTraversal,
+  auditHealLadder,
+  debugSupportSummary,
+} from './debug/topo.debug';
 import type { Coordinate } from '../../types/core';
 import type {
   Pixel,
@@ -280,10 +291,6 @@ export class HBuilder {
   /** Collapse every degree-2 node whose two edges carry identical line sets,
    *  joining their polylines through the node. */
   contractDegree2WithMatchingLines(): void {
-    const trace =
-      typeof process !== 'undefined'
-        ? envStr('OCTI_TRACE_LINE')
-        : undefined;
     let changed = true;
     while (changed) {
       changed = false;
@@ -291,10 +298,7 @@ export class HBuilder {
         if (this.protected_.has(nid)) continue;
         if (eids.size !== 2) continue;
         const [e1, e2] = [...eids].map((id) => this.edges.get(id)!);
-        if (trace && (!e1 || !e2)) {
-          console.error(`[topo] contract: STALE adj at ${nid}: ${[...eids]} -> ${!!e1},${!!e2}`);
-          continue;
-        }
+        if (traceContractStale(nid, eids, e1, e2)) continue;
         if (!setsEqual(e1.lineIds, e2.lineIds)) continue;
         const other1 = e1.a === nid ? e1.b : e1.a;
         const other2 = e2.a === nid ? e2.b : e2.a;
@@ -708,11 +712,6 @@ export function collapseSharedSegments(
       (ekey(x) < ekey(y) ? -1 : ekey(x) > ekey(y) ? 1 : 0),
   );
 
-  const trace2 =
-    typeof process !== 'undefined'
-      ? envStr('OCTI_TRACE_LINE')
-      : undefined;
-
   const imgNds = new Map<string, string>();
 
   for (const e of sorted) {
@@ -766,19 +765,10 @@ export function collapseSharedSegments(
       last = cur;
     }
 
-    if (trace2 && e.lineIds.has(trace2)) {
-      const at = (nid: string | undefined | null): string => {
-        if (!nid) return '?';
-        const p = h.nodePos(nid);
-        return `${nid}(${p[0].toFixed(0)},${p[1].toFixed(0)})`;
-      };
-      console.error(
-        `[walk] edge ${e.fromId.slice(0, 6)}->${e.toId.slice(0, 6)} ` +
-        `len=${polylineLength(e.points).toFixed(0)} samples=${samples.length} ` +
-        `unions=${unions} earlyBreak=${broke} ` +
-        `ends: ${at(imgNds.get(e.fromId))} -> ${at(imgNds.get(e.toId))} first=${at(front)} last=${at(last)}`,
-      );
-    }
+    traceWalk(
+      e.lineIds, e.fromId, e.toId, polylineLength(e.points), samples.length, unions, broke,
+      (nid) => h.nodePos(nid), imgNds.get(e.fromId), imgNds.get(e.toId), front, last,
+    );
 
     const fromNd = imgNds.get(e.fromId);
     const toNd = imgNds.get(e.toId);
@@ -790,19 +780,9 @@ export function collapseSharedSegments(
     }
   }
 
-  const trace =
-    typeof process !== 'undefined'
-      ? envStr('OCTI_TRACE_LINE')
-      : undefined;
-  if (trace) {
-    const n = h.edgeList().filter((e) => e.lineIds.has(trace)).length;
-    console.error(`[topo] pre-contract: trace line on ${n}/${h.edgeList().length} edges`);
-  }
+  traceContractCount('pre', () => h.edgeList());
   h.contractDegree2WithMatchingLines();
-  if (trace) {
-    const n = h.edgeList().filter((e) => e.lineIds.has(trace)).length;
-    console.error(`[topo] post-contract: trace line on ${n}/${h.edgeList().length} edges`);
-  }
+  traceContractCount('post', () => h.edgeList());
   return h;
 }
 
@@ -1139,12 +1119,7 @@ function weldRedundantStubs(
     }
     if (!changed) break;
   }
-  if (
-    stubWelds > 0 &&
-    envStr('OCTI_AUDIT')
-  ) {
-    console.error(`[audit:fire] weldRedundantStubs=${stubWelds}`);
-  }
+  auditWeldStubs(stubWelds);
 }
 
 /** Absorb sub-dHat degree-1 stubs hanging off junctions (degree >= 3 with
@@ -1161,9 +1136,7 @@ function absorbJunctionStubs(
   adj: Map<string, string[]>,
   dHat: number,
 ): void {
-  const DBG =
-    typeof process !== 'undefined' &&
-    !!envStr('OCTI_DEBUG');
+  const DBG = absorbDebugEnabled();
   let absorbed = 0;
   for (const eid of [...edges.keys()].sort()) {
     const e = edges.get(eid);
@@ -1203,16 +1176,11 @@ function absorbJunctionStubs(
       const i = arrB.indexOf(eid);
       if (i >= 0) arrB.splice(i, 1);
       absorbed++;
-      if (DBG) console.error(`[topo] absorb ${eid} ${A} -> ${B} (span ${span.toFixed(1)})`);
+      debugAbsorb(DBG, eid, A, B, span);
       break;
     }
   }
-  if (
-    absorbed > 0 &&
-    envStr('OCTI_AUDIT')
-  ) {
-    console.error(`[audit:fire] absorbJunctionStubs=${absorbed}`);
-  }
+  auditAbsorb(absorbed);
 }
 
 /**
@@ -1652,24 +1620,10 @@ export function buildSupportGraph(
       appendTraversalSteps(steps, seg);
       curNode = target;
     }
-    if (
-      envStr('OCTI_TRACE_LINE') === lineId
-    ) {
-      console.error(
-        `[trav] line ${lineId.slice(0, 8)}: graphNodes=${graphNodes.length} ` +
-        `supportNodes=[${supportNodes.map((s) => s.slice(0, 6)).join(',')}] steps=${steps.length}`,
-      );
-    }
+    traceTraversal(lineId, graphNodes.length, supportNodes, steps.length);
     if (steps.length > 0) lineTraversals.set(lineId, steps);
   }
-  if (
-    envStr('OCTI_AUDIT')
-  ) {
-    console.error(
-      `[audit:heal-ladder] path=${healStats.bfs} ` +
-      `anyPath(paint)=${healStats.anyPath} miss=${healStats.miss} stallJump=${healStats.stallJump}`,
-    );
-  }
+  auditHealLadder(healStats);
 
   const stopAt = new Set<string>();
 
@@ -1815,15 +1769,7 @@ export function buildSupportGraph(
     if (st) st.stopLines = lines;
   }
 
-  if (
-    envStr('OCTI_DEBUG')
-  ) {
-    let anchors = 0;
-    for (const id of nodes.keys()) if (id.startsWith('ha')) anchors++;
-    console.error(
-      `[topo] support: ${nodes.size} nodes (${anchors} anchor splits), ${edges.size} edges`,
-    );
-  }
+  debugSupportSummary(nodes.keys(), nodes.size, edges.size);
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
 

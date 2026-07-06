@@ -2,6 +2,17 @@
 // pre-projected node pixels and paints the route lines, stops, and labels for
 // the smoothed renderer.
 
+import {
+  joinTraceTarget, makeJoinLog, reportPaintedLoops, reportVanishedStations,
+  reportFarAttach, reportSplitFit, reportCapsOverlap, reportPlatformSplit,
+  reportBoxRegime, reportMegaFallbacks, reportCapsOvlStats, reportCapsAudit,
+  reportSlideBoxed, reportRigidSlideDeclined, reportSlideStackDeclined,
+  reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
+  reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
+  reportNoOverlapFloorBoxed, reportNoOverlapFloorSummary, reportEgregiousOverlaps,
+  reportSlideBoxedSummary, reportSlidStations, reportEvictedStations,
+  reportConnTrace, reportRibbonSummary,
+} from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
@@ -18,7 +29,6 @@ import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { TransferPair } from './transfers';
 import { renderTransferConnectors, edgeKeysFromGraph } from './transfers';
-import { detectPaintedLoops } from './layout/loopMetrics';
 import type { FrameRect } from './projection';
 import type { Scene, Prim } from './sceneIR';
 import { sceneFromSvg } from './sceneFromSvg';
@@ -639,10 +649,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // independently of the turn miter.
   const noDogleg =
     envStr('OCTI_NO_DOGLEG') === '1';
-  const JOIN_TRACE = typeof process !== 'undefined' ? envStr('OCTI_JOIN_TRACE') : undefined;
+  const JOIN_TRACE = joinTraceTarget();
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
-    const jlog = (m: string) => { if (JOIN_TRACE === lineId) console.error('[join] ' + m); };
+    const jlog = makeJoinLog(JOIN_TRACE, lineId);
     for (let i = 1; i < traversal.length; i++) {
       const a = traversal[i - 1];
       const b = traversal[i];
@@ -929,50 +939,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // route's skeleton is a perfect overlap, so a self-crossing loop at a station
   // group (Chicago Blue A at Chestnut St) is invisible there but plain in the
   // painted lanes. Each loop is anchored to its nearest station group.
-  if (envStr('OCTI_LOOPS')) {
-    const routesPainted: Array<{ lineId: string; pts: Pixel[] }> = [];
-    for (const [lineId, traversal] of layout.lineTraversals) {
-      if (!lineById.has(lineId)) continue;
-      const pts: Pixel[] = [];
-      for (const step of traversal) {
-        const lane = segPath.get(step.edgeId + '|' + lineId);
-        if (!lane || lane.length < 2) continue;
-        const seq = step.reversed ? [...lane].reverse() : lane; // lanes run from→to
-        for (const p of seq) {
-          const last = pts[pts.length - 1];
-          if (!last || Math.abs(last[0] - p[0]) > 1e-6 || Math.abs(last[1] - p[1]) > 1e-6) pts.push(p);
-        }
-      }
-      if (pts.length >= 4) routesPainted.push({ lineId, pts });
-    }
-    // station groups (nodes carrying ≥1 stop) with pixel positions + labels,
-    // for anchoring each loop to the place a reader would name it.
-    const groups: Array<{ pos: Pixel; label: string }> = [];
-    for (const st of args.stations ?? []) {
-      const pos = nodePx.get(st.nodeId);
-      if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
-    }
-    const nearestGroup = (p: Pixel): string => {
-      let best = '?';
-      let bd = Infinity;
-      for (const g of groups) {
-        const d = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
-        if (d < bd) { bd = d; best = g.label; }
-      }
-      return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
-    };
-    const loops = detectPaintedLoops(routesPainted);
-    for (const l of loops.slice(0, 40)) {
-      const ln = lineById.get(l.lineId);
-      console.error(
-        `[loops] ${l.kind.toUpperCase()} route ${ln?.label ?? l.lineId} (${ln?.color ?? '?'}) ` +
-        `at=(${l.at[0].toFixed(0)},${l.at[1].toFixed(0)}) group=${nearestGroup(l.at)} ` +
-        `loopArc=${l.loopArc.toFixed(0)} diam=${l.diameter.toFixed(0)}`,
-      );
-    }
-    const arts = loops.filter((l) => l.kind === 'artifact').length;
-    console.error(`[loops] ${arts} artifact loops, ${loops.length - arts} bigloops (likely genuine routes)`);
-  }
+  reportPaintedLoops({
+    layout, lineById, lineTraversals: layout.lineTraversals, segPath,
+    stations: args.stations, nodePx,
+  });
 
   // NOTE: path emission (pushSeg + join curves) happens AFTER the station
   // marker pass below — sliding a terminus marker clear of a mega box must
@@ -1149,31 +1119,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     //   =!line the stop references a line id absent from this render
     //   (no stopNodes) — the station was stripped upstream (its node did not
     //          survive imageMerge's node remap), so it never had marks to lose
-    if (
-      envStr('OCTI_DEBUG')
-    ) {
-      let vanished = 0;
-      for (let i = 0; i < args.stations.length; i++) {
-        if (gathered[i].marks.length > 0) continue;
-        const st = args.stations[i];
-        const label = layout.nodes.get(st.nodeId)?.label ?? st.nodeId;
-        const trace: string[] = [];
-        for (const [lineId, flagNode] of st.stopNodes) {
-          const why = !lineById.get(lineId)
-            ? '!line'
-            : drawnEndAt.has(flagNode + '|' + lineId) ? 'ok' : '!pos';
-          trace.push(`${lineById.get(lineId)?.label ?? lineId}@${flagNode}=${why}`);
-        }
-        console.error(
-          `[stops] VANISHED "${label}" node=${st.nodeId} members=${st.members} ` +
-          `stops=${st.stopNodes.size}: ${trace.join(' ') || '(no stopNodes)'}`,
-        );
-        vanished++;
-      }
-      if (vanished > 0) {
-        console.error(`[stops] vanished stations (edge drawn, no marker): ${vanished}`);
-      }
-    }
+    reportVanishedStations({ stations: args.stations, gathered, layout, lineById, drawnEndAt });
 
     // ---- marker collision backup ------------------------------------------
     // A mega box swallows nearby small markers (Court's pill under the
@@ -1565,12 +1511,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               step: 0.5,
             });
           }
-          if (capPlaceDebug) {
-            console.error(
-              `[far-attach] ${s.nodeId} spread=${spread.toFixed(0)} bundles=${groups.length}` +
-              ` -> ${sol ? 'ATTACHED' : 'failed'}`,
-            );
-          }
+          reportFarAttach(s.nodeId, spread, groups.length, !!sol);
         }
         // BEST-EFFORT (split units only): a re-queued platform unit that
         // still has no seat is almost always OVERLAP-vetoed — every candidate
@@ -1598,9 +1539,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               return pen;
             },
           });
-          if (capPlaceDebug) {
-            console.error(`[split-fit] ${s.nodeId} best-effort -> ${sol ? 'seated' : 'still null (structural)'}`);
-          }
+          reportSplitFit(s.nodeId, !!sol);
         }
         // Seat-time hull overlap check (spec 2026-07-02; on by default, see
         // capNoOvlOn above). Runs AFTER both solve stages so it judges the
@@ -1644,13 +1583,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (ev.selfOvl) capOvlStats.self++;
           if (ev.crossOvl) capOvlStats.cross++;
           const reject = capNoOvlOn && !bestEffort && (ev.selfOvl || ev.crossOvl !== null);
-          if ((ev.selfOvl || ev.crossOvl) && capPlaceDebug) {
-            let cx = 0, cy = 0;
-            for (const v of ev.verts) { cx += v[0]; cy += v[1]; }
-            console.error(
-              `[capsovl] ${reject ? 'REJECT' : 'overlap'} ${s.nodeId} marks=${s.marks.length}${bestEffort ? ' best-effort' : ''} at=(${(cx / ev.verts.length).toFixed(0)},${(cy / ev.verts.length).toFixed(0)})${ev.selfOvl ? ' self' : ''}${ev.crossOvl ? ` cross(${ev.crossOvl})` : ''}${reject ? ' → split/mega' : ''}`,
-            );
-          }
+          if (ev.selfOvl || ev.crossOvl) reportCapsOverlap({
+            reject, nodeId: s.nodeId, markCount: s.marks.length, bestEffort,
+            verts: ev.verts, selfOvl: ev.selfOvl, crossOvl: ev.crossOvl,
+          });
           if (reject) { capOvlStats.rejected++; sol = null; }
           else placedHulls.push({ nodeId: s.nodeId, hull: ev.hull });
         }
@@ -1697,12 +1633,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             s.marks = clusters[keep].map((i) => s.marks[i]);
             s.splitBase = s.nodeId;
             placeQueue.push(s); // re-solve the shrunken primary cluster
-            if (envStr('OCTI_PLACE_DEBUG') === '1') {
-              console.error(
-                `[stops] platform-split "${layout.nodes.get(s.nodeId)?.label ?? s.nodeId}" ` +
-                `-> ${clusters.length} bundle units [${clusters.map((c) => c.length).join(',')}]`,
-              );
-            }
+            reportPlatformSplit({ layout, nodeId: s.nodeId, clusters });
             continue; // marks re-place per cluster; no dots committed yet
           }
           // spec v2 §3: total fallback — the mega box covers all bundles.
@@ -1718,27 +1649,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // with ldeg>deg means lines are welded onto few corridors → fan-fold /
           // over-weld (fix = de-weld). deg>8 means genuine 8-direction saturation
           // (fix = split the hub; we cannot add directions without breaking octi).
-          if (envStr('OCTI_PLACE_DEBUG') === '1') {
-            let deg = 0;
-            for (const e of layout.edges) if (e.from === s.nodeId || e.to === s.nodeId) deg++;
-            let cx = 0, cy = 0;
-            for (const mk of s.marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
-            const nm = s.marks.length || 1;
-            console.error(
-              `[box-regime] ${s.nodeId} name="${layout.nodes.get(s.nodeId)?.label ?? ''}" at=(${(cx / nm).toFixed(0)},${(cy / nm).toFixed(0)}) deg=${deg} ldeg=${ldegOf(s.nodeId)} ` +
-                `bundles=${groups.length} members=[${groups.map((gr) => gr.length).join(',')}] → ` +
-                (deg > 8 ? 'PORT-SATURATION (deg>8)' : 'OVER-WELD/FAN-FOLD (deg<=8, lines bundled)'),
-            );
-          }
+          reportBoxRegime({ layout, edges: layout.edges, nodeId: s.nodeId, marks: s.marks, ldeg: ldegOf(s.nodeId), groups });
         }
       }
       for (const mk of s.marks) placedDots.push(mk.pos);
     }
-    if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
-    if (capPlaceDebug || capOvlStats.rejected > 0)
-      console.error(
-        `[capsovl] capsules=${capOvlStats.capsules} selfOvl=${capOvlStats.self} crossOvl=${capOvlStats.cross} rejected=${capOvlStats.rejected} (guard=${capGuardOn ? 'on' : 'off'} noovl=${capNoOvlOn ? 'on' : 'off'})`,
-      );
+    reportMegaFallbacks(megaFallbacks);
+    reportCapsOvlStats({ capPlaceDebug, stats: capOvlStats, guardOn: capGuardOn, noOvlOn: capNoOvlOn });
     const megas = gathered.filter((s) => boxOf(s).mega);
     // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
     // image-merge stations (ms3/ms4) carries stop flags for BOTH — e.g. the
@@ -1816,9 +1733,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (penBetween(items[i].hull, items[j].hull) > 0.5) crossPairs.push(items[i].nodeId + '×' + items[j].nodeId);
       const selfs: string[] = [];
       for (const it of items) if (capsHullSelfCrosses(it.hull)) selfs.push(it.nodeId);
-      console.error(
-        `[capsaudit:${label}] cross=${crossPairs.length}${crossPairs.length ? ' [' + crossPairs.join(',') + ']' : ''} self=${selfs.length}${selfs.length ? ' [' + selfs.join(',') + ']' : ''}`,
-      );
+      reportCapsAudit({ label, crossPairs, selfs });
     };
     capsAudit('post-place');
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
@@ -1868,7 +1783,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // row has no corner to recover. Such stations fall back to the mega box
     // (spec v2 §3 — the honest fallback for anything that can't read as a
     // clean octilinear marker). Matches the octi gate's length-aware bar.
-    const QPI = Math.PI / 4;
     const spineOctilinear = (marks: StMarks['marks']): boolean => {
       const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
       const vs: Pixel[] = [];
@@ -1926,7 +1840,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               if (incident <= 1 && !sharedWithOther) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
             applyCorners(cap); // recompute corners on the slid dots (spec R1)
-            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; console.error(`[stops TEMP] SLIDE-BOXED ${s.nodeId}: mega-escape slide bent the spine off-octilinear -> boxed`); }
+            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; reportSlideBoxed(s.nodeId); }
             slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
@@ -2119,28 +2033,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         for (let i = 0; i < clone.length; i++) clone[i].pos = moved[i].p;
         applyCorners(dcap);
         if (!spineOctilinear(clone)) {
-          // TEMP diag: dump leg structure + the worst off-axis segment so we can
-          // see WHY the candidate bent in-engine (rigid vs fallback path).
+          // dump leg structure + the worst off-axis segment so we can see WHY the
+          // candidate bent in-engine (rigid vs fallback path).
           const lg = rowsOf(st.marks).map((l) => l.idx.length).join('+');
-          const ord = [...clone].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
-          const vs: Pixel[] = [];
-          for (const mk of ord) { vs.push(mk.pos); if (mk.cornerAfter) vs.push(mk.cornerAfter); }
-          let worst = '(none)';
-          let worstGap = -Infinity;
-          for (let i = 1; i < vs.length; i++) {
-            const dx = vs[i][0] - vs[i - 1][0], dy = vs[i][1] - vs[i - 1][1];
-            const len = hyp(dx, dy);
-            if (len < 1) continue;
-            const m = ((Math.atan2(dy, dx) % QPI) + QPI) % QPI;
-            const off = Math.min(m, QPI - m);
-            const bar = Math.max(Math.PI / 180, Math.asin(Math.min(1, 0.85 / len)));
-            if (off - bar > worstGap) {
-              worstGap = off - bar;
-              worst = `seg${i} len=${len.toFixed(1)} off=${(off * 180 / Math.PI).toFixed(1)}deg bar=${(bar * 180 / Math.PI).toFixed(1)}deg`;
-            }
-          }
-          const corners = st.marks.filter((m) => m.cornerAfter).length;
-          console.error(`[stops] rigid slide declined (non-octilinear) ${st.nodeId}: legs=${lg} marks=${st.marks.length} corners=${corners} worst[${worst}]`);
+          reportRigidSlideDeclined({ nodeId: st.nodeId, legs: lg, marks: st.marks, clone });
           return false;
         }
         // Intra-station dot floor: re-seating dots on the translated line can
@@ -2154,7 +2050,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const dx = clone[i].pos[0] - clone[j].pos[0];
             const dy = clone[i].pos[1] - clone[j].pos[1];
             if (dx * dx + dy * dy < dotFloor * dotFloor - 1e-6) {
-              console.error(`[stops] slide declined (would stack dots) ${st.nodeId}: ${Math.sqrt(dx * dx + dy * dy).toFixed(1)}px < floor ${dotFloor.toFixed(1)}`);
+              reportSlideStackDeclined(st.nodeId, Math.sqrt(dx * dx + dy * dy), dotFloor);
               return false;
             }
           }
@@ -2165,12 +2061,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (capGuardOn && st.marks.length >= 2) {
           const slidHull = capsHullOf(clone);
           if (capsHullSelfCrosses(slidHull)) {
-            if (capPlaceDebug) console.error(`[capsovl] slide declined (would self-cross) ${st.nodeId}`);
+            reportSlideSelfCross(capPlaceDebug, st.nodeId);
             return false;
           }
           const clash = capsHullClash(st, slidHull);
           if (clash) {
-            if (capPlaceDebug) console.error(`[capsovl] slide declined (would cross ${clash}) ${st.nodeId}`);
+            reportSlideClashDeclined(capPlaceDebug, st.nodeId, clash);
             return false;
           }
         }
@@ -2571,7 +2467,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         };
         let spreadChains = 0;
         let spreadMembers = 0;
-        const SPREAD_DBG = envStr('CSPREAD_DEBUG');
+        const SPREAD_DBG = corridorSpreadDebug();
         for (const members of chains.values()) {
           if (members.length < 2) continue;
           // only spread chains that actually contain an OVERLAPPING (< touch)
@@ -2694,14 +2590,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           if (!ok) {
             for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) corridorPairs.delete(pairKey(members[x], members[y]));
-            if (SPREAD_DBG) console.error(`[CSPREAD] chain ABANDON fail=${failNid} order=[${seq2.map((i) => smalls[i].nodeId).join(',')}]`);
+            reportCorridorAbandon(SPREAD_DBG, failNid, seq2.map((i) => smalls[i].nodeId));
             continue;
           }
           for (const p of plan) if (rigidShift(smalls[p.i], p.dx, p.dy)) spreadMembers++;
           spreadChains++;
-          if (SPREAD_DBG) console.error(`[CSPREAD] chain SPREAD n=${seq2.length} axis=[${axis[0].toFixed(2)},${axis[1].toFixed(2)}] order=[${seq2.map((i) => smalls[i].nodeId).join(',')}]`);
+          reportCorridorSpread(SPREAD_DBG, seq2.length, axis, seq2.map((i) => smalls[i].nodeId));
         }
-        if (spreadChains > 0) console.error(`[stops] corridor-spread: ${spreadChains} chains, ${spreadMembers} members`);
+        reportCorridorSpreadSummary(spreadChains, spreadMembers);
         // last-resort: any pair whose bullet FILLS still merge (< boxFloor)
         // boxes the fewer-marks station. Casing-only grazes (boxFloor ≤ d < touch)
         // are left as drawn-but-clear-fill adjacent bullets and reported below.
@@ -2720,10 +2616,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             for (const mk of S.marks) mk.mega = true;
             floorBoxed++;
             const O = S === A ? B : A;
-            console.error(`[stops] NO-OVERLAP-FLOOR boxed ${S.nodeId} "${layout.nodes.get(S.nodeId)?.label ?? ''}" (residual marker overlap with ${O.nodeId} "${layout.nodes.get(O.nodeId)?.label ?? ''}")`);
+            reportNoOverlapFloorBoxed({ layout, boxedNodeId: S.nodeId, otherNodeId: O.nodeId });
           }
         }
-        if (floorBoxed > 0) console.error('[stops] no-overlap-floor boxed: ' + floorBoxed);
+        reportNoOverlapFloorSummary(floorBoxed);
       }
       capsAudit('final');
       // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps. Bullet rings
@@ -2732,60 +2628,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // station that are NOT same-row-adjacent (a folded spine / piled junction).
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
-      if (envStr('OCTI_DEBUG')) {
-      const ringDia = 2 * r + 1.5;
-      const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
-      // Re-filter to stations still drawn as bullets: a station boxed by the
-      // post-slide no-overlap floor renders as a <rect>, so its marks no longer
-      // draw rings and cannot constitute a ring overlap (matches the drawn SVG).
-      const ringSmalls = smalls.filter((s) => !boxOf(s).mega && !s.marks.some((m) => m.mega));
-      for (let ai = 0; ai < ringSmalls.length; ai++) {
-        for (let bi = ai + 1; bi < ringSmalls.length; bi++) {
-          const A = ringSmalls[ai], B = ringSmalls[bi];
-          let md = Infinity, mx = 0, my = 0;
-          for (const p of A.marks) for (const q of B.marks) {
-            const dx = p.pos[0] - q.pos[0], dy = p.pos[1] - q.pos[1];
-            const dd = Math.sqrt(dx * dx + dy * dy);
-            if (dd < md) { md = dd; mx = (p.pos[0] + q.pos[0]) / 2; my = (p.pos[1] + q.pos[1]) / 2; }
-          }
-          if (md < ringDia) ovls.push({ kind: 'XSTN', a: A.nodeId, b: B.nodeId, dist: md, x: mx, y: my });
-        }
-      }
-      for (const s of gathered) {
-        if (s.marks.length < 2 || s.marks.some((m) => m.mega)) continue;
-        const ord = [...s.marks].sort((a, b) => (a.chain ?? 0) - (b.chain ?? 0));
-        for (let i = 0; i < ord.length; i++) {
-          for (let j = i + 1; j < ord.length; j++) {
-            if (j === i + 1 && !ord[i].cornerAfter) continue; // same-row-adjacent = normal
-            const dx = ord[i].pos[0] - ord[j].pos[0], dy = ord[i].pos[1] - ord[j].pos[1];
-            const dd = Math.sqrt(dx * dx + dy * dy);
-            if (dd < ringDia) {
-              ovls.push({ kind: 'INSTN', a: s.nodeId, b: `${i}~${j}${ord[i].cornerAfter ? '/cnr' : ''}`, dist: dd, x: (ord[i].pos[0] + ord[j].pos[0]) / 2, y: (ord[i].pos[1] + ord[j].pos[1]) / 2 });
-            }
-          }
-        }
-      }
-      ovls.sort((p, q) => p.dist - q.dist);
-      const lbl = (id: string) => layout.nodes.get(id)?.label ?? '';
-      const xstnAll = ovls.filter((o) => o.kind === 'XSTN');
-      for (const o of (envStr('OCTI_XSTN_ALL') ? xstnAll : ovls.slice(0, 25))) {
-        const nm = o.kind === 'XSTN' ? ` "${lbl(o.a)}" vs "${lbl(o.b)}"` : '';
-        console.error(`[stops] ${o.kind} ${o.dist.toFixed(1)}px ${o.a} vs ${o.b}${nm} @(${o.x.toFixed(0)},${o.y.toFixed(0)})`);
-      }
-      const xstnSevere = xstnAll.filter((o) => o.dist < 3.2).length; // dots actually overlap
-      console.error(`[stops] egregious overlaps: ${ovls.length} (ringDia=${ringDia.toFixed(1)}) XSTN=${xstnAll.length} XSTN_SEVERE=${xstnSevere} INSTN=${ovls.length - xstnAll.length}`);
-      }
+      reportEgregiousOverlaps({ layout, r, smalls, gathered, boxIsMega: (s) => boxOf(s).mega });
     }
-    if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
-    if (
-      slid.length > 0 &&
-      envStr('OCTI_DEBUG')
-    ) {
-      for (const s of slid) {
-        const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
-        console.error(`[stops] slid "${label}" clear of mega box at (${s.at[0].toFixed(0)},${s.at[1].toFixed(0)})`);
-      }
-    }
+    reportSlideBoxedSummary(slideBoxed);
+    reportSlidStations({ layout, slid });
 
     // Terminus trim: a line that ENDS at this station has exactly one drawn
     // incident lane, and its ribbon runs all the way to the NODE. The
@@ -2952,15 +2798,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           evicted.push({ node: s.nodeId, to: placed });
         }
       }
-      if (
-        evicted.length > 0 &&
-        envStr('OCTI_DEBUG')
-      ) {
-        for (const e of evicted) {
-          const label = layout.nodes.get(e.node)?.label ?? e.node;
-          console.error(`[stops] evicted "${label}" terminus dot clear of foreign capsule -> (${e.to[0].toFixed(0)},${e.to[1].toFixed(0)})`);
-        }
-      }
+      reportEvictedStations({ layout, evicted });
     }
 
     for (const s of gathered) {
@@ -3114,10 +2952,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // sweeps instead of tight Z-jogs)
       const dirA = prevA ? unitTo(prevA, pa) : unitTo(pa, pb); // into the node
       const dirB = nextB ? unitTo(pb, nextB) : unitTo(pa, pb); // out of the node
-      if (envStr('OCTI_CONN_TRACE') === lineId) {
-        const np = layout.nodes.get(endA)?.cell;
-        console.error(`[conn] ${endA} pa=(${pa[0].toFixed(1)},${pa[1].toFixed(1)}) pb=(${pb[0].toFixed(1)},${pb[1].toFixed(1)}) gap=${gap.toFixed(1)} prevA=(${prevA[0].toFixed(1)},${prevA[1].toFixed(1)}) nextB=(${nextB[0].toFixed(1)},${nextB[1].toFixed(1)}) dirA=(${dirA[0].toFixed(2)},${dirA[1].toFixed(2)}) dirB=(${dirB[0].toFixed(2)},${dirB[1].toFixed(2)}) nA=${polyA.length} nB=${polyB.length} edges=${a.edgeId}|${b.edgeId} cell=${np ? np[0] + ',' + np[1] : '?'}`);
-      }
+      reportConnTrace({
+        lineId, endA, cell: layout.nodes.get(endA)?.cell,
+        pa, pb, gap, prevA, nextB, dirA, dirB,
+        nA: polyA.length, nB: polyB.length, edgeA: a.edgeId, edgeB: b.edgeId,
+      });
       // The S only works when the jog makes forward progress along the
       // travel direction, so cap the tangent extension at the chord's
       // LONGITUDINAL span. A pure lateral jog (lanes of two collinear edges
@@ -3153,14 +2992,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
   }
 
-  if (
-    envStr('OCTI_DEBUG')
-  ) {
-    console.error(
-      `[ribbons] per-edge: ${segPath.size} segments across ${layout.edges.length} edges, ` +
-      `${mitered.size} mitered joins, ${connSeen.size} connector candidates, ${dByLine.size} lines`,
-    );
-  }
+  reportRibbonSummary({
+    segCount: segPath.size, edgeCount: layout.edges.length,
+    miteredCount: mitered.size, connCount: connSeen.size, lineCount: dByLine.size,
+  });
 
   return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups };
 }

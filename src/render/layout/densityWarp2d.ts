@@ -7,7 +7,7 @@
 // + − × ÷ √ plus Math.exp QUANTIZED to 1e-12, so it is bit-identical cross-V8.
 // Spec: docs/superpowers/specs/2026-06-17-2d-density-warp-design.md
 
-import { envStr } from '../../env';
+import { debugWarp2d } from './debug/densityWarp2d.debug';
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
 
@@ -243,11 +243,7 @@ export function buildDensityWarp2D(
     }
   }
 
-  if (envStr('OCTI_WARP_DEBUG')) {
-    const a0 = steps[0]?.alpha ?? 0;
-    const aN = steps[steps.length - 1]?.alpha ?? 0;
-    console.error(`[warp2d] iters=${steps.length}/${iters} sigmaPx=${sigmaPx.toFixed(0)} alpha[0]=${a0.toExponential(2)} alpha[last]=${aN.toExponential(2)}`);
-  }
+  debugWarp2d(steps, iters, sigmaPx);
 
   return (q) => {
     let x = q[0];

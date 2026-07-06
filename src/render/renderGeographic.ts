@@ -3,6 +3,17 @@
 // positions (Smoothed mode). Smoothed reuses the schematic's ribbon renderer so
 // lines bundle into parallel ribbons and multi-route stops become pills.
 
+import {
+  makePerfLap,
+  auditBoxTransit,
+  traceCellSize,
+  makeShortEdgeCensus,
+  traceWeld,
+  auditBoxSupport,
+  auditLine,
+  auditSpurDrops,
+  traceHooks,
+} from './debug/renderGeographic.debug';
 import { envStr, envNum } from '../env';
 import type { Coordinate } from '../types/core';
 import type { Route, Track } from '../types/game-state';
@@ -496,14 +507,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   } as never).fp;
   // Stage timing (dev): OCTI_PERF=1 logs per-stage wall-clock to stderr so the
   // octi pass can be isolated from topo merge / untangle / render when profiling.
-  const PERF = typeof process !== 'undefined' && !!envStr('OCTI_PERF');
-  let _perfT = PERF ? performance.now() : 0;
-  const lap = (label: string): void => {
-    if (!PERF) return;
-    const now = performance.now();
-    console.error(`[perf] ${label}: ${(now - _perfT).toFixed(0)}ms`);
-    _perfT = now;
-  };
+  const lap = makePerfLap();
   // Canonicalize input ORDER by id. The layout's Map/Set insertion order — and
   // thus octi's greedy search PATH — follows the input array order, so the
   // offline dump and the game's live data (iterated in a different order) would
@@ -956,22 +960,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // dev: OCTI_AUDIT_BOX also dumps the TRANSIT graph (pre-merge) in the box:
   // original node ids, stop flags, and each incident edge's lines + geometry,
   // so support-stage defects can be diffed against what the merge was given.
-  if (env?.OCTI_AUDIT_BOX) {
-    const [bx0, by0, bx1, by1] = env.OCTI_AUDIT_BOX.split(',').map(Number);
-    const lbl = (lid: string) => { for (const e of graph.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); };
-    for (const [nid, n] of graph.nodes) {
-      if (!n.pos || n.pos[0] < bx0 || n.pos[0] > bx1 || n.pos[1] < by0 || n.pos[1] > by1) continue;
-      console.error(`[graphbox] ${nid.slice(0, 12)} (${n.pos[0].toFixed(1)},${n.pos[1].toFixed(1)})${n.label ? ` "${n.label}"` : ''}`);
-      for (const e of graph.edges) {
-        if (e.from !== nid && e.to !== nid) continue;
-        const other = e.from === nid ? e.to : e.from;
-        const on = graph.nodes.get(other);
-        const chord = on ? Math.hypot(on.pos[0] - n.pos[0], on.pos[1] - n.pos[1]) : NaN;
-        const stops = [...e.stops.entries()].map(([l, f]) => `${lbl(l)}${f.atFrom ? (e.from === nid ? '@this' : '@far') : ''}${f.atTo ? (e.to === nid ? '@this' : '@far') : ''}`).join(' ');
-        console.error(`[graphbox]    ${e.id.slice(0, 10)} -> ${other.slice(0, 12)}"${on?.label ?? ''}"(${on ? on.pos.map((v) => v.toFixed(0)).join(',') : '?'}) chord=${chord.toFixed(1)} geo=${e.geo?.length ?? 0}pts lines=[${e.lines.map((l) => l.label ?? l.id.slice(0, 6)).join(',')}] stops:{${stops}}`);
-      }
-    }
-  }
+  auditBoxTransit(graph, env?.OCTI_AUDIT_BOX ?? '');
   const support = buildSupportGraph(graph, groups, topoParams);
   auditTraversals(
     'support',
@@ -1016,7 +1005,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   //  the layout through the medLen -> cellSize feedback. Unset in production.)
   const cellEnv = Number(env?.OCTI_CELL);
   if (Number.isFinite(cellEnv) && cellEnv > 0) octiOpts.cellSize = cellEnv;
-  if (env?.OCTI_TRACE) console.error(`[trace] cellSize=${octiOpts.cellSize.toFixed(1)} (medLen=${medLen.toFixed(1)} divisor=${divisor}) contract<${(octiOpts.cellSize / 2).toFixed(1)}`);
+  traceCellSize(octiOpts.cellSize, medLen, divisor);
   // (dev diagnostic, default off: OCTI_NO_COMBINE=1 disables octi's deg-2
   // collapse so every station node is placed by the octilinearizer itself)
   if (
@@ -1079,37 +1068,14 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // contraction uses. (dev override: OCTI_WELD=<px>, 0 disables)
   // dev: OCTI_AUDIT=1 gives a short-edge census at the octi seam (the
   // router-facing degeneracy picture: edges below half a cell cannot get distinct cells).
-  const shortEdgeCensus = (tag: string): void => {
-    if (!env?.OCTI_AUDIT) return;
-    const half = octiOpts.cellSize / 2;
-    let subHalf = 0;
-    let subCell = 0;
-    for (const e of support.edges.values()) {
-      const a = support.nodes.get(e.from)?.pos;
-      const b = support.nodes.get(e.to)?.pos;
-      if (!a || !b) continue;
-      const d = Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2);
-      if (d < half) {
-        subHalf++;
-        const kind = (nid: string): string => {
-          if (support.stations.size) {
-            for (const sp of support.stations.values()) if (sp.nodeId === nid) return 'STN';
-          }
-          return nid.replace(/\d+$/, '');
-        };
-        console.error(`[audit:octi-seam ${tag}]   ${e.id} ${e.from}(${kind(e.from)})<->${e.to}(${kind(e.to)}) ${d.toFixed(1)}px`);
-      }
-      if (d < octiOpts.cellSize) subCell++;
-    }
-    console.error(`[audit:octi-seam ${tag}] edges<cell/2(${half.toFixed(1)}px)=${subHalf} edges<cell=${subCell} total=${support.edges.size}`);
-  };
+  const shortEdgeCensus = makeShortEdgeCensus(support, octiOpts.cellSize);
   shortEdgeCensus('pre-weld');
   {
     const weldEnv = Number(env?.OCTI_WELD);
     const weldDist = Number.isFinite(weldEnv) && weldEnv >= 0 ? weldEnv : octiOpts.cellSize / 2;
     if (weldDist > 0) {
       const welds = weldSubCellNodes(support, weldDist);
-      if (welds > 0 && (env?.OCTI_TRACE || env?.OCTI_AUDIT)) console.error(`[weld] sub-cell welds=${welds} (dist=${weldDist.toFixed(1)})`);
+      traceWeld(welds, weldDist);
       if (welds > 0) {
         shortEdgeCensus('post-weld');
         // The weld remaps traversals over fused nodes. Chord reversals born
@@ -1129,57 +1095,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // dev: OCTI_AUDIT_BOX="x0,y0,x1,y1" dumps pre-octi support nodes in the box
   // (id, position, station?, degree) plus sub-cell node pairs, the router
   // congestion picture octi actually faces.
-  if (env?.OCTI_AUDIT_BOX) {
-    const [bx0, by0, bx1, by1] = env.OCTI_AUDIT_BOX.split(',').map(Number);
-    const stationNode = new Map<string, string>();
-    for (const [gid, sp] of support.stations) stationNode.set(sp.nodeId, sp.label || gid);
-    const inBox: Array<{ id: string; pos: Pixel }> = [];
-    for (const [id, n] of support.nodes) {
-      if (n.pos[0] >= bx0 && n.pos[0] <= bx1 && n.pos[1] >= by0 && n.pos[1] <= by1) inBox.push({ id, pos: n.pos });
-    }
-    inBox.sort((a, b) => (a.id < b.id ? -1 : 1));
-    const lineLabel = (lid: string) => support.lineRefs.get(lid)?.label ?? lid.slice(0, 6);
-    for (const { id, pos } of inBox) {
-      const deg = (support.adj.get(id) ?? []).length;
-      const st = stationNode.get(id);
-      console.error(`[boxdbg] ${id} (${pos[0].toFixed(1)},${pos[1].toFixed(1)}) deg=${deg}${st ? ` STATION "${st}"` : ''}`);
-      for (const eid of support.adj.get(id) ?? []) {
-        const e = support.edges.get(eid);
-        if (!e) continue;
-        const other = e.from === id ? e.to : e.from;
-        const op = support.nodes.get(other)?.pos;
-        const len = op ? Math.hypot(op[0] - pos[0], op[1] - pos[1]) : NaN;
-        console.error(`[boxdbg]    ${eid} -> ${other}(${op ? op.map((v) => v.toFixed(0)).join(',') : '?'}) ${len.toFixed(1)}px lines=[${[...e.lineIds].map(lineLabel).sort().join(',')}]`);
-      }
-    }
-    const cell = octiOpts.cellSize ?? 0;
-    for (let i = 0; i < inBox.length; i++) {
-      for (let j = i + 1; j < inBox.length; j++) {
-        const d = Math.sqrt((inBox[i].pos[0] - inBox[j].pos[0]) ** 2 + (inBox[i].pos[1] - inBox[j].pos[1]) ** 2);
-        if (d < cell) console.error(`[boxdbg] SUB-CELL pair ${inBox[i].id} <-> ${inBox[j].id}: ${d.toFixed(1)}px (cell=${cell.toFixed(1)})`);
-      }
-    }
-  }
+  auditBoxSupport(support, octiOpts.cellSize, env?.OCTI_AUDIT_BOX ?? '');
   const imageRaw = octi(support, octiOpts);
   // dev: OCTI_AUDIT_LINE=<label> dumps a line's support traversal with octi
   // placement/path status per edge (which edge lost its grid path, and where).
-  if (env?.OCTI_AUDIT_LINE) {
-    for (const [lid, steps] of support.lineTraversals) {
-      if (support.lineRefs.get(lid)?.label !== env.OCTI_AUDIT_LINE) continue;
-      for (let i = 0; i < steps.length; i++) {
-        const s = steps[i];
-        const e = support.edges.get(s.edgeId);
-        if (!e) { console.error(`[octidbg] [${i}] ${s.edgeId} MISSING-EDGE`); continue; }
-        const a = s.reversed ? e.to : e.from;
-        const b = s.reversed ? e.from : e.to;
-        const pa = imageRaw.placement.get(a);
-        const pb = imageRaw.placement.get(b);
-        const path = imageRaw.paths.get(e.id);
-        const at = (p?: readonly number[]): string => (p ? `(${p[0].toFixed(0)},${p[1].toFixed(0)})` : '(unplaced)');
-        console.error(`[octidbg] [${i}] ${e.id} ${s.reversed ? 'REV' : '   '} ${a}${at(pa)} -> ${b}${at(pb)} path=${path ? path.length : 'NONE'} lines=${e.lineIds.size}`);
-      }
-    }
-  }
+  auditLine(support, imageRaw, env?.OCTI_AUDIT_LINE);
   lap('octi');
   // 'placed' census: the SAME traversals as postWeld, measured at octi's
   // node placements. A reversal appearing here (and not at postWeld) is
@@ -1288,7 +1208,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         }
       }
     }
-    if (spurDrops > 0 && env?.OCTI_AUDIT) console.error(`[audit:fire] spurStepDrops=${spurDrops}`);
+    auditSpurDrops(spurDrops);
   }
   auditTraversals(
     'spurCleanup',
@@ -1310,9 +1230,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (Number.isFinite(ratioEnv) && ratioEnv > 0) hookOpts.ratio = ratioEnv;
     if (Number.isFinite(foldEnv)) hookOpts.fold = foldEnv;
     const { spliced } = suppressHooks(layout, hookOpts);
-    const trace =
-      env?.OCTI_TRACE === '1' || env?.OCTI_PLACE_DEBUG === '1';
-    if (spliced > 0 || trace) console.log(`[hooks] spliced=${spliced}`);
+    traceHooks(spliced);
     auditTraversals(
       'hooks',
       layout.lineTraversals,

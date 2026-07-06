@@ -11,7 +11,7 @@
 // support graph + image whose edges are those runs. Line traversals, station
 // anchors, and stop flags are remapped onto the new edges.
 
-import { envStr } from '../../env';
+import { debugMergeChains } from './debug/imageMerge.debug';
 import type {
   Pixel,
   SupportGraph,
@@ -224,23 +224,7 @@ export function mergeCoincidentPaths(
   }
   // dev: OCTI_MERGEDBG=<edgeId,edgeId> dumps an old edge's vertex list and its
   // run chain after pass 4 (which runs cover it, in what order/orientation).
-  const mergeDbg =
-    typeof process !== 'undefined' ? envStr('OCTI_MERGEDBG') : undefined;
-  if (mergeDbg) {
-    for (const eid of mergeDbg.split(',')) {
-      const verts = edgeVerts.get(eid);
-      if (!verts) { console.error(`[mergedbg] ${eid}: no verts`); continue; }
-      const at = (vk: string): string => { const p = vPos.get(vk); return p ? `(${p[0].toFixed(1)},${p[1].toFixed(1)})` : vk; };
-      console.error(`[mergedbg] ${eid} verts: ${verts.map(at).join(' ')}`);
-      for (let i = 1; i < verts.length; i++) {
-        const sk = segKey(verts[i - 1], verts[i]);
-        const hit = segToRun.get(sk);
-        console.error(`[mergedbg]   seg ${at(verts[i - 1])}->${at(verts[i])} run=${hit ? hit.run : 'NONE'} owners=${ownersKeyOf(sk)}`);
-      }
-      const chain = chains.get(eid) ?? [];
-      console.error(`[mergedbg] ${eid} chain: ${chain.map((c) => `me${c.run}${c.rev ? 'R' : ''}[${at(runs[c.run].verts[0])}->${at(runs[c.run].verts[runs[c.run].verts.length - 1])}]`).join(' ')}`);
-    }
-  }
+  debugMergeChains(edgeVerts, vPos, segKey, segToRun, ownersKeyOf, chains, runs);
 
   // ---- pass 5: remap traversals, stations, stops ---------------------------
   const lineTraversals = new Map<string, TraversalStep[]>();

@@ -12,6 +12,19 @@
 //     grid positions (plus staying put), re-route its incident edges, and keep
 //     the best-scoring placement until convergence.
 
+import {
+  blockageStats,
+  probeDirectCourse,
+  debugNoCands,
+  debugDetourCuts,
+  tracePaths,
+  traceChain,
+  debugMethod,
+  debugSweep,
+  debugLocalSearchStop,
+  blockageFinalCensus,
+  traceGeo,
+} from './debug/octi.debug';
 import { envStr, envNum } from '../../env';
 import type { Pixel, SupportGraph, SupportEdge, Image } from './types';
 import {
@@ -61,10 +74,6 @@ export const DEFAULT_OCTI_OPTIONS: OctiOptions = {
 
 const MAX_STALL_RETRIES = 3;
 const CONVERGENCE_THRESHOLD = 0.05;
-
-/** Set OCTI_DEBUG=1 to log ordering scores and local-search convergence. */
-const DBG: boolean =
-  typeof process !== 'undefined' && !!envStr('OCTI_DEBUG');
 
 function dist(a: Pixel, b: Pixel): number {
   const dx = a[0] - b[0], dy = a[1] - b[1];
@@ -1159,104 +1168,9 @@ function getRtPair(
 
 // ---- the core edge-insertion loop (Octilinearizer::draw) -------------------
 
-// Blockage census (dev, OCTI_BLOCKAGE=1): when an edge routes at 1.5x+ its
-// endpoint chord, walk the ideal octilinear course between the CHOSEN endpoint
-// bases at that exact moment's grid state — what would the router have had to
-// traverse to go direct? Classifies each step by grid-edge flags plus node
-// closure/settlement, so the census names the availability gap that forces
-// wandering (RCA cost-regime Phase 1).
-const BLOCKAGE: boolean =
-  typeof process !== 'undefined' && !!envStr('OCTI_BLOCKAGE');
-export const blockageStats = {
-  routed: 0,
-  wanderers: 0,
-  cells: {} as Record<string, number>,
-  worst: {} as Record<string, number>,
-  samples: [] as string[],
-  reset(): void {
-    this.routed = 0;
-    this.wanderers = 0;
-    this.cells = {};
-    this.worst = {};
-    this.samples = [];
-  },
-  report(): void {
-    if (!BLOCKAGE) return;
-    const fmt = (o: Record<string, number>): string =>
-      Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' ');
-    console.error(
-      `[blockage] routed=${this.routed} wanderers(>1.5x)=${this.wanderers} ` +
-      `worst-per-edge{ ${fmt(this.worst)} } course-cells{ ${fmt(this.cells)} }`,
-    );
-    for (const s of this.samples) console.error(`[blockage]   ${s}`);
-  },
-};
-
-function probeDirectCourse(
-  grid: OctiGridGraph,
-  ce: SupportEdge,
-  res: { edges: number[]; fromBase: number; toBase: number },
-): void {
-  let arc = 0;
-  for (const ge of res.edges) {
-    if (!grid.isGridEdge(ge)) continue;
-    const [a, b] = grid.gridEdgeBases(ge);
-    arc += dist(grid.basePos(a), grid.basePos(b));
-  }
-  const chord = dist(grid.basePos(res.fromBase), grid.basePos(res.toBase));
-  blockageStats.routed++;
-  if (chord < 1e-6 || arc / chord <= 1.5) return;
-  blockageStats.wanderers++;
-  let c = grid.baseCol(res.fromBase);
-  let r = grid.baseRow(res.fromBase);
-  const tc = grid.baseCol(res.toBase);
-  const tr = grid.baseRow(res.toBase);
-  const seen: Record<string, number> = {};
-  const bump = (k: string): void => {
-    seen[k] = (seen[k] ?? 0) + 1;
-    blockageStats.cells[k] = (blockageStats.cells[k] ?? 0) + 1;
-  };
-  let guard = 0;
-  while ((c !== tc || r !== tr) && guard++ < 500) {
-    const sc = Math.sign(tc - c);
-    const sr = Math.sign(tr - r);
-    const cur = grid.baseIdx(c, r);
-    const nxt = grid.baseIdx(c + sc, r + sr);
-    const ge = grid.getNEdg(cur, nxt);
-    bump(ge >= 0 ? grid.edgeClass(ge) : 'offgrid');
-    if (grid.isClosed(nxt)) bump('closedNode');
-    else if (grid.isSettledBase(nxt) && (c + sc !== tc || r + sr !== tr)) bump('settledBase');
-    c += sc;
-    r += sr;
-  }
-  const rank = ['closed', 'blocked', 'closedNode', 'soft', 'settledBase', 'cross', 'offgrid', 'free'];
-  let worst = 'free';
-  for (const k of rank) { if (seen[k]) { worst = k; break; } }
-  blockageStats.worst[worst] = (blockageStats.worst[worst] ?? 0) + 1;
-  if (blockageStats.samples.length < 12) {
-    blockageStats.samples.push(
-      `${ce.id} span=${chord.toFixed(0)}px ratio=${(arc / chord).toFixed(2)} worst=${worst} ` +
-      `course{ ${Object.entries(seen).map(([k, v]) => `${k}:${v}`).join(' ')} }`,
-    );
-  }
-}
-
-/** Drawn arc length over endpoint chord for a placed support edge (1 = the
- *  route is as direct as its endpoints allow; > 1.5 = it wanders). */
-function drawnRatio(drawing: Drawing, ce: SupportEdge, grid: OctiGridGraph): number {
-  const path = drawing.edgs.get(ce.id);
-  const fb = drawing.nds.get(ce.from);
-  const tb = drawing.nds.get(ce.to);
-  if (!path || fb === undefined || tb === undefined) return 1;
-  let arc = 0;
-  for (const ge of path) {
-    if (!grid.isGridEdge(ge)) continue;
-    const [a, b] = grid.gridEdgeBases(ge);
-    arc += dist(grid.basePos(a), grid.basePos(b));
-  }
-  const chord = dist(grid.basePos(fb), grid.basePos(tb));
-  return chord < 1e-6 ? 1 : arc / chord;
-}
+// Blockage census (dev, OCTI_BLOCKAGE=1) and drawnRatio live in
+// debug/octi.debug.ts: blockageStats, probeDirectCourse, and the final-state
+// wander census exist only to log. octi seeds them via reset()/report().
 
 type Undrawable = 'DRAWN' | 'NO_PATH' | 'NO_CANDS';
 
@@ -1282,13 +1196,7 @@ function drawOrder(
 
     let [frCands, toCands] = getRtPair(frNd, toNd, preSettled, grid, ctx);
     if (frCands.length === 0 || toCands.length === 0) {
-      if (
-        envStr('OCTI_DEBUG')
-      ) {
-        const why = (nd: string, cands: number[]) =>
-          `${nd}(deg=${ctx.deg(nd)},settled=${grid.isSettled(nd)},cands=${cands.length})`;
-        console.error(`[octi] NO_CANDS ${why(frNd, frCands)} -> ${why(toNd, toCands)}`);
-      }
+      debugNoCands(frNd, toNd, frCands, toCands, (nd) => ctx.deg(nd), (nd) => grid.isSettled(nd));
       return 'NO_CANDS';
     }
 
@@ -1342,7 +1250,7 @@ function drawOrder(
 
     drawing.draw(ce, rev, res.edges, res.costs, res.fromBase, res.toBase, grid, ctx.childCount(ce.id), ctx.geoLenOf(ce), ctx.lenPresW);
 
-    if (BLOCKAGE) probeDirectCourse(grid, ce, res);
+    probeDirectCourse(grid, ce, res);
 
     for (const b of toCands) grid.closeSinkTo(b);
     for (const b of frCands) grid.closeSinkFr(b);
@@ -1529,22 +1437,8 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
         paths.set(id, cut);
       }
     }
-    if (DBG && cuts)
-      console.error(
-        `[octi] drawn-level detour cuts: ${cuts} (sub-cell chord ${cutsSub}, widened shortcut ${cutsShort}, fold-cut ${cutsFold})`,
-      );
-    const traceP =
-      typeof process !== 'undefined'
-        ? envStr('OCTI_TRACE_PATHS')
-        : undefined;
-    if (traceP) {
-      const [tx, ty] = traceP.split(',').map(Number);
-      for (const [id, p] of paths) {
-        if (p.some((q) => (q[0] - tx) ** 2 + (q[1] - ty) ** 2 < 900)) {
-          console.error(`[octi] path ${id}: ${p.map((q) => `(${q[0].toFixed(0)},${q[1].toFixed(0)})`).join(' ')}`);
-        }
-      }
-    }
+    debugDetourCuts(cuts, cutsSub, cutsShort, cutsFold);
+    tracePaths(paths);
     return pinStationTermini({ placement: joined.placement, paths, cellSize: joined.cellSize }, h);
   };
 
@@ -1741,34 +1635,10 @@ function expandImage(imageC: Image, h: SupportGraph, hC: SupportGraph, info: Col
     const L = polyLen(path);
     const tot = chain.edges.length;
     const arcs = projectChainArcs(path, L, chain.nodes, h);
-    // Diagnostic (OCTI_TRACE_CHAIN=<nodeId>): dump projection inputs/outputs
-    // for the chain containing that node.
-    const traceNd =
-      typeof process !== 'undefined'
-        ? envStr('OCTI_TRACE_CHAIN')
-        : undefined;
-    const traceHit = (() => {
-      if (!traceNd) return false;
-      if (traceNd.includes(',')) {
-        const [tx, ty] = traceNd.split(',').map(Number);
-        return chain.nodes.some((n) => {
-          const p = h.nodes.get(n)?.pos;
-          return p && (p[0] - tx) ** 2 + (p[1] - ty) ** 2 < 900;
-        });
-      }
-      return chain.nodes.includes(traceNd);
-    })();
-    if (traceHit) {
-      console.error(`[octi] TRACE_CHAIN ${e.id} L=${L.toFixed(1)} pathStart=(${path[0]}) pathEnd=(${path[path.length - 1]})`);
-      console.error(`[octi]   path: ${path.map((p) => `(${p[0].toFixed(0)},${p[1].toFixed(0)})`).slice(0, 12).join(' ')}${path.length > 12 ? ' ...' : ''}`);
-      for (let i = 0; i <= tot; i++) {
-        const n = h.nodes.get(chain.nodes[i]);
-        const raw = n && i > 0 && i < tot ? nearestArcOn(path, n.pos).toFixed(1) : '-';
-        console.error(
-          `[octi]   node[${i}] ${chain.nodes[i]} true=(${n?.pos.map((x) => x.toFixed(0))}) rawArc=${raw} arc=${arcs[i].toFixed(1)} -> (${pointAlong(path, arcs[i]).map((x) => x.toFixed(0))})`,
-        );
-      }
-    }
+    traceChain(
+      e.id, path, L, tot, chain.nodes, arcs,
+      (n) => h.nodes.get(n)?.pos, nearestArcOn, pointAlong,
+    );
     for (let i = 1; i < tot; i++) {
       placement.set(chain.nodes[i], pointAlong(path, arcs[i]));
     }
@@ -1885,12 +1755,7 @@ function tryDraw(
     const drawing = new Drawing();
     const status = drawOrder(order, empty, grid, drawing, best?.score() ?? Infinity, ctx);
     drawing.eraseFromGrid(grid); // restore pristine grid for the next try
-    if (DBG) {
-      console.error(
-        `[octi] ${method}: ${status} score=${drawing.score().toFixed(1)} ` +
-        `vios=${drawing.violations} (${Date.now() - t}ms)`,
-      );
-    }
+    debugMethod(method, status, drawing.score(), drawing.violations, Date.now() - t);
     if (status === 'DRAWN' && drawing.score() < (best?.score() ?? Infinity)) {
       best = drawing;
     }
@@ -2232,12 +2097,7 @@ function tryDraw(
     // is NOT a picture of the final map. Judge any future router work by
     // [blockage:final], not [blockage].
 
-    if (DBG) {
-      console.error(
-        `[octi] locSearch sweep ${iter}: score=${drawing.score().toFixed(1)} ` +
-        `vios=${drawing.violations} (imp ${sweepImp.toFixed(2)}, ${Date.now() - t0}ms total)`,
-      );
-    }
+    debugSweep(iter, drawing.score(), drawing.violations, sweepImp, Date.now() - t0);
     locSweeps = iter + 1;
     if (sweepImp < CONVERGENCE_THRESHOLD) { locConverged = true; break; }
   }
@@ -2246,274 +2106,17 @@ function tryDraw(
   // above counts every routing attempt. The local-search sweeps re-route, so
   // it inflates with the amount of searching done. THIS number is the honest
   // ruler: how many edges still wander in the state we actually draw.
-  if (BLOCKAGE) {
-    let wander = 0;
-    let total = 0;
-    let worstR = 1;
-    for (const ce of hEdges) {
-      if (ce.from === ce.to || !drawing.drawn(ce.id)) continue;
-      total++;
-      const r = drawnRatio(drawing, ce, grid);
-      if (r > 1.5) wander++;
-      if (r > worstR) worstR = r;
-    }
-    console.error(`[blockage:final] wanderers=${wander} of ${total} drawn (worst ratio ${worstR.toFixed(2)})`);
-    // Course-economy census: windows whose DRAWN arc/chord exceeds their
-    // support-reference allowance. This is the manufactured switchback/revisit
-    // population the course-detour penalty prices. The zigzag census misses
-    // 90°-cornered shapes (dot threshold); this is the honest ruler.
-    let bad = 0;
-    let worstX = 0;
-    const posAt = (id: string): Pixel | null => {
-      const bIdx = drawing.nds.get(id);
-      return bIdx === undefined ? null : grid.basePos(bIdx);
-    };
-    for (const w of allWindows) {
-      let arc = 0;
-      let ok = true;
-      let pPrev: Pixel | null = null;
-      for (const m of w.nds) {
-        const p = posAt(m);
-        if (!p) { ok = false; break; }
-        if (pPrev) arc += dist(pPrev, p);
-        pPrev = p;
-      }
-      if (!ok || arc < 1e-6) continue;
-      const a = posAt(w.nds[0])!;
-      const b = posAt(w.nds[w.nds.length - 1])!;
-      const chord = Math.max(dist(a, b), grid.cellSize / 2);
-      const excess = arc / chord - Math.max(w.ref + DETOUR_SLACK, DETOUR_FREE);
-      if (excess > 0) { bad++; if (excess > worstX) worstX = excess; }
-    }
-    console.error(`[blockage:course] detour windows=${bad} of ${allWindows.length} (worst excess ${worstX.toFixed(2)})`);
-    // Loop-area census: geographic cycles whose DRAWN enclosed area collapsed
-    // below half their minimal-visible target. This is the flattened-loop
-    // population the loop-area penalty opens.
-    let collapsed = 0;
-    let worstFrac = 1;
-    for (const lc of allLoops) {
-      const drawn = polyArea(lc.nds, posAt);
-      const frac = drawn / lc.target;
-      if (frac < 0.5) collapsed++;
-      if (frac < worstFrac) worstFrac = frac;
-    }
-    console.error(`[blockage:loop] collapsed loops=${collapsed} of ${allLoops.length} (worst frac ${worstFrac.toFixed(2)})`);
-  }
+  blockageFinalCensus(drawing, grid, hEdges, allWindows, allLoops, polyArea, DETOUR_FREE, DETOUR_SLACK);
 
-  // OCTI_DEBUG telemetry: why the local search stopped. There is no wall-clock
-  // budget; the search stops only on convergence or the iters cap. The search
-  // is engine-deterministic, so this reads identically for a given input on any
-  // V8 build (offline == in-game).
-  if (DBG)
-    console.log(
-      `[octi] localSearch stop: ${locConverged ? 'CONVERGED' : 'ITERS-CAP'} ` +
-      `after ${locSweeps}/${iters} sweeps, residual vios=${drawing.violations}, score=${drawing.score().toFixed(1)}`,
-    );
-
-  if (DBG) {
-    console.error(`[octi] final score=${drawing.score().toFixed(1)} vios=${drawing.violations}`);
-    for (const [ceId, v] of drawing.vios) {
-      if (v <= 0) continue;
-      const e = h.edges.get(ceId);
-      const f = e ? h.nodes.get(e.from)?.pos : undefined;
-      const t = e ? h.nodes.get(e.to)?.pos : undefined;
-      console.error(
-        `[octi]   vio x${v} on ${ceId} ` +
-        `(${f?.map((x) => x.toFixed(0))} -> ${t?.map((x) => x.toFixed(0))})`,
-      );
-    }
-  }
+  // OCTI_DEBUG telemetry: why the local search stopped, plus the final score
+  // and per-edge violation dump. There is no wall-clock budget; the search
+  // stops only on convergence or the iters cap.
+  debugLocalSearchStop(drawing, locConverged, locSweeps, iters, h);
 
   // Diagnostic (OCTI_TRACE_GEO=1): per comb edge, what the FINAL routed path
   // actually paid in geographic-course penalty and how far it strays from the
   // course. This is the ground truth for "is geoPen inert or just out-bid".
-  if (
-    envStr('OCTI_TRACE_GEO')
-  ) {
-    const geoW = opts.geographicAffinity ?? 0;
-    const devTo = (p: Pixel, course: Pixel[]): number => {
-      let best = Infinity;
-      for (let i = 1; i < course.length; i++) {
-        best = Math.min(best, pointToSegment(p, course[i - 1], course[i]));
-      }
-      return best === Infinity ? 0 : best;
-    };
-    const rows: Array<{
-      id: string; hops: number; bow: number; w: number; paid: number;
-      maxDev: number; spring: number; cost: number; fr: Pixel; to: Pixel;
-    }> = [];
-    for (const ce of h.edges.values()) {
-      const path = drawing.edgs.get(ce.id);
-      if (!path || path.length === 0) continue;
-      const span = dist(ce.points[0], ce.points[ce.points.length - 1]);
-      const bow = span > 1e-6 ? Math.max(1, polyLen(ce.points) / span) : 4;
-      const w = geoW * Math.min(8, bow * bow);
-      let paid = 0;
-      let maxDev = 0;
-      let hops = 0;
-      for (const e of path) {
-        if (!grid.isGridEdge(e)) continue;
-        hops++;
-        const [a, b] = grid.gridEdgeBases(e);
-        const d = Math.max(devTo(grid.basePos(a), ce.points), devTo(grid.basePos(b), ce.points)) / grid.cellSize;
-        maxDev = Math.max(maxDev, d);
-        paid += Math.min(SOFT_INF, w * d * d);
-      }
-      rows.push({
-        id: ce.id, hops, bow, w, paid, maxDev,
-        spring: drawing.springCosts.get(ce.id) ?? 0,
-        cost: drawing.edgCosts.get(ce.id) ?? 0,
-        fr: ctx.posOf(ce.from), to: ctx.posOf(ce.to),
-      });
-    }
-    rows.sort((a, b) => b.maxDev - a.maxDev);
-    console.error(`[octi] TRACE_GEO cellSize=${grid.cellSize.toFixed(1)} geoW=${geoW} (top 25 by max course deviation in cells)`);
-    for (const r of rows.slice(0, 25)) {
-      console.error(
-        `[octi]   ${r.id} (${r.fr.map((x) => x.toFixed(0))})->(${r.to.map((x) => x.toFixed(0))}) ` +
-        `hops=${r.hops} bow=${r.bow.toFixed(2)} w=${r.w.toFixed(3)} ` +
-        `maxDev=${r.maxDev.toFixed(1)}c paid=${r.paid.toFixed(1)} spring=${r.spring.toFixed(1)} cost=${r.cost.toFixed(1)}`,
-      );
-    }
-
-    // OCTI_TRACE_CE=<id,...>: who occupies the grid along this edge's TRUE
-    // course in the final state, the would-be faithful corridor's residents.
-    const traceCe = envStr('OCTI_TRACE_CE');
-    for (const ceId of (traceCe ?? '').split(',').filter(Boolean)) {
-      const ce = h.edges.get(ceId);
-      if (!ce) { console.error(`[octi] TRACE_CE ${ceId}: no such edge`); continue; }
-      console.error(`[octi] TRACE_CE ${ceId} lines={${[...ce.lineIds].map((l) => l.slice(0, 8)).join(',')}} course pts=${ce.points.length}`);
-      const owners = new Map<string, number>();
-      let closedBases = 0;
-      let samples = 0;
-      const step = grid.cellSize / 2;
-      let acc = 0;
-      let prev = ce.points[0];
-      const visit = (p: Pixel) => {
-        samples++;
-        const col = Math.max(0, Math.min(grid.cols - 1, Math.round((p[0] - grid.originX) / grid.cellSize)));
-        const row = Math.max(0, Math.min(grid.rows - 1, Math.round((p[1] - grid.originY) / grid.cellSize)));
-        const b = grid.baseIdx(col, row);
-        if (grid.isClosed(b)) closedBases++;
-        for (let d = 0; d < 8; d++) {
-          const res = grid.getResEdgs(grid.gridIdx(b, d));
-          if (res) for (const o of res) owners.set(o, (owners.get(o) ?? 0) + 1);
-        }
-      };
-      visit(prev);
-      for (let i = 1; i < ce.points.length; i++) {
-        let segLen = dist(prev, ce.points[i]);
-        while (acc + segLen >= step) {
-          const t = (step - acc) / segLen;
-          prev = [prev[0] + (ce.points[i][0] - prev[0]) * t, prev[1] + (ce.points[i][1] - prev[1]) * t];
-          segLen = dist(prev, ce.points[i]);
-          acc = 0;
-          visit(prev);
-        }
-        acc += segLen;
-        prev = ce.points[i];
-      }
-      const lineOf = (oid: string) => {
-        const oe = h.edges.get(oid);
-        return oe ? [...oe.lineIds].map((l) => l.slice(0, 8)).join('+') : '?';
-      };
-      console.error(`[octi]   course samples=${samples} closedBases=${closedBases}`);
-      for (const [oid, n] of [...owners.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
-        const oe = h.edges.get(oid);
-        const fr = oe ? ctx.posOf(oe.from) : undefined;
-        const to = oe ? ctx.posOf(oe.to) : undefined;
-        console.error(
-          `[octi]   resident ${oid} x${n} lines={${lineOf(oid)}} ` +
-          `(${fr?.map((x) => x.toFixed(0))})->(${to?.map((x) => x.toFixed(0))})${oid === ceId ? '  <-- SELF' : ''}`,
-        );
-      }
-
-      // Angular-ordering audit at both endpoints: tangent at 4px (current
-      // ordering basis) vs tangent at cell scale (what the first grid hop
-      // actually subtends). An order swap between the two = the topology
-      // blocking constraint enforces a noise-scale ordering.
-      for (const nd of [ce.from, ce.to]) {
-        const ndPos = ctx.posOf(nd);
-        const rows2: string[] = [];
-        for (const ae of ctx.adjEdges(nd)) {
-          const pts = ae.from === nd ? ae.points : [...ae.points].reverse();
-          const refNear = pts.length > 1 ? pts[1] : ctx.posOf(ae.to === nd ? ae.from : ae.to);
-          let acc2 = 0;
-          let refCell: Pixel = pts[pts.length - 1];
-          for (let i = 1; i < pts.length; i++) {
-            acc2 += dist(pts[i - 1], pts[i]);
-            if (acc2 >= grid.cellSize) { refCell = pts[i]; break; }
-          }
-          const angN = Math.atan2(refNear[1] - ndPos[1], refNear[0] - ndPos[0]) * 180 / Math.PI;
-          const angC = Math.atan2(refCell[1] - ndPos[1], refCell[0] - ndPos[0]) * 180 / Math.PI;
-          rows2.push(
-            `${ae.id}${ae.id === ceId ? '*' : ''} lines={${lineOf(ae.id)}} ` +
-            `ang4px=${angN.toFixed(0)} angCell=${angC.toFixed(0)} circ=${ctx.circDist(nd, ae.id, ceId)}`,
-          );
-        }
-        console.error(`[octi]   ordering at ${nd} (${ndPos.map((x) => x.toFixed(0))}):`);
-        for (const r of rows2) console.error(`[octi]     ${r}`);
-      }
-
-      // Rip the edge up and re-route it under the FINAL constraints. If this
-      // finds a cheaper path, the local-search edge sweep would have fixed it
-      // and simply never got the chance.
-      if (drawing.drawn(ce.id)) {
-        const before = drawing.score();
-        for (const [tag, cutoff] of [['budgeted', before], ['unbounded', Infinity]] as const) {
-          const run = drawing.clone();
-          run.eraseEdgeFromGrid(ce.id, grid);
-          run.eraseEdge(ce, grid, ctx);
-          const err = drawOrder([ce], new Map(), grid, run, cutoff, ctx);
-          const after = run.score();
-          let detail = '';
-          if (err === 'DRAWN') {
-            const path = run.edgs.get(ce.id) ?? [];
-            let maxDev = 0;
-            let hops = 0;
-            for (const e of path) {
-              if (!grid.isGridEdge(e)) continue;
-              hops++;
-              const [a, b] = grid.gridEdgeBases(e);
-              const d = Math.max(devTo(grid.basePos(a), ce.points), devTo(grid.basePos(b), ce.points)) / grid.cellSize;
-              maxDev = Math.max(maxDev, d);
-            }
-            detail = ` newPath hops=${hops} maxDev=${maxDev.toFixed(1)}c edgCost=${(run.edgCosts.get(ce.id) ?? 0).toFixed(1)}`;
-            // pinpoint each violated (soft-closed/blocked) element of the new
-            // path: position + every resident path at its two bases
-            for (const e of path) {
-              if (grid.edgeCost(e) < SOFT_INF) continue;
-              const parts: string[] = [];
-              if (grid.isGridEdge(e)) {
-                const [a, b] = grid.gridEdgeBases(e);
-                for (const bb of [a, b]) {
-                  const res = new Set<string>();
-                  for (let d8 = 0; d8 < 8; d8++) {
-                    const r = grid.getResEdgs(grid.gridIdx(bb, d8));
-                    if (r) for (const o of r) res.add(o);
-                  }
-                  const p = grid.basePos(bb);
-                  parts.push(
-                    `base(${p[0].toFixed(0)},${p[1].toFixed(0)}) closed=${grid.isClosed(bb)} ` +
-                    `settled=${grid.isSettledBase(bb)} residents=[${[...res].join(',')}]`,
-                  );
-                }
-                console.error(`[octi]     VIOLATED grid edge: ${parts.join(' | ')}`);
-              } else {
-                console.error(`[octi]     VIOLATED non-grid edge (bend/sink) idx=${e}`);
-              }
-            }
-          }
-          console.error(
-            `[octi]   re-route(${tag}): ${err} before=${before.toFixed(1)} after=${after.toFixed(1)}${detail}`,
-          );
-          // restore the original drawing on the grid
-          if (err === 'DRAWN') run.eraseEdgeFromGrid(ce.id, grid);
-          drawing.applyEdgeToGrid(ce.id, grid);
-        }
-      }
-    }
-  }
+  traceGeo(drawing, grid, ctx, h, opts.geographicAffinity ?? 0, polyLen, drawOrder);
 
   // 3. extract the image
   const placement = new Map<string, Pixel>();

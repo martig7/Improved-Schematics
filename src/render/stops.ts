@@ -6,7 +6,7 @@
 // when its group has several member stations. Each dot prints its line's name
 // (route bullet) inside, upright, toggled by the stations toggle.
 
-import { envStr } from '../env';
+import { debugMegaBox } from './debug/stops.debug';
 import type { Pixel, StopMark } from './layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
 import { escapeXml } from './escape';
@@ -163,12 +163,7 @@ export function renderStops(
       const minSide = 2 * r + 3;
       if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
       if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
-      if (envStr('OCTI_PLACE_DEBUG') === '1') {
-        let cx = 0, cy = 0; for (const m of marks) { cx += m.pos[0]; cy += m.pos[1]; }
-        cx /= marks.length; cy /= marks.length;
-        const ds = marks.map((m) => Math.sqrt((m.pos[0] - cx) ** 2 + (m.pos[1] - cy) ** 2)).sort((a, b) => a - b);
-        console.error(`[megabox] ${nodeId} marks=${marks.length} box=${(x1 - x0).toFixed(0)}x${(y1 - y0).toFixed(0)} centroidDist med=${ds[ds.length >> 1].toFixed(0)} p90=${ds[Math.floor(ds.length * 0.9)].toFixed(0)} max=${ds[ds.length - 1].toFixed(0)}`);
-      }
+      debugMegaBox(nodeId, marks, x0, y0, x1, y1);
       // No internal bullet circles: a boxed station is a genuine crossing where
       // the stops converge at the crossing point, so the per-line dots overlap
       // into an unreadable cluster. The box alone marks the interchange; the
