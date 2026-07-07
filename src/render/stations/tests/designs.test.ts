@@ -70,7 +70,7 @@ test('tokyu: omits the number when seq is absent, and the bullet when showBullet
   assert.ok(!(gsNoBullet.filter((g) => g.kind === 'text') as Array<{ text: string }>).some((t) => t.text === 'TY'));
 });
 
-test('tokyu interchange: a rectRows capsule renders a dark-gray group rect + one numbered box per line', () => {
+test('tokyu interchange: a rectRows capsule renders the group as a border rect under a fill rect + one numbered box per line', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [
@@ -87,19 +87,24 @@ test('tokyu interchange: a rectRows capsule renders a dark-gray group rect + one
     dotRadius: 6,
   };
   const gs = tokyu.paint(sc, ctx);
-  // 1 group capsule rect + one box per line = 3 rects
+  // Expand-and-overdraw: one border rect + one fill rect for the group, plus one
+  // box per line = 4 rects.
   const rects = gs.filter((g) => g.kind === 'rect') as Array<{ w: number; fill: string; stroke: string }>;
-  assert.equal(rects.length, 3);
-  // The group capsule is the dark-gray rect with the black border.
-  const cap = rects.find((r) => r.fill === '#6f6f73');
-  assert.ok(cap, 'group capsule uses CAP_FILL');
-  assert.equal(cap!.stroke, '#111111');
+  assert.equal(rects.length, 4);
+  // The border rect is the black one; the fill rect sits on top in CAP_FILL with
+  // no stroke.
+  const borderRect = rects.find((r) => r.fill === '#111111');
+  assert.ok(borderRect, 'group border rect uses CAP_BORDER');
+  assert.equal(borderRect!.stroke, '#111111');
+  const fillRect = rects.find((r) => r.fill === '#6f6f73');
+  assert.ok(fillRect, 'group fill rect uses CAP_FILL');
+  assert.equal(fillRect!.stroke, 'none');
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
   assert.ok(texts.some((t) => t.text === '05'));
   assert.ok(texts.some((t) => t.text === '09'));
 });
 
-test('tokyu interchange: a connector emits a closed fill on top of the capsules plus two open side outlines, no closed stroked connector', () => {
+test('tokyu interchange: a connector renders as a seamless border-then-fill silhouette (neck path in each layer, no thin side outlines)', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [
@@ -119,41 +124,51 @@ test('tokyu interchange: a connector emits a closed fill on top of the capsules 
     dotRadius: 6,
   };
   const gs = tokyu.paint(sc, ctx);
-  const paths = gs.filter((g) => g.kind === 'path') as Array<{ d: string; fill: string; stroke: string }>;
-  // One connector -> one closed fill path + two open side outlines.
-  assert.equal(paths.length, 3);
+  const paths = gs.filter((g) => g.kind === 'path') as Array<{ d: string; fill: string; stroke: string; strokeWidth: number }>;
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ fill: string; stroke: string; strokeWidth: number }>;
 
-  const fills = paths.filter((p) => p.fill === '#6f6f73');
-  assert.equal(fills.length, 1); // exactly one filled path
-  const fill = fills[0];
-  assert.equal(fill.stroke, 'none'); // fill carries no border
-  assert.ok(fill.d.startsWith('M '));
-  assert.ok(fill.d.trimEnd().endsWith('Z')); // closed
-  // A 2-point connector is widened to 3 vertices (a, mid, b): 3 left + 3 right
-  // = 6 line-to targets after the initial M.
-  assert.equal((fill.d.match(/L /g) || []).length, 5);
+  // Expand-and-overdraw: one neck path per connector in the BORDER layer, then
+  // one in the FILL layer. Exactly two neck paths, no thin side outlines.
+  assert.equal(paths.length, 2);
 
-  const sides = paths.filter((p) => p.fill === 'none');
-  assert.equal(sides.length, 2); // left + right open outlines
-  for (const side of sides) {
-    assert.equal(side.stroke, '#111111'); // CAP_BORDER
-    assert.ok(side.d.startsWith('M '));
-    assert.ok(!side.d.trimEnd().endsWith('Z')); // open, no closing segment
-    // Each side traces 3 vertices: initial M + 2 line-tos.
-    assert.equal((side.d.match(/L /g) || []).length, 2);
-  }
+  const borderNecks = paths.filter((p) => p.fill === '#111111');
+  const fillNecks = paths.filter((p) => p.fill === '#6f6f73');
+  assert.equal(borderNecks.length, 1); // border-layer neck
+  assert.equal(fillNecks.length, 1); // fill-layer neck
 
-  // No closed path is stroked with the border color (the old seam).
-  assert.ok(!paths.some((p) => p.stroke === '#111111' && p.d.trimEnd().endsWith('Z')));
+  const borderNeck = borderNecks[0];
+  // The border-layer neck is fattened: fill AND stroke are CAP_BORDER.
+  assert.equal(borderNeck.stroke, '#111111');
+  assert.ok(borderNeck.strokeWidth > 0);
+  assert.ok(borderNeck.d.startsWith('M '));
+  assert.ok(borderNeck.d.trimEnd().endsWith('Z')); // closed
 
-  // The connector fill is drawn AFTER the group capsule rects so it covers the
-  // capsule border at the junction; the route boxes are drawn last.
-  const capRects = gs.filter((g) => g.kind === 'rect' && (g as { fill: string }).fill === '#6f6f73');
-  const lastCapRectIdx = gs.lastIndexOf(capRects[capRects.length - 1]);
-  const fillIdx = gs.indexOf(fill);
-  assert.ok(fillIdx > lastCapRectIdx, 'connector fill drawn after the group capsules');
+  const fillNeck = fillNecks[0];
+  assert.equal(fillNeck.stroke, 'none'); // fill-layer neck carries no border
+  assert.ok(fillNeck.d.startsWith('M '));
+  assert.ok(fillNeck.d.trimEnd().endsWith('Z')); // closed
+
+  // No thin non-fattened side outline: every path is a closed silhouette piece,
+  // none is an open (unclosed) stroke.
+  assert.ok(!paths.some((p) => !p.d.trimEnd().endsWith('Z')));
+
+  // Two group rects x two layers = 4 route-less rects, plus one box per line.
+  const borderRects = rects.filter((r) => r.fill === '#111111');
+  const fillRects = rects.filter((r) => r.fill === '#6f6f73' && r.stroke === 'none');
+  assert.equal(borderRects.length, 2); // border layer: one per group
+  assert.equal(fillRects.length, 2); // fill layer: one per group
+
+  // Draw order: whole BORDER layer (rects + neck) first, then whole FILL layer
+  // (rects + neck), then the route boxes on top.
+  const borderNeckIdx = gs.indexOf(borderNeck);
+  const fillNeckIdx = gs.indexOf(fillNeck);
+  const lastBorderRectIdx = gs.lastIndexOf(borderRects[borderRects.length - 1]);
+  const firstFillRectIdx = gs.indexOf(fillRects[0]);
+  assert.ok(borderNeckIdx > lastBorderRectIdx, 'border neck drawn after the border rects');
+  assert.ok(fillNeckIdx > borderNeckIdx, 'fill layer drawn after the border layer');
+  assert.ok(firstFillRectIdx > borderNeckIdx, 'fill rects drawn after the border layer');
   const lastRectIdx = gs.map((g, i) => (g.kind === 'rect' ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
-  assert.ok(lastRectIdx > fillIdx, 'route boxes drawn on top of the connector');
+  assert.ok(lastRectIdx > fillNeckIdx, 'route boxes drawn on top of the fill layer');
 });
 
 test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded rect', () => {

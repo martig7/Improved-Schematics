@@ -24,16 +24,8 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
 
 const f1 = (n: number): string => n.toFixed(1);
 
-/** Unit perpendicular (left-hand normal) of the segment a -> b, or null when
- *  the two points coincide. Uses sqrt (not hypot) for cross-V8 determinism. */
-function unitPerp(a: Point, b: Point): Point | null {
-  const dx = b[0] - a[0], dy = b[1] - a[1];
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len === 0) return null;
-  return [-dy / len, dx / len];
-}
-
-/** Unit vector a -> b, or null when the two points coincide. sqrt, not hypot. */
+/** Unit vector a -> b, or null when the two points coincide. Uses sqrt (not
+ *  hypot) for cross-V8 determinism. */
 function unitVec(a: Point, b: Point): Point | null {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   const len = Math.sqrt(dx * dx + dy * dy);
@@ -41,106 +33,109 @@ function unitVec(a: Point, b: Point): Point | null {
   return [dx / len, dy / len];
 }
 
+const SPINE_SAMPLES = 12; // resampled points per connector leg (dense waist)
+
 /**
- * The two side chains (left, right) of a filled, tapered connector. The taper is
- * widest where it meets each group capsule (the two endpoints, the sources) and
- * narrows at every interior waist vertex. A 2-point connector gets a synthesized
- * midpoint so it always has a waist. Both END vertices are pushed a short
- * distance back INTO their capsules so the fill covers the capsule border strip
- * at the junction and the neck reads as one shape with the capsule. Half-widths
- * and the overlap are in world px.
+ * Closed polygon `d` of one connector neck, built by lateral extrusion of the
+ * centerline. The centerline endpoints already sit on the two capsule
+ * boundaries; each end is first TUCKED a short way INTO its capsule so the
+ * extrusion merges under the capsule fill (never bulging outward). The spine is
+ * then resampled densely (midpoint for a 2-point line, along both legs for a
+ * bend) so the normal turns continuously with no discrete bevel. The half-width
+ * profile is wide at both ends and pinched at the waist, giving a smooth neck.
+ *
+ * @param points connector centerline (2 or 3 pts), endpoints on capsule edges
+ * @param box    box side length (world px); widths and tuck scale with it
+ * @returns closed path d-string, or null for a degenerate centerline
  */
-function taperedConnectorSides(
-  points: Point[],
-  wideHalf: number,
-  waistHalf: number,
-  overlap: number,
-): { left: Point[]; right: Point[] } | null {
+function neckPolygon(points: Point[], box: number): string | null {
   if (points.length < 2) return null;
-  const v: Point[] = points.length === 2
-    ? [points[0], [(points[0][0] + points[1][0]) / 2, (points[0][1] + points[1][1]) / 2], points[1]]
-    : points.slice();
-  const n = v.length;
+  const WIDE = box * 0.42;
+  const WAIST = box * 0.26;
+  const TUCK = box * 0.10;
 
-  // Extend the two end vertices a short way back into their capsules along the
-  // connector's own direction, so the taper fill laps over the capsule border.
-  const dirOut0 = unitVec(v[1], v[0]);          // points from the first waist toward the start
-  const dirOutN = unitVec(v[n - 2], v[n - 1]);  // points from the last waist toward the end
-  if (dirOut0) v[0] = [v[0][0] + dirOut0[0] * overlap, v[0][1] + dirOut0[1] * overlap];
-  if (dirOutN) v[n - 1] = [v[n - 1][0] + dirOutN[0] * overlap, v[n - 1][1] + dirOutN[1] * overlap];
+  // Tuck each end inward along the connector's own end direction so the neck
+  // starts under the capsule fill rather than flush with (or past) its border.
+  const src = points.slice();
+  const n0 = src.length;
+  const inDir0 = unitVec(src[0], src[1]);           // toward the interior from the first end
+  const inDirN = unitVec(src[n0 - 1], src[n0 - 2]); // toward the interior from the last end
+  if (inDir0) src[0] = [src[0][0] + inDir0[0] * TUCK, src[0][1] + inDir0[1] * TUCK];
+  if (inDirN) src[n0 - 1] = [src[n0 - 1][0] + inDirN[0] * TUCK, src[n0 - 1][1] + inDirN[1] * TUCK];
 
-  // Per-vertex outward perpendicular: an endpoint uses its single adjacent
-  // segment; an interior vertex uses the normalized sum of its two neighbors'
-  // unit perpendiculars (the bevel bisector).
-  const perp: Point[] = [];
-  for (let i = 0; i < n; i++) {
-    let p: Point | null;
-    if (i === 0) p = unitPerp(v[0], v[1]);
-    else if (i === n - 1) p = unitPerp(v[n - 2], v[n - 1]);
-    else {
-      const a = unitPerp(v[i - 1], v[i]);
-      const b = unitPerp(v[i], v[i + 1]);
-      if (a && b) {
-        const sx = a[0] + b[0], sy = a[1] + b[1];
-        const len = Math.sqrt(sx * sx + sy * sy);
-        p = len === 0 ? a : [sx / len, sy / len];
-      } else p = a || b;
+  // Dense spine: sample each leg evenly so the waist and any bend are smooth.
+  const spine: Point[] = [];
+  for (let leg = 0; leg < src.length - 1; leg++) {
+    const a = src[leg], b = src[leg + 1];
+    const last = leg === src.length - 2;
+    const steps = last ? SPINE_SAMPLES : SPINE_SAMPLES - 1; // avoid duplicating the shared bend vertex
+    for (let s = 0; s <= steps; s++) {
+      const t = s / SPINE_SAMPLES;
+      spine.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
     }
-    perp.push(p || [0, 0]);
+  }
+  const m = spine.length;
+  if (m < 2) return null;
+
+  // Per-point unit tangent from adjacent samples, then left-normal N = (-Ty, Tx)
+  // and half-width from the bump profile (1 at both ends, 0 at the waist).
+  const left: Point[] = [];
+  const right: Point[] = [];
+  for (let i = 0; i < m; i++) {
+    const a = spine[i === 0 ? 0 : i - 1];
+    const b = spine[i === m - 1 ? m - 1 : i + 1];
+    let tx = b[0] - a[0], ty = b[1] - a[1];
+    const len = Math.sqrt(tx * tx + ty * ty);
+    if (len === 0) { tx = 1; ty = 0; } else { tx /= len; ty /= len; }
+    const nx = -ty, ny = tx;
+    const t = i / (m - 1);
+    const bump = (2 * t - 1) * (2 * t - 1); // 1 at ends, 0 at the waist
+    const hw = WAIST + (WIDE - WAIST) * bump;
+    const p = spine[i];
+    left.push([p[0] + hw * nx, p[1] + hw * ny]);
+    right.push([p[0] - hw * nx, p[1] - hw * ny]);
   }
 
-  const half = (i: number): number => (i === 0 || i === n - 1 ? wideHalf : waistHalf);
-  const left: Point[] = v.map((pt, i) => [pt[0] + half(i) * perp[i][0], pt[1] + half(i) * perp[i][1]]);
-  const right: Point[] = v.map((pt, i) => [pt[0] - half(i) * perp[i][0], pt[1] - half(i) * perp[i][1]]);
-  return { left, right };
-}
-
-/** Closed fill `d` from the two side chains: down the left, back up the right. */
-function fillPath(left: Point[], right: Point[]): string {
-  const n = left.length;
   let d = 'M ' + f1(left[0][0]) + ' ' + f1(left[0][1]);
-  for (let i = 1; i < n; i++) d += ' L ' + f1(left[i][0]) + ' ' + f1(left[i][1]);
-  for (let i = n - 1; i >= 0; i--) d += ' L ' + f1(right[i][0]) + ' ' + f1(right[i][1]);
+  for (let i = 1; i < m; i++) d += ' L ' + f1(left[i][0]) + ' ' + f1(left[i][1]);
+  for (let i = m - 1; i >= 0; i--) d += ' L ' + f1(right[i][0]) + ' ' + f1(right[i][1]);
   return d + ' Z';
-}
-
-/** Open `d` tracing one side chain (no closing segment, no end cap). */
-function sidePath(chain: Point[]): string {
-  let d = 'M ' + f1(chain[0][0]) + ' ' + f1(chain[0][1]);
-  for (let i = 1; i < chain.length; i++) d += ' L ' + f1(chain[i][0]) + ' ' + f1(chain[i][1]);
-  return d;
 }
 
 /**
  * Tokyu: Japanese-metro station boxes. A single-line stop is one rounded square
  * (route color, bullet over station number). A multi-line interchange seats one
  * box per line into axis-aligned rows (the 'rectRows' capsule from placement):
- * dark-gray group capsules behind the boxes, filled tapered connectors joining
- * the rows, and a box per line at its solved center. The station name stays on
- * the label layer.
+ * dark-gray group capsules behind the boxes, extruded connector necks joining
+ * the rows, and a box per line at its solved center. Capsules and necks are
+ * rendered as one seamless bordered silhouette by expand-and-overdraw. The
+ * station name stays on the label layer.
  */
 function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
   const cap = scene.capsule;
 
   if (cap.kind === 'rectRows') {
     const s = cap.box;
-    const border = +(s * 0.06).toFixed(2);
-    const overlap = s * 0.12;
+    const bw = +(s * 0.06).toFixed(2); // border rim half-width
     const g: Glyph[] = [];
-    // Draw order: group capsules first, then each connector's fill (covering the
-    // capsule border under the neck), then the connector side outlines (flowing
-    // into the capsule outline), then the route boxes on top. So the neck and the
-    // capsule read as one shape with no seam line at the junction.
-    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: CAP_FILL, stroke: CAP_BORDER, strokeWidth: border }));
-    const sides = cap.connectors.map((c) => taperedConnectorSides(c.points, s * 0.42, s * 0.26, overlap));
-    for (const sd of sides) {
-      if (sd) g.push({ kind: 'path', d: fillPath(sd.left, sd.right), fill: CAP_FILL, stroke: 'none', strokeWidth: 0, lineCap: 'round', lineJoin: 'round' });
-    }
-    for (const sd of sides) {
-      if (!sd) continue;
-      g.push({ kind: 'path', d: sidePath(sd.left), fill: 'none', stroke: CAP_BORDER, strokeWidth: border, lineCap: 'round', lineJoin: 'round' });
-      g.push({ kind: 'path', d: sidePath(sd.right), fill: 'none', stroke: CAP_BORDER, strokeWidth: border, lineCap: 'round', lineJoin: 'round' });
-    }
+    const necks = cap.connectors
+      .map((c) => neckPolygon(c.points, s))
+      .filter((d): d is string => d != null);
+
+    // Expand-and-overdraw: draw every piece (group capsules and connector necks)
+    // fattened in the border color first, then redraw every interior in the fill
+    // color. The fattened pieces union into one outer silhouette, so only a
+    // uniform border rim survives and the capsules and necks read as ONE
+    // seamless shape, flush at every junction with no seam line.
+    // BORDER LAYER: each piece stroked and filled in the border color, fattening
+    // it by bw on every side.
+    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: CAP_BORDER, stroke: CAP_BORDER, strokeWidth: 2 * bw }));
+    for (const d of necks) g.push({ kind: 'path', d, fill: CAP_BORDER, stroke: CAP_BORDER, strokeWidth: 2 * bw, lineCap: 'round', lineJoin: 'round' });
+    // FILL LAYER: each interior in the fill color, no stroke, covering all but
+    // the border rim.
+    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: CAP_FILL, stroke: 'none', strokeWidth: 0 }));
+    for (const d of necks) g.push({ kind: 'path', d, fill: CAP_FILL, stroke: 'none', strokeWidth: 0, lineCap: 'round', lineJoin: 'round' });
+
     for (const ln of scene.lines) g.push(...square(ln.pos[0], ln.pos[1], s, ln, ctx.showBullets));
     return g;
   }
