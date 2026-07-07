@@ -70,21 +70,42 @@ test('tokyu: omits the number when seq is absent, and the bullet when showBullet
   assert.ok(!(gsNoBullet.filter((g) => g.kind === 'text') as Array<{ text: string }>).some((t) => t.text === 'TY'));
 });
 
-test('tokyu interchange: a capsule renders a grouping rect + one numbered box per line', () => {
+test('tokyu interchange: a rectRows capsule renders a group rect + one numbered box per line', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [
       { lineId: 'L1', color: '#e10f2b', bullet: 'A', textColor: '#ffffff', pos: [0, 0], chain: 0, seq: 5 },
-      { lineId: 'L2', color: '#0067c0', bullet: 'D', textColor: '#ffffff', pos: [4, 0], chain: 1, seq: 9 },
+      { lineId: 'L2', color: '#0067c0', bullet: 'D', textColor: '#ffffff', pos: [34, 0], chain: 1, seq: 9 },
     ],
-    capsule: { kind: 'pill', points: [[0, 0], [4, 0]], smooth: false },
-    anchor: [2, 0],
+    capsule: {
+      kind: 'rectRows',
+      box: 30,
+      groups: [{ x: -20, y: -20, w: 74, h: 40, rx: 6 }],
+      connectors: [],
+    },
+    anchor: [17, 0],
     dotRadius: 6,
   };
   const gs = tokyu.paint(sc, ctx);
-  // 1 grouping capsule rect + one fill rect per line = 3 rects
+  // 1 group capsule rect + one box per line = 3 rects
   assert.equal(gs.filter((g) => g.kind === 'rect').length, 3);
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
   assert.ok(texts.some((t) => t.text === '05'));
   assert.ok(texts.some((t) => t.text === '09'));
+});
+
+test('tokyu: a box (mega-fallback) capsule renders the opaque rounded rect', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [],
+    capsule: { kind: 'box', x: 0, y: 0, w: 40, h: 40, rx: 6 },
+    anchor: [20, 20],
+    dotRadius: 6,
+  };
+  const gs = tokyu.paint(sc, ctx);
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; w: number; fill: string; stroke: string }>;
+  assert.equal(rects.length, 1);
+  assert.equal(rects[0].w, 40);
+  assert.equal(rects[0].fill, '#ffffff');
+  assert.equal(rects[0].stroke, '#c9c9c9');
 });
