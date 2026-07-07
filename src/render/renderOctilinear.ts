@@ -26,6 +26,7 @@ import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/c
 import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
+import { cropLaneToBox } from './laneCrop';
 import { getStationDesign } from './stations';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
@@ -50,7 +51,7 @@ const fmtPt = (p: Pixel): string => p[0].toFixed(1) + ',' + p[1].toFixed(1);
 /**
  * Build the per-line 'd' command arrays from a lane bundle (`segPath`) and its
  * node join curves, exactly as the inline emission does. Extracted so the lanes
- * can be re-emitted from a modified clone of segPath without duplicating the
+ * can be re-emitted from a CROPPED clone of segPath without duplicating the
  * fillet math. Pure over its inputs: it reads segPath / joinCurves and writes a
  * fresh Map, never touching module state.
  *
@@ -61,8 +62,8 @@ const fmtPt = (p: Pixel): string => p[0].toFixed(1) + ',' + p[1].toFixed(1);
  *
  * `segmentsOut`, when given, collects the straight sub-segments each lane
  * contributes (used downstream for label placement / collision). Pass the real
- * segments array for the live build; omit it for a throwaway re-emit so the live
- * collision set is not polluted.
+ * segments array for the live build; omit it for a throwaway crop re-emit so the
+ * live collision set is not polluted.
  */
 export function buildDByLine(
   segPath: Map<string, Pixel[]>,
@@ -107,6 +108,82 @@ export function buildDByLine(
     if (segmentsOut) segmentsOut.push({ p1: jc.a, p2: jc.b });
   }
   return dByLine;
+}
+
+/** One lane end to crop to a seated rectangle-capsule box. `flagNode` is the
+ *  support node the mark sits on: an incident drawn lane is `segPath[edgeId|lineId]`
+ *  for an edge with from/to == flagNode. `shared` means the terminus-trim
+ *  shared-anchor guard flagged this end as anchoring more than one station, so it
+ *  is left uncropped (cropping to one station's box would orphan the other). */
+export interface LaneCropTarget {
+  lineId: string;
+  flagNode: string;
+  boxCenter: [number, number];
+  boxSide: number;
+  shared: boolean;
+}
+
+/**
+ * Re-emit the per-line 'd' strings from a segPath whose incident lane ends have
+ * been cropped so each terminates exactly on its mark's seated rectangle-capsule
+ * box. Builds on a CLONE of segPath (only the polylines actually edited are deep-
+ * cloned; the real segPath is never mutated). For each target, every incident
+ * drawn lane at its support node is oriented node-end-first and cropped by
+ * cropLaneToBox (cut back when it overshoots into or through the box, extended
+ * straight when it falls short). Shared-anchor ends are skipped. A through line
+ * with an incident lane at each of two nodes is cropped at each end independently
+ * because each end is a separate target.
+ *
+ * Deterministic: cropLaneToBox uses Math.sqrt only and a fixed box-edge scan
+ * order; targets are applied in their given (stable placement) order.
+ *
+ * Returns the per-line 'd' command ARRAYS (not joined), so the node-connector
+ * pass can append its cross-node jog commands to them exactly as it does to the
+ * live dByLine, and the caller joins them into strings once at the end.
+ */
+export function computeTokyuLaneCrops(
+  targets: LaneCropTarget[],
+  segPath: Map<string, Pixel[]>,
+  edges: Array<{ id: string; from: string; to: string }>,
+  joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }>,
+  filletR: number,
+): Map<string, string[]> {
+  // A shallow copy of the segPath map: entries start as the real polyline
+  // references and are REPLACED (not mutated) with fresh cropped arrays, so the
+  // real segPath and its polylines are never touched.
+  const cropSeg = new Map(segPath);
+  const incidentByNode = new Map<string, Array<{ id: string; from: string; to: string }>>();
+  for (const e of edges) {
+    let a = incidentByNode.get(e.from);
+    if (!a) incidentByNode.set(e.from, (a = []));
+    a.push(e);
+    if (e.to !== e.from) {
+      let b = incidentByNode.get(e.to);
+      if (!b) incidentByNode.set(e.to, (b = []));
+      b.push(e);
+    }
+  }
+
+  for (const t of targets) {
+    if (t.shared) continue; // shared terminus: leave the lane at its tip
+    const inc = incidentByNode.get(t.flagNode);
+    if (!inc) continue;
+    for (const e of inc) {
+      const key = e.id + '|' + t.lineId;
+      const poly = cropSeg.get(key);
+      if (!poly || poly.length < 2) continue;
+      // orient node-end-first (poly[0] near flagNode), as trimLaneAt/arcToPoint do
+      const atStart = e.from === t.flagNode;
+      const nodeFirst = atStart ? poly : [...poly].reverse();
+      const cropped = cropLaneToBox(nodeFirst, t.boxCenter, t.boxSide);
+      const back = atStart ? cropped : [...cropped].reverse();
+      cropSeg.set(key, back);
+    }
+  }
+
+  // Re-emit from the cropped clone; segments are the live collision set, so pass
+  // no sink here (the crop re-emit must not pollute it).
+  return buildDByLine(cropSeg, joinCurves, filletR);
 }
 
 const snapAxis = (dx: number, dy: number): Pixel => {
@@ -294,6 +371,15 @@ export interface RibbonGeometry {
    *  never read it. OPTIONAL: absent in geometry serialized before it existed;
    *  paint then falls back to the mark's own position. */
   tokyuStopPos?: Map<string, [number, number]>;
+  /** Per-line 'd' strings re-emitted from a segPath whose incident lane ends were
+   *  cropped (cut back or extended) to terminate exactly on each mark's seated
+   *  rectangle-capsule box. Consulted ONLY by the rectangle ("rectRows") design;
+   *  every other design reads dByLine, so the drawn output is byte-identical for
+   *  them. OPTIONAL: absent in geometry serialized before it existed (and when
+   *  there are no seated boxes); paint falls back to dByLine per line. This
+   *  doubles the lane-string storage, accepted under the cache-over-recompute
+   *  rule since it degrades gracefully. */
+  tokyuLaneByLine?: Map<string, string>;
 }
 
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
@@ -392,6 +478,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // there are no station groups; always present on the returned geometry.
   let rectByNode = new Map<string, RectCapsule>();
   let tokyuStopPos = new Map<string, [number, number]>();
+  // Per-line 'd' command arrays from a lane bundle cropped to the seated rect
+  // boxes; filled at emit time (undefined when there are no boxes). The node-
+  // connector pass appends to these arrays alongside dByLine, and they are joined
+  // into tokyuLaneByLine strings at the end. Only the rectangle design reads the
+  // result, so leaving it undefined keeps every other design identical.
+  let tokyuDParts: Map<string, string[]> | undefined;
+  // The lane-crop targets, gathered inside the station block (where the marks and
+  // the shared-anchor guard live) and consumed after the draw-fillet finalizes
+  // segPath. Empty for non-station renders.
+  const cropTargets: LaneCropTarget[] = [];
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
@@ -2958,6 +3054,36 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // for non-rect designs. gathered is in the deterministic placement order, so
     // the maps are stable.
     ({ rectByNode, tokyuStopPos } = computeRectByNode(gathered));
+
+    // Lane-crop targets: for every mark that resolved to a seated rect box, the
+    // box center + side and whether its terminus is shared (the same guard the
+    // terminus trim uses). A multi-line mark reads its own box center from the
+    // capsule's per-line centers (side = capsule box); a single stop reads the
+    // rescued marker position (side = the single-stop box). Marks without a box
+    // are skipped. Consumed after the draw-fillet finalizes segPath.
+    const singleBoxSide = 3 * RECT_R0;
+    for (const s of gathered) {
+      const cap = rectByNode.get(s.nodeId);
+      const singlePos = tokyuStopPos.get(s.nodeId);
+      for (const mk of s.marks) {
+        // A mega interchange in the rectangle design is a compact GRID of numbered
+        // boxes (one per line, seated in computeRectByNode), not one opaque cover,
+        // so its lane ends crop to their own grid box too. The mega flag only means
+        // the dot row solve fell back; the per-line box still exists in centers.
+        let boxCenter: [number, number] | undefined;
+        let boxSide = 0;
+        if (cap) {
+          const c = cap.centers.find((e) => e.lineId === mk.lineId);
+          if (c) { boxCenter = [c.x, c.y]; boxSide = cap.box; }
+        } else if (singlePos && s.marks.length === 1) {
+          boxCenter = [singlePos[0], singlePos[1]]; boxSide = singleBoxSide;
+        }
+        if (!boxCenter) continue;
+        const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
+        const shared = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(s.nodeId));
+        cropTargets.push({ lineId: mk.lineId, flagNode: mk.flagNode, boxCenter, boxSide, shared });
+      }
+    }
   } else {
     for (const edge of layout.edges) {
       for (const [lineId, stop] of edge.stops) {
@@ -3016,6 +3142,17 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   }
 
   emitLanes();
+
+  // Rectangle-capsule lane crop: re-emit a parallel per-line 'd' from a clone of
+  // segPath whose incident lane ends were cut back or extended to meet each
+  // mark's seated box. segPath is final here (the draw-fillet has run), so the
+  // clone reflects the drawn lanes. The real dByLine above is untouched, so non-
+  // rect designs stay byte-identical. Skipped when there are no crop targets.
+  if (cropTargets.length > 0) {
+    tokyuDParts = computeTokyuLaneCrops(cropTargets, segPath, layout.edges, joinCurves, FILLET_R);
+  }
+  // else: leave tokyuDParts undefined so the rectangle design falls back to
+  // dByLine and every other design stays byte-identical.
 
   // Node connectors: where a line continues across a node between two edges
   // whose lane slots differ, bridge the lateral jog so the line reads as
@@ -3080,6 +3217,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (gap < 0.5 || gap > maxGap) continue; // coincident, or pathological jump
       let d = dByLine.get(lineId);
       if (!d) dByLine.set(lineId, (d = []));
+      // The connector jog is drawn on both the live dByLine and (when present) the
+      // cropped rect-design parts, so a through line keeps its lateral node jog in
+      // the Tokyu design too. The bridge attaches at the real lane ends, which sit
+      // under the seated boxes, so it reads the same for both.
+      const conn: string[] = [];
       // Tangent-matched cubic instead of a straight chord makes a lateral lane
       // jog read as a smooth S through the node, not a crimp (LOOM transitmap's
       // inner node geometries). Control points extend along each lane's end
@@ -3118,19 +3260,25 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         (pb[0] - pa[0]) * dirA[0] + (pb[1] - pa[1]) * dirA[1],
         (pb[0] - pa[0]) * dirB[0] + (pb[1] - pa[1]) * dirB[1],
       );
-      d.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
+      conn.push('M' + pa[0].toFixed(1) + ',' + pa[1].toFixed(1));
       if (dirA[0] * dirB[0] + dirA[1] * dirB[1] < -0.3 || k < 1.5 || prog < 0) {
         // regressive turn (or no forward progress): tangent-matched control
         // points would bulge the bridge outward. A plain chord across the
         // junction reads as the line passing straight through.
-        d.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
+        conn.push('L' + pb[0].toFixed(1) + ',' + pb[1].toFixed(1));
       } else {
         const { c1, c2 } = connectorControls(pa, pb, dirA, dirB, k);
-        d.push(
+        conn.push(
           'C' + c1[0].toFixed(1) + ',' + c1[1].toFixed(1) + ' ' +
           c2[0].toFixed(1) + ',' + c2[1].toFixed(1) + ' ' +
           pb[0].toFixed(1) + ',' + pb[1].toFixed(1),
         );
+      }
+      for (const cmd of conn) d.push(cmd);
+      if (tokyuDParts) {
+        let td = tokyuDParts.get(lineId);
+        if (!td) tokyuDParts.set(lineId, (td = []));
+        for (const cmd of conn) td.push(cmd);
       }
       segments.push({ p1: pa, p2: pb });
     }
@@ -3141,7 +3289,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     miteredCount: mitered.size, connCount: connSeen.size, lineCount: dByLine.size,
   });
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos };
+  // Join the cropped rect-design parts (lanes + mirrored connectors) into per-line
+  // strings, serialization-safe on the geometry. Absent when there were no boxes.
+  let tokyuLaneByLine: Map<string, string> | undefined;
+  if (tokyuDParts) {
+    tokyuLaneByLine = new Map<string, string>();
+    for (const [lineId, parts] of tokyuDParts) tokyuLaneByLine.set(lineId, parts.join(' '));
+  }
+
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, tokyuLaneByLine };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3159,10 +3315,15 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const casingParts: string[] = [];
   const strokeParts: string[] = [];
 
+  // The rectangle ("rectRows") design draws its lanes cropped to the seated
+  // boxes: consult the cached tokyuLaneByLine, falling back to dByLine per line
+  // (and when the cache is absent). EVERY other design reads dByLine only, so
+  // their drawn output is byte-identical.
+  const isRect = getStationDesign(args.stationDesign)?.capsule === 'rectRows' && !!geom.tokyuLaneByLine;
   for (const [lineId, line] of lineById) {
     const d = dByLine.get(lineId);
     if (!d || d.length < 2) continue;
-    const dStr = d.join(' ');
+    const dStr = isRect ? (geom.tokyuLaneByLine!.get(lineId) ?? d.join(' ')) : d.join(' ');
     casingParts.push(
       '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
         '" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -3288,7 +3449,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     for (const [lineId, line] of lineById) {
       const d = dByLine.get(lineId);
       if (!d || d.length < 2) continue;
-      const dStr = d.join(' ');
+      // Same rect-crop source as the SVG markup above; non-rect designs read
+      // dByLine only, so the scene IR stays byte-identical for them.
+      const dStr = isRect ? (geom.tokyuLaneByLine!.get(lineId) ?? d.join(' ')) : d.join(' ');
       casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: casingWidth, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
       strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: LINE_WIDTH, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
     }
