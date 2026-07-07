@@ -18,6 +18,7 @@
 // across V8 versions).
 
 import type { StopScene, Point } from '../stations/types';
+import type { RectCapsule } from './rectSeat';
 
 // Clearance kept between footprints and applied when a stop is pushed out,
 // scaled so it reads the same at every zoom. Cleared stops keep this gap, so
@@ -119,37 +120,42 @@ function translateScene(scene: StopScene, dx: number, dy: number): void {
   }
 }
 
-/**
- * Slide overlapping Tokyu stops apart. Every scene is processed (the caller
- * gates the whole rescue on the Tokyu design). Mutates `scenes` in place.
- *
- * Placement queue: scenes ordered by member count (scene.lines.length)
- * descending, then nodeId ascending, so the biggest interchange claims space
- * first and single boxes yield. Each stop is then pushed out of already-placed
- * stops greedily: up to MAX_ITERS times, against ALL currently-overlapping
- * placed footprints, take the max X-penetration and max Y-penetration, and push
- * along whichever axis clears with the smaller move (tie -> X) by
- * penetration + margin, away from the overlapping mass' center. This clears a
- * stop wedged between two neighbors without oscillating. The net translation is
- * applied once, and the shifted (expanded) footprint joins the placed list.
- */
-export function rescueRectCapsules(scenes: StopScene[]): void {
-  if (scenes.length < 2) return;
+// One item the placement core deconflicts: its member count and nodeId set the
+// biggest-first order, its footprint AABB + margin drive the push, and `translate`
+// applies the resolved net shift to the underlying object.
+interface RescueItem {
+  id: string;
+  memberCount: number;
+  box: AABB;
+  margin: number;
+  translate: (dx: number, dy: number) => void;
+}
 
-  const items: Array<{ scene: StopScene; box: AABB; margin: number }> = [];
-  for (const scene of scenes) {
-    const fp = footprintOf(scene);
-    if (fp) items.push({ scene, box: fp.box, margin: fp.margin });
-  }
+/**
+ * Slide overlapping footprints apart, mutating each item's object through its
+ * `translate` callback.
+ *
+ * Placement queue: items ordered by member count descending, then id ascending,
+ * so the biggest interchange claims space first and single boxes yield. Each
+ * item is then pushed out of already-placed items greedily: up to MAX_ITERS
+ * times, against ALL currently-overlapping placed footprints, take the max
+ * X-penetration and max Y-penetration, and push along whichever axis clears with
+ * the smaller move (tie -> X) by penetration + margin, away from the overlapping
+ * mass' center. This clears a stop wedged between two neighbors without
+ * oscillating. The net translation is applied once, and the shifted (expanded)
+ * footprint joins the placed list. Fully deterministic: fixed order, fixed
+ * tie-breaks, no Math.random / Date.
+ */
+function rescueFootprints(items: RescueItem[]): void {
   if (items.length < 2) return;
 
   const order = items.slice().sort((a, b) =>
-    (b.scene.lines.length - a.scene.lines.length) ||
-    (a.scene.nodeId < b.scene.nodeId ? -1 : a.scene.nodeId > b.scene.nodeId ? 1 : 0));
+    (b.memberCount - a.memberCount) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const placed: AABB[] = [];
 
-  for (const { scene, box, margin } of order) {
+  for (const { box, margin, translate } of order) {
     const base = expand(box, margin);
 
     let dx = 0, dy = 0;
@@ -187,10 +193,76 @@ export function rescueRectCapsules(scenes: StopScene[]): void {
       }
     }
 
-    if (dx !== 0 || dy !== 0) translateScene(scene, dx, dy);
+    if (dx !== 0 || dy !== 0) translate(dx, dy);
     placed.push({
       x0: base.x0 + dx, y0: base.y0 + dy,
       x1: base.x1 + dx, y1: base.y1 + dy,
     });
   }
+}
+
+/**
+ * Slide overlapping Tokyu stops apart. Every scene is processed (the caller
+ * gates the whole rescue on the Tokyu design). Mutates `scenes` in place.
+ */
+export function rescueRectCapsules(scenes: StopScene[]): void {
+  const items: RescueItem[] = [];
+  for (const scene of scenes) {
+    const fp = footprintOf(scene);
+    if (fp) items.push({
+      id: scene.nodeId,
+      memberCount: scene.lines.length,
+      box: fp.box,
+      margin: fp.margin,
+      translate: (dx, dy) => translateScene(scene, dx, dy),
+    });
+  }
+  rescueFootprints(items);
+}
+
+/** The stop's full painted footprint for a cached rect capsule (the union of its
+ *  group rects), plus the per-box clearance margin. Null when the capsule has no
+ *  group rect to place. Mirrors the rectRows branch of footprintOf. */
+function capsuleFootprint(cap: RectCapsule): { box: AABB; margin: number } | null {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const g of cap.groups) {
+    if (g.x < x0) x0 = g.x;
+    if (g.y < y0) y0 = g.y;
+    if (g.x + g.w > x1) x1 = g.x + g.w;
+    if (g.y + g.h > y1) y1 = g.y + g.h;
+  }
+  if (x0 === Infinity) return null;
+  return { box: { x0, y0, x1, y1 }, margin: cap.box * MARGIN_FRAC };
+}
+
+/** Shift every positional field of a rect capsule by (dx, dy) in place. */
+function translateCapsule(cap: RectCapsule, dx: number, dy: number): void {
+  for (const c of cap.centers) { c.x += dx; c.y += dy; }
+  for (const g of cap.groups) { g.x += dx; g.y += dy; }
+  for (const cn of cap.connectors) {
+    cn.points = cn.points.map((p): [number, number] => [p[0] + dx, p[1] + dy]);
+  }
+}
+
+/**
+ * Compute-time equivalent of rescueRectCapsules operating on cached RectCapsule
+ * geometry. Slides overlapping capsules apart with the SAME biggest-first order
+ * (member count then nodeId), footprint (group-rect union + per-box margin), and
+ * cheaper-axis push as the scene path, mutating each capsule in `byNode` in
+ * place. Runs unconditionally at compute time; the data is inert for non-Tokyu
+ * designs. Fully deterministic.
+ */
+export function rescueRectCapsuleMap(byNode: Map<string, RectCapsule>): void {
+  const items: RescueItem[] = [];
+  for (const [nodeId, cap] of byNode) {
+    const fp = capsuleFootprint(cap);
+    if (fp) items.push({
+      id: nodeId,
+      memberCount: cap.centers.length,
+      box: fp.box,
+      margin: fp.margin,
+      translate: (dx, dy) => translateCapsule(cap, dx, dy),
+    });
+  }
+  rescueFootprints(items);
 }

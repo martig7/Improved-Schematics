@@ -24,7 +24,8 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
-import type { RectCapsule } from './layout/rectSeat';
+import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
+import { rescueRectCapsuleMap } from './layout/rectRescue';
 import { getStationDesign } from './stations';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
@@ -223,6 +224,46 @@ export interface RibbonGeometry {
   rectByNode?: Map<string, RectCapsule>;
 }
 
+// Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
+// RCAP are defined exactly as the placement geometry defines them so the seated
+// box matches the marker sizing; S = 3*RCAP/MARKER_SCALE = the single-stop box.
+const RECT_R0 = LINE_WIDTH * 0.7;
+const RECT_RCAP = RECT_R0 * MARKER_SCALE;
+const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
+
+// One gathered station's data the rect-capsule seating needs: its nodeId and the
+// marks whose pre-solve home/axis feed the solver. Matches the StMarks shape.
+export interface RectSeatStation {
+  nodeId: string;
+  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean }>;
+}
+
+/**
+ * Build the design-agnostic rectangle-capsule geometry for every multi-line
+ * station whose marks all carry a pre-solve home and run axis (the GEOMETRIC
+ * predicate; this never reads the active design). Each qualifying station is
+ * seated with rectSeat at the shared box/gap and converted to the serialization-
+ * safe RectCapsule; the whole map is then deconflicted across stations by the
+ * cross-station rescue. Stations are visited in their given order (the caller
+ * passes them in the deterministic placement order), so the map is stable.
+ */
+export function computeRectByNode(gathered: RectSeatStation[], box: number = RECT_BOX): Map<string, RectCapsule> {
+  const rectByNode = new Map<string, RectCapsule>();
+  for (const s of gathered) {
+    if (s.marks.length < 2) continue;
+    if (!s.marks.every((m) => m.home && m.axis !== undefined)) continue;
+    const members: RectMember[] = s.marks.map((m) => ({
+      lineId: m.lineId, home: m.home as Pixel, axis: m.axis as number,
+    }));
+    const seat = rectSeat(members, box, box * 0.14);
+    rectByNode.set(s.nodeId, rectSeatToCapsule(seat, box));
+  }
+  // Slide overlapping capsules apart at compute time so the cached geometry is
+  // already deconflicted (the former draw-time rescue, hoisted).
+  rescueRectCapsuleMap(rectByNode);
+  return rectByNode;
+}
+
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
   return paintRibbons(args, computeRibbonGeometry(args), sceneOut);
 }
@@ -242,6 +283,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // pass has finished mutating gathered[*].marks[*].pos — so the connectors
   // wired in paintRibbons read final dot positions, never pre-slide ones.
   const splitGroups = new Map<string, string[]>();
+  // Precomputed rectangle-capsule geometry per node, filled after the placement
+  // queue exhausts (marks' home/axis final) so the seating runs once here rather
+  // than on every repaint. Empty when there are no station groups; always present
+  // on the returned geometry.
+  let rectByNode = new Map<string, RectCapsule>();
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
@@ -2833,6 +2879,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [base, arr] of splitGroups) {
       if (arr.length < 2) splitGroups.delete(base);
     }
+    // Rectangle-capsule interchange geometry, seated + deconflicted once here.
+    // The placement queue has exhausted, so every mark's pre-solve home/axis is
+    // final. Design-agnostic: built from geometry, never from the active design;
+    // inert for non-rect designs. gathered is in the deterministic placement
+    // order, so the seated map is stable.
+    rectByNode = computeRectByNode(gathered);
   } else {
     for (const edge of layout.edges) {
       for (const [lineId, stop] of edge.stops) {
@@ -3016,7 +3068,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     miteredCount: mitered.size, connCount: connSeen.size, lineCount: dByLine.size,
   });
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
