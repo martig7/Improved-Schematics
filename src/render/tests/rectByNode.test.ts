@@ -48,6 +48,12 @@ test('computeRectByNode: geometric predicate skips singles and marks missing hom
       { lineId: 'A', home: [0, 0], axis: 0 },
       { lineId: 'B', home: [40, 0] },
     ] },
+    // a mega multi-line station -> excluded (drawn as box/pill, not a rect
+    // capsule), so it never gets a phantom rectByNode entry.
+    { nodeId: 'mega', marks: [
+      { lineId: 'A', home: [0, 0], axis: 0, mega: true },
+      { lineId: 'B', home: [40, 0], axis: 0, mega: true },
+    ] },
     // qualifies
     { nodeId: 'ok', marks: [
       { lineId: 'A', home: [0, 0], axis: 0 },
