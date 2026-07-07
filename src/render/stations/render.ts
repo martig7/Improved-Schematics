@@ -3,6 +3,7 @@ import type { Prim } from '../sceneIR';
 import type { RectCapsule } from '../layout/rectSeat';
 import type { StationDesign, StopScene } from './types';
 import { buildScene } from './placement';
+import { rescueRectCapsules } from '../layout/rectRescue';
 import { glyphsToSvg, glyphsToPrims, wrapMarker } from './serialize';
 
 export interface RenderStationsCtx {
@@ -43,6 +44,15 @@ export function renderStations(
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
     });
     built.push({ nodeId, marks, scene });
+  }
+
+  // Old-cache fallback: a pre-feature serialized geometry carries no rectByNode,
+  // so buildScene seated each rect capsule on the fly WITHOUT the cross-station
+  // rescue (which now runs at compute time). Restore the former draw-time rescue
+  // for that case only. When rectByNode is present (the normal path) the rescue
+  // already ran at compute, so this is skipped.
+  if (ctx.rectByNode === undefined && design.capsule === 'rectRows') {
+    rescueRectCapsules(built.map((b) => b.scene));
   }
 
   // Phase 2: paint each scene.
