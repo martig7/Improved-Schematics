@@ -994,13 +994,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     chain?: number,
     cornerAfter?: Pixel,
     mega?: boolean,
+    home?: Pixel,
+    axis?: number,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -1068,6 +1070,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         chain?: number;
         cornerAfter?: Pixel;
         mega?: boolean;
+        home?: Pixel;
+        axis?: number;
       }>;
     }
     const gathered: StMarks[] = [];
@@ -1323,6 +1327,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (s.marks.length === 1) {
         s.marks[0].chain = 0;
       } else if (s.marks.length > 1) {
+        // pre-solve home (lane position where the line passes the node), a
+        // geometric fact consumed by the rectangle capsule seating. The guard
+        // keeps the ORIGINAL position when a split unit is re-queued.
+        for (const mk of s.marks) if (mk.home === undefined) mk.home = [mk.pos[0], mk.pos[1]];
         const curves = s.marks.map((mk) =>
           buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT),
         );
@@ -1347,6 +1355,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // diff can't flip the grouping axis at a 22.5° boundary.
           return (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
         });
+        // octilinear run-axis per mark, a geometric fact for the rectangle
+        // capsule seating. The guard keeps the first axis a re-queued unit saw.
+        s.marks.forEach((mk, i) => { if (mk.axis === undefined) mk.axis = markAxis[i]; });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
           parent[x] === x ? x : (parent[x] = find(parent[x]));
@@ -2803,7 +2814,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis);
     }
 
     for (const s of gathered) {
