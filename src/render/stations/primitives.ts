@@ -78,6 +78,7 @@ export function capsuleGlyphs(capsule: Capsule, colors: { border: string; fill: 
   if (capsule.kind === 'none') return [];
   if (capsule.kind === 'box') return [rect(capsule.x, capsule.y, capsule.w, capsule.h, capsule.rx, { fill: colors.fill, stroke: colors.border, strokeWidth: 3 })];
   if (capsule.kind === 'ring') return [circle(capsule.cx, capsule.cy, capsule.r, { fill: colors.fill, stroke: colors.border, strokeWidth: 1.5 })];
+  if (capsule.kind === 'rectRows') return []; // painted by the rect design, not here
   const w = capsuleStrokeWidths(dotRadius);
   const d = pillPath(capsule.points, capsule.smooth);
   const p = (stroke: string, sw: number): Glyph => ({ kind: 'path', d, fill: 'none', stroke, strokeWidth: +sw.toFixed(1), lineCap: 'round', lineJoin: 'round' });

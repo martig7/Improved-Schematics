@@ -120,6 +120,12 @@ export interface StopMark {
   /** Rigid-row total fallback (spec v2 §3): when no feasible row configuration
    *  exists, the station renders as the mega box instead of a spine capsule. */
   mega?: boolean;
+  /** Rect seating inputs (design-agnostic, recorded in computeRibbonGeometry for
+   *  interchange marks): the pre-solve lane position ("home", where the line passes
+   *  the node) and its octilinear run-axis index (0=–, 1=/, 2=|, 3=\). Consumed by
+   *  the rectangle ("Tokyu") capsule seating at paint time. */
+  home?: Pixel;
+  axis?: number;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

@@ -23,7 +23,12 @@ export type Capsule =
   | { kind: 'none' }
   | { kind: 'pill'; points: Point[]; smooth: boolean }
   | { kind: 'box'; x: number; y: number; w: number; h: number; rx: number }
-  | { kind: 'ring'; cx: number; cy: number; r: number };
+  | { kind: 'ring'; cx: number; cy: number; r: number }
+  | { kind: 'rectRows';
+      box: number;                                   // box side length (world px)
+      groups: Array<{ x: number; y: number; w: number; h: number; rx: number }>; // one rounded-rect per aligned row
+      connectors: Array<{ points: Point[] }>;        // octilinear polyline (2 pts = 1 segment, 3 = one bend)
+    };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots
  *  to draw (empty for an opaque mega box). */
@@ -56,6 +61,9 @@ export interface StationDesign {
   id: string;
   name: string;
   blurb?: string;
+  /** Interchange capsule regime the design wants placement to produce. Default
+   *  'pill'. 'rectRows' triggers the upright-box rectangle seating. */
+  capsule?: 'pill' | 'rectRows';
   /** Paint one station into a draw list (capsule glyphs first, dots/bullets
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];
