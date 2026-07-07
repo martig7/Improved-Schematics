@@ -67,6 +67,13 @@ Comments describe **what the code does** and, in general terms, **why**.
 - Keep legitimate provenance: algorithm/paper references, a concise spec-file pointer,
   `@param`/`@returns`, and units.
 
+## Production UI copy
+
+Never add unnecessary text to production-facing designs. A title or label that **names**
+the control is good; explanatory sentences, hints, and reassurance ("applies instantly",
+"choose how X works") are fluff and must not ship. When in doubt, cut the sentence and
+keep the noun.
+
 ## Workflow & git
 
 - **Momentum with inline batched execution.** Use `AskUserQuestion` only for genuine scope
