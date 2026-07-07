@@ -53,10 +53,11 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const lines = marks.map(toLine);
 
   // Rectangle ("Tokyu") seating: a multi-line station uses its compute-time
-  // seated, cross-station-deconflicted rect capsule when one is cached. Seating is
-  // never done at draw time, so a cache miss falls through to the normal
-  // pill / mega / ring / none paths (degrading to per-line boxes). Single stops
-  // fall through to the none path below.
+  // seated, cross-station-deconflicted rect capsule when one is cached, mega
+  // interchanges included (they get a compact grid of numbered boxes rather than
+  // an opaque cover). Seating is never done at draw time, so a cache miss falls
+  // through to the normal pill / mega / ring / none paths. Single stops fall
+  // through to the none path below.
   const cachedRect = ctx.capsuleMode === 'rectRows' && isCapsule
     ? ctx.rectByNode?.get(nodeId)
     : undefined;

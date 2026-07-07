@@ -254,11 +254,12 @@ export interface RectPlacement {
 }
 
 /**
- * Build the design-agnostic rectangle-capsule geometry for every non-mega
- * multi-line station whose marks all carry a pre-solve home and run axis (the
- * GEOMETRIC predicate; this never reads the active design). Mega stations are
- * excluded so the seated set matches buildScene's rect gate exactly. Each
- * qualifying station is
+ * Build the design-agnostic rectangle-capsule geometry for every multi-line
+ * station whose marks all carry a pre-solve home and run axis (the GEOMETRIC
+ * predicate; this never reads the active design). Mega interchanges are included:
+ * in the Tokyu design their cached capsule is the drawn shape (a compact grid of
+ * numbered boxes), so seating them here is real, not a phantom, and non-rectRows
+ * designs ignore rectByNode entirely. Each qualifying station is
  * seated with rectSeat at the shared box/gap and converted to the serialization-
  * safe RectCapsule. Single Tokyu stops (one mark) contribute a box-sized
  * footprint at their final marker position. The whole set (interchange capsules
@@ -280,17 +281,13 @@ export function computeRectByNode(gathered: RectSeatStation[], box: number = REC
       continue;
     }
     if (s.marks.length < 2) continue;
-    // Match buildScene's rect gate exactly, including the mega exclusion. Mega
-    // stations are drawn as a box or a curve pill depending on the draw-time
-    // megaFallback option, which this design-agnostic compute must not read, so
-    // their cross-station deconfliction is not hoisted here. Without this guard a
-    // mega station would seat a phantom capsule (never painted) that also seats
-    // first in the biggest-first rescue and pushes real stops out of a footprint
-    // that is not its drawn shape. Megas are opaque and rare, so leaving their
-    // rescue at draw time (absent for the cached path) is an accepted minor
-    // deviation.
+    // Any multi-line station whose marks all carry a pre-solve home and run axis
+    // is seated, mega included. In the Tokyu (rectRows) design the cached capsule
+    // IS the drawn shape, so a mega interchange becomes a compact grid of numbered
+    // boxes (one per line) instead of an opaque cover, and its footprint is real,
+    // not a phantom. Non-rectRows designs never read rectByNode, so seating this
+    // extra data is inert for them.
     if (!s.marks.every((m) => m.home && m.axis !== undefined)) continue;
-    if (s.marks.some((m) => m.mega)) continue;
     const members: RectMember[] = s.marks.map((m) => ({
       lineId: m.lineId, home: m.home as Pixel, axis: m.axis as number,
     }));

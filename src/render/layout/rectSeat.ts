@@ -26,8 +26,10 @@
 // Search: for small member counts the set partitions are enumerable (Bell
 // numbers stay tiny), and per part the axis is chosen from {H, V}; box order and
 // row placement within a part are closed-form (sort by along-axis home, center on
-// the median home), so no continuous search is needed. Large hubs fall back to a
-// single best-axis row (the opaque mega box handles the truly huge ones upstream).
+// the median home), so no continuous search is needed. Large hubs skip the
+// enumeration and seat as a single near-square stacked-row grid (ceil(sqrt(n))
+// boxes per row, ceil(n/R) rows) so a many-line interchange reads as a compact
+// block of numbered boxes rather than one illegibly wide row.
 //
 // Fully deterministic: no Math.random / Date; every tie-break resolves by a fixed
 // index or lineId order, so offline output equals in-game output.
@@ -79,8 +81,8 @@ export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
   return { box, centers, groups, connectors };
 }
 
-// Above this member count the enumeration is skipped and a single best-axis row
-// is used; real interchanges below this, larger hubs fall back to the mega box.
+// Above this member count the set-partition enumeration is skipped and the hub is
+// seated as a stacked-row grid instead; at or below it, partitions are enumerated.
 const ENUM_MAX = 6;
 
 // Per overlapping-or-touching capsule-pair penalty. Large enough that any layout
@@ -214,6 +216,67 @@ function padRect(centers: Iterable<Point>, box: number, pad: number): { x0: numb
 }
 
 /**
+ * Seat a large hub's members as a near-square stacked-row grid. The members are
+ * ordered along their dominant home axis (the axis of larger home spread, tie ->
+ * horizontal) and cut into contiguous rows of R = ceil(sqrt(n)) boxes each, so
+ * there are ceil(n/R) rows. Row k packs its boxes edge-to-edge along the dominant
+ * axis and is offset by k * pitch on the cross axis, and the whole grid is
+ * centered on the members' mean home. This stacks the rows with a guaranteed full
+ * pitch of separation on the cross axis (so no two boxes overlap regardless of how
+ * the homes cluster) while keeping the footprint compact, rather than one
+ * illegibly wide row.
+ *
+ * Returns one Placed row per grid row (matching the enumerated path's shape), so
+ * the group rects and octilinear connectors are built by the shared downstream
+ * code. Fully deterministic: the sort tie-breaks by lineId, the chunk size and
+ * cross offsets are fixed, and slide uses sqrt-based distance.
+ */
+function gridRows(members: RectMember[], pitch: number): Placed[] {
+  const n = members.length;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let sumX = 0, sumY = 0;
+  for (const m of members) {
+    if (m.home[0] < minX) minX = m.home[0];
+    if (m.home[0] > maxX) maxX = m.home[0];
+    if (m.home[1] < minY) minY = m.home[1];
+    if (m.home[1] > maxY) maxY = m.home[1];
+    sumX += m.home[0];
+    sumY += m.home[1];
+  }
+  const horiz = (maxX - minX) >= (maxY - minY); // dominant axis, tie -> horizontal
+  const along = (m: RectMember) => (horiz ? m.home[0] : m.home[1]);
+  const ordered = [...members].sort(
+    (a, b) => along(a) - along(b) || (a.lineId < b.lineId ? -1 : a.lineId > b.lineId ? 1 : 0),
+  );
+  const R = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / R);
+  const meanAlong = horiz ? sumX / n : sumY / n;
+  const meanCross = horiz ? sumY / n : sumX / n;
+  // Cross-axis coordinate of row k, centered so the whole stack straddles the
+  // members' mean cross-home.
+  const crossOf = (k: number) => meanCross + (k - (rows - 1) / 2) * pitch;
+
+  const out: Placed[] = [];
+  for (let k = 0; k < rows; k++) {
+    const part = ordered.slice(k * R, (k + 1) * R);
+    const m = part.length;
+    const cross = crossOf(k);
+    const centers = new Map<string, Point>();
+    let total = 0, max = 0;
+    part.forEach((mem, i) => {
+      const a = meanAlong + (i - (m - 1) / 2) * pitch;
+      const c: Point = horiz ? [a, cross] : [cross, a];
+      centers.set(mem.lineId, c);
+      const slide = hyp(c[0] - mem.home[0], c[1] - mem.home[1]);
+      total += slide;
+      if (slide > max) max = slide;
+    });
+    out.push({ centers, total, max });
+  }
+  return out;
+}
+
+/**
  * Seat interchange members into upright-box rows joined by octilinear connectors.
  * `box` is the fixed box side length; `gap` is the edge-to-edge spacing within a
  * row (pitch = box + gap).
@@ -289,8 +352,16 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
       idx++;
     }
   } else {
-    // Large hub: one best-axis row (the mega box handles the huge cases upstream).
-    consider([members.map((_, i) => i)], 0);
+    // Large hub: a single stacked-row grid. Enumerating partitions is infeasible
+    // (Bell numbers explode), and one long row is illegibly wide, so the members
+    // are ordered along their dominant home axis and cut into contiguous rows of
+    // R = ceil(sqrt(n)) boxes, giving ceil(n/R) rows (a near square) stacked on the
+    // cross axis. A twelve-line hub becomes about three rows of four numbered boxes
+    // rather than one row of twelve. This is the sole candidate, so it is taken
+    // directly (no cost comparison), and its rows flow through the same group-rect
+    // and connector code below.
+    const rows = gridRows(members, pitch);
+    best = { parts: rows.map((_, i) => [i]), rows };
   }
 
   const chosen = best!;

@@ -120,3 +120,39 @@ test('three coincident homes -> capsules clear of overlap and touch', () => {
         `capsules ${i},${j} closer than capGap`,
       );
 });
+
+test('large hub (n > 6) -> compact stacked grid, not one long row', () => {
+  // Twelve members on a common line. Above the enumeration limit the solver
+  // chunks them into ceil(n/R) rows with R = ceil(sqrt(n)), so a 12-line hub is
+  // several stacked rows rather than one 12-box row.
+  const box = 30;
+  const n = 12;
+  const members = Array.from({ length: n }, (_, i) => ({
+    lineId: `L${String.fromCharCode(97 + i)}`,
+    home: [i * 40, 0] as [number, number],
+    axis: 0,
+  }));
+  const out = rectSeat(members, box, 4);
+  assert.equal(out.centers.size, n);
+  // More than one group (a grid), and fewer groups than a per-box split.
+  assert.ok(out.groups.length > 1, 'expected multiple stacked rows');
+  assert.ok(out.groups.length < n, 'expected rows, not one box per group');
+  // No two output boxes overlap.
+  const cs = [...out.centers.values()];
+  for (let i = 0; i < cs.length; i++)
+    for (let j = i + 1; j < cs.length; j++)
+      assert.ok(!boxesOverlap(cs[i], cs[j], box), `centers ${i},${j} overlap`);
+  // The grouped rows are more compact on the long axis than a single row of n.
+  let x0 = Infinity, x1 = -Infinity;
+  for (const g of out.groups) { x0 = Math.min(x0, g.x); x1 = Math.max(x1, g.x + g.w); }
+  const singleRowWidth = n * (box + 4);
+  assert.ok(x1 - x0 < singleRowWidth, 'grid should be narrower than one long row');
+});
+
+test('large hub grid is deterministic on repeat', () => {
+  const box = 30;
+  const members = Array.from({ length: 10 }, (_, i) => ({
+    lineId: `L${i}`, home: [i * 37, (i % 3) * 11] as [number, number], axis: (i % 4),
+  }));
+  assert.deepEqual(rectSeat(members, box, 4), rectSeat(members, box, 4));
+});
