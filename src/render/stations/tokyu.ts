@@ -33,18 +33,41 @@ function unitPerp(a: Point, b: Point): Point | null {
   return [-dy / len, dx / len];
 }
 
+/** Unit vector a -> b, or null when the two points coincide. sqrt, not hypot. */
+function unitVec(a: Point, b: Point): Point | null {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return null;
+  return [dx / len, dy / len];
+}
+
 /**
- * A single filled, tapered connector polygon as a closed path `d`. It is widest
- * where it meets each group capsule (the two endpoints, the sources) and narrows
- * at every interior waist vertex. A 2-point connector gets a synthesized
- * midpoint so it always has a waist. Half-widths are in world px.
+ * The two side chains (left, right) of a filled, tapered connector. The taper is
+ * widest where it meets each group capsule (the two endpoints, the sources) and
+ * narrows at every interior waist vertex. A 2-point connector gets a synthesized
+ * midpoint so it always has a waist. Both END vertices are pushed a short
+ * distance back INTO their capsules so the fill covers the capsule border strip
+ * at the junction and the neck reads as one shape with the capsule. Half-widths
+ * and the overlap are in world px.
  */
-function taperedConnectorPath(points: Point[], wideHalf: number, waistHalf: number): string | null {
+function taperedConnectorSides(
+  points: Point[],
+  wideHalf: number,
+  waistHalf: number,
+  overlap: number,
+): { left: Point[]; right: Point[] } | null {
   if (points.length < 2) return null;
   const v: Point[] = points.length === 2
     ? [points[0], [(points[0][0] + points[1][0]) / 2, (points[0][1] + points[1][1]) / 2], points[1]]
     : points.slice();
   const n = v.length;
+
+  // Extend the two end vertices a short way back into their capsules along the
+  // connector's own direction, so the taper fill laps over the capsule border.
+  const dirOut0 = unitVec(v[1], v[0]);          // points from the first waist toward the start
+  const dirOutN = unitVec(v[n - 2], v[n - 1]);  // points from the last waist toward the end
+  if (dirOut0) v[0] = [v[0][0] + dirOut0[0] * overlap, v[0][1] + dirOut0[1] * overlap];
+  if (dirOutN) v[n - 1] = [v[n - 1][0] + dirOutN[0] * overlap, v[n - 1][1] + dirOutN[1] * overlap];
 
   // Per-vertex outward perpendicular: an endpoint uses its single adjacent
   // segment; an interior vertex uses the normalized sum of its two neighbors'
@@ -69,11 +92,23 @@ function taperedConnectorPath(points: Point[], wideHalf: number, waistHalf: numb
   const half = (i: number): number => (i === 0 || i === n - 1 ? wideHalf : waistHalf);
   const left: Point[] = v.map((pt, i) => [pt[0] + half(i) * perp[i][0], pt[1] + half(i) * perp[i][1]]);
   const right: Point[] = v.map((pt, i) => [pt[0] - half(i) * perp[i][0], pt[1] - half(i) * perp[i][1]]);
+  return { left, right };
+}
 
+/** Closed fill `d` from the two side chains: down the left, back up the right. */
+function fillPath(left: Point[], right: Point[]): string {
+  const n = left.length;
   let d = 'M ' + f1(left[0][0]) + ' ' + f1(left[0][1]);
   for (let i = 1; i < n; i++) d += ' L ' + f1(left[i][0]) + ' ' + f1(left[i][1]);
   for (let i = n - 1; i >= 0; i--) d += ' L ' + f1(right[i][0]) + ' ' + f1(right[i][1]);
   return d + ' Z';
+}
+
+/** Open `d` tracing one side chain (no closing segment, no end cap). */
+function sidePath(chain: Point[]): string {
+  let d = 'M ' + f1(chain[0][0]) + ' ' + f1(chain[0][1]);
+  for (let i = 1; i < chain.length; i++) d += ' L ' + f1(chain[i][0]) + ' ' + f1(chain[i][1]);
+  return d;
 }
 
 /**
@@ -90,14 +125,22 @@ function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
   if (cap.kind === 'rectRows') {
     const s = cap.box;
     const border = +(s * 0.06).toFixed(2);
+    const overlap = s * 0.12;
     const g: Glyph[] = [];
-    // Connectors first (behind), then group capsules, then boxes on top: each
-    // tapered neck merges under the dark-gray capsules it joins.
-    for (const c of cap.connectors) {
-      const d = taperedConnectorPath(c.points, s * 0.42, s * 0.26);
-      if (d) g.push({ kind: 'path', d, fill: CAP_FILL, stroke: CAP_BORDER, strokeWidth: border, lineCap: 'round', lineJoin: 'round' });
-    }
+    // Draw order: group capsules first, then each connector's fill (covering the
+    // capsule border under the neck), then the connector side outlines (flowing
+    // into the capsule outline), then the route boxes on top. So the neck and the
+    // capsule read as one shape with no seam line at the junction.
     for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: CAP_FILL, stroke: CAP_BORDER, strokeWidth: border }));
+    const sides = cap.connectors.map((c) => taperedConnectorSides(c.points, s * 0.42, s * 0.26, overlap));
+    for (const sd of sides) {
+      if (sd) g.push({ kind: 'path', d: fillPath(sd.left, sd.right), fill: CAP_FILL, stroke: 'none', strokeWidth: 0, lineCap: 'round', lineJoin: 'round' });
+    }
+    for (const sd of sides) {
+      if (!sd) continue;
+      g.push({ kind: 'path', d: sidePath(sd.left), fill: 'none', stroke: CAP_BORDER, strokeWidth: border, lineCap: 'round', lineJoin: 'round' });
+      g.push({ kind: 'path', d: sidePath(sd.right), fill: 'none', stroke: CAP_BORDER, strokeWidth: border, lineCap: 'round', lineJoin: 'round' });
+    }
     for (const ln of scene.lines) g.push(...square(ln.pos[0], ln.pos[1], s, ln, ctx.showBullets));
     return g;
   }

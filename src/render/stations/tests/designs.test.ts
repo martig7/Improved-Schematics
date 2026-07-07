@@ -99,7 +99,7 @@ test('tokyu interchange: a rectRows capsule renders a dark-gray group rect + one
   assert.ok(texts.some((t) => t.text === '09'));
 });
 
-test('tokyu interchange: a connector emits a closed, filled tapered path (dark-gray fill + black border), drawn behind the capsules', () => {
+test('tokyu interchange: a connector emits a closed fill on top of the capsules plus two open side outlines, no closed stroked connector', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [
@@ -120,20 +120,40 @@ test('tokyu interchange: a connector emits a closed, filled tapered path (dark-g
   };
   const gs = tokyu.paint(sc, ctx);
   const paths = gs.filter((g) => g.kind === 'path') as Array<{ d: string; fill: string; stroke: string }>;
-  assert.equal(paths.length, 1); // one connector -> one tapered polygon
-  const p = paths[0];
-  assert.equal(p.fill, '#6f6f73'); // filled, not 'none'
-  assert.notEqual(p.fill, 'none');
-  assert.equal(p.stroke, '#111111');
-  assert.ok(p.d.startsWith('M '));
-  assert.ok(p.d.trimEnd().endsWith('Z')); // closed
+  // One connector -> one closed fill path + two open side outlines.
+  assert.equal(paths.length, 3);
+
+  const fills = paths.filter((p) => p.fill === '#6f6f73');
+  assert.equal(fills.length, 1); // exactly one filled path
+  const fill = fills[0];
+  assert.equal(fill.stroke, 'none'); // fill carries no border
+  assert.ok(fill.d.startsWith('M '));
+  assert.ok(fill.d.trimEnd().endsWith('Z')); // closed
   // A 2-point connector is widened to 3 vertices (a, mid, b): 3 left + 3 right
   // = 6 line-to targets after the initial M.
-  assert.equal((p.d.match(/L /g) || []).length, 5);
-  // Connector is drawn before (behind) the group capsules.
-  const firstPath = gs.findIndex((g) => g.kind === 'path');
-  const firstRect = gs.findIndex((g) => g.kind === 'rect');
-  assert.ok(firstPath >= 0 && firstPath < firstRect);
+  assert.equal((fill.d.match(/L /g) || []).length, 5);
+
+  const sides = paths.filter((p) => p.fill === 'none');
+  assert.equal(sides.length, 2); // left + right open outlines
+  for (const side of sides) {
+    assert.equal(side.stroke, '#111111'); // CAP_BORDER
+    assert.ok(side.d.startsWith('M '));
+    assert.ok(!side.d.trimEnd().endsWith('Z')); // open, no closing segment
+    // Each side traces 3 vertices: initial M + 2 line-tos.
+    assert.equal((side.d.match(/L /g) || []).length, 2);
+  }
+
+  // No closed path is stroked with the border color (the old seam).
+  assert.ok(!paths.some((p) => p.stroke === '#111111' && p.d.trimEnd().endsWith('Z')));
+
+  // The connector fill is drawn AFTER the group capsule rects so it covers the
+  // capsule border at the junction; the route boxes are drawn last.
+  const capRects = gs.filter((g) => g.kind === 'rect' && (g as { fill: string }).fill === '#6f6f73');
+  const lastCapRectIdx = gs.lastIndexOf(capRects[capRects.length - 1]);
+  const fillIdx = gs.indexOf(fill);
+  assert.ok(fillIdx > lastCapRectIdx, 'connector fill drawn after the group capsules');
+  const lastRectIdx = gs.map((g, i) => (g.kind === 'rect' ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+  assert.ok(lastRectIdx > fillIdx, 'route boxes drawn on top of the connector');
 });
 
 test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded rect', () => {
