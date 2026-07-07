@@ -522,7 +522,7 @@ export function buildTransitGraph(
     // NOTHING (a blank dot), not the route's UUID. Lines are matched by id, so
     // the label is display-only and may safely be empty. The id is canonicalized
     // above so same-bullet+colour routes (loop directions) share one line.
-    const line: LineRef = { id: canonLineId.get(route.id) ?? route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color) };
+    const line: LineRef = { id: canonLineId.get(route.id) ?? route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color), textColor: route.textColor ? normalizeColor(route.textColor) : undefined };
     const traversal: TraversalStep[] = [];
 
     for (let i = 0; i < visits.length - 1; i++) {

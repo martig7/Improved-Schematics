@@ -25,6 +25,9 @@ export interface LineRef {
   id: string;
   label: string;
   color: string;
+  /** Route text color (hex) for the bullet, when the game provides one. Used by
+   *  the 'solid' dot style; falls back to an auto-contrast ink when absent. */
+  textColor?: string;
 }
 
 export interface EdgeStop {
@@ -93,6 +96,9 @@ export interface Visit {
 export interface StopMark {
   lineId: string;
   color: string;
+  /** Route text color (hex) for the bullet, when the game provides one. Used by
+   *  the 'solid' dot style; falls back to auto-contrast ink when absent. */
+  textColor?: string;
   pos: Pixel;
   /** Line display name (route bullet) printed inside the stop dot. */
   name?: string;
