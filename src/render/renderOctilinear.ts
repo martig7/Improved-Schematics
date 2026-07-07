@@ -3195,7 +3195,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode },
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode: geom.rectByNode, tokyuStopPos: geom.tokyuStopPos },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;

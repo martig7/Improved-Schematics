@@ -7,7 +7,7 @@
 import type { Pixel, StopMark } from '../layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
-import { rectSeat } from '../layout/rectSeat';
+import { rectSeat, type RectCapsule } from '../layout/rectSeat';
 import { debugMegaBox } from '../debug/stops.debug';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
@@ -22,6 +22,13 @@ export interface PlacementCtx {
   /** Interchange capsule regime the active design wants. 'rectRows' triggers the
    *  upright-box rectangle seating for multi-line, non-mega stations. */
   capsuleMode?: 'pill' | 'rectRows';
+  /** Precomputed rectangle-capsule geometry per node (seated + cross-station
+   *  deconflicted at compute time). Read only in the 'rectRows' branch; when a
+   *  node has an entry the scene is built from it with no draw-time seating. */
+  rectByNode?: Map<string, RectCapsule>;
+  /** Precomputed rescued marker position of each single Tokyu stop. Read only in
+   *  the 'rectRows' branch; when set for a single stop the box is placed there. */
+  tokyuStopPos?: Map<string, [number, number]>;
 }
 
 const toLine = (mk: StopMark): StopLine => ({
@@ -51,6 +58,22 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   if (ctx.capsuleMode === 'rectRows' && isCapsule && !marks.some((m) => m.mega)
       && marks.every((m) => m.home && m.axis !== undefined)) {
     const S = 3 * RCAP / MARKER_SCALE;   // box side = single-stop box (matches the rect paint)
+    // Prefer the compute-time seated, cross-station-deconflicted capsule. It is
+    // built from the same marks with the same box/gap, so the scene matches the
+    // former draw-time seat; the rescue already ran at compute.
+    const cached = ctx.rectByNode?.get(nodeId);
+    if (cached) {
+      const byLine = new Map(cached.centers.map((c) => [c.lineId, [c.x, c.y] as Point]));
+      const rlines = lines.map((ln) => ({ ...ln, pos: byLine.get(ln.lineId) ?? ln.pos }));
+      let cx = 0, cy = 0;
+      for (const c of cached.centers) { cx += c.x; cy += c.y; }
+      const n = cached.centers.length || 1;
+      const groups = cached.groups.map((g) => ({ ...g }));
+      const connectors = cached.connectors.map((cn) => ({ points: cn.points.map((p): Point => [p[0], p[1]]) }));
+      return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: cached.box, groups, connectors }, anchor: [cx / n, cy / n], dotRadius };
+    }
+    // Fallback for geometry cached before rectByNode existed: seat on the fly (the
+    // former draw-time path). No cross-station rescue here; old caches only.
     const members = marks.map((m) => ({ lineId: m.lineId, home: m.home as Point, axis: m.axis as number }));
     const seat = rectSeat(members, S, S * 0.14);
     const rlines = lines.map((ln) => ({ ...ln, pos: (seat.centers.get(ln.lineId) ?? ln.pos) as Point }));
@@ -72,7 +95,14 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const a = marks[ai].pos;
 
   if (!isCapsule) {
-    return { nodeId, lines, capsule: { kind: 'none' }, anchor: [a[0], a[1]], dotRadius };
+    // A single Tokyu stop uses its compute-time rescued position (deconflicted
+    // against interchange capsules and other singles) when one is cached; the box
+    // draws at the line's pos, so override both. Other designs never reach here
+    // with a rectRows capsuleMode, so their singles keep the raw mark position.
+    const rescued = ctx.capsuleMode === 'rectRows' ? ctx.tokyuStopPos?.get(nodeId) : undefined;
+    const p: Point = rescued ? [rescued[0], rescued[1]] : [a[0], a[1]];
+    const slines = rescued ? lines.map((ln) => ({ ...ln, pos: [p[0], p[1]] as Point })) : lines;
+    return { nodeId, lines: slines, capsule: { kind: 'none' }, anchor: p, dotRadius };
   }
 
   const members = ctx.members?.get(nodeId);
