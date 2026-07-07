@@ -15,6 +15,7 @@ export interface StopLine {
   textColor: string;  // route text color (hex), or '' when the route has none
   pos: Point;         // solved dot center, world px
   chain: number;      // order within the capsule spine
+  seq?: number;       // station number (1-based stop index along the line), when known
 }
 
 /** Design-agnostic capsule (interchange) geometry, from placement. */

@@ -425,7 +425,7 @@ export function buildTransitGraph(
   },
 ): TransitGraph {
   if (groups.length === 0) {
-    return { nodes: new Map(), edges: [], adj: new Map(), lineTraversals: new Map() };
+    return { nodes: new Map(), edges: [], adj: new Map(), lineTraversals: new Map(), numberByGroup: new Map() };
   }
 
   let { stNodeToGroup, trackToGroup } = buildGroupMaps(stations, groups);
@@ -514,6 +514,8 @@ export function buildTransitGraph(
   const edgeMap = new Map<string, GraphEdge>();
   let edgeN = 0;
   const lineTraversals = new Map<string, TraversalStep[]>();
+  // Per line: the ordered stop groups of its longest route, for intake numbering.
+  const lineStopOrder = new Map<string, string[]>();
 
   for (const route of routes) {
     if (route.tempParentId) continue;
@@ -523,6 +525,11 @@ export function buildTransitGraph(
     // the label is display-only and may safely be empty. The id is canonicalized
     // above so same-bullet+colour routes (loop directions) share one line.
     const line: LineRef = { id: canonLineId.get(route.id) ?? route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color), textColor: route.textColor ? normalizeColor(route.textColor) : undefined };
+    // Station numbers = the raw route stop order at intake; keep the longest
+    // route per line so branches / loop directions still cover every stop.
+    const stopGroups = visits.filter((v) => v.isStop && v.groupId).map((v) => v.groupId as string);
+    const prevStops = lineStopOrder.get(line.id);
+    if (!prevStops || stopGroups.length > prevStops.length) lineStopOrder.set(line.id, stopGroups);
     const traversal: TraversalStep[] = [];
 
     for (let i = 0; i < visits.length - 1; i++) {
@@ -598,5 +605,14 @@ export function buildTransitGraph(
     }
   }
 
-  return { nodes, edges, adj, lineTraversals };
+  const numberByGroup = new Map<string, number>();
+  for (const [lineId, stops] of lineStopOrder) {
+    let i = 0;
+    for (const g of stops) {
+      const k = lineId + '|' + g;
+      if (!numberByGroup.has(k)) numberByGroup.set(k, ++i); // first occurrence wins (loop lines)
+    }
+  }
+
+  return { nodes, edges, adj, lineTraversals, numberByGroup };
 }

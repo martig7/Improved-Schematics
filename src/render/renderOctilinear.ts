@@ -1000,7 +1000,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, chain, cornerAfter, mega,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;

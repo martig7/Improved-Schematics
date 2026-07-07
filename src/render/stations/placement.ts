@@ -27,6 +27,7 @@ const toLine = (mk: StopMark): StopLine => ({
   textColor: mk.textColor ?? '',
   pos: [mk.pos[0], mk.pos[1]],
   chain: mk.chain ?? 0,
+  seq: mk.seq,
 });
 
 const median = (vals: number[]): number => {

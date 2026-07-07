@@ -57,6 +57,9 @@ export interface TransitGraph {
   edges: GraphEdge[];
   adj: Map<string, string[]>; // nodeId -> edgeIds
   lineTraversals: Map<string, TraversalStep[]>; // lineId -> ordered edge steps
+  /** Per (lineId|groupId): the 1-based station number along the line, from the
+   *  raw route stop order at intake. */
+  numberByGroup: Map<string, number>;
 }
 
 export interface LayoutNode {
@@ -81,6 +84,9 @@ export interface Layout {
   nodes: Map<string, LayoutNode>;
   edges: LayoutEdge[];
   lineTraversals: Map<string, TraversalStep[]>;
+  /** Per (lineId|nodeId): the station number to render at that node, resolved
+   *  from the intake numbers via the support graph's per-group stop-node map. */
+  nodeSeq?: Map<string, number>;
 }
 
 /** Walk result element from walkRouteVisits. */
@@ -99,6 +105,9 @@ export interface StopMark {
   /** Route text color (hex) for the bullet, when the game provides one. Used by
    *  the 'solid' dot style; falls back to auto-contrast ink when absent. */
   textColor?: string;
+  /** Station number: 1-based index of this stop along its line, when derivable.
+   *  Used by the numbered ("Tokyu") design. */
+  seq?: number;
   pos: Pixel;
   /** Line display name (route bullet) printed inside the stop dot. */
   name?: string;

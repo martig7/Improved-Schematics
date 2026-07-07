@@ -34,6 +34,7 @@ import { LINE_WIDTH, LINE_GAP } from './constants';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
+import { nodeSeqFromSupport } from './layout/stopSeq';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
 import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
@@ -392,6 +393,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   };
   const h = buildSupportGraph(graph, groups, topoParams);
   const { layout, nodePx } = supportToLayout(h);
+  layout.nodeSeq = nodeSeqFromSupport(h, graph.numberByGroup);
   orderLines(layout);
 
   // Render geography through the real projection (the support graph carries no
@@ -1149,6 +1151,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // with octi's grid placement and edge paths with its routed octilinear
   // polylines. Each layout edge already carries the union of merged line ids.
   const { layout, nodePx } = supportToLayout(supportM);
+  layout.nodeSeq = nodeSeqFromSupport(supportM, graph.numberByGroup);
   for (const n of layout.nodes.values()) {
     const placed = image.placement.get(n.id);
     if (placed) {
