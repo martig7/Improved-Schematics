@@ -70,7 +70,7 @@ test('tokyu: omits the number when seq is absent, and the bullet when showBullet
   assert.ok(!(gsNoBullet.filter((g) => g.kind === 'text') as Array<{ text: string }>).some((t) => t.text === 'TY'));
 });
 
-test('tokyu interchange: a rectRows capsule renders a group rect + one numbered box per line', () => {
+test('tokyu interchange: a rectRows capsule renders a dark-gray group rect + one numbered box per line', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [
@@ -88,13 +88,55 @@ test('tokyu interchange: a rectRows capsule renders a group rect + one numbered 
   };
   const gs = tokyu.paint(sc, ctx);
   // 1 group capsule rect + one box per line = 3 rects
-  assert.equal(gs.filter((g) => g.kind === 'rect').length, 3);
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ w: number; fill: string; stroke: string }>;
+  assert.equal(rects.length, 3);
+  // The group capsule is the dark-gray rect with the black border.
+  const cap = rects.find((r) => r.fill === '#6f6f73');
+  assert.ok(cap, 'group capsule uses CAP_FILL');
+  assert.equal(cap!.stroke, '#111111');
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
   assert.ok(texts.some((t) => t.text === '05'));
   assert.ok(texts.some((t) => t.text === '09'));
 });
 
-test('tokyu: a box (mega-fallback) capsule renders the opaque rounded rect', () => {
+test('tokyu interchange: a connector emits a closed, filled tapered path (dark-gray fill + black border), drawn behind the capsules', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#e10f2b', bullet: 'A', textColor: '#ffffff', pos: [0, 0], chain: 0, seq: 5 },
+      { lineId: 'L2', color: '#0067c0', bullet: 'D', textColor: '#ffffff', pos: [0, 60], chain: 1, seq: 9 },
+    ],
+    capsule: {
+      kind: 'rectRows',
+      box: 30,
+      groups: [
+        { x: -20, y: -20, w: 40, h: 40, rx: 6 },
+        { x: -20, y: 40, w: 40, h: 40, rx: 6 },
+      ],
+      connectors: [{ points: [[0, 0], [0, 60]] }],
+    },
+    anchor: [0, 30],
+    dotRadius: 6,
+  };
+  const gs = tokyu.paint(sc, ctx);
+  const paths = gs.filter((g) => g.kind === 'path') as Array<{ d: string; fill: string; stroke: string }>;
+  assert.equal(paths.length, 1); // one connector -> one tapered polygon
+  const p = paths[0];
+  assert.equal(p.fill, '#6f6f73'); // filled, not 'none'
+  assert.notEqual(p.fill, 'none');
+  assert.equal(p.stroke, '#111111');
+  assert.ok(p.d.startsWith('M '));
+  assert.ok(p.d.trimEnd().endsWith('Z')); // closed
+  // A 2-point connector is widened to 3 vertices (a, mid, b): 3 left + 3 right
+  // = 6 line-to targets after the initial M.
+  assert.equal((p.d.match(/L /g) || []).length, 5);
+  // Connector is drawn before (behind) the group capsules.
+  const firstPath = gs.findIndex((g) => g.kind === 'path');
+  const firstRect = gs.findIndex((g) => g.kind === 'rect');
+  assert.ok(firstPath >= 0 && firstPath < firstRect);
+});
+
+test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded rect', () => {
   const sc: StopScene = {
     nodeId: 'n',
     lines: [],
@@ -106,6 +148,6 @@ test('tokyu: a box (mega-fallback) capsule renders the opaque rounded rect', () 
   const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; w: number; fill: string; stroke: string }>;
   assert.equal(rects.length, 1);
   assert.equal(rects[0].w, 40);
-  assert.equal(rects[0].fill, '#ffffff');
-  assert.equal(rects[0].stroke, '#c9c9c9');
+  assert.equal(rects[0].fill, '#6f6f73');
+  assert.equal(rects[0].stroke, '#111111');
 });
