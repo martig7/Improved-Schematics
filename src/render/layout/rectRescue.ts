@@ -244,29 +244,6 @@ function translateCapsule(cap: RectCapsule, dx: number, dy: number): void {
   }
 }
 
-/**
- * Compute-time equivalent of rescueRectCapsules operating on cached RectCapsule
- * geometry. Slides overlapping capsules apart with the SAME biggest-first order
- * (member count then nodeId), footprint (group-rect union + per-box margin), and
- * cheaper-axis push as the scene path, mutating each capsule in `byNode` in
- * place. Runs unconditionally at compute time; the data is inert for non-Tokyu
- * designs. Fully deterministic.
- */
-export function rescueRectCapsuleMap(byNode: Map<string, RectCapsule>): void {
-  const items: RescueItem[] = [];
-  for (const [nodeId, cap] of byNode) {
-    const fp = capsuleFootprint(cap);
-    if (fp) items.push({
-      id: nodeId,
-      memberCount: cap.centers.length,
-      box: fp.box,
-      margin: fp.margin,
-      translate: (dx, dy) => translateCapsule(cap, dx, dy),
-    });
-  }
-  rescueFootprints(items);
-}
-
 // A single (non-interchange) Tokyu stop feeding the compute-time rescue: its
 // nodeId, marker position, and the single-stop box side the paint draws (side
 // 3*R0, so the footprint here equals the box the design renders at mark.pos).
