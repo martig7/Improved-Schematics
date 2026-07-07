@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { classic } from '../classic';
 import { nycSolid } from '../nycSolid';
 import { nycMap } from '../nycMap';
+import { tokyu } from '../tokyu';
 import type { StopScene } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -49,4 +50,41 @@ test('nycMap on-map capsule: fixed white pill / black border in BOTH themes; sin
 test('showBullets false omits bullet text', () => {
   const gs = classic.paint(single(), { dark: false, showBullets: false });
   assert.ok(!gs.some((g) => g.kind === 'text'));
+});
+
+test('tokyu: rounded square in the line color with bullet + zero-padded number', () => {
+  const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#e10f2b', bullet: 'TY', textColor: '#ffffff', pos: [10, 10], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 12 };
+  const gs = tokyu.paint(sc, ctx);
+  const r = gs.find((g) => g.kind === 'rect') as { fill: string };
+  assert.equal(r.fill, '#e10f2b');
+  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
+  assert.ok(texts.some((t) => t.text === 'TY'));
+  assert.ok(texts.some((t) => t.text === '01')); // seq 1 -> '01'
+});
+
+test('tokyu: omits the number when seq is absent, and the bullet when showBullets is false', () => {
+  const noSeq: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#e10f2b', bullet: 'TY', textColor: '', pos: [10, 10], chain: 0 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 12 };
+  const gsNoSeq = tokyu.paint(noSeq, ctx);
+  assert.ok(!(gsNoSeq.filter((g) => g.kind === 'text') as Array<{ text: string }>).some((t) => /\d/.test(t.text)));
+  const gsNoBullet = tokyu.paint(noSeq, { dark: false, showBullets: false });
+  assert.ok(!(gsNoBullet.filter((g) => g.kind === 'text') as Array<{ text: string }>).some((t) => t.text === 'TY'));
+});
+
+test('tokyu interchange: a capsule renders a grouping rect + one numbered box per line', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#e10f2b', bullet: 'A', textColor: '#ffffff', pos: [0, 0], chain: 0, seq: 5 },
+      { lineId: 'L2', color: '#0067c0', bullet: 'D', textColor: '#ffffff', pos: [4, 0], chain: 1, seq: 9 },
+    ],
+    capsule: { kind: 'pill', points: [[0, 0], [4, 0]], smooth: false },
+    anchor: [2, 0],
+    dotRadius: 6,
+  };
+  const gs = tokyu.paint(sc, ctx);
+  // 1 grouping capsule rect + one fill rect per line = 3 rects
+  assert.equal(gs.filter((g) => g.kind === 'rect').length, 3);
+  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
+  assert.ok(texts.some((t) => t.text === '05'));
+  assert.ok(texts.some((t) => t.text === '09'));
 });

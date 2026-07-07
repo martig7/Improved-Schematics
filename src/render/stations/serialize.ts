@@ -73,7 +73,7 @@ export function wrapMarker(anchor: [number, number], nodeId: string, lineIds: st
 function syntheticSingle(ex: ExampleStation): StopScene {
   return {
     nodeId: 'preview',
-    lines: [{ lineId: 'L', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [22, 22], chain: 0 }],
+    lines: [{ lineId: 'L', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [22, 22], chain: 0, seq: 1 }],
     capsule: { kind: 'none' },
     anchor: [22, 22],
     dotRadius: 12,
@@ -85,8 +85,8 @@ function syntheticInterchange(ex: ExampleStation): StopScene {
   return {
     nodeId: 'preview',
     lines: [
-      { lineId: 'L1', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [12, 22], chain: 0 },
-      { lineId: 'L2', color: ex.color, bullet: second, textColor: ex.textColor, pos: [32, 22], chain: 1 },
+      { lineId: 'L1', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [12, 22], chain: 0, seq: 1 },
+      { lineId: 'L2', color: ex.color, bullet: second, textColor: ex.textColor, pos: [32, 22], chain: 1, seq: 2 },
     ],
     capsule: { kind: 'pill', points: [[12, 22], [32, 22]], smooth: false },
     anchor: [22, 22],

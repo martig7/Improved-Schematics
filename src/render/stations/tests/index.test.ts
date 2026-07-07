@@ -5,7 +5,7 @@ import { renderStations } from '../render';
 import type { StopMark, Pixel } from '../../layout/types';
 
 test('registry has classic, nyc-solid, nyc-map; default classic; fallback', () => {
-  for (const id of ['classic', 'nyc-solid', 'nyc-map']) assert.ok(STATION_DESIGNS.some((d) => d.id === id));
+  for (const id of ['classic', 'nyc-solid', 'nyc-map', 'tokyu']) assert.ok(STATION_DESIGNS.some((d) => d.id === id));
   assert.equal(DEFAULT_STATION_DESIGN, 'classic');
   assert.equal(getStationDesign('classic').id, 'classic');
   assert.equal(getStationDesign('nope').id, 'classic');
