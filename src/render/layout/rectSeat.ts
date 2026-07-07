@@ -12,11 +12,12 @@
 //
 // Objective (minimized): the sum of per-member slide (world-px distance from a
 // member's home to its placed box center) plus a per-extra-row penalty, plus a
-// hard penalty per overlapping box pair so no two boxes ever stack. A single
-// packed row (pitch = box + gap) is always non-overlapping, so a non-overlapping
-// layout always exists and any overlap-free option beats any overlapping one. A
-// separate row plus connector is preferred exactly when forcing its members into
-// one shared row would cost more slide than the penalty. The penalty
+// hard penalty per pair of DIFFERENT groups whose padded capsule rects overlap or
+// touch, so no two drawn capsules ever kiss. A single packed row (pitch =
+// box + gap) is one capsule with no pair to test, so a touch-free layout always
+// exists and any touch-free option beats any touching one. A separate row plus
+// connector is preferred exactly when forcing its members into one shared row
+// would cost more slide than the penalty. The penalty
 //   K = 0.5 * maxSlideForcedRow
 // where maxSlideForcedRow is the largest single-member slide incurred by forcing
 // ALL members into one packed row (the worse of the two single-axis layouts).
@@ -54,26 +55,38 @@ export interface RectSeatOut {
 // is used; real interchanges below this, larger hubs fall back to the mega box.
 const ENUM_MAX = 6;
 
-// Per overlapping-box-pair penalty. Large enough that any layout with a
-// non-overlapping alternative always wins on the objective; a single packed row
-// is always such an alternative, so coincident or convergent homes spread into
-// one legible row instead of stacking into overlapping singleton boxes.
+// Per overlapping-or-touching capsule-pair penalty. Large enough that any layout
+// with a clear-of-touch alternative always wins on the objective; a single packed
+// row is always such an alternative (its members share ONE capsule, so there is no
+// pair to test), so coincident or convergent homes spread into one legible row
+// instead of splitting into singleton capsules whose padded rects would touch.
 const OVERLAP_PEN = 1e6;
 
+// Minimum clear gap required between the padded rects of two DIFFERENT groups.
+// Two capsules closer than this along both axes count as touching and are
+// penalized so the solver prefers merging them into one row over a split whose
+// capsules kiss at the corner.
+const CAP_GAP_FRAC = 0.12;
+
 /**
- * Count pairs of upright boxes (fixed side `box`) whose footprints overlap.
- * Two axis-aligned boxes centered at c1,c2 overlap iff they overlap on BOTH
- * axes: abs(dx) < box - eps and abs(dy) < box - eps. Deterministic O(n^2) scan
- * over a small n (enumerated regime), no floating tie sensitivity beyond eps.
+ * Count pairs of DIFFERENT groups whose padded capsule rects overlap or sit
+ * within `capGap` of each other. Each group's rect is the rendered capsule rect
+ * (bbox of its box centers expanded by box/2 + pad); two rects "touch" when they
+ * intersect after each is grown by capGap/2, i.e. their AABBs are within capGap
+ * on both axes. Deterministic O(g^2) scan over the small group count.
  */
-function overlapPairs(centers: Point[], box: number): number {
+function capsuleTouchPairs(rects: Array<{ x0: number; y0: number; x1: number; y1: number }>, capGap: number): number {
   const eps = 1e-6;
   let count = 0;
-  for (let i = 0; i < centers.length; i++) {
-    for (let j = i + 1; j < centers.length; j++) {
-      const dx = Math.abs(centers[i][0] - centers[j][0]);
-      const dy = Math.abs(centers[i][1] - centers[j][1]);
-      if (dx < box - eps && dy < box - eps) count++;
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      const touch =
+        a.x0 - capGap < b.x1 - eps &&
+        b.x0 - capGap < a.x1 - eps &&
+        a.y0 - capGap < b.y1 - eps &&
+        b.y0 - capGap < a.y1 - eps;
+      if (touch) count++;
     }
   }
   return count;
@@ -154,8 +167,13 @@ function* setPartitions(n: number): Generator<number[][]> {
   yield* rec(0, []);
 }
 
-/** Axis-aligned bounding rect of a set of box centers (box side = `box`). */
-function rowRect(centers: Iterable<Point>, box: number): { x0: number; y0: number; x1: number; y1: number } {
+/**
+ * Rendered capsule rect for a group: the bbox of its box centers expanded by
+ * box/2 + pad on every side. This is exactly the rect drawn as the group's
+ * rounded rectangle and used for connector attachment, so measuring capsule
+ * overlap against this rect measures overlap against the drawn capsule.
+ */
+function padRect(centers: Iterable<Point>, box: number, pad: number): { x0: number; y0: number; x1: number; y1: number } {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const c of centers) {
     if (c[0] < x0) x0 = c[0];
@@ -163,7 +181,7 @@ function rowRect(centers: Iterable<Point>, box: number): { x0: number; y0: numbe
     if (c[1] < y0) y0 = c[1];
     if (c[1] > y1) y1 = c[1];
   }
-  const h = box / 2;
+  const h = box / 2 + pad;
   return { x0: x0 - h, y0: y0 - h, x1: x1 + h, y1: y1 + h };
 }
 
@@ -176,6 +194,8 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
   const pitch = box + gap;
   const pad = box * 0.16;
   const rx = (box + 2 * pad) * 0.16;
+  // Minimum clear gap two split capsules must keep between their padded rects.
+  const capGap = box * CAP_GAP_FRAC;
 
   // Trivial cases: 0 or 1 member is one row, no connector.
   if (members.length <= 1) {
@@ -213,11 +233,14 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
   const consider = (parts: number[][], idx: number) => {
     const rows = parts.map((g) => bestRow(g.map((i) => members[i]), pitch));
     const slide = rows.reduce((s, r) => s + r.total, 0);
-    // Every placed box center across all rows; overlapping pairs are penalized
-    // hard so stacked (coincident-home) singleton boxes never win.
-    const allCenters: Point[] = [];
-    for (const r of rows) for (const c of r.centers.values()) allCenters.push(c);
-    const cost = slide + (parts.length - 1) * K + OVERLAP_PEN * overlapPairs(allCenters, box);
+    // One padded capsule rect per group (exactly the rendered rect); pairs of
+    // DIFFERENT groups whose capsules overlap or sit within capGap are penalized
+    // hard so a split whose capsules would touch never beats merging them into
+    // one row. Boxes packed edge-to-edge within a row share ONE capsule, so there
+    // is no intra-group pair to test, and group-rect separation implies the boxes
+    // themselves are separated too.
+    const capRects = rows.map((r) => padRect(r.centers.values(), box, pad));
+    const cost = slide + (parts.length - 1) * K + OVERLAP_PEN * capsuleTouchPairs(capRects, capGap);
     const better =
       cost < bestCost - 1e-9 ||
       (Math.abs(cost - bestCost) <= 1e-9 &&
@@ -250,9 +273,9 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
   const rects: Rect[] = [];
   chosen.rows.forEach((row) => {
     for (const [id, c] of row.centers) centers.set(id, c);
-    const bb = rowRect(row.centers.values(), box);
-    const gx = bb.x0 - pad, gy = bb.y0 - pad;
-    const gw = bb.x1 - bb.x0 + 2 * pad, gh = bb.y1 - bb.y0 + 2 * pad;
+    const bb = padRect(row.centers.values(), box, pad);
+    const gx = bb.x0, gy = bb.y0;
+    const gw = bb.x1 - bb.x0, gh = bb.y1 - bb.y0;
     groups.push({ x: gx, y: gy, w: gw, h: gh, rx });
     rects.push({ x: gx, y: gy, w: gw, h: gh });
   });
