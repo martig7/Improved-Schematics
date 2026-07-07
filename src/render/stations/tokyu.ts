@@ -50,6 +50,11 @@ const SPINE_SAMPLES = 12; // resampled points per connector leg (dense waist)
  */
 function neckPolygon(points: Point[], box: number): string | null {
   if (points.length < 2) return null;
+  // A degenerate connector (coincident endpoints, emitted when two capsules
+  // already overlap, e.g. stacked grid rows) has no real length; skip it so it
+  // paints no zero-width stray sliver. The overlapping capsules union on their
+  // own under expand-overdraw.
+  if (!unitVec(points[0], points[points.length - 1])) return null;
   const WIDE = box * 0.42;
   const WAIST = box * 0.26;
   const TUCK = box * 0.10;
