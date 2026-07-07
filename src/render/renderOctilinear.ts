@@ -43,6 +43,72 @@ const SIN1DEG = 0.017452406437283513;
 // snap is bit-identical cross-V8 (no atan2). Module scope: used by both the
 // spineOctilinear gate and the rigid-row collision slide.
 const AXES4: Pixel[] = [[1, 0], [Math.SQRT1_2, Math.SQRT1_2], [0, 1], [-Math.SQRT1_2, Math.SQRT1_2]];
+
+/** One point formatted at the emitted-SVG coordinate precision. */
+const fmtPt = (p: Pixel): string => p[0].toFixed(1) + ',' + p[1].toFixed(1);
+
+/**
+ * Build the per-line 'd' command arrays from a lane bundle (`segPath`) and its
+ * node join curves, exactly as the inline emission does. Extracted so the lanes
+ * can be re-emitted from a modified clone of segPath without duplicating the
+ * fillet math. Pure over its inputs: it reads segPath / joinCurves and writes a
+ * fresh Map, never touching module state.
+ *
+ * Iteration order matches the original emission (segPath insertion order, then
+ * joinCurves order) so the joined path strings are byte-identical. Interior
+ * corners get a `filletR`-radius quadratic fillet (clamped per corner to half
+ * each adjacent segment); a near-straight corner degrades to a plain line-to.
+ *
+ * `segmentsOut`, when given, collects the straight sub-segments each lane
+ * contributes (used downstream for label placement / collision). Pass the real
+ * segments array for the live build; omit it for a throwaway re-emit so the live
+ * collision set is not polluted.
+ */
+export function buildDByLine(
+  segPath: Map<string, Pixel[]>,
+  joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }>,
+  filletR: number,
+  segmentsOut?: Segment[],
+): Map<string, string[]> {
+  const dByLine = new Map<string, string[]>();
+  const push = (lineId: string, poly: Pixel[]) => {
+    let d = dByLine.get(lineId);
+    if (!d) dByLine.set(lineId, (d = []));
+    if (segmentsOut) for (let k = 1; k < poly.length; k++) segmentsOut.push({ p1: poly[k - 1], p2: poly[k] });
+    d.push('M' + fmtPt(poly[0]));
+    for (let k = 1; k < poly.length - 1; k++) {
+      const a = poly[k - 1];
+      const v = poly[k];
+      const b = poly[k + 1];
+      const l1 = hyp(v[0] - a[0], v[1] - a[1]);
+      const l2 = hyp(b[0] - v[0], b[1] - v[1]);
+      if (l1 < 1e-6 || l2 < 1e-6) continue;
+      const u1: Pixel = [(v[0] - a[0]) / l1, (v[1] - a[1]) / l1];
+      const u2: Pixel = [(b[0] - v[0]) / l2, (b[1] - v[1]) / l2];
+      const cross = u1[0] * u2[1] - u1[1] * u2[0];
+      const dot = u1[0] * u2[0] + u1[1] * u2[1];
+      if (Math.abs(cross) < 0.05 && dot > 0) {
+        d.push('L' + fmtPt(v)); // effectively straight
+        continue;
+      }
+      const f = Math.min(filletR, l1 / 2, l2 / 2);
+      d.push(
+        'L' + fmtPt([v[0] - u1[0] * f, v[1] - u1[1] * f]),
+        'Q' + fmtPt(v) + ' ' + fmtPt([v[0] + u2[0] * f, v[1] + u2[1] * f]),
+      );
+    }
+    d.push('L' + fmtPt(poly[poly.length - 1]));
+  };
+  for (const [key, poly] of segPath) push(key.slice(key.indexOf('|') + 1), poly);
+  for (const jc of joinCurves) {
+    let d = dByLine.get(jc.lineId);
+    if (!d) dByLine.set(jc.lineId, (d = []));
+    d.push('M' + fmtPt(jc.a), 'Q' + fmtPt(jc.apex) + ' ' + fmtPt(jc.b));
+    if (segmentsOut) segmentsOut.push({ p1: jc.a, p2: jc.b });
+  }
+  return dByLine;
+}
+
 const snapAxis = (dx: number, dy: number): Pixel => {
   let best = 0, bv = -1;
   for (let k = 0; k < 4; k++) {
@@ -389,7 +455,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     return Number.isFinite(v) && v > 0 ? v : 12;
   })();
   const segPath = new Map<string, Pixel[]>(); // edge.id|lineId -> offset polyline
-  const dByLine = new Map<string, string[]>();
+  // Per-line 'd' command arrays. Populated by emitLanes (via buildDByLine) and
+  // then appended to by the node-connector pass; reassigned once by emitLanes,
+  // hence `let`.
+  let dByLine = new Map<string, string[]>();
   // Corner fillets: every interior bend of a lane polyline is rounded with a
   // small quadratic (control point = the original vertex), so 90° bundle
   // exits and 45° course bends read as smooth turns instead of hard elbows
@@ -400,35 +469,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // corner to the available segment length.
   const SMOOTH_R = LINE_WIDTH * 5;
   const FILLET_R = SMOOTH_R;
-  const fmt = (p: Pixel) => p[0].toFixed(1) + ',' + p[1].toFixed(1);
-  const pushSeg = (lineId: string, poly: Pixel[]) => {
-    let d = dByLine.get(lineId);
-    if (!d) dByLine.set(lineId, (d = []));
-    for (let k = 1; k < poly.length; k++) segments.push({ p1: poly[k - 1], p2: poly[k] });
-    d.push('M' + fmt(poly[0]));
-    for (let k = 1; k < poly.length - 1; k++) {
-      const a = poly[k - 1];
-      const v = poly[k];
-      const b = poly[k + 1];
-      const l1 = hyp(v[0] - a[0], v[1] - a[1]);
-      const l2 = hyp(b[0] - v[0], b[1] - v[1]);
-      if (l1 < 1e-6 || l2 < 1e-6) continue;
-      const u1: Pixel = [(v[0] - a[0]) / l1, (v[1] - a[1]) / l1];
-      const u2: Pixel = [(b[0] - v[0]) / l2, (b[1] - v[1]) / l2];
-      const cross = u1[0] * u2[1] - u1[1] * u2[0];
-      const dot = u1[0] * u2[0] + u1[1] * u2[1];
-      if (Math.abs(cross) < 0.05 && dot > 0) {
-        d.push('L' + fmt(v)); // effectively straight
-        continue;
-      }
-      const f = Math.min(FILLET_R, l1 / 2, l2 / 2);
-      d.push(
-        'L' + fmt([v[0] - u1[0] * f, v[1] - u1[1] * f]),
-        'Q' + fmt(v) + ' ' + fmt([v[0] + u2[0] * f, v[1] + u2[1] * f]),
-      );
-    }
-    d.push('L' + fmt(poly[poly.length - 1]));
-  };
 
   // A line draws on an edge only if its traversal actually uses that edge —
   // edge.lineIds alone over-draws: merge walks and anchor splits leave line
@@ -1036,19 +1076,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stations: args.stations, nodePx,
   });
 
-  // NOTE: path emission (pushSeg + join curves) happens AFTER the station
+  // NOTE: path emission (fillet builder + join curves) happens AFTER the station
   // marker pass below — sliding a terminus marker clear of a mega box must
-  // also trim the terminating lanes back to the slid marker.
+  // also trim the terminating lanes back to the slid marker. The per-line 'd'
+  // arrays and the straight-segment collision set both come from buildDByLine
+  // over the real segPath, so the drawn lanes are byte-identical to before.
   const emitLanes = () => {
-    for (const [key, poly] of segPath) {
-      pushSeg(key.slice(key.indexOf('|') + 1), poly);
-    }
-    for (const jc of joinCurves) {
-      let d = dByLine.get(jc.lineId);
-      if (!d) dByLine.set(jc.lineId, (d = []));
-      d.push('M' + fmt(jc.a), 'Q' + fmt(jc.apex) + ' ' + fmt(jc.b));
-      segments.push({ p1: jc.a, p2: jc.b });
-    }
+    dByLine = buildDByLine(segPath, joinCurves, FILLET_R, segments);
   };
 
   /** A line's drawn endpoint at a node (offset polylines run from→to). */
