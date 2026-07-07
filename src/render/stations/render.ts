@@ -24,7 +24,7 @@ export function renderStations(
   const prims: Prim[] = [];
   for (const [nodeId, marks] of stopsByNode) {
     if (marks.length === 0) continue;
-    const scene = buildScene(nodeId, marks, { megaFallback: ctx.megaFallback, members: ctx.members, deg: ctx.deg });
+    const scene = buildScene(nodeId, marks, { megaFallback: ctx.megaFallback, members: ctx.members, deg: ctx.deg, capsuleMode: design.capsule });
     const glyphs = design.paint(scene, { dark: ctx.dark, showBullets: ctx.showBullets });
     const lineIds = marks.map((m) => m.lineId);
     svg.push(wrapMarker(scene.anchor, nodeId, lineIds, glyphsToSvg(glyphs)));

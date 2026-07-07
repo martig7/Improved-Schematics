@@ -7,6 +7,7 @@
 import type { Pixel, StopMark } from '../layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
+import { rectSeat } from '../layout/rectSeat';
 import { debugMegaBox } from '../debug/stops.debug';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
@@ -18,6 +19,9 @@ export interface PlacementCtx {
   megaFallback: 'box' | 'curve';
   members?: Map<string, number>;
   deg?: Map<string, number>;
+  /** Interchange capsule regime the active design wants. 'rectRows' triggers the
+   *  upright-box rectangle seating for multi-line, non-mega stations. */
+  capsuleMode?: 'pill' | 'rectRows';
 }
 
 const toLine = (mk: StopMark): StopLine => ({
@@ -40,6 +44,21 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const isCapsule = marks.length > 1;
   const dotRadius = isCapsule ? RCAP : R0;
   const lines = marks.map(toLine);
+
+  // Rectangle ("Tokyu") seating: multi-line, non-mega stations whose marks carry
+  // pre-solve home/axis get upright boxes slid into aligned rows. Mega and single
+  // stops fall through to the existing box / none paths.
+  if (ctx.capsuleMode === 'rectRows' && isCapsule && !marks.some((m) => m.mega)
+      && marks.every((m) => m.home && m.axis !== undefined)) {
+    const S = 3 * RCAP / MARKER_SCALE;   // box side = single-stop box (matches the rect paint)
+    const members = marks.map((m) => ({ lineId: m.lineId, home: m.home as Point, axis: m.axis as number }));
+    const seat = rectSeat(members, S, S * 0.14);
+    const rlines = lines.map((ln) => ({ ...ln, pos: (seat.centers.get(ln.lineId) ?? ln.pos) as Point }));
+    let cx = 0, cy = 0;
+    for (const p of seat.centers.values()) { cx += p[0]; cy += p[1]; }
+    const n = seat.centers.size || 1;
+    return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: S, groups: seat.groups, connectors: seat.connectors }, anchor: [cx / n, cy / n], dotRadius };
+  }
 
   // farthest pair: axis start (a) + max separation (best)
   let ai = 0;
