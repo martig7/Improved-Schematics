@@ -266,3 +266,63 @@ export function rescueRectCapsuleMap(byNode: Map<string, RectCapsule>): void {
   }
   rescueFootprints(items);
 }
+
+// A single (non-interchange) Tokyu stop feeding the compute-time rescue: its
+// nodeId, marker position, and the single-stop box side the paint draws (side
+// 3*R0, so the footprint here equals the box the design renders at mark.pos).
+export interface SingleStop {
+  nodeId: string;
+  pos: [number, number];
+  box: number;
+}
+
+/**
+ * Compute-time cross-station rescue over the FULL Tokyu stop set: the multi-line
+ * capsules in `byNode` AND the single stops in `singles`. Both feed one shared
+ * placement queue so a single box and an interchange capsule deconflict against
+ * each other exactly as the former draw-time rescue did (biggest-first: member
+ * count then nodeId; interchanges anchor, singles yield). Interchange capsules
+ * are mutated in place; each single's rescued marker position is returned keyed
+ * by nodeId.
+ *
+ * The single footprint mirrors the scene path's `kind: 'none'` case: a box of
+ * side `box` centered at `pos`, with margin `box * MARGIN_FRAC`. Fully
+ * deterministic (fixed order, fixed tie-breaks, sqrt-based distance in the core).
+ */
+export function rescueRectAndSingles(
+  byNode: Map<string, RectCapsule>,
+  singles: SingleStop[],
+): Map<string, [number, number]> {
+  const items: RescueItem[] = [];
+
+  for (const [nodeId, cap] of byNode) {
+    const fp = capsuleFootprint(cap);
+    if (fp) items.push({
+      id: nodeId,
+      memberCount: cap.centers.length,
+      box: fp.box,
+      margin: fp.margin,
+      translate: (dx, dy) => translateCapsule(cap, dx, dy),
+    });
+  }
+
+  // Every single is recorded and returned (deterministic and small), so the
+  // paint can look up any Tokyu single by nodeId; those the rescue leaves in
+  // place simply return their input position.
+  const pos = new Map<string, [number, number]>();
+  for (const s of singles) {
+    const half = s.box / 2;
+    const cur: [number, number] = [s.pos[0], s.pos[1]];
+    pos.set(s.nodeId, cur);
+    items.push({
+      id: s.nodeId,
+      memberCount: 1,
+      box: { x0: cur[0] - half, y0: cur[1] - half, x1: cur[0] + half, y1: cur[1] + half },
+      margin: s.box * MARGIN_FRAC,
+      translate: (dx, dy) => { cur[0] += dx; cur[1] += dy; },
+    });
+  }
+
+  rescueFootprints(items);
+  return pos;
+}

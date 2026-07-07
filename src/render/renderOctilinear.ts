@@ -25,7 +25,7 @@ import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
-import { rescueRectCapsuleMap } from './layout/rectRescue';
+import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { getStationDesign } from './stations';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
@@ -222,6 +222,12 @@ export interface RibbonGeometry {
    *  reads it. OPTIONAL: geometry serialized BEFORE this field existed
    *  deserializes without it; paint falls back to seating at draw time. */
   rectByNode?: Map<string, RectCapsule>;
+  /** Per single Tokyu stop: its rescued marker position (nodeId -> [x, y]),
+   *  deconflicted against the interchange capsules and other singles in the same
+   *  compute-time rescue. Design-agnostic and inert for non-rect designs, which
+   *  never read it. OPTIONAL: absent in geometry serialized before it existed;
+   *  paint then falls back to the mark's own position. */
+  tokyuStopPos?: Map<string, [number, number]>;
 }
 
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
@@ -232,10 +238,19 @@ const RECT_RCAP = RECT_R0 * MARKER_SCALE;
 const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
 
 // One gathered station's data the rect-capsule seating needs: its nodeId and the
-// marks whose pre-solve home/axis feed the solver. Matches the StMarks shape.
+// marks whose pre-solve home/axis feed the solver, plus each mark's final marker
+// position (single stops seat at pos, not home). Matches the StMarks shape.
 export interface RectSeatStation {
   nodeId: string;
-  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean }>;
+  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean; pos?: Pixel }>;
+}
+
+/** Compute-time rect placement for the full Tokyu stop set: the multi-line
+ *  capsules keyed by nodeId (already cross-station deconflicted), plus the
+ *  rescued marker position of every single Tokyu stop keyed by nodeId. */
+export interface RectPlacement {
+  rectByNode: Map<string, RectCapsule>;
+  tokyuStopPos: Map<string, [number, number]>;
 }
 
 /**
@@ -243,13 +258,25 @@ export interface RectSeatStation {
  * station whose marks all carry a pre-solve home and run axis (the GEOMETRIC
  * predicate; this never reads the active design). Each qualifying station is
  * seated with rectSeat at the shared box/gap and converted to the serialization-
- * safe RectCapsule; the whole map is then deconflicted across stations by the
- * cross-station rescue. Stations are visited in their given order (the caller
- * passes them in the deterministic placement order), so the map is stable.
+ * safe RectCapsule. Single Tokyu stops (one mark) contribute a box-sized
+ * footprint at their final marker position. The whole set (interchange capsules
+ * AND singles) is then deconflicted across stations by one shared cross-station
+ * rescue, so a single box and an interchange capsule never overlap. Stations are
+ * visited in their given order (the caller passes them in the deterministic
+ * placement order), so the maps are stable.
  */
-export function computeRectByNode(gathered: RectSeatStation[], box: number = RECT_BOX): Map<string, RectCapsule> {
+export function computeRectByNode(gathered: RectSeatStation[], box: number = RECT_BOX): RectPlacement {
   const rectByNode = new Map<string, RectCapsule>();
+  const singles: SingleStop[] = [];
+  // Single-stop box side: side 3*R0 centered at the marker position, matching the
+  // box the rect design draws for a lone stop. RECT_BOX equals 3*R0 already.
+  const singleBox = 3 * RECT_R0;
   for (const s of gathered) {
+    if (s.marks.length === 1) {
+      const m = s.marks[0];
+      if (m.pos) singles.push({ nodeId: s.nodeId, pos: [m.pos[0], m.pos[1]], box: singleBox });
+      continue;
+    }
     if (s.marks.length < 2) continue;
     if (!s.marks.every((m) => m.home && m.axis !== undefined)) continue;
     const members: RectMember[] = s.marks.map((m) => ({
@@ -258,10 +285,11 @@ export function computeRectByNode(gathered: RectSeatStation[], box: number = REC
     const seat = rectSeat(members, box, box * 0.14);
     rectByNode.set(s.nodeId, rectSeatToCapsule(seat, box));
   }
-  // Slide overlapping capsules apart at compute time so the cached geometry is
-  // already deconflicted (the former draw-time rescue, hoisted).
-  rescueRectCapsuleMap(rectByNode);
-  return rectByNode;
+  // Slide overlapping capsules AND single boxes apart at compute time so the
+  // cached geometry is already deconflicted (the former draw-time rescue over the
+  // full stop set, hoisted). Returns each single's rescued marker position.
+  const tokyuStopPos = rescueRectAndSingles(rectByNode, singles);
+  return { rectByNode, tokyuStopPos };
 }
 
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
@@ -283,11 +311,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // pass has finished mutating gathered[*].marks[*].pos — so the connectors
   // wired in paintRibbons read final dot positions, never pre-slide ones.
   const splitGroups = new Map<string, string[]>();
-  // Precomputed rectangle-capsule geometry per node, filled after the placement
-  // queue exhausts (marks' home/axis final) so the seating runs once here rather
-  // than on every repaint. Empty when there are no station groups; always present
-  // on the returned geometry.
+  // Precomputed rectangle placement for the full Tokyu stop set, filled after the
+  // placement queue exhausts (marks' home/axis/pos final) so the seating and the
+  // cross-station rescue run once here rather than on every repaint. Empty when
+  // there are no station groups; always present on the returned geometry.
   let rectByNode = new Map<string, RectCapsule>();
+  let tokyuStopPos = new Map<string, [number, number]>();
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
@@ -2879,12 +2908,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [base, arr] of splitGroups) {
       if (arr.length < 2) splitGroups.delete(base);
     }
-    // Rectangle-capsule interchange geometry, seated + deconflicted once here.
-    // The placement queue has exhausted, so every mark's pre-solve home/axis is
-    // final. Design-agnostic: built from geometry, never from the active design;
-    // inert for non-rect designs. gathered is in the deterministic placement
-    // order, so the seated map is stable.
-    rectByNode = computeRectByNode(gathered);
+    // Rectangle placement for the full Tokyu stop set (interchange capsules plus
+    // single boxes), seated + deconflicted once here. The placement queue has
+    // exhausted, so every mark's pre-solve home/axis and final pos are set.
+    // Design-agnostic: built from geometry, never from the active design; inert
+    // for non-rect designs. gathered is in the deterministic placement order, so
+    // the maps are stable.
+    ({ rectByNode, tokyuStopPos } = computeRectByNode(gathered));
   } else {
     for (const edge of layout.edges) {
       for (const [lineId, stop] of edge.stops) {
@@ -3068,7 +3098,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     miteredCount: mitered.size, connCount: connSeen.size, lineCount: dByLine.size,
   });
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
