@@ -11,7 +11,10 @@
 // vertical, whichever the cost model prefers given the members' homes.
 //
 // Objective (minimized): the sum of per-member slide (world-px distance from a
-// member's home to its placed box center) plus a per-extra-row penalty. A
+// member's home to its placed box center) plus a per-extra-row penalty, plus a
+// hard penalty per overlapping box pair so no two boxes ever stack. A single
+// packed row (pitch = box + gap) is always non-overlapping, so a non-overlapping
+// layout always exists and any overlap-free option beats any overlapping one. A
 // separate row plus connector is preferred exactly when forcing its members into
 // one shared row would cost more slide than the penalty. The penalty
 //   K = 0.5 * maxSlideForcedRow
@@ -31,6 +34,10 @@
 import type { Point } from '../stations/types';
 import { octiConnect, type Rect } from './octiConnect';
 
+// sqrt(a*a+b*b) is correctly-rounded across V8 versions; Math.hypot is not, so
+// using it on the emitted-SVG path would render differently offline vs in-game.
+const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
+
 export interface RectMember {
   lineId: string;
   home: Point;   // pre-solve lane position, world px
@@ -46,6 +53,31 @@ export interface RectSeatOut {
 // Above this member count the enumeration is skipped and a single best-axis row
 // is used; real interchanges below this, larger hubs fall back to the mega box.
 const ENUM_MAX = 6;
+
+// Per overlapping-box-pair penalty. Large enough that any layout with a
+// non-overlapping alternative always wins on the objective; a single packed row
+// is always such an alternative, so coincident or convergent homes spread into
+// one legible row instead of stacking into overlapping singleton boxes.
+const OVERLAP_PEN = 1e6;
+
+/**
+ * Count pairs of upright boxes (fixed side `box`) whose footprints overlap.
+ * Two axis-aligned boxes centered at c1,c2 overlap iff they overlap on BOTH
+ * axes: abs(dx) < box - eps and abs(dy) < box - eps. Deterministic O(n^2) scan
+ * over a small n (enumerated regime), no floating tie sensitivity beyond eps.
+ */
+function overlapPairs(centers: Point[], box: number): number {
+  const eps = 1e-6;
+  let count = 0;
+  for (let i = 0; i < centers.length; i++) {
+    for (let j = i + 1; j < centers.length; j++) {
+      const dx = Math.abs(centers[i][0] - centers[j][0]);
+      const dy = Math.abs(centers[i][1] - centers[j][1]);
+      if (dx < box - eps && dy < box - eps) count++;
+    }
+  }
+  return count;
+}
 
 /** Median of a list of numbers. Even counts use the average of the two central
  *  values so a rigid packed row centers on the members' central home. */
@@ -86,7 +118,7 @@ function placeRow(part: RectMember[], horiz: boolean, pitch: number): Placed {
     const a = medAlong + (i - (n - 1) / 2) * pitch;
     const c: Point = horiz ? [a, medCross] : [medCross, a];
     centers.set(m.lineId, c);
-    const slide = Math.hypot(c[0] - m.home[0], c[1] - m.home[1]);
+    const slide = hyp(c[0] - m.home[0], c[1] - m.home[1]);
     total += slide;
     if (slide > max) max = slide;
   });
@@ -181,7 +213,11 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
   const consider = (parts: number[][], idx: number) => {
     const rows = parts.map((g) => bestRow(g.map((i) => members[i]), pitch));
     const slide = rows.reduce((s, r) => s + r.total, 0);
-    const cost = slide + (parts.length - 1) * K;
+    // Every placed box center across all rows; overlapping pairs are penalized
+    // hard so stacked (coincident-home) singleton boxes never win.
+    const allCenters: Point[] = [];
+    for (const r of rows) for (const c of r.centers.values()) allCenters.push(c);
+    const cost = slide + (parts.length - 1) * K + OVERLAP_PEN * overlapPairs(allCenters, box);
     const better =
       cost < bestCost - 1e-9 ||
       (Math.abs(cost - bestCost) <= 1e-9 &&
@@ -249,7 +285,7 @@ function mstConnectors(rects: Rect[]): Array<{ points: Point[] }> {
       if (!inTree[i]) continue;
       for (let j = 0; j < n; j++) {
         if (inTree[j]) continue;
-        const w = Math.hypot(cx[i] - cx[j], cy[i] - cy[j]);
+        const w = hyp(cx[i] - cx[j], cy[i] - cy[j]);
         // Fixed tie-break by (i, j) index keeps the tree deterministic.
         if (w < bestW - 1e-9) {
           bestW = w;
