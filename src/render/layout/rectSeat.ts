@@ -51,6 +51,34 @@ export interface RectSeatOut {
   connectors: Array<{ points: Point[] }>;                        // octilinear polylines between rows
 }
 
+// Serialization-safe form of a seated rect capsule, cached on RibbonGeometry so
+// the seating runs once at compute time instead of on every repaint. It holds
+// ONLY plain arrays and objects (no nested Maps): the map-cache codec wraps a
+// top-level Map but does not reliably round-trip a Map nested inside another
+// Map's value, so `centers` is flattened to an array here.
+export interface RectCapsule {
+  box: number;                                                   // box side length, world px
+  centers: Array<{ lineId: string; x: number; y: number }>;      // seated box center per line
+  groups: Array<{ x: number; y: number; w: number; h: number; rx: number }>; // one rounded-rect per aligned row
+  connectors: Array<{ points: Array<[number, number]> }>;        // octilinear polylines between rows
+}
+
+/**
+ * Convert a solver `RectSeatOut` into the serialization-safe `RectCapsule`:
+ * flatten the `centers` Map into an array and round connector points to one
+ * decimal (matching the emitted-SVG coordinate precision). `RectSeatOut` stays
+ * the solver's native shape; this converts at the compute/cache boundary.
+ */
+export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
+  const centers: RectCapsule['centers'] = [];
+  for (const [lineId, c] of out.centers) centers.push({ lineId, x: c[0], y: c[1] });
+  const groups = out.groups.map((g) => ({ x: g.x, y: g.y, w: g.w, h: g.h, rx: g.rx }));
+  const connectors = out.connectors.map((cn) => ({
+    points: cn.points.map((p): [number, number] => [+p[0].toFixed(1), +p[1].toFixed(1)]),
+  }));
+  return { box, centers, groups, connectors };
+}
+
 // Above this member count the enumeration is skipped and a single best-axis row
 // is used; real interchanges below this, larger hubs fall back to the mega box.
 const ENUM_MAX = 6;

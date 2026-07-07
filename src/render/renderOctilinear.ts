@@ -24,6 +24,7 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
+import type { RectCapsule } from './layout/rectSeat';
 import { getStationDesign } from './stations';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
@@ -214,6 +215,12 @@ export interface RibbonGeometry {
    *  maps / dump bundles — mapCache v8 / schema 18 predate it) deserializes
    *  without it; paintRibbons must draw with no connectors, not crash. */
   splitGroups?: Map<string, string[]>;
+  /** Per node: the precomputed rectangle-capsule interchange geometry (seated
+   *  boxes, group rects, connectors), deconflicted across stations. Design-
+   *  agnostic geometry built unconditionally; only the rectangle-capsule design
+   *  reads it. OPTIONAL: geometry serialized BEFORE this field existed
+   *  deserializes without it; paint falls back to seating at draw time. */
+  rectByNode?: Map<string, RectCapsule>;
 }
 
 export function renderRibbons(args: RenderRibbonsArgs, sceneOut?: SceneOut): string {
