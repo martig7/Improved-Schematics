@@ -14,8 +14,16 @@ const rectMarks = (): StopMark[] => [
   mk('B', 40, 0, { home: [40, 0] as Pixel, axis: 0, chain: 1 }),
 ];
 
-test('rectRows mode with home/axis -> rectRows capsule, dots kept, one group', () => {
-  const s = buildScene('n1', rectMarks(), { megaFallback: 'curve', capsuleMode: 'rectRows' });
+test('rectRows mode with a cached capsule -> rectRows capsule, dots kept, one group', () => {
+  const cached: RectCapsule = {
+    box: 21,
+    centers: [{ lineId: 'A', x: 0, y: 0 }, { lineId: 'B', x: 30, y: 0 }],
+    groups: [{ x: -10, y: -10, w: 50, h: 20, rx: 4 }],
+    connectors: [],
+  };
+  const s = buildScene('n1', rectMarks(), {
+    megaFallback: 'curve', capsuleMode: 'rectRows', rectByNode: new Map([['n1', cached]]),
+  });
   assert.equal(s.capsule.kind, 'rectRows');
   assert.ok(s.lines.length > 0);
   const cap = s.capsule as { kind: 'rectRows'; groups: unknown[] };
@@ -53,13 +61,13 @@ test('rectRows mode reads the cached capsule when present (no draw-time seat)', 
   assert.deepEqual(s.anchor, [115, 200]);
 });
 
-test('rectRows mode without a cache entry falls back to on-the-fly seating', () => {
-  // No rectByNode entry: the old draw-time seat path still produces a rectRows
-  // capsule so an old cache does not crash.
+test('rectRows mode with a cache miss degrades to a non-rectRows scene', () => {
+  // No rectByNode entry for this node: there is no draw-time seating, so the
+  // multi-line station falls through to the normal pill path (per-line boxes).
   const s = buildScene('n1', rectMarks(), {
     megaFallback: 'curve', capsuleMode: 'rectRows', rectByNode: new Map(),
   });
-  assert.equal(s.capsule.kind, 'rectRows');
+  assert.notEqual(s.capsule.kind, 'rectRows');
 });
 
 test('single rectRows stop uses its cached rescued position', () => {

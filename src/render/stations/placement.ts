@@ -7,7 +7,7 @@
 import type { Pixel, StopMark } from '../layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
-import { rectSeat, type RectCapsule } from '../layout/rectSeat';
+import { type RectCapsule } from '../layout/rectSeat';
 import { debugMegaBox } from '../debug/stops.debug';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
@@ -52,35 +52,23 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const dotRadius = isCapsule ? RCAP : R0;
   const lines = marks.map(toLine);
 
-  // Rectangle ("Tokyu") seating: multi-line, non-mega stations whose marks carry
-  // pre-solve home/axis get upright boxes slid into aligned rows. Mega and single
-  // stops fall through to the existing box / none paths.
-  if (ctx.capsuleMode === 'rectRows' && isCapsule && !marks.some((m) => m.mega)
-      && marks.every((m) => m.home && m.axis !== undefined)) {
-    const S = 3 * RCAP / MARKER_SCALE;   // box side = single-stop box (matches the rect paint)
-    // Prefer the compute-time seated, cross-station-deconflicted capsule. It is
-    // built from the same marks with the same box/gap, so the scene matches the
-    // former draw-time seat; the rescue already ran at compute.
-    const cached = ctx.rectByNode?.get(nodeId);
-    if (cached) {
-      const byLine = new Map(cached.centers.map((c) => [c.lineId, [c.x, c.y] as Point]));
-      const rlines = lines.map((ln) => ({ ...ln, pos: byLine.get(ln.lineId) ?? ln.pos }));
-      let cx = 0, cy = 0;
-      for (const c of cached.centers) { cx += c.x; cy += c.y; }
-      const n = cached.centers.length || 1;
-      const groups = cached.groups.map((g) => ({ ...g }));
-      const connectors = cached.connectors.map((cn) => ({ points: cn.points.map((p): Point => [p[0], p[1]]) }));
-      return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: cached.box, groups, connectors }, anchor: [cx / n, cy / n], dotRadius };
-    }
-    // Fallback for geometry cached before rectByNode existed: seat on the fly (the
-    // former draw-time path). No cross-station rescue here; old caches only.
-    const members = marks.map((m) => ({ lineId: m.lineId, home: m.home as Point, axis: m.axis as number }));
-    const seat = rectSeat(members, S, S * 0.14);
-    const rlines = lines.map((ln) => ({ ...ln, pos: (seat.centers.get(ln.lineId) ?? ln.pos) as Point }));
+  // Rectangle ("Tokyu") seating: a multi-line station uses its compute-time
+  // seated, cross-station-deconflicted rect capsule when one is cached. Seating is
+  // never done at draw time, so a cache miss falls through to the normal
+  // pill / mega / ring / none paths (degrading to per-line boxes). Single stops
+  // fall through to the none path below.
+  const cachedRect = ctx.capsuleMode === 'rectRows' && isCapsule
+    ? ctx.rectByNode?.get(nodeId)
+    : undefined;
+  if (cachedRect) {
+    const byLine = new Map(cachedRect.centers.map((c) => [c.lineId, [c.x, c.y] as Point]));
+    const rlines = lines.map((ln) => ({ ...ln, pos: byLine.get(ln.lineId) ?? ln.pos }));
     let cx = 0, cy = 0;
-    for (const p of seat.centers.values()) { cx += p[0]; cy += p[1]; }
-    const n = seat.centers.size || 1;
-    return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: S, groups: seat.groups, connectors: seat.connectors }, anchor: [cx / n, cy / n], dotRadius };
+    for (const c of cachedRect.centers) { cx += c.x; cy += c.y; }
+    const n = cachedRect.centers.length || 1;
+    const groups = cachedRect.groups.map((g) => ({ ...g }));
+    const connectors = cachedRect.connectors.map((cn) => ({ points: cn.points.map((p): Point => [p[0], p[1]]) }));
+    return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: cachedRect.box, groups, connectors }, anchor: [cx / n, cy / n], dotRadius };
   }
 
   // farthest pair: axis start (a) + max separation (best)
