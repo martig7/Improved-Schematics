@@ -41,3 +41,45 @@ test('deterministic: same input -> identical output', () => {
   assert.deepEqual(octiConnect(R(0, 0, 4, 4), R(50, 20, 4, 4)),
                    octiConnect(R(0, 0, 4, 4), R(50, 20, 4, 4)));
 });
+
+// A point is strictly interior to a rect iff it lies inside on BOTH axes
+// (touching the boundary does not count).
+const strictlyInside = (p: number[], r: { x: number; y: number; w: number; h: number }, eps = 1e-6) =>
+  p[0] > r.x + eps && p[0] < r.x + r.w - eps && p[1] > r.y + eps && p[1] < r.y + r.h - eps;
+
+const onBoundary = (p: number[], r: { x: number; y: number; w: number; h: number }, eps = 1e-6) => {
+  const onX = Math.abs(p[0] - r.x) < eps || Math.abs(p[0] - (r.x + r.w)) < eps;
+  const onY = Math.abs(p[1] - r.y) < eps || Math.abs(p[1] - (r.y + r.h)) < eps;
+  const inX = p[0] > r.x - eps && p[0] < r.x + r.w + eps;
+  const inY = p[1] > r.y - eps && p[1] < r.y + r.h + eps;
+  return (onX && inY) || (onY && inX);
+};
+
+test('diagonal single segment lands on both rect boundaries on a common 45 line', () => {
+  const A = R(0, 0, 20, 4), B = R(30, 30, 4, 20);
+  const c = octiConnect(A, B);
+  assert.equal(c.points.length, 2);
+  const [p0, p1] = c.points;
+  const dx = Math.abs(p1[0] - p0[0]), dy = Math.abs(p1[1] - p0[1]);
+  assert.ok(Math.abs(dx - dy) < 1e-6, 'endpoints on a common 45 line');
+  assert.ok(onBoundary(p0, A), 'p0 on boundary of A');
+  assert.ok(onBoundary(p1, B), 'p1 on boundary of B');
+});
+
+test('touching rects -> no point strictly interior to either rect', () => {
+  const A = R(0, 0, 10, 10), B = R(10, 0, 10, 10);
+  const c = octiConnect(A, B);
+  for (const p of c.points) {
+    assert.ok(!strictlyInside(p, A), `point ${p} inside A`);
+    assert.ok(!strictlyInside(p, B), `point ${p} inside B`);
+  }
+});
+
+test('identical rects -> no point strictly interior to either rect', () => {
+  const A = R(0, 0, 10, 10), B = R(0, 0, 10, 10);
+  const c = octiConnect(A, B);
+  for (const p of c.points) {
+    assert.ok(!strictlyInside(p, A), `point ${p} inside A`);
+    assert.ok(!strictlyInside(p, B), `point ${p} inside B`);
+  }
+});

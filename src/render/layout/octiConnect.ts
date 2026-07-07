@@ -43,6 +43,19 @@ export function octiConnect(A: Rect, B: Rect): Connector {
   const ax0 = A.x, ax1 = A.x + A.w, ay0 = A.y, ay1 = A.y + A.h;
   const bx0 = B.x, bx1 = B.x + B.w, by0 = B.y, by1 = B.y + B.h;
 
+  // Overlapping or touching rects (gap <= 0 on both axes): the single-segment
+  // and dead-zone branches below assume a positive gap and would otherwise place
+  // a vertex inside a rect. Return a degenerate boundary-to-boundary connector on
+  // the contact region instead. Defense-in-depth: callers should seat boxes so
+  // they never overlap, but this stays robust if one slips through.
+  {
+    const xlo = Math.max(ax0, bx0), xhi = Math.min(ax1, bx1);
+    const ylo = Math.max(ay0, by0), yhi = Math.min(ay1, by1);
+    if (xlo <= xhi + EPS && ylo <= yhi + EPS) {
+      return { points: contactConnector(A, B, xlo, xhi, ylo, yhi) };
+    }
+  }
+
   const cands: Candidate[] = [];
 
   // Vertical segment (dir 0): x-ranges overlap, connect at the overlap midpoint.
@@ -65,17 +78,14 @@ export function octiConnect(A: Rect, B: Rect): Connector {
   // coordinate; along that shared band the perpendicular coordinate v=x-y
   // separates them, and the diagonal gap is that v separation (each unit of v
   // is sqrt(2)/2 of world distance, but v itself is the ordering key). Endpoints
-  // sit at the near corners along the shared u band.
+  // are clamped onto each rect's boundary along the chosen diagonal line.
   {
     const au0 = ax0 + ay0, au1 = ax1 + ay1;   // x+y range of A
     const bu0 = bx0 + by0, bu1 = bx1 + by1;    // x+y range of B
     const ou = overlap(au0, au1, bu0, bu1);
     if (ou) {
       const us = (ou[0] + ou[1]) / 2;           // shared x+y value
-      const av0 = ax0 - ay1, av1 = ax1 - ay0;   // x-y range of A
-      const bv0 = bx0 - by1, bv1 = bx1 - by0;   // x-y range of B
-      // separation along v (the diagonal gap)
-      const seg = diagFromUV(us, av0, av1, bv0, bv1, +1);
+      const seg = diagFromUV(us, A, B, +1);
       if (seg) cands.push({ p0: seg.p0, p1: seg.p1, gap: seg.gap, dir: 2 });
     }
   }
@@ -88,9 +98,7 @@ export function octiConnect(A: Rect, B: Rect): Connector {
     const ou = overlap(au0, au1, bu0, bu1);
     if (ou) {
       const us = (ou[0] + ou[1]) / 2;           // shared x-y value
-      const av0 = ax0 + ay0, av1 = ax1 + ay1;   // x+y range of A
-      const bv0 = bx0 + by0, bv1 = bx1 + by1;   // x+y range of B
-      const seg = diagFromUV(us, av0, av1, bv0, bv1, -1);
+      const seg = diagFromUV(us, A, B, -1);
       if (seg) cands.push({ p0: seg.p0, p1: seg.p1, gap: seg.gap, dir: 3 });
     }
   }
@@ -107,11 +115,15 @@ export function octiConnect(A: Rect, B: Rect): Connector {
     return { points: [best.p0, best.p1] };
   }
 
-  // Dead zone: no single octilinear segment spans the pair. Route a two-leg
-  // axis-aligned octilinear path A -> bend -> B. The first leg runs along the
-  // dominant axis (the larger of |dx|,|dy| between the rect centers), the second
-  // leg finishes into the other rect; the bend is an octilinear vertex and both
-  // endpoints clamp to the rect boundaries.
+  // Dead zone: no single octilinear segment spans the pair. Reaching here means
+  // the rects are strictly separated on BOTH x and y (any axis overlap would have
+  // produced a single-segment candidate above, and touching/overlapping pairs
+  // returned earlier), so the bend below sits between the rects and no vertex
+  // lands strictly inside either rect. Route a two-leg axis-aligned octilinear
+  // path A -> bend -> B. The first leg runs along the dominant axis (the larger
+  // of |dx|,|dy| between the rect centers), the second leg finishes into the
+  // other rect; the bend is an octilinear vertex and both endpoints lie on the
+  // rect boundaries.
   const acx = A.x + A.w / 2, acy = A.y + A.h / 2;
   const bcx = B.x + B.w / 2, bcy = B.y + B.h / 2;
   const dx = bcx - acx, dy = bcy - acy;
@@ -131,15 +143,30 @@ export function octiConnect(A: Rect, B: Rect): Connector {
 }
 
 // Build a 45-degree segment on the shared band. `us` is the fixed value of the
-// band coordinate u; the two rects' ranges on the separating coordinate v are
-// [av0,av1] and [bv0,bv1]. `sign` selects how (u,v) map back to (x,y):
+// band coordinate u; `sign` selects how (u,v) map back to (x,y):
 //   sign +1: u = x+y, v = x-y  ->  x = (u+v)/2, y = (u-v)/2   (slope -1 line)
 //   sign -1: u = x-y, v = x+y  ->  x = (u+v)/2, y = (v-u)/2   (slope +1 line)
-// Returns the near-corner endpoints and the positive v gap, or null when the v
-// ranges are not separated (the rects touch or overlap on this diagonal).
+// The diagonal line u = us cuts each rect over a v-interval; that interval is
+// computed from the rect's own x and y bounds (the full-rect v-range is wider
+// than the range achievable at a fixed u slice, so clamping to it is what keeps
+// both endpoints on the actual boundary). Returns the near-boundary endpoints
+// and the positive v gap, or null when the two rects' v-intervals are not
+// separated (they touch or overlap on this diagonal, handled elsewhere).
 function diagFromUV(
-  us: number, av0: number, av1: number, bv0: number, bv1: number, sign: number,
+  us: number, A: Rect, B: Rect, sign: number,
 ): { p0: Point; p1: Point; gap: number } | null {
+  // v-interval where the line u = us intersects a rect, from its x/y bounds.
+  const vRange = (r: Rect): [number, number] => {
+    const x0 = r.x, x1 = r.x + r.w, y0 = r.y, y1 = r.y + r.h;
+    // sign +1: v = x - y, with x = (us+v)/2, y = (us-v)/2. sign -1: v = x + y,
+    // with x = (us+v)/2, y = (v-us)/2. Both invert to bounds on v below.
+    const vx0 = 2 * x0 - us, vx1 = 2 * x1 - us;               // from x bounds
+    const vy0 = sign > 0 ? us - 2 * y1 : 2 * y0 - us;         // from y bounds
+    const vy1 = sign > 0 ? us - 2 * y0 : 2 * y1 - us;
+    return [Math.max(vx0, vy0), Math.min(vx1, vy1)];
+  };
+  const [av0, av1] = vRange(A);
+  const [bv0, bv1] = vRange(B);
   let va: number, vb: number, gap: number;
   if (bv0 - av1 > EPS) { va = av1; vb = bv0; gap = bv0 - av1; }         // B beyond A on v
   else if (av0 - bv1 > EPS) { va = av0; vb = bv1; gap = av0 - bv1; }   // A beyond B on v
@@ -147,4 +174,36 @@ function diagFromUV(
   const toXY = (u: number, v: number): Point =>
     sign > 0 ? [(u + v) / 2, (u - v) / 2] : [(u + v) / 2, (v - u) / 2];
   return { p0: toXY(us, va), p1: toXY(us, vb), gap };
+}
+
+/** True when point p is strictly inside rect r (touching the boundary is out). */
+function strictlyInside(p: Point, r: Rect): boolean {
+  return p[0] > r.x + EPS && p[0] < r.x + r.w - EPS &&
+         p[1] > r.y + EPS && p[1] < r.y + r.h - EPS;
+}
+
+/**
+ * Boundary-to-boundary connector for overlapping or touching rects. The overlap
+ * box is [xlo,xhi] x [ylo,yhi]; its corners are boundary-crossing points of the
+ * two rects (each on an edge of A and an edge of B) except under full
+ * containment, where no shared-boundary point exists. Pick the overlap-box
+ * corner that is not strictly interior to either rect and is nearest the mean of
+ * the rect centers, with a fixed tie-break, and return it as a degenerate
+ * two-point segment so no vertex lies strictly inside either rect.
+ */
+function contactConnector(
+  A: Rect, B: Rect, xlo: number, xhi: number, ylo: number, yhi: number,
+): Point[] {
+  const mx = (A.x + A.x + A.w + B.x + B.x + B.w) / 4;
+  const my = (A.y + A.y + A.h + B.y + B.y + B.h) / 4;
+  const corners: Point[] = [[xlo, ylo], [xhi, ylo], [xlo, yhi], [xhi, yhi]];
+  const nonInterior = corners.filter((c) => !strictlyInside(c, A) && !strictlyInside(c, B));
+  const pool = nonInterior.length > 0 ? nonInterior : corners;
+  let bc = pool[0];
+  let bd = Infinity;
+  for (const c of pool) {
+    const d = (c[0] - mx) * (c[0] - mx) + (c[1] - my) * (c[1] - my);
+    if (d < bd - EPS) { bd = d; bc = c; }
+  }
+  return [bc, bc];
 }
