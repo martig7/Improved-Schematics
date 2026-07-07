@@ -21,7 +21,7 @@ import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescripto
 import { decideAreaAction } from './areaLifecycle';
 import { Icon } from './icons';
 import { StationDesignPicker } from './StationDesignPicker';
-import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stationDesigns';
+import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stations';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';

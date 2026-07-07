@@ -24,7 +24,8 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
-import { getStationDesign } from './stationDesigns';
+import { getStationDesign } from './stations';
+import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { FrameRect } from './projection';
@@ -202,7 +203,7 @@ export interface RibbonGeometry {
   membersByNode: Map<string, number> | undefined;
   dByLine: Map<string, string[]>;
   segments: Segment[];
-  lineById: Map<string, { id: string; label?: string; color: string }>;
+  lineById: Map<string, { id: string; label?: string; color: string; textColor?: string }>;
   orderOf: Map<string, string[]>;
   /** Platform-split groups (spec 2026-07-04 §2.4): base station nodeId ->
    *  every placement-unit nodeId (in stopsByNode) that split off from it,
@@ -237,7 +238,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const stopSeen = new Set<string>();
   const segments: Segment[] = [];
   const edgeById = new Map(layout.edges.map((e) => [e.id, e]));
-  const lineById = new Map<string, { id: string; label?: string; color: string }>();
+  const lineById = new Map<string, { id: string; label?: string; color: string; textColor?: string }>();
   for (const e of layout.edges) for (const l of e.lines) if (!lineById.has(l.id)) lineById.set(l.id, l);
 
   // --- per-edge bundle drawing (LOOM transitmap model) -----------------------
@@ -999,7 +1000,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, chain, cornerAfter, mega,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, chain, cornerAfter, mega,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -3092,10 +3093,13 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     }
   }
 
-  const stopParts = getStationDesign(args.stationDesign).renderStops(
-    stopsByNode, dark, membersByNode, degByNode, args.showStations !== false,
-    sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'curve',
+  const stationOut = renderStations(
+    stopsByNode,
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode },
+    getStationDesign(args.stationDesign),
   );
+  const stopParts = stationOut.svg;
+  if (sceneOut) for (const p of stationOut.prims) stopsPrims.push(p);
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];

@@ -6,7 +6,7 @@
  * instantly (draw-time) and closes.
  */
 
-import { getStationDesign, type StationDesign, type ExampleStation } from '../render/stationDesigns';
+import { renderStationPreview, type StationDesign, type ExampleStation } from '../render/stations';
 import { Icon } from './icons';
 
 export function StationDesignPicker(props: {
@@ -83,7 +83,7 @@ export function StationDesignPicker(props: {
             >
               <span
                 style={{ width: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', background: exampleBg, borderRadius: 8 }}
-                dangerouslySetInnerHTML={{ __html: getStationDesign(d.id).renderPreview(example, dark) }}
+                dangerouslySetInnerHTML={{ __html: renderStationPreview(d, example, dark) }}
               />
               <span style={{ fontSize: 13, fontWeight: 600 }}>{d.name}</span>
               {active && (
