@@ -24,7 +24,7 @@ import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
-import { renderStops } from './stops';
+import { getStationDesign } from './stationDesigns';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
 import type { FrameRect } from './projection';
@@ -123,6 +123,9 @@ export interface RenderRibbonsArgs {
    *  the opaque rounded rect) or 'curve' (a soft squircle of the same footprint).
    *  Draw-time only — consumed in paintRibbons, never in computeRibbonGeometry. */
   megaFallback?: 'box' | 'curve';
+  /** Station design id (marker style); resolved via getStationDesign, unknown →
+   *  Classic. Draw-time only, consumed in paintRibbons. */
+  stationDesign?: string;
   water?: WaterCollection;
   /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
    *  labels for these — the ghost is invisible by design (lines pass through
@@ -3089,7 +3092,10 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     }
   }
 
-  const stopParts = renderStops(stopsByNode, dark, membersByNode, degByNode, args.showStations !== false, sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'curve');
+  const stopParts = getStationDesign(args.stationDesign).renderStops(
+    stopsByNode, dark, membersByNode, degByNode, args.showStations !== false,
+    sceneOut ? stopsPrims : undefined, args.megaFallback ?? 'curve',
+  );
   const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];

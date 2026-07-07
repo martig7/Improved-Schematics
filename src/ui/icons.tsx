@@ -6,7 +6,7 @@
 // Lucide is loaded by stroke="currentColor", so each icon inherits the button's text color
 // and opacity for free, which is what the row's other controls expect.
 
-export type IconName = 'lock' | 'unlock' | 'edit' | 'check' | 'x' | 'trash' | 'settings';
+export type IconName = 'lock' | 'unlock' | 'edit' | 'check' | 'x' | 'trash' | 'settings' | 'chevronLeft';
 
 // Each semantic name maps to ordered Lucide candidates; the first one present in the
 // game's set wins. Names drift across Lucide versions, so
@@ -19,6 +19,7 @@ const LUCIDE: Record<IconName, string[]> = {
   x: ['X'],
   trash: ['Trash2', 'Trash'],
   settings: ['Settings', 'Settings2', 'Cog'],
+  chevronLeft: ['ChevronLeft', 'ArrowLeft'],
 };
 
 /** A Lucide icon from the game's set. Renders nothing if none of the candidates exist

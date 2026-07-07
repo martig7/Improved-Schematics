@@ -20,6 +20,8 @@ import {
 import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescriptor } from './DetailInset';
 import { decideAreaAction } from './areaLifecycle';
 import { Icon } from './icons';
+import { StationDesignPicker } from './StationDesignPicker';
+import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stationDesigns';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
@@ -219,6 +221,7 @@ type RestoredSettings = {
   showStations?: boolean;
   showLabels?: boolean;
   megaFallback?: 'box' | 'curve';
+  stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
   applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; stationSplit?: boolean };
@@ -272,6 +275,12 @@ export function SchematicPanel() {
   // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
   // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
   const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? DEFAULT_MEGA_FALLBACK);
+  const [stationDesign, setStationDesign] = useState(rvis.stationDesign ?? DEFAULT_STATION_DESIGN);
+  // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
+  const [designPanelOpen, setDesignPanelOpen] = useState(false);
+  // The example station shown in the picker tiles: a representative player route
+  // (bullet + colors), recomputed each time the overlay opens.
+  const designExample = useMemo(() => pickExampleRoute(api.gameState.getRoutes()), [designPanelOpen]);
   // Landmass style: geography backdrop as-is ('faithful'), simplified rounded
   // blobs ('rounded'), or octilinear-snapped diagram blobs ('diagram'), with a
   // 0..1 strength. Draw-time only (not in the layout fingerprint); persisted
@@ -466,6 +475,7 @@ export function SchematicPanel() {
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setMegaFallback(v.megaFallback ?? DEFAULT_MEGA_FALLBACK);
+    setStationDesign(v.stationDesign ?? DEFAULT_STATION_DESIGN);
     setLandmass(v.landmass ?? 'faithful');
     setLandmassDetail(v.landmassDetail ?? 0.5);
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
@@ -490,7 +500,7 @@ export function SchematicPanel() {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     if (!shared) return;
-    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale };
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
     for (const m of ['geographic', 'smoothed'] as const) {
       if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
     }
@@ -748,7 +758,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, megaFallback, landmass, landmassDetail }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, megaFallback, landmass, landmassDetail, stationDesign }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -761,7 +771,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, megaFallback, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, megaFallback, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -822,10 +832,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, megaFallback, landmass, landmassDetail, applied, labelScale });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, megaFallback, landmass, landmassDetail, applied, labelScale, stationDesign });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, mountCity]);
+  }, [showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -990,7 +1000,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale };
+    const settings = { mode, showStations, showLabels, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
     // the displayed pre across load/generate sequences (a remembered ref can
@@ -1032,6 +1042,7 @@ export function SchematicPanel() {
       showStations?: boolean;
       showLabels?: boolean;
       megaFallback?: 'box' | 'curve';
+      stationDesign?: string;
       landmass?: 'faithful' | 'rounded' | 'diagram';
       landmassDetail?: number;
       applied?: typeof applied;
@@ -1061,6 +1072,7 @@ export function SchematicPanel() {
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
     if (s.megaFallback === 'box' || s.megaFallback === 'curve') setMegaFallback(s.megaFallback);
+    if (typeof s.stationDesign === 'string') setStationDesign(STATION_DESIGNS.some((d) => d.id === s.stationDesign) ? s.stationDesign : DEFAULT_STATION_DESIGN);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
     if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
@@ -1671,7 +1683,7 @@ export function SchematicPanel() {
   const settingsPopRef = useClampedPopover(settingsOpen, rootRef, `settings:${mode}`, 230);
 
   return (
-    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%', position: 'relative' }}>
       {/* position+zIndex so the toolbar (and its popovers) always stack above the
           map layer's detail-area panels. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
@@ -1934,6 +1946,21 @@ export function SchematicPanel() {
               <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>
                 Appearance
               </span>
+              {/* Station design: the marker style. Draw-time (instant repaint),
+                  like Label size. Opens the picker overlay. */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>Station design</span>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{getStationDesign(stationDesign).name}</span>
+                </span>
+                <button
+                  onClick={() => { setDesignPanelOpen(true); setSettingsOpen(false); }}
+                  title="Change station design"
+                  style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                >
+                  Change
+                </button>
+              </div>
               <Slider
                 label="Line thickness"
                 value={lineWidth}
@@ -2401,6 +2428,17 @@ export function SchematicPanel() {
           </div>
         )}
       </div>
+      {designPanelOpen && (
+        <StationDesignPicker
+          designs={STATION_DESIGNS}
+          current={stationDesign}
+          example={designExample}
+          dark={api.ui.getResolvedTheme() === 'dark'}
+          onSelect={setStationDesign}
+          onBack={() => { setDesignPanelOpen(false); setSettingsOpen(true); }}
+          onClose={() => setDesignPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }

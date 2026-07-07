@@ -86,6 +86,7 @@ export function drawSmoothedSchematic(
       showLabels: opts.showLabels,
       showStations: opts.showStations,
       megaFallback: opts.megaFallback,
+      stationDesign: opts.stationDesign,
       landmass: landmassParams(opts.landmass ?? 'faithful', opts.landmassDetail ?? 0.5),
     },
     sceneOut,

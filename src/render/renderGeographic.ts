@@ -1402,7 +1402,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams },
+  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1443,6 +1443,7 @@ export function drawSmoothed(
     showLabels: opts.showLabels,
     showStations: opts.showStations,
     megaFallback: opts.megaFallback ?? 'curve',
+    stationDesign: opts.stationDesign,
     backdrop,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
@@ -1458,7 +1459,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, megaFallback: opts.megaFallback });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

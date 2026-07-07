@@ -70,6 +70,11 @@ export interface SchematicOptions {
    *  does not change the layout, so it's excluded from the cache fingerprint and
    *  toggling it just repaints. Default 'box'. */
   megaFallback?: 'box' | 'curve';
+  /** Which station design (marker style) to draw. Resolved via
+   *  render/stationDesigns.ts getStationDesign; unknown/undefined → Classic.
+   *  Draw-time only — like megaFallback it never changes the layout and is
+   *  excluded from the cache fingerprint. Smoothed/topo modes only for now. */
+  stationDesign?: string;
   /** Diagnostic: overlay the Hanan routing grid underneath the routes.
    *  Smoothed mode only, since that's the only renderer that uses one. */
   showGrid?: boolean;
