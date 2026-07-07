@@ -54,12 +54,12 @@ function unionOverlapArea(a: StopScene, b: StopScene): number {
   return ox * oy;
 }
 
-const noneScene = (nodeId: string, pos: Point): StopScene => ({
+const noneScene = (nodeId: string, pos: Point, dotRadius = 5): StopScene => ({
   nodeId,
   lines: [line('X', pos)],
   capsule: { kind: 'none' },
   anchor: pos,
-  dotRadius: 5,
+  dotRadius,
 });
 
 const pillScene = (nodeId: string, pos: Point): StopScene => ({
@@ -69,6 +69,27 @@ const pillScene = (nodeId: string, pos: Point): StopScene => ({
   anchor: pos,
   dotRadius: 5,
 });
+
+// Core (unexpanded) painted box of a 'none' single stop: side 3*dotRadius
+// centered at the anchor. Matches the single box tokyu.paint draws.
+function noneBox(scene: StopScene) {
+  const half = (3 * scene.dotRadius) / 2;
+  return { x0: scene.anchor[0] - half, y0: scene.anchor[1] - half, x1: scene.anchor[0] + half, y1: scene.anchor[1] + half };
+}
+
+// Signed overlap area of two axis-aligned boxes; <= 0 means clear on an axis.
+function boxOverlapArea(a: { x0: number; y0: number; x1: number; y1: number }, b: { x0: number; y0: number; x1: number; y1: number }): number {
+  const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  if (ox <= 0 || oy <= 0) return 0;
+  return ox * oy;
+}
+
+// Core (unexpanded) group-union box of a rectRows scene.
+function rectBox(scene: StopScene) {
+  const u = groupUnion(scene);
+  return { x0: u.x0, y0: u.y0, x1: u.x1, y1: u.y1 };
+}
 
 test('two overlapping rectRows scenes -> no longer overlap; larger stays put', () => {
   // A has 3 members (bigger), B has 2; they overlap heavily. A stays, B moves.
@@ -133,20 +154,48 @@ test('non-overlapping rectRows scenes -> unchanged', () => {
   assert.deepEqual(b, bBefore);
 });
 
-test('pill / none scenes mixed in are never moved', () => {
-  const rectA = rectScene('A', { x: 0, y: 0, w: 40, h: 30 }, ['1', '2', '3']);
-  const rectB = rectScene('B', { x: 20, y: 10, w: 40, h: 30 }, ['4', '5']);
-  // Place the pill and none scenes right where the rect clusters sit so a naive
-  // resolver would push them; they must not move.
-  const pill = pillScene('P', [10, 10]);
-  const none = noneScene('N', [25, 15]);
-  const pillBefore = JSON.parse(JSON.stringify(pill));
-  const noneBefore = JSON.parse(JSON.stringify(none));
+test('two adjacent single (none) Tokyu stops whose boxes overlap get separated with a gap', () => {
+  // Boxes are side 15 (dotRadius 5); centers 10 apart overlap by 5 on X.
+  const a = noneScene('A', [0, 0]);
+  const b = noneScene('B', [10, 0]);
+  assert.ok(boxOverlapArea(noneBox(a), noneBox(b)) > 0, 'setup: boxes must overlap');
 
-  rescueRectCapsules([rectA, pill, rectB, none]);
+  rescueRectCapsules([a, b]);
 
-  assert.deepEqual(pill, pillBefore);
-  assert.deepEqual(none, noneBefore);
+  // Cleared, and not merely touching: a positive gap remains between the boxes.
+  assert.equal(boxOverlapArea(noneBox(a), noneBox(b)), 0, 'boxes still overlap after rescue');
+  const ba = noneBox(a), bb = noneBox(b);
+  const gapX = Math.max(bb.x0 - ba.x1, ba.x0 - bb.x1);
+  const gapY = Math.max(bb.y0 - ba.y1, ba.y0 - bb.y1);
+  assert.ok(gapX > 0 || gapY > 0, 'cleared stops keep a visible gap, not corner contact');
+  // The anchor and its line dot moved together.
+  assert.deepEqual(b.lines[0].pos, b.anchor);
+});
+
+test('a single (none) box overlapping a rectRows capsule is pushed clear', () => {
+  // The rectRows interchange (2 members) is bigger, so it anchors; the single
+  // yields. They overlap at the origin corner.
+  const rect = rectScene('R', { x: 0, y: 0, w: 40, h: 30 }, ['1', '2']);
+  const single = noneScene('S', [5, 5]);
+  const rectBefore = JSON.parse(JSON.stringify(rect));
+  assert.ok(boxOverlapArea(rectBox(rect), noneBox(single)) > 0, 'setup: single must overlap the capsule');
+
+  rescueRectCapsules([rect, single]);
+
+  assert.equal(boxOverlapArea(rectBox(rect), noneBox(single)), 0, 'single still overlaps the capsule');
+  // The bigger interchange did not move.
+  assert.deepEqual(rect, rectBefore);
+});
+
+test('a non-overlapping mixed set is left unchanged', () => {
+  const rect = rectScene('R', { x: 0, y: 0, w: 40, h: 30 }, ['1', '2', '3']);
+  const single = noneScene('S', [400, 400]);
+  const pill = pillScene('P', [800, 800]);
+  const before = JSON.parse(JSON.stringify([rect, single, pill]));
+
+  rescueRectCapsules([rect, single, pill]);
+
+  assert.deepEqual([rect, single, pill], before);
 });
 
 test('deterministic: same input -> identical output', () => {
@@ -154,7 +203,8 @@ test('deterministic: same input -> identical output', () => {
     rectScene('A', { x: 0, y: 0, w: 40, h: 30 }, ['1', '2', '3']),
     rectScene('B', { x: 20, y: 10, w: 40, h: 30 }, ['4', '5']),
     rectScene('C', { x: 30, y: 25, w: 40, h: 30 }, ['6']),
-    pillScene('P', [10, 10]),
+    noneScene('D', [15, 12]),
+    noneScene('E', [40, 8]),
   ];
   const run1 = build();
   const run2 = build();

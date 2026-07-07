@@ -32,10 +32,13 @@ export function renderStations(
     built.push({ nodeId, marks, scene });
   }
 
-  // Phase 2: slide any overlapping rect ("rectRows") clusters apart. This
-  // mutates only rectRows scenes; every other capsule kind is left untouched,
-  // so non-rect designs emit identical geometry.
-  rescueRectCapsules(built.map((b) => b.scene));
+  // Phase 2: for the rectangle ("rectRows") design only, slide any overlapping
+  // stops apart across stations (interchange capsules, single boxes, and mega
+  // boxes alike). Every other design skips this entirely, so their geometry is
+  // byte-identical.
+  if (design.capsule === 'rectRows') {
+    rescueRectCapsules(built.map((b) => b.scene));
+  }
 
   // Phase 3: paint each (possibly rescued) scene.
   for (const { nodeId, marks, scene } of built) {
