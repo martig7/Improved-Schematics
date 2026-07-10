@@ -436,6 +436,18 @@ export class HBuilder {
     const newPos = new Map<string, Pixel>();
     for (const [nid, eids] of this.adj) {
       if (eids.size === 0) continue;
+      // A degree-1 PROTECTED node (a terminus or spur-end station) is not an
+      // intersection: its "average" is one point dHat along its only edge, which
+      // teleports the station into the corridor. On a short edge that collapses
+      // the terminus onto its neighbour station (the grid then resolves the
+      // near-coincident pair in inverted order, swapping the first two stops of
+      // a line) and folds a sub-dHat spur flat. Synthetic dangles still tidy.
+      if (eids.size === 1 && this.protected_.has(nid)) continue;
+      // Degree-2+ protected nodes are NOT skipped: pinning stations while their
+      // unprotected corridor neighbors average against bent merged polylines
+      // displaces pass-through platform nodes off the corridor, and every line
+      // through them draws a visible detour. Their averaging stays bounded by
+      // the cropped edge endpoints.
       let sx = 0;
       let sy = 0;
       let n = 0;
@@ -786,7 +798,7 @@ export function collapseSharedSegments(
   return h;
 }
 
-export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
+export function runMergeRounds(g: TransitGraph, params: TopoParams, groups?: StationGroup[]): HBuilder {
   let h: HBuilder | null = null;
   let prevLen = Infinity;
   let prevEdges = Infinity;
@@ -807,23 +819,93 @@ export function runMergeRounds(g: TransitGraph, params: TopoParams): HBuilder {
       if (flags.atTo) stopNodeIds.add(e.to);
     }
   }
+  // Per-node STOP lines (lines that flag a stop AT the node, not mere
+  // pass-throughs): the distinctness invariant below is about stops.
+  const nodeStopLines = new Map<string, Set<string>>();
+  for (const e of g.edges) {
+    for (const [lineId, flags] of e.stops) {
+      if (flags.atFrom) {
+        let s = nodeStopLines.get(e.from);
+        if (!s) nodeStopLines.set(e.from, (s = new Set()));
+        s.add(lineId);
+      }
+      if (flags.atTo) {
+        let s = nodeStopLines.get(e.to);
+        if (!s) nodeStopLines.set(e.to, (s = new Set()));
+        s.add(lineId);
+      }
+    }
+  }
+  // Node -> station group (platform nodes map to their group; group-id nodes to
+  // themselves), so the seeding can tell one group's own platforms apart from a
+  // DIFFERENT group's stop on the same line.
+  const nodeGroup = new Map<string, string>();
+  if (groups) {
+    for (const grp of groups) {
+      nodeGroup.set(grp.id, grp.id);
+      for (const sid of grp.stationIds ?? []) nodeGroup.set(sid, grp.id);
+    }
+  }
   // Spacing floor at the SOURCE: a stop within dHat of an already-protected
-  // position gets NO seed of its own. Its walk samples snap onto the neighbour
-  // and the stops share a node. Without this, dense maps grow sub-cell station
-  // twins the router must ping-pong around. Anchors seed first (junctions stay
-  // put); stop seeding order is sorted by node id, so it is deterministic.
-  const protectedPositions = [...g.nodes.values()]
-    .filter((n) => isMergeAnchor(g, n.id))
-    .map((n) => n.pos.slice() as Pixel);
+  // position gets NO seed of its own and is ABSORBED into that seed. Each seed
+  // keeps a ledger of WHICH GROUP owns each absorbed stop line; a stop whose
+  // line is already owned at a nearby seed by a DIFFERENT group must keep its
+  // own protected seed, because two distinct stops on one line must never share
+  // a node. The ledger makes the rule TRANSITIVE: an absorbed stop still guards
+  // its line for every later stop, where the previous pairwise check silently
+  // dropped the absorbed stop's identity and let same-line neighbours collapse
+  // (their corridor order then scrambled in the post-merge re-split). Anchors
+  // seed first (junctions stay put); stop seeding order is sorted by node id,
+  // so it is deterministic.
+  const protectedPositions: Pixel[] = [];
+  const seedOwners: Array<Map<string, Set<string>>> = []; // line -> owning groups
+  for (const n of [...g.nodes.values()].filter((n) => isMergeAnchor(g, n.id))) {
+    protectedPositions.push(n.pos.slice() as Pixel);
+    const owners = new Map<string, Set<string>>();
+    const own = nodeGroup.get(n.id) ?? n.id;
+    for (const lid of nodeStopLines.get(n.id) ?? []) owners.set(lid, new Set([own]));
+    seedOwners.push(owners);
+  }
   const stopOnly = [...g.nodes.values()]
     .filter((n) => !isMergeAnchor(g, n.id) && stopNodeIds.has(n.id))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const n of stopOnly) {
-    let clear = true;
-    for (const p of protectedPositions) {
-      if (dist(p, n.pos) < params.dHat) { clear = false; break; }
+    const myStop = nodeStopLines.get(n.id) ?? new Set<string>();
+    const myGroup = nodeGroup.get(n.id) ?? n.id;
+    let conflict = false;
+    const absorbedBy: number[] = [];
+    for (let i = 0; i < protectedPositions.length && !conflict; i++) {
+      if (dist(protectedPositions[i], n.pos) >= params.dHat) continue;
+      const owners = seedOwners[i];
+      for (const lid of myStop) {
+        const os = owners.get(lid);
+        if (!os) continue;
+        for (const og of os) {
+          if (og !== myGroup) { conflict = true; break; }
+        }
+        if (conflict) break;
+      }
+      if (!conflict) absorbedBy.push(i);
     }
-    if (clear) protectedPositions.push(n.pos.slice() as Pixel);
+    if (conflict || absorbedBy.length === 0) {
+      // Own seed: either nothing is near, or a nearby seed already carries this
+      // stop's line for another group.
+      protectedPositions.push(n.pos.slice() as Pixel);
+      const owners = new Map<string, Set<string>>();
+      for (const lid of myStop) owners.set(lid, new Set([myGroup]));
+      seedOwners.push(owners);
+    } else {
+      // Absorbed: record this stop's lines on every dominating seed so a later
+      // same-line stop of another group still seeds apart.
+      for (const i of absorbedBy) {
+        const owners = seedOwners[i];
+        for (const lid of myStop) {
+          let os = owners.get(lid);
+          if (!os) owners.set(lid, (os = new Set()));
+          os.add(myGroup);
+        }
+      }
+    }
   }
   for (let round = 1; round <= params.maxRounds; round++) {
     const input = h === null ? inputFromGraph(g, params.projectGeo) : inputFromBuilder(h, params.dHat);
@@ -1241,6 +1323,31 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
     return false;
   };
 
+  // LINE CONSERVATION: welding the two endpoints of a line's ONLY edge turns
+  // that edge into a degenerate self-loop, which the cleanup below deletes,
+  // erasing the line's entire drawn course (a short shuttle compressed under
+  // the weld radius by the warp and corridor merge). Such endpoint pairs are
+  // pinned: they never weld, directly or through a component chain. The
+  // same-group guard alone cannot catch this because a group's platforms can
+  // straddle both nodes and legitimize the pair.
+  const edgeCountByLine = new Map<string, number>();
+  for (const e of h.edges.values()) {
+    for (const lid of e.lineIds) edgeCountByLine.set(lid, (edgeCountByLine.get(lid) ?? 0) + 1);
+  }
+  const pinnedPairs: Array<[string, string]> = [];
+  for (const e of h.edges.values()) {
+    if (e.from === e.to) continue;
+    for (const lid of e.lineIds) {
+      if (edgeCountByLine.get(lid) === 1) { pinnedPairs.push([e.from, e.to]); break; }
+    }
+  }
+  const pinnedWith = (a: string, b: string): boolean => {
+    for (const [u, v] of pinnedPairs) {
+      if ((u === a && v === b) || (u === b && v === a)) return true;
+    }
+    return false;
+  };
+
   const parent = new Map<string, string>(ids.map((id) => [id, id]));
   const find = (a: string): string => {
     let r = a;
@@ -1262,6 +1369,7 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
           // change what the map says (two stops become one). Same-group twins
           // and synthetics are fair game.
           if (stationNodes.has(id) && stationNodes.has(other) && !sameGroup(id, other)) continue;
+          if (pinnedWith(id, other)) continue; // a line's only edge spans this pair
           if (dist(p, h.nodes.get(other)!.pos) < minDist) union(id, other);
         }
       }
@@ -1273,6 +1381,20 @@ export function weldSubCellNodes(h: SupportGraph, minDist: number): number {
   for (const id of ids) {
     const r = find(id);
     (comps.get(r) ?? comps.set(r, []).get(r)!).push(id);
+  }
+  // A synthetic chain can still pull both ends of a pinned pair into ONE
+  // component; ejecting both endpoints from the component keeps the line's
+  // only edge alive (they simply do not weld this round).
+  if (pinnedPairs.length > 0) {
+    for (const [root, members] of comps) {
+      if (members.length < 2) continue;
+      const inComp = new Set(members);
+      const eject = new Set<string>();
+      for (const [u, v] of pinnedPairs) {
+        if (inComp.has(u) && inComp.has(v)) { eject.add(u); eject.add(v); }
+      }
+      if (eject.size > 0) comps.set(root, members.filter((m) => !eject.has(m)));
+    }
   }
   const survivorOf = new Map<string, string>();
   let welds = 0;
@@ -1425,7 +1547,7 @@ export function buildSupportGraph(
   groups: StationGroup[],
   params: TopoParams,
 ): SupportGraph {
-  const builder = runMergeRounds(g, params);
+  const builder = runMergeRounds(g, params, groups);
   // Honest lengths before contraction: a balloon fold inflates polyline
   // length past the short-edge threshold and shields the edge from cleanup.
   builder.sanitizeEdgeGeometry(params.dHat);
@@ -1653,6 +1775,13 @@ export function buildSupportGraph(
     }
   }
 
+  // Lines already claimed at each anchor node by previously-assigned groups.
+  // Two groups that SHARE a line must never anchor on one node: that fuses two
+  // same-line stops into one marker, and the post-merge re-split then scrambles
+  // their corridor order while the capsule solver bridges the leftover marks
+  // across the map. Distinct-line groups may still share (interchange dedup).
+  const claimedLines = new Map<string, Set<string>>();
+
   for (const group of groups) {
     const incident: GraphEdge[] = [];
     for (const m of groupMemberNodes.get(group.id) ?? []) {
@@ -1663,13 +1792,20 @@ export function buildSupportGraph(
     for (const e of incident) for (const l of e.lines) wantLines.add(l.id);
 
     const centroid = groupPixel(group, g);
+    const sameLineClaimed = (nid: string): boolean => {
+      const cl = claimedLines.get(nid);
+      if (!cl) return false;
+      for (const l of wantLines) if (cl.has(l)) return true;
+      return false;
+    };
     // Nearest line-serving node wins (tie-break: more served). A
     // most-served-wins rule would let a busy junction steal a group from its
     // own terminus stub / anchor node, collapsing two groups onto one marker
     // and erasing the line's last hop visually. A node exists at every stop
     // position, so nearest-with-service maps each group to its own node.
     let best: { id: string; served: number; d: number } | null = null;
-    const consider = (nid: string, node: SupportNode, radius: number) => {
+    const consider = (nid: string, node: SupportNode, radius: number, allowClaimed = false) => {
+      if (!allowClaimed && sameLineClaimed(nid)) return;
       const d = dist(node.pos, centroid);
       if (d > radius) return;
       let served = 0;
@@ -1691,6 +1827,11 @@ export function buildSupportGraph(
       for (const [nid, node] of nodes) consider(nid, node, mapRadius);
     }
     if (!best) {
+      // Degenerate: every serving node is claimed by a same-line group. Sharing
+      // an anchor beats losing the station outright.
+      for (const [nid, node] of nodes) consider(nid, node, mapRadius, true);
+    }
+    if (!best) {
       for (const m of groupMemberNodes.get(group.id) ?? []) {
         const sn = mapToSupport(m);
         if (!sn) continue;
@@ -1705,6 +1846,12 @@ export function buildSupportGraph(
       }
     }
     if (!best) continue;
+    {
+      const chosen = best as { id: string };
+      let cl = claimedLines.get(chosen.id);
+      if (!cl) claimedLines.set(chosen.id, (cl = new Set()));
+      for (const l of wantLines) cl.add(l);
+    }
     groupSupportNode.set(group.id, best.id);
     stations.set(group.id, {
       id: group.id,
