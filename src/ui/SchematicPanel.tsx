@@ -252,10 +252,18 @@ export function SchematicPanel() {
   // layout fingerprint automatically (they ARE the fingerprinted content).
   const mapBearing = useMemo(() => {
     try {
-      const c = api.utils.getCities?.()?.find((x) => x.code === mountCity);
-      const b = c?.initialViewState?.bearing;
+      const cities = api.utils.getCities?.();
+      const c = cities?.find((x) => x.code === mountCity);
+      if (!c) {
+        // A missed lookup silently rendering unrotated is indistinguishable
+        // from a city whose bearing is genuinely 0; say so in the log.
+        console.warn('[ImprovedSchematics] no city entry for "' + mountCity + '" (' + (cities ? cities.length + ' cities' : 'getCities unavailable') + '); map bearing defaults to 0');
+        return 0;
+      }
+      const b = c.initialViewState?.bearing;
       return typeof b === 'number' && Number.isFinite(b) ? b : 0;
-    } catch {
+    } catch (err) {
+      console.warn('[ImprovedSchematics] map bearing lookup failed (' + String(err) + '); defaults to 0');
       return 0;
     }
   }, [mountCity]);
@@ -690,7 +698,10 @@ export function SchematicPanel() {
       exportOptions: { format: exportFormat, rasterScale, jpegQuality },
       // Provenance: the game bearing the captured coordinates were rotated into
       // (the coords above are ALREADY in the rotated frame — do not re-rotate).
+      // bearingApplied makes that contract machine-readable so a loader can
+      // refuse to guess.
       mapBearing,
+      bearingApplied: true,
       // Per-area cropped sub-inputs (see above) for debugging any area in isolation.
       areas,
     };
