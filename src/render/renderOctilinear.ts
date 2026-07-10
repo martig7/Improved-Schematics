@@ -3526,11 +3526,24 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const connStroke = dark ? '#e4e4e7' : '#111111'; // capsule border colors (stops.ts)
     const connW = +(LINE_WIDTH * 0.45).toFixed(1); // hairline bar
     const f = (n: number) => n.toFixed(1);
+    // The rect design re-seats marks into capsules whose boxes can sit away
+    // from the classic mark positions; anchor the bars (and the elbow
+    // avoidance set) on the SEATED box centers so no bar dangles beside a
+    // moved capsule. Every other design keeps the classic mark anchors.
+    const rectDots = (nid: string): Pixel[] | undefined => {
+      if (!isRect) return undefined;
+      const cap = geom.rectByNode?.get(nid);
+      if (cap && cap.centers.length > 0) return cap.centers.map((c): Pixel => [c.x, c.y]);
+      const sp = geom.tokyuStopPos?.get(nid);
+      return sp ? [[sp[0], sp[1]]] : undefined;
+    };
     for (const [base, unitIds] of splitGroups) {
       const memberSet = new Set(unitIds);
       const foreign: Pixel[] = [];
       for (const [nid, marks] of stopsByNode) {
         if (memberSet.has(nid)) continue;
+        const seated = rectDots(nid);
+        if (seated) { for (const p of seated) foreign.push(p); continue; }
         for (const m of marks) foreign.push(m.pos);
       }
       // mega-boxed units draw no dots (stops.ts mega branch). A connector into
@@ -3540,7 +3553,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
       const units = unitIds
         .map((id) => ({
           id,
-          dots: (stopsByNode.get(id) ?? []).filter((m) => !m.mega).map((m) => m.pos),
+          dots: rectDots(id) ?? (stopsByNode.get(id) ?? []).filter((m) => !m.mega).map((m) => m.pos),
         }))
         .filter((u) => u.dots.length > 0);
       if (units.length < 2) continue;
