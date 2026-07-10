@@ -3223,14 +3223,44 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return undefined;
     };
-    // Targets are pushed for every boxed mark; the ENDINGS-ONLY rule is enforced
-    // geometrically inside computeTokyuLaneCrops (a lane end is touched only when
-    // it is a free end of the line's drawn course), so a through lane can never
-    // be cut and the gate always agrees with the final drawn geometry.
+    // ROUTE-TERMINUS gate: a target is pushed only where the line's course
+    // actually ends. The geometric free-end signals inside
+    // computeTokyuLaneCrops cannot tell a terminus from a SEAM in the drawn
+    // course (a trim or merge can leave a single incident lane with a
+    // detached endpoint at a mid-route station, and cropping there amputates
+    // a line that continues). The traversal gives the semantic ends: the
+    // walk's start and end nodes, plus every turnaround where the walk
+    // re-traverses an edge back the way it came (a branch tip on a forked
+    // line). A seam never appears in the traversal, so it can never be
+    // cropped.
+    const routeEndNodes = new Map<string, Set<string>>();
+    for (const [lid, trav] of layout.lineTraversals) {
+      if (trav.length === 0) continue;
+      const ends = new Set<string>();
+      const eF = edgeById.get(trav[0].edgeId);
+      const eL = edgeById.get(trav[trav.length - 1].edgeId);
+      if (eF) ends.add(trav[0].reversed ? eF.to : eF.from);
+      if (eL) ends.add(trav[trav.length - 1].reversed ? eL.from : eL.to);
+      for (let i = 1; i < trav.length; i++) {
+        if (trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed) {
+          const e = edgeById.get(trav[i].edgeId);
+          if (e) ends.add(trav[i].reversed ? e.to : e.from);
+        }
+      }
+      routeEndNodes.set(lid, ends);
+    }
+    const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
+      routeEndNodes.get(lineId)?.has(flagNode) ?? false;
+    // Targets are pushed for every boxed TERMINUS mark; the ENDINGS-ONLY rule is
+    // additionally enforced geometrically inside computeTokyuLaneCrops (a lane
+    // end is touched only when it is a free end of the line's drawn course), so
+    // a through lane can never be cut and the gate always agrees with the final
+    // drawn geometry.
     for (const s of gathered) {
       const cap = rectByNode.get(s.nodeId);
       const singlePos = tokyuStopPos.get(s.nodeId);
       for (const mk of s.marks) {
+        if (!isRouteTerminus(mk.lineId, mk.flagNode)) continue;
         let box: Box | undefined;
         if (cap) {
           const c = cap.centers.find((e) => e.lineId === mk.lineId);
