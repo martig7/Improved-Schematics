@@ -1633,7 +1633,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, megaFallback, landmass, landmassDetail]);
+  }, [showLabels, showStations, megaFallback, stationDesign, landmass, landmassDetail]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -2361,6 +2361,7 @@ export function SchematicPanel() {
             showStations={showStations}
             showLabels={showLabels}
             megaFallback={megaFallback}
+            stationDesign={stationDesign}
             landmass={landmass}
             landmassDetail={landmassDetail}
             labelScale={labelScale}

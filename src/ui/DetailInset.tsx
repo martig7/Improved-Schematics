@@ -66,6 +66,9 @@ interface DetailInsetProps {
   /** Dense-hub fallback shape (the main map's setting). Re-sims of the crop may also
    *  hit un-seatable hubs, so they honour the same box/curve choice. */
   megaFallback: 'box' | 'curve';
+  /** Station design (the main map's setting): the popout draws its stations
+   *  with the same design as the map it magnifies. */
+  stationDesign: string;
   /** Landmass style (the main map's setting). The popout's backdrop matches
    *  the main map's faithful/rounded/diagram look. */
   landmass: 'faithful' | 'rounded' | 'diagram';
@@ -106,6 +109,7 @@ export function DetailInset({
   showStations,
   showLabels,
   megaFallback,
+  stationDesign,
   landmass,
   landmassDetail,
   labelScale,
@@ -263,7 +267,7 @@ export function DetailInset({
     };
     // Cheap redraw of a cached sub-layout with the CURRENT toggles.
     const drawResim = (subPre: SmoothedPrecomputed, selFrame: Rect | null) => {
-      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, megaFallback, landmass, landmassDetail });
+      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, megaFallback, stationDesign, landmass, landmassDetail });
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
       applyLabelScale();
@@ -364,7 +368,7 @@ export function DetailInset({
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, megaFallback, landmass, landmassDetail, position, buildInput, applyLabelScale]);
+  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, megaFallback, stationDesign, landmass, landmassDetail, position, buildInput, applyLabelScale]);
 
   // Re-apply the label scale when only the setting changes (no re-draw needed).
   useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);
