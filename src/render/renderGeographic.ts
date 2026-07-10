@@ -39,6 +39,7 @@ import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
 import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
+import { rescueTwists } from './layout/twistRescue';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
@@ -1276,6 +1277,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     )
   ) {
     orderByBlocks(layout);
+    // Same-section twist rescue: a swap that landed at a straight-through
+    // node migrates along the pair's co-bundled stretch to the nearest
+    // branch (preferred) or >=45deg turn. OCTI_TWIST_RESCUE=0 disables.
+    rescueTwists(layout);
   }
   lap('untangle');
 
