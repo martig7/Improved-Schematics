@@ -1240,6 +1240,22 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       (lid) => { for (const e of layout.edges) { const l = e.lines.find((x) => x.id === lid); if (l?.label) return l.label; } return lid.slice(0, 8); },
     );
   }
+  // Line conservation audit: every intake line that had a traversal must still
+  // have a non-empty traversal after the merge and its cleanups, or the map is
+  // silently missing a whole line. The render continues, but the loss is
+  // reported loudly so it can never ship unnoticed.
+  for (const [lid, steps] of graph.lineTraversals) {
+    if (steps.length === 0) continue;
+    const out = layout.lineTraversals.get(lid);
+    if (!out || out.length === 0) {
+      let label = lid;
+      for (const e of graph.edges) {
+        const l = e.lines.find((x) => x.id === lid);
+        if (l?.label) { label = l.label; break; }
+      }
+      console.error('[ImprovedSchematics] merge dropped line "' + label + '" (no drawn course survives)');
+    }
+  }
   orderLines(layout);
   // capsule rule counts only SERVED members: a routeless platform in a
   // group must not promote it to an interchange capsule

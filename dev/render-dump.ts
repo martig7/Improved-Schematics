@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { Resvg } from '@resvg/resvg-js';
 import { deserializeMap } from '../src/render/persist';
-import { drawSmoothedSchematic } from '../src/render/schematic';
+import { drawSmoothedSchematic, precomputeSmoothedSchematic } from '../src/render/schematic';
 import type { SmoothedPrecomputed } from '../src/render/schematic';
 import type { Pixel } from '../src/render/layout/types';
 import { analyzeLine } from './contig';
@@ -33,10 +33,31 @@ const span = Number(val('--span', '560'));
 const width = Number(val('--width', '1300'));
 
 const bundle = deserializeMap(readFileSync(dumpPath, 'utf-8'));
+
+// Synthesize stNodes for routes with empty stNodes/stCombos in inputDump (offline testing fallback)
+if (bundle.inputDump && Array.isArray(bundle.inputDump.routes)) {
+  for (const r of bundle.inputDump.routes) {
+    if ((!r.stNodes || r.stNodes.length === 0) && (!r.stCombos || r.stCombos.length === 0) && r.stations) {
+      console.log(`Synthesizing stNodes for route ${r.id} (${r.bullet || r.name})`);
+      r.stNodes = r.stations.map((sid: string) => ({ id: sid }));
+    }
+  }
+}
+
 const pre = bundle.pre as SmoothedPrecomputed;
 console.log(`dump ${dumpPath}: ${pre.width}x${pre.height} dark=${pre.dark} hasGeometry=${!!pre.geometry}`);
 
-if (flag('--recompute')) { delete pre.geometry; console.log('cleared pre.geometry → will recompute'); }
+if (flag('--recompute')) {
+  console.log('recomputing layout from inputDump...');
+  const res = precomputeSmoothedSchematic(bundle.inputDump as any);
+  if (typeof res === 'string') {
+    console.error('recompute failed:', res);
+    process.exit(1);
+  }
+  for (const k of Object.keys(pre)) delete (pre as any)[k];
+  Object.assign(pre, res);
+  console.log('full layout recomputation complete.');
+}
 
 const settings = (bundle.settings ?? {}) as { showLabels?: boolean; showStations?: boolean };
 let svg = drawSmoothedSchematic(pre, {
