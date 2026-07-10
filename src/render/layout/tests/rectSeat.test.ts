@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rectSeat } from '../rectSeat';
+import { rectSeat, mstConnectors } from '../rectSeat';
 
 const near = (a: number, b: number, e = 1e-6) => Math.abs(a - b) < e;
 
@@ -33,6 +33,17 @@ test('deterministic: identical output on repeat', () => {
   const args = () => rectSeat(
     [{ lineId: 'A', home: [0, 0], axis: 2 }, { lineId: 'B', home: [3, 60], axis: 2 }], 30, 4);
   assert.deepEqual(args(), args());
+});
+
+test('mstConnectors survives a non-finite rect instead of spanning into it', () => {
+  // A NaN center makes every distance comparison false, so no pair is ever
+  // picked; the MST must stop rather than read a rect it never chose.
+  const out = mstConnectors([
+    { x: NaN, y: NaN, w: 10, h: 10 },
+    { x: 40, y: 0, w: 10, h: 10 },
+    { x: 80, y: 0, w: 10, h: 10 },
+  ], 2, 3);
+  assert.ok(Array.isArray(out)); // reaching here means no throw
 });
 
 test('single member -> one box at its home, no connector', () => {

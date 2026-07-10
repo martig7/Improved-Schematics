@@ -529,13 +529,28 @@ export function computeRectByNode(
   // rigid rescue. Singles without a lane stay put as static obstacles.
   const pool: LaneStation[] = [];
   const poolStations = new Map<string, RectSeatStation>();
+  // Finite-input boundary: one non-finite coordinate poisons the whole shared
+  // solve (a NaN part rect makes every overlap comparison false, and the
+  // connector MST then indexes a rect it never picked). A station carrying a
+  // non-finite mark, or producing a non-finite lane curve, is left unseated
+  // and reported, so the rest of the map still seats and the log names the
+  // offender for root-causing.
+  const finitePt = (p?: Pixel): boolean => !!p && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+  const finiteCurve = (li: LaneItem): boolean =>
+    Number.isFinite(li.t0) &&
+    Number.isFinite(li.curve.anchorT) &&
+    Number.isFinite(li.curve.cum[li.curve.cum.length - 1]);
   for (const s of gathered) {
     if (s.marks.length === 0) continue;
+    if (s.marks.some((m) => (m.pos && !finitePt(m.pos)) || (m.home && !finitePt(m.home)))) {
+      console.warn('[ImprovedSchematics] rect seating: non-finite mark position at station ' + s.nodeId + '; left unseated');
+      continue;
+    }
     const items: LaneItem[] = [];
     let ok = laneItemFor !== undefined;
     for (const m of s.marks) {
       const li = ok && m.flagNode && m.pos ? laneItemFor!(m.lineId, m.flagNode, m.pos) : null;
-      if (!li) { ok = false; break; }
+      if (!li || !finiteCurve(li)) { ok = false; break; }
       items.push(li);
     }
     if (ok && (s.marks.length === 1 || s.marks.every((m) => m.pos))) {

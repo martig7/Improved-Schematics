@@ -184,6 +184,29 @@ test('computeRectByNode: a single box is pushed clear of an interchange capsule'
   assert.ok(Math.abs(s[1]) < 1e-9, 'single left its lane');
 });
 
+test('computeRectByNode: a station with a non-finite mark is left unseated, others seat', () => {
+  // Reproduces the crash class: one NaN coordinate used to poison the shared
+  // solve and blow up the connector MST for the whole map. The station must be
+  // skipped, and every other station must still seat normally.
+  const stations: RectSeatStation[] = [
+    { nodeId: 'bad', marks: [
+      { lineId: 'A', home: [NaN, 0], axis: 0, pos: [NaN, 0], flagNode: 'f1' },
+      { lineId: 'B', home: [40, 0], axis: 0, pos: [40, 0], flagNode: 'f2' },
+    ] },
+    { nodeId: 'good', marks: [
+      { lineId: 'C', home: [500, 500], axis: 0, pos: [500, 500], flagNode: 'f3' },
+      { lineId: 'D', home: [540, 500], axis: 0, pos: [540, 500], flagNode: 'f4' },
+    ] },
+  ];
+  const { rectByNode } = computeRectByNode(stations, undefined, hLaneItem);
+  assert.ok(!rectByNode.has('bad'), 'non-finite station must not seat');
+  const cap = rectByNode.get('good')!;
+  assert.ok(cap, 'finite station still seats');
+  for (const c of cap.centers) {
+    assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y), 'finite station output stays finite');
+  }
+});
+
 test('computeRectByNode: deterministic on repeat', () => {
   const stations: RectSeatStation[] = [
     { nodeId: 'n1', marks: [

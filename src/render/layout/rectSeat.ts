@@ -468,6 +468,9 @@ export function mstConnectors(rects: Rect[], margin: number, tuck: number): Arra
         }
       }
     }
+    // No pickable pair means a non-finite center made every distance
+    // comparison false; stop spanning rather than index a rect never chosen.
+    if (bestJ < 0) break;
     inTree[bestJ] = true;
     const c = octiConnect(rects[bestI], rects[bestJ], margin);
     connectors.push({ points: tuckPolyline(c, tuck) });
