@@ -281,49 +281,58 @@ export function laneSeatAll(
   // system shifts along the common direction only. Iterated so the foot points
   // re-resolve across bends and tips; the shift is capped per pass so a
   // degenerate configuration can never fling the row.
+  // One Gauss-Newton step: the rigid shift that best centers the given box
+  // positions on their own lanes (least squares over the true distances to the
+  // nearest lane point, radial gradients; a singular system shifts along the
+  // common direction only). Capped so a degenerate configuration cannot fling
+  // the row.
+  const lsqShift = (posMap: Map<number, Point>): [number, number] => {
+    let m00 = 0, m01 = 0, m11 = 0, r0 = 0, r1 = 0;
+    let n0: Point | null = null;
+    let sNx = 0, sNy = 0, sE = 0, cnt = 0;
+    for (const [i, p] of posMap) {
+      const f = laneFoot(i, p);
+      let nx: number, ny: number, e: number;
+      if (f.d > 1e-6) {
+        nx = (p[0] - f.q[0]) / f.d;
+        ny = (p[1] - f.q[1]) / f.d;
+        e = f.d;
+      } else {
+        nx = -f.t[1];
+        ny = f.t[0];
+        e = 0;
+      }
+      m00 += nx * nx; m01 += nx * ny; m11 += ny * ny;
+      r0 -= e * nx; r1 -= e * ny;
+      if (!n0) n0 = [nx, ny];
+      const sgn = nx * n0[0] + ny * n0[1] < 0 ? -1 : 1;
+      sNx += sgn * nx; sNy += sgn * ny; sE += sgn * e;
+      cnt++;
+    }
+    if (cnt === 0) return [0, 0];
+    const det = m00 * m11 - m01 * m01;
+    let u = 0, v = 0;
+    if (Math.abs(det) > 1e-9) {
+      u = (r0 * m11 - r1 * m01) / det;
+      v = (m00 * r1 - m01 * r0) / det;
+    } else {
+      const len = hyp(sNx, sNy);
+      if (len > 1e-9) {
+        const s = -(sE / cnt);
+        u = s * (sNx / len);
+        v = s * (sNy / len);
+      }
+    }
+    const mag = hyp(u, v);
+    const cap = 2 * box * FLOAT_CAP_FRAC;
+    if (mag > cap) { u *= cap / mag; v *= cap / mag; }
+    return [u, v];
+  };
   const centerOnLanes = (posMap: Map<number, Point>): void => {
     for (let pass = 0; pass < 6; pass++) {
-      let m00 = 0, m01 = 0, m11 = 0, r0 = 0, r1 = 0;
-      let n0: Point | null = null;
-      let sNx = 0, sNy = 0, sE = 0, cnt = 0;
-      for (const [i, p] of posMap) {
-        const f = laneFoot(i, p);
-        let nx: number, ny: number, e: number;
-        if (f.d > 1e-6) {
-          nx = (p[0] - f.q[0]) / f.d;
-          ny = (p[1] - f.q[1]) / f.d;
-          e = f.d;
-        } else {
-          nx = -f.t[1];
-          ny = f.t[0];
-          e = 0;
-        }
-        m00 += nx * nx; m01 += nx * ny; m11 += ny * ny;
-        r0 -= e * nx; r1 -= e * ny;
-        if (!n0) n0 = [nx, ny];
-        const sgn = nx * n0[0] + ny * n0[1] < 0 ? -1 : 1;
-        sNx += sgn * nx; sNy += sgn * ny; sE += sgn * e;
-        cnt++;
-      }
-      if (cnt === 0) return;
-      const det = m00 * m11 - m01 * m01;
-      let u = 0, v = 0;
-      if (Math.abs(det) > 1e-9) {
-        u = (r0 * m11 - r1 * m01) / det;
-        v = (m00 * r1 - m01 * r0) / det;
-      } else {
-        const len = hyp(sNx, sNy);
-        if (len > 1e-9) {
-          const s = -(sE / cnt);
-          u = s * (sNx / len);
-          v = s * (sNy / len);
-        }
-      }
-      const mag = hyp(u, v);
-      const cap = 2 * box * FLOAT_CAP_FRAC;
-      if (mag > cap) { u *= cap / mag; v *= cap / mag; }
+      const [u, v] = lsqShift(posMap);
       for (const [, p] of posMap) { p[0] += u; p[1] += v; }
-      if (mag < 0.05) break; // converged
+      if (hyp(u, v) < 0.05) break; // converged
     }
   };
   const snapPart = (part: Part): void => {
@@ -478,6 +487,104 @@ export function laneSeatAll(
     parts[mi] = { station: parts[mi].station, members: union, horiz: (x1 - x0) >= (y1 - y0) };
     parts.splice(mj, 1);
     snapPart(parts[mi]);
+  }
+
+  // CONSTRAINED RE-CENTERING polish: the deconflict slide displaces rows in
+  // fixed steps and can overshoot, dumping all the displacement on one capsule
+  // while slack remains. Each multi-box row now pulls back toward its lanes by
+  // the largest fraction of its least-squares shift that creates NO overlap
+  // with any other part or obstacle, over a few passes, so every capsule
+  // reclaims whatever line contact the crowding allows and the unavoidable
+  // residual spreads instead of piling up. Singleton parts are already on
+  // their lanes and skip. Deterministic: fixed part order, fixed fractions.
+  {
+    const shiftedRect = (part: Part, u: number, v: number) => {
+      const r = rectOf(part);
+      return { x0: r.x0 + u, y0: r.y0 + v, x1: r.x1 + u, y1: r.y1 + v };
+    };
+    for (let pass = 0; pass < 8; pass++) {
+      let improved = false;
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i].members.length < 2) continue;
+        const posMap = new Map<number, Point>();
+        for (const k of parts[i].members) posMap.set(k, [pts[k][0], pts[k][1]]);
+        const [u, v] = lsqShift(posMap);
+        if (hyp(u, v) < 0.05) continue;
+        // Largest fraction of the shift that stays clear of every other part
+        // and obstacle, found by bisection (the available slack is often much
+        // smaller than the wanted shift, so fixed fractions starve).
+        const clearAt = (t: number): boolean => {
+          const trial = shiftedRect(parts[i], u * t, v * t);
+          for (const b of obstacles) if (overlaps(trial, b)) return false;
+          for (let j = 0; j < parts.length; j++) {
+            if (j !== i && overlaps(trial, rectOf(parts[j]))) return false;
+          }
+          return true;
+        };
+        let lo = 0;
+        if (clearAt(1)) lo = 1;
+        else {
+          let hi = 1;
+          for (let b = 0; b < 8; b++) {
+            const mid = (lo + hi) / 2;
+            if (clearAt(mid)) lo = mid; else hi = mid;
+          }
+        }
+        if (lo * hyp(u, v) < 0.05) continue;
+        for (const k of parts[i].members) { pts[k][0] += u * lo; pts[k][1] += v * lo; }
+        improved = true;
+      }
+      if (!improved) break;
+    }
+    // PAIR BALANCING: two capsules pressed against each other over a contested
+    // junction cannot both center individually (the greedy pass gives the
+    // first-comer everything). A joint least-squares shift over BOTH parts'
+    // members moves the pressed pair as ONE unit to the residual-balancing
+    // position, bisected against everything else, so the unavoidable
+    // displacement splits between the capsules and each line still passes
+    // through its box. Singleton parts stay out (they are exactly on-lane).
+    for (let pass = 0; pass < 4; pass++) {
+      let improved = false;
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i].members.length < 2) continue;
+        for (let j = i + 1; j < parts.length; j++) {
+          if (parts[j].members.length < 2) continue;
+          const a = rectOf(parts[i]);
+          const b = rectOf(parts[j]);
+          const gx = Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1);
+          const gy = Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1);
+          if (Math.max(gx, gy) > capGap + 0.35) continue; // not pressed together
+          const union = new Map<number, Point>();
+          for (const k of parts[i].members) union.set(k, [pts[k][0], pts[k][1]]);
+          for (const k of parts[j].members) union.set(k, [pts[k][0], pts[k][1]]);
+          const [u, v] = lsqShift(union);
+          if (hyp(u, v) < 0.05) continue;
+          const pairClearAt = (t: number): boolean => {
+            for (const pi of [i, j]) {
+              const trial = shiftedRect(parts[pi], u * t, v * t);
+              for (const ob of obstacles) if (overlaps(trial, ob)) return false;
+              for (let k = 0; k < parts.length; k++) {
+                if (k !== i && k !== j && overlaps(trial, rectOf(parts[k]))) return false;
+              }
+            }
+            return true;
+          };
+          let lo = 0;
+          if (pairClearAt(1)) lo = 1;
+          else {
+            let hi = 1;
+            for (let bi = 0; bi < 8; bi++) {
+              const mid = (lo + hi) / 2;
+              if (pairClearAt(mid)) lo = mid; else hi = mid;
+            }
+          }
+          if (lo * hyp(u, v) < 0.05) continue;
+          for (const k of union.keys()) { pts[k][0] += u * lo; pts[k][1] += v * lo; }
+          improved = true;
+        }
+      }
+      if (!improved) break;
+    }
   }
 
   // Emit: FLUSH capsule per part; per-station connectors over its own parts.

@@ -543,6 +543,10 @@ export function computeRectByNode(
       poolStations.set(s.nodeId, s);
       continue;
     }
+    if ((process as any).env?.OCTI_POOL_DEBUG) {
+      console.error('[pool] fallback ' + s.nodeId + ' marks=' + s.marks.map((m) =>
+        m.lineId.slice(0, 6) + ':' + (m.flagNode ? 'fn' : 'NOFN') + ':' + (m.pos ? 'pos' : 'NOPOS')).join(','));
+    }
     if (s.marks.length === 1) {
       const m = s.marks[0];
       if (m.pos) singles.push({ nodeId: s.nodeId, pos: [m.pos[0], m.pos[1]], box: singleBox });
