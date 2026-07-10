@@ -102,6 +102,46 @@ test('coincident anchors on parallel lanes deconflict then stay flush', () => {
   assertNoBoxOverlap(out);
 });
 
+test('merged row centers EXACTLY on crossing lanes, terminus tip included', () => {
+  // Lane A: slope +1 through the origin. Lane B: slope -1 through (0, 20),
+  // ending at a TERMINUS tip at (6, 14) just past the junction. A merged
+  // vertical column has an exact both-on-line solution (x = (20 - pitch) / 2),
+  // and B's solution point lies on its drawn extent. The centering must find
+  // it even though B's nearest-point foot CLAMPS at the tip early in the
+  // iteration (the radial residual, not a segment-normal phantom).
+  const laneA: LaneCurve = {
+    pts: [[-200, -200], [200, 200]],
+    cum: [0, Math.sqrt(2) * 400],
+    anchorT: Math.sqrt(2) * 400 * (216 / 400), // anchor at (16, 16)
+  };
+  const lenB = Math.sqrt(2) * 36; // from (-30, 50) to the tip (6, 14)
+  const laneB: LaneCurve = {
+    pts: [[-30, 50], [6, 14]],
+    cum: [0, lenB],
+    anchorT: lenB, // anchor at the tip
+  };
+  const out = laneSeat(
+    [{ lineId: 'A', curve: laneA, t0: laneA.anchorT }, { lineId: 'B', curve: laneB, t0: laneB.anchorT }],
+    BOX, GAP,
+  );
+  assert.equal(out.groups.length, 1, 'merged into one capsule');
+  const segDist = (p: [number, number], pts: Array<[number, number]>): number => {
+    let best = Infinity;
+    for (let k = 1; k < pts.length; k++) {
+      const ax = pts[k - 1][0], ay = pts[k - 1][1];
+      const dx = pts[k][0] - ax, dy = pts[k][1] - ay;
+      const l2 = dx * dx + dy * dy;
+      const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2));
+      best = Math.min(best, Math.hypot(p[0] - (ax + dx * u), p[1] - (ay + dy * u)));
+    }
+    return best;
+  };
+  const a = out.centers.get('A')!;
+  const b = out.centers.get('B')!;
+  assert.ok(segDist([a[0], a[1]], laneA.pts as Array<[number, number]>) < 0.2, 'A box centered on its lane');
+  assert.ok(segDist([b[0], b[1]], laneB.pts as Array<[number, number]>) < 0.2, 'B box centered on its lane');
+});
+
 test('deterministic: identical input yields identical output', () => {
   const mk = () => [item('A', hLane(0, 0)), item('B', hLane(7.5, 0)), item('C', hLane(15, 6))];
   const a = laneSeat(mk(), BOX, GAP);

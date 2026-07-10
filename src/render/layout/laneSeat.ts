@@ -269,21 +269,35 @@ export function laneSeatAll(
     return out;
   };
   // Shift a packed row rigidly so every member sits AS CENTERED ON ITS OWN LANE
-  // as possible: least squares over the members' signed lane-normal offsets (two
-  // free parameters, the row origin). A crossing pair solves exactly (both boxes
-  // dead on their lines); parallel lanes center the row across them; a singular
-  // system (all normals parallel) shifts along the common normal only. Two
-  // passes refine the lane foot points on curved lanes. The shift is capped so a
+  // as possible: Gauss-Newton least squares over the members' distances to the
+  // nearest point on their own lane, with two free parameters (the row origin).
+  // The residual gradient is the RADIAL direction from the lane foot to the box
+  // center: for an interior foot that equals the segment normal, and for a foot
+  // clamped at a lane endpoint or vertex (a terminus box) it is the true
+  // distance gradient, where a segment normal would impose a phantom
+  // constraint. A member already on its lane contributes its segment normal as
+  // the stay-on-line direction. A crossing pair solves exactly (both boxes dead
+  // on their lines); parallel lanes center the row across them; a singular
+  // system shifts along the common direction only. Iterated so the foot points
+  // re-resolve across bends and tips; the shift is capped per pass so a
   // degenerate configuration can never fling the row.
   const centerOnLanes = (posMap: Map<number, Point>): void => {
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 6; pass++) {
       let m00 = 0, m01 = 0, m11 = 0, r0 = 0, r1 = 0;
       let n0: Point | null = null;
       let sNx = 0, sNy = 0, sE = 0, cnt = 0;
       for (const [i, p] of posMap) {
         const f = laneFoot(i, p);
-        const nx = -f.t[1], ny = f.t[0];
-        const e = nx * (p[0] - f.q[0]) + ny * (p[1] - f.q[1]);
+        let nx: number, ny: number, e: number;
+        if (f.d > 1e-6) {
+          nx = (p[0] - f.q[0]) / f.d;
+          ny = (p[1] - f.q[1]) / f.d;
+          e = f.d;
+        } else {
+          nx = -f.t[1];
+          ny = f.t[0];
+          e = 0;
+        }
         m00 += nx * nx; m01 += nx * ny; m11 += ny * ny;
         r0 -= e * nx; r1 -= e * ny;
         if (!n0) n0 = [nx, ny];
