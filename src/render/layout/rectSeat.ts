@@ -27,9 +27,11 @@
 // numbers stay tiny), and per part the axis is chosen from {H, V}; box order and
 // row placement within a part are closed-form (sort by along-axis home, center on
 // the median home), so no continuous search is needed. Large hubs skip the
-// enumeration and seat as a single near-square stacked-row grid (ceil(sqrt(n))
-// boxes per row, ceil(n/R) rows) so a many-line interchange reads as a compact
-// block of numbered boxes rather than one illegibly wide row.
+// enumeration and seat by CORRIDOR: members are grouped by their run axis (lines
+// that ride one corridor share it; crossing lines carry different axes), each
+// group packs into one row, and the group rows are then pushed apart along their
+// corridors until their capsules clear. A many-line interchange spreads into one
+// capsule per corridor, each on its line, joined by thin connectors.
 //
 // Fully deterministic: no Math.random / Date; every tie-break resolves by a fixed
 // index or lineId order, so offline output equals in-game output.
@@ -82,7 +84,8 @@ export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
 }
 
 // Above this member count the set-partition enumeration is skipped and the hub is
-// seated as a stacked-row grid instead; at or below it, partitions are enumerated.
+// seated by a greedy agglomerative merge instead; at or below it, partitions are
+// enumerated.
 const ENUM_MAX = 6;
 
 // Per overlapping-or-touching capsule-pair penalty. Large enough that any layout
@@ -215,65 +218,97 @@ function padRect(centers: Iterable<Point>, box: number, pad: number): { x0: numb
   return { x0: x0 - h, y0: y0 - h, x1: x1 + h, y1: y1 + h };
 }
 
-/**
- * Seat a large hub's members as a near-square stacked-row grid. The members are
- * ordered along their dominant home axis (the axis of larger home spread, tie ->
- * horizontal) and cut into contiguous rows of R = ceil(sqrt(n)) boxes each, so
- * there are ceil(n/R) rows. Row k packs its boxes edge-to-edge along the dominant
- * axis and is offset by k * pitch on the cross axis, and the whole grid is
- * centered on the members' mean home. This stacks the rows with a guaranteed full
- * pitch of separation on the cross axis (so no two boxes overlap regardless of how
- * the homes cluster) while keeping the footprint compact, rather than one
- * illegibly wide row.
- *
- * Returns one Placed row per grid row (matching the enumerated path's shape), so
- * the group rects and octilinear connectors are built by the shared downstream
- * code. Fully deterministic: the sort tie-breaks by lineId, the chunk size and
- * cross offsets are fixed, and slide uses sqrt-based distance.
- */
-function gridRows(members: RectMember[], pitch: number): Placed[] {
-  const n = members.length;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  let sumX = 0, sumY = 0;
-  for (const m of members) {
-    if (m.home[0] < minX) minX = m.home[0];
-    if (m.home[0] > maxX) maxX = m.home[0];
-    if (m.home[1] < minY) minY = m.home[1];
-    if (m.home[1] > maxY) maxY = m.home[1];
-    sumX += m.home[0];
-    sumY += m.home[1];
-  }
-  const horiz = (maxX - minX) >= (maxY - minY); // dominant axis, tie -> horizontal
-  const along = (m: RectMember) => (horiz ? m.home[0] : m.home[1]);
-  const ordered = [...members].sort(
-    (a, b) => along(a) - along(b) || (a.lineId < b.lineId ? -1 : a.lineId > b.lineId ? 1 : 0),
-  );
-  const R = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / R);
-  const meanAlong = horiz ? sumX / n : sumY / n;
-  const meanCross = horiz ? sumY / n : sumX / n;
-  // Cross-axis coordinate of row k, centered so the whole stack straddles the
-  // members' mean cross-home.
-  const crossOf = (k: number) => meanCross + (k - (rows - 1) / 2) * pitch;
+// sqrt(1/2): unit component of a 45-degree run axis. Literal so it is byte-
+// identical across V8 versions (no trig).
+const AXIS_S = 0.7071067811865476;
+// Unit direction of an octilinear run axis (0..3, mod 180 deg). Sign is arbitrary
+// here; the spread step re-signs it away from the hub center.
+function axisUnit(axis: number): Point {
+  const a = ((axis % 4) + 4) % 4;
+  return a === 0 ? [1, 0] : a === 1 ? [AXIS_S, AXIS_S] : a === 2 ? [0, 1] : [-AXIS_S, AXIS_S];
+}
+// Max iterations of the corridor-spread push (bounded + deterministic).
+const SPREAD_ITERS = 128;
 
-  const out: Placed[] = [];
-  for (let k = 0; k < rows; k++) {
-    const part = ordered.slice(k * R, (k + 1) * R);
-    const m = part.length;
-    const cross = crossOf(k);
-    const centers = new Map<string, Point>();
-    let total = 0, max = 0;
-    part.forEach((mem, i) => {
-      const a = meanAlong + (i - (m - 1) / 2) * pitch;
-      const c: Point = horiz ? [a, cross] : [cross, a];
-      centers.set(mem.lineId, c);
-      const slide = hyp(c[0] - mem.home[0], c[1] - mem.home[1]);
-      total += slide;
-      if (slide > max) max = slide;
-    });
-    out.push({ centers, total, max });
+/**
+ * Seat a large hub by CORRIDOR, then SPREAD the corridors apart, instead of
+ * stacking a compact grid. Members are grouped by their octilinear run axis: lines
+ * that ride the same corridor share an axis and pack into one capsule row, while
+ * lines that cross the node carry different axes and stay separate. Because the
+ * lanes converge at the node, the group rows would pile on top of each other, so
+ * each group is then pushed out ALONG its own corridor (its run axis, signed away
+ * from the hub center) until the capsules no longer overlap. The result is one
+ * capsule per corridor, each sitting on its line and offset toward where that line
+ * runs, joined by thin connectors.
+ *
+ * Returns one Placed row per corridor group (matching the enumerated path's shape)
+ * so the group rects and connectors are built by the shared downstream code. Fully
+ * deterministic: axis groups are visited in sorted-axis then member order, the
+ * spread scan is a fixed (i < j) sweep with a fixed step, and every distance uses
+ * sqrt (never Math.hypot).
+ */
+function spreadSeat(
+  members: RectMember[],
+  pitch: number,
+  box: number,
+  pad: number,
+  capGap: number,
+): Placed[] {
+  // Group members by run axis (corridor). Sorted axis keys + input member order
+  // keep the grouping deterministic.
+  const byAxis = new Map<number, number[]>();
+  members.forEach((m, i) => {
+    const a = ((m.axis % 4) + 4) % 4;
+    const arr = byAxis.get(a);
+    if (arr) arr.push(i); else byAxis.set(a, [i]);
+  });
+  const axisKeys = [...byAxis.keys()].sort((a, b) => a - b);
+  const groups = axisKeys.map((a) => byAxis.get(a)!);
+  const rows = groups.map((g) => bestRow(g.map((k) => members[k]), pitch));
+  if (rows.length <= 1) return rows;
+
+  // Hub center (mean home) and each group's outward push direction: its corridor
+  // axis, signed to point away from the center so crossing corridors separate.
+  let cx = 0, cy = 0;
+  for (const m of members) { cx += m.home[0]; cy += m.home[1]; }
+  cx /= members.length; cy /= members.length;
+  const rowCenter = (r: Placed): Point => {
+    let x = 0, y = 0, n = 0;
+    for (const p of r.centers.values()) { x += p[0]; y += p[1]; n++; }
+    return [x / n, y / n];
+  };
+  const dirs: Point[] = rows.map((r, gi) => {
+    const gc = rowCenter(r);
+    const [ux, uy] = axisUnit(axisKeys[gi]);
+    const sign = (gc[0] - cx) * ux + (gc[1] - cy) * uy >= 0 ? 1 : -1;
+    return [sign * ux, sign * uy];
+  });
+  const translate = (r: Placed, dx: number, dy: number): void => {
+    for (const [id, p] of r.centers) r.centers.set(id, [p[0] + dx, p[1] + dy]);
+  };
+
+  // Push overlapping group capsules apart along their corridors until clear. Each
+  // overlapping pair moves both groups a step along their own outward direction;
+  // fixed step + fixed scan order keep it deterministic and bounded.
+  const step = box * 0.5;
+  for (let iter = 0; iter < SPREAD_ITERS; iter++) {
+    let moved = false;
+    const rects = rows.map((r) => padRect(r.centers.values(), box, pad));
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        const a = rects[i], b = rects[j];
+        const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + capGap;
+        const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + capGap;
+        if (ox <= 0 || oy <= 0) continue; // already clear on an axis
+        translate(rows[i], dirs[i][0] * step, dirs[i][1] * step);
+        translate(rows[j], dirs[j][0] * step, dirs[j][1] * step);
+        moved = true;
+      }
+    }
+    if (!moved) break;
   }
-  return out;
+
+  return rows;
 }
 
 /**
@@ -352,15 +387,11 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
       idx++;
     }
   } else {
-    // Large hub: a single stacked-row grid. Enumerating partitions is infeasible
-    // (Bell numbers explode), and one long row is illegibly wide, so the members
-    // are ordered along their dominant home axis and cut into contiguous rows of
-    // R = ceil(sqrt(n)) boxes, giving ceil(n/R) rows (a near square) stacked on the
-    // cross axis. A twelve-line hub becomes about three rows of four numbered boxes
-    // rather than one row of twelve. This is the sole candidate, so it is taken
-    // directly (no cost comparison), and its rows flow through the same group-rect
-    // and connector code below.
-    const rows = gridRows(members, pitch);
+    // Large hub: greedy agglomerative merge over the same objective. Enumerating
+    // partitions is infeasible (Bell numbers explode), so start from every line on
+    // its own box and merge the pair that most reduces cost until none helps. Its
+    // rows flow through the same group-rect and connector code below.
+    const rows = spreadSeat(members, pitch, box, pad, capGap);
     best = { parts: rows.map((_, i) => [i]), rows };
   }
 
@@ -380,8 +411,11 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
   });
 
   // Connectors: a minimum spanning tree (Prim) over the group rects by centroid
-  // distance; each tree edge is an octilinear polyline between the two rects.
-  const connectors = mstConnectors(rects);
+  // distance; each tree edge is a straight connector between the two rects,
+  // attached on flat edges with a small margin (a thin line needs almost no edge
+  // room), then tucked perpendicular into each box so the line's end is buried
+  // under the capsule fill and the join is seamless.
+  const connectors = mstConnectors(rects, box * 0.16, box * 0.28);
 
   return { centers, groups, connectors };
 }
@@ -391,7 +425,25 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
  * one octilinear connector per tree edge. Deterministic: ties in edge weight
  * break by the lower candidate index.
  */
-function mstConnectors(rects: Rect[]): Array<{ points: Point[] }> {
+/**
+ * Extend an attach-point connector into a straight neck centerline by pushing each
+ * end `tuck` px along the connector direction INTO its box, so the thin drawn line's
+ * ends are buried under the capsule fill and the join is seamless. A thin line has
+ * no bulb to overshoot a corner, so a straight along-direction tuck (rather than a
+ * perpendicular one) keeps the line straight and avoids an axis-aligned jog. A
+ * degenerate contact connector (both points equal) is passed through so the neck
+ * skips it.
+ */
+function tuckPolyline(c: { points: Point[]; normals?: [Point, Point] }, tuck: number): Point[] {
+  const [p0, p1] = c.points;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return c.points;
+  const ux = dx / len, uy = dy / len;
+  return [[p0[0] - ux * tuck, p0[1] - uy * tuck], [p1[0] + ux * tuck, p1[1] + uy * tuck]];
+}
+
+export function mstConnectors(rects: Rect[], margin: number, tuck: number): Array<{ points: Point[] }> {
   const n = rects.length;
   if (n <= 1) return [];
   const cx = rects.map((r) => r.x + r.w / 2);
@@ -417,7 +469,8 @@ function mstConnectors(rects: Rect[]): Array<{ points: Point[] }> {
       }
     }
     inTree[bestJ] = true;
-    connectors.push(octiConnect(rects[bestI], rects[bestJ]));
+    const c = octiConnect(rects[bestI], rects[bestJ], margin);
+    connectors.push({ points: tuckPolyline(c, tuck) });
   }
   return connectors;
 }

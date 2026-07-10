@@ -121,10 +121,10 @@ test('three coincident homes -> capsules clear of overlap and touch', () => {
       );
 });
 
-test('large hub (n > 6) -> compact stacked grid, not one long row', () => {
-  // Twelve members on a common line. Above the enumeration limit the solver
-  // chunks them into ceil(n/R) rows with R = ceil(sqrt(n)), so a 12-line hub is
-  // several stacked rows rather than one 12-box row.
+test('large hub (n > 6) all on one line -> greedy merges into few rows', () => {
+  // Twelve members strung along a common line. Above the enumeration limit the
+  // greedy seater merges collinear boxes into shared rows, so a 12-line hub is a
+  // handful of rows rather than one box per line.
   const box = 30;
   const n = 12;
   const members = Array.from({ length: n }, (_, i) => ({
@@ -134,25 +134,57 @@ test('large hub (n > 6) -> compact stacked grid, not one long row', () => {
   }));
   const out = rectSeat(members, box, 4);
   assert.equal(out.centers.size, n);
-  // More than one group (a grid), and fewer groups than a per-box split.
-  assert.ok(out.groups.length > 1, 'expected multiple stacked rows');
-  assert.ok(out.groups.length < n, 'expected rows, not one box per group');
+  // Fewer groups than a per-box split (collinear lines share rows).
+  assert.ok(out.groups.length < n, 'expected shared rows, not one box per group');
   // No two output boxes overlap.
   const cs = [...out.centers.values()];
   for (let i = 0; i < cs.length; i++)
     for (let j = i + 1; j < cs.length; j++)
       assert.ok(!boxesOverlap(cs[i], cs[j], box), `centers ${i},${j} overlap`);
-  // The grouped rows are more compact on the long axis than a single row of n.
-  let x0 = Infinity, x1 = -Infinity;
-  for (const g of out.groups) { x0 = Math.min(x0, g.x); x1 = Math.max(x1, g.x + g.w); }
-  const singleRowWidth = n * (box + 4);
-  assert.ok(x1 - x0 < singleRowWidth, 'grid should be narrower than one long row');
 });
 
-test('large hub grid is deterministic on repeat', () => {
+test('large hub greedy seat is deterministic on repeat', () => {
   const box = 30;
   const members = Array.from({ length: 10 }, (_, i) => ({
     lineId: `L${i}`, home: [i * 37, (i % 3) * 11] as [number, number], axis: (i % 4),
   }));
   assert.deepEqual(rectSeat(members, box, 4), rectSeat(members, box, 4));
+});
+
+test('7-member hub -> collinear lines share rows, far lines stay separate', () => {
+  // Above the enumeration limit (n > 6) so the greedy seater runs. Four members
+  // share one axis and sit near-collinear along one line (they pack into one row
+  // cheaply); three sit far away in distinct directions, so the greedy merge folds
+  // the collinear lines together but does not collapse the whole hub into one row.
+  const box = 7.35;
+  const gap = box * 0.14;
+  const members = [
+    // Four near-collinear along the x axis, common axis 0.
+    { lineId: 'A', home: [0, 0] as [number, number], axis: 0 },
+    { lineId: 'B', home: [9, 0] as [number, number], axis: 0 },
+    { lineId: 'C', home: [18, 0] as [number, number], axis: 0 },
+    { lineId: 'D', home: [27, 0] as [number, number], axis: 0 },
+    // Three far away in distinct directions/distances.
+    { lineId: 'E', home: [140, 60] as [number, number], axis: 1 },
+    { lineId: 'F', home: [-90, 130] as [number, number], axis: 2 },
+    { lineId: 'G', home: [60, -150] as [number, number], axis: 3 },
+  ];
+  const out = rectSeat(members, box, gap);
+  assert.equal(out.centers.size, 7);
+  // The collinear lines share at least one row (so fewer than 7 groups); the far
+  // lines are not all absorbed into it (so more than one group).
+  assert.ok(out.groups.length > 1, 'far lines should not all collapse into one row');
+  assert.ok(out.groups.length < 7, 'collinear lines should share at least one row');
+  // No two output group capsules overlap or touch.
+  const rects = out.groups.map(capsuleRect);
+  const capGap = box * CAP_GAP_FRAC;
+  let touchPairs = 0;
+  for (let i = 0; i < rects.length; i++)
+    for (let j = i + 1; j < rects.length; j++)
+      if (rectClearance(rects[i], rects[j]) < capGap - 1e-6) touchPairs++;
+  assert.equal(touchPairs, 0, 'no two output group rects overlap or touch');
+  // Determinism: two calls with the same input serialize identically.
+  const ser = () => JSON.stringify(rectSeat(members, box, gap), (_k, v) =>
+    v instanceof Map ? [...v.entries()] : v);
+  assert.equal(ser(), ser());
 });
