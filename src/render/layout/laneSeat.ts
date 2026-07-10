@@ -226,19 +226,97 @@ export function laneSeatAll(
   // Snap a part into an exact packed row (shared mean cross, pitch spacing
   // centered on the mean along). The sanctioned FLOAT: a snapped box may sit
   // slightly off its lane so its capsule can be flush.
-  const snapPart = (part: Part): void => {
-    const m = part.members.length;
-    if (m < 2) return;
-    const along = part.horiz ? 0 : 1;
-    const cross = part.horiz ? 1 : 0;
+  // Nearest point on a member's lane to p, with that segment's unit tangent.
+  const laneFoot = (i: number, p: Point): { q: Point; t: Point; d: number } => {
+    const cpts = slots[i].curve.pts;
+    let best = Infinity;
+    let q: Point = [p[0], p[1]];
+    let t: Point = [1, 0];
+    for (let k = 1; k < cpts.length; k++) {
+      const ax = cpts[k - 1][0], ay = cpts[k - 1][1];
+      const dx = cpts[k][0] - ax, dy = cpts[k][1] - ay;
+      const l2 = dx * dx + dy * dy;
+      if (l2 < 1e-12) continue;
+      const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2));
+      const fx = ax + dx * u, fy = ay + dy * u;
+      const d = hyp(p[0] - fx, p[1] - fy);
+      if (d < best) {
+        best = d;
+        q = [fx, fy];
+        const len = Math.sqrt(l2);
+        t = [dx / len, dy / len];
+      }
+    }
+    return { q, t, d: best };
+  };
+  const distToLane = (i: number, p: Point): number => laneFoot(i, p).d;
+  // Pack members into an exact pitch row along one axis, centered on their mean.
+  const packedRow = (members: number[], horiz: boolean): Map<number, Point> => {
+    const m = members.length;
+    const along = horiz ? 0 : 1;
+    const cross = horiz ? 1 : 0;
     let meanA = 0, meanC = 0;
-    for (const i of part.members) { meanA += pts[i][along]; meanC += pts[i][cross]; }
+    for (const i of members) { meanA += pts[i][along]; meanC += pts[i][cross]; }
     meanA /= m; meanC /= m;
-    const order = [...part.members].sort((a, b) => pts[a][along] - pts[b][along] || a - b);
+    const order = [...members].sort((a, b) => pts[a][along] - pts[b][along] || a - b);
+    const out = new Map<number, Point>();
     order.forEach((i, k) => {
-      pts[i][along] = meanA + (k - (m - 1) / 2) * pitch;
-      pts[i][cross] = meanC;
+      const p: [number, number] = [0, 0];
+      p[along] = meanA + (k - (m - 1) / 2) * pitch;
+      p[cross] = meanC;
+      out.set(i, p as Point);
     });
+    return out;
+  };
+  // Shift a packed row rigidly so every member sits AS CENTERED ON ITS OWN LANE
+  // as possible: least squares over the members' signed lane-normal offsets (two
+  // free parameters, the row origin). A crossing pair solves exactly (both boxes
+  // dead on their lines); parallel lanes center the row across them; a singular
+  // system (all normals parallel) shifts along the common normal only. Two
+  // passes refine the lane foot points on curved lanes. The shift is capped so a
+  // degenerate configuration can never fling the row.
+  const centerOnLanes = (posMap: Map<number, Point>): void => {
+    for (let pass = 0; pass < 2; pass++) {
+      let m00 = 0, m01 = 0, m11 = 0, r0 = 0, r1 = 0;
+      let n0: Point | null = null;
+      let sNx = 0, sNy = 0, sE = 0, cnt = 0;
+      for (const [i, p] of posMap) {
+        const f = laneFoot(i, p);
+        const nx = -f.t[1], ny = f.t[0];
+        const e = nx * (p[0] - f.q[0]) + ny * (p[1] - f.q[1]);
+        m00 += nx * nx; m01 += nx * ny; m11 += ny * ny;
+        r0 -= e * nx; r1 -= e * ny;
+        if (!n0) n0 = [nx, ny];
+        const sgn = nx * n0[0] + ny * n0[1] < 0 ? -1 : 1;
+        sNx += sgn * nx; sNy += sgn * ny; sE += sgn * e;
+        cnt++;
+      }
+      if (cnt === 0) return;
+      const det = m00 * m11 - m01 * m01;
+      let u = 0, v = 0;
+      if (Math.abs(det) > 1e-9) {
+        u = (r0 * m11 - r1 * m01) / det;
+        v = (m00 * r1 - m01 * r0) / det;
+      } else {
+        const len = hyp(sNx, sNy);
+        if (len > 1e-9) {
+          const s = -(sE / cnt);
+          u = s * (sNx / len);
+          v = s * (sNy / len);
+        }
+      }
+      const mag = hyp(u, v);
+      const cap = 2 * box * FLOAT_CAP_FRAC;
+      if (mag > cap) { u *= cap / mag; v *= cap / mag; }
+      for (const [, p] of posMap) { p[0] += u; p[1] += v; }
+      if (mag < 0.05) break; // converged
+    }
+  };
+  const snapPart = (part: Part): void => {
+    if (part.members.length < 2) return;
+    const posMap = packedRow(part.members, part.horiz);
+    centerOnLanes(posMap);
+    for (const [i, p] of posMap) { pts[i][0] = p[0]; pts[i][1] = p[1]; }
   };
   for (const part of parts) snapPart(part);
 
@@ -271,35 +349,11 @@ export function laneSeatAll(
   // order, first acceptable merge applies, part count strictly decreases.
   const floatCap = box * FLOAT_CAP_FRAC;
   const mergeReach = box * MERGE_REACH_FRAC;
-  const distToLane = (i: number, p: Point): number => {
-    const cpts = slots[i].curve.pts;
-    let best = Infinity;
-    for (let k = 1; k < cpts.length; k++) {
-      const ax = cpts[k - 1][0], ay = cpts[k - 1][1];
-      const dx = cpts[k][0] - ax, dy = cpts[k][1] - ay;
-      const l2 = dx * dx + dy * dy;
-      const u = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2));
-      const d = hyp(p[0] - (ax + dx * u), p[1] - (ay + dy * u));
-      if (d < best) best = d;
-    }
-    return best;
-  };
-  // Snapped trial positions for a merged member set along one axis (no mutation).
+  // Trial positions for a merged member set: exact pitch row, then rigidly
+  // centered on the members' own lanes (same placement snapPart applies).
   const trialSnap = (members: number[], horiz: boolean): Map<number, Point> => {
-    const m = members.length;
-    const along = horiz ? 0 : 1;
-    const cross = horiz ? 1 : 0;
-    let meanA = 0, meanC = 0;
-    for (const i of members) { meanA += pts[i][along]; meanC += pts[i][cross]; }
-    meanA /= m; meanC /= m;
-    const order = [...members].sort((a, b) => pts[a][along] - pts[b][along] || a - b);
-    const out = new Map<number, Point>();
-    order.forEach((i, k) => {
-      const p: [number, number] = [0, 0];
-      p[along] = meanA + (k - (m - 1) / 2) * pitch;
-      p[cross] = meanC;
-      out.set(i, p as Point);
-    });
+    const out = packedRow(members, horiz);
+    centerOnLanes(out);
     return out;
   };
   {
