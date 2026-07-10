@@ -61,7 +61,6 @@ const PAD_FRAC = 0.16;      // capsule padding around the box centers
 const CAP_GAP_FRAC = 0.12;  // clear gap kept outside a capsule
 const CLUSTER_FRAC = 1.5;   // center-distance (in box units) that still clusters
 const DECONFLICT_ITERS = 300;
-const PART_ITERS = 64;      // rigid part-slide iterations (bounded, deterministic)
 // Max distance a box may FLOAT off its own lane for its station's parts to merge
 // into one shared row. Within the cap, nearby parts (crossing corridors
 // included) fuse into a single capsule instead of a chain of singletons; beyond
@@ -421,17 +420,18 @@ export function laneSeatAll(
     const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + capGap;
     return ox > 0 && oy > 0;
   };
-  // Push one part away from a reference point. A SINGLETON part slides along
-  // its own LANE arc (clamped to the drawn extent), so a lone box never leaves
-  // its line; a snapped multi-box row translates rigidly along its row axis so
-  // its flush packing survives. Returns true when anything moved.
-  const pushPart = (part: Part, awayFromX: number, awayFromY: number, tieSign: number): boolean => {
+  // Move one part by (dx, dy). A SINGLETON part is exactly on its lane and must
+  // stay there: the motion PROJECTS onto its lane arc (clamped to the drawn
+  // extent), so a lone box can only slide along its line. A multi-box row
+  // translates rigidly (any direction), because the centering pull below keeps
+  // fighting it back onto its lanes; flush packing survives either way.
+  const movePart = (part: Part, dx: number, dy: number): boolean => {
     if (part.members.length === 1) {
       const i = part.members[0];
       const tg = curveTangent(slots[i].curve, slots[i].t);
-      const proj = (pts[i][0] - awayFromX) * tg[0] + (pts[i][1] - awayFromY) * tg[1];
-      const sgn = proj > EPS_TIE ? 1 : proj < -EPS_TIE ? -1 : tieSign;
-      const nt = clampT(i, slots[i].t + sgn * step);
+      const proj = dx * tg[0] + dy * tg[1];
+      if (Math.abs(proj) < 1e-9) return false;
+      const nt = clampT(i, slots[i].t + proj);
       if (nt === slots[i].t) return false;
       slots[i].t = nt;
       const p = posOf(i);
@@ -439,35 +439,93 @@ export function laneSeatAll(
       pts[i][1] = p[1];
       return true;
     }
-    const c = centerOf(part);
-    const ax = part.horiz ? 0 : 1;
-    const d = c[ax] - (ax === 0 ? awayFromX : awayFromY);
-    const sgn = d > EPS_TIE ? 1 : d < -EPS_TIE ? -1 : tieSign;
-    for (const k of part.members) pts[k][ax] += sgn * step;
+    for (const k of part.members) { pts[k][0] += dx; pts[k][1] += dy; }
     return true;
   };
-  const slideRound = (): boolean => {
-    let moved = false;
-    for (let i = 0; i < parts.length; i++) {
-      const a = rectOf(parts[i]);
-      for (const b of obstacles) {
-        if (!overlaps(a, b)) continue;
-        if (pushPart(parts[i], (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, 1)) moved = true;
+
+  // UNIFIED CONTACT-VS-OVERLAP SOLVE. Everything the seating wants from the
+  // part layer is one problem: minimize every box's distance to its own lane
+  // subject to no two footprints overlapping. Each iteration takes a damped
+  // least-squares CENTERING step per row (the objective's descent direction),
+  // then PROJECTS the overlap constraints: every overlapping pair separates
+  // along its minimal-translation axis, the penetration split half and half
+  // (obstacles push their full penetration onto the part). Because pushes are
+  // penetration-proportional, pressure chains cannot balance into a frozen
+  // cycle, and because the pull and the push act together, a contested
+  // junction settles at the residual-balancing equilibrium by itself: no
+  // separate deconflict, re-centering, or pair-balancing stages. Singleton
+  // parts stay exactly on their lanes (projected motion) and carry no
+  // centering error. Deterministic: fixed iteration order, fixed damping,
+  // index tie-breaks, bounded iterations.
+  const CENTER_DAMP = 0.6;
+  const SOLVE_ITERS = 48;
+  const runSolve = (): void => {
+    for (let iter = 0; iter < SOLVE_ITERS; iter++) {
+      let maxMove = 0;
+      // Descent: damped centering pull toward each row's own lanes.
+      for (const part of parts) {
+        if (part.members.length < 2) continue;
+        const posMap = new Map<number, Point>();
+        for (const k of part.members) posMap.set(k, [pts[k][0], pts[k][1]]);
+        const [u, v] = lsqShift(posMap);
+        const du = u * CENTER_DAMP, dv = v * CENTER_DAMP;
+        const mag = hyp(du, dv);
+        if (mag < 0.02) continue;
+        for (const k of part.members) { pts[k][0] += du; pts[k][1] += dv; }
+        if (mag > maxMove) maxMove = mag;
       }
-      for (let j = i + 1; j < parts.length; j++) {
-        if (!overlaps(rectOf(parts[i]), rectOf(parts[j]))) continue;
-        const ci = centerOf(parts[i]);
-        const cj = centerOf(parts[j]);
-        if (pushPart(parts[i], cj[0], cj[1], -1)) moved = true;
-        if (pushPart(parts[j], ci[0], ci[1], 1)) moved = true;
+      // Projection: separate every overlapping pair along the minimal axis.
+      for (let i = 0; i < parts.length; i++) {
+        let a = rectOf(parts[i]);
+        for (const b of obstacles) {
+          const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + capGap;
+          const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + capGap;
+          if (ox <= 0 || oy <= 0) continue;
+          const ci = centerOf(parts[i]);
+          let dx = 0, dy = 0;
+          if (ox <= oy) dx = (ci[0] >= (b.x0 + b.x1) / 2 ? 1 : -1) * ox;
+          else dy = (ci[1] >= (b.y0 + b.y1) / 2 ? 1 : -1) * oy;
+          if (movePart(parts[i], dx, dy)) {
+            a = rectOf(parts[i]);
+            const m = hyp(dx, dy);
+            if (m > maxMove) maxMove = m;
+          }
+        }
+        for (let j = i + 1; j < parts.length; j++) {
+          const ri = rectOf(parts[i]);
+          const rj = rectOf(parts[j]);
+          const ox = Math.min(ri.x1, rj.x1) - Math.max(ri.x0, rj.x0) + capGap;
+          const oy = Math.min(ri.y1, rj.y1) - Math.max(ri.y0, rj.y0) + capGap;
+          if (ox <= 0 || oy <= 0) continue;
+          const ci = centerOf(parts[i]);
+          const cj = centerOf(parts[j]);
+          let dx = 0, dy = 0;
+          if (ox <= oy) {
+            const d = ci[0] - cj[0];
+            const sgn = d > EPS_TIE ? 1 : d < -EPS_TIE ? -1 : -1;
+            dx = sgn * ox / 2;
+          } else {
+            const d = ci[1] - cj[1];
+            const sgn = d > EPS_TIE ? 1 : d < -EPS_TIE ? -1 : -1;
+            dy = sgn * oy / 2;
+          }
+          const mi2 = movePart(parts[i], dx, dy);
+          const mj2 = movePart(parts[j], -dx, -dy);
+          if (mi2 || mj2) {
+            const m = hyp(dx, dy);
+            if (m > maxMove) maxMove = m;
+          }
+        }
       }
+      if (maxMove < 0.03) break; // settled
     }
-    return moved;
   };
+  // Solve, with the same-station MERGE backstop: a pair of one station's parts
+  // that stays overlapping after the solve fuses into one row and the solve
+  // resumes (part count strictly decreases, so this terminates). Cross-station
+  // or obstacle residue after the budget is accepted (bounded, rare).
   for (;;) {
-    let iter = 0;
-    while (iter < PART_ITERS && slideRound()) iter++;
-    if (iter < PART_ITERS) break; // converged: no overlap remains
+    runSolve();
     let mi = -1, mj = -1;
     outer: for (let i = 0; i < parts.length; i++) {
       for (let j = i + 1; j < parts.length; j++) {
@@ -475,7 +533,7 @@ export function laneSeatAll(
         if (overlaps(rectOf(parts[i]), rectOf(parts[j]))) { mi = i; mj = j; break outer; }
       }
     }
-    if (mi < 0) break; // only cross-station or obstacle residue remains: accept
+    if (mi < 0) break;
     const union = parts[mi].members.concat(parts[mj].members);
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (const k of union) {
@@ -487,104 +545,6 @@ export function laneSeatAll(
     parts[mi] = { station: parts[mi].station, members: union, horiz: (x1 - x0) >= (y1 - y0) };
     parts.splice(mj, 1);
     snapPart(parts[mi]);
-  }
-
-  // CONSTRAINED RE-CENTERING polish: the deconflict slide displaces rows in
-  // fixed steps and can overshoot, dumping all the displacement on one capsule
-  // while slack remains. Each multi-box row now pulls back toward its lanes by
-  // the largest fraction of its least-squares shift that creates NO overlap
-  // with any other part or obstacle, over a few passes, so every capsule
-  // reclaims whatever line contact the crowding allows and the unavoidable
-  // residual spreads instead of piling up. Singleton parts are already on
-  // their lanes and skip. Deterministic: fixed part order, fixed fractions.
-  {
-    const shiftedRect = (part: Part, u: number, v: number) => {
-      const r = rectOf(part);
-      return { x0: r.x0 + u, y0: r.y0 + v, x1: r.x1 + u, y1: r.y1 + v };
-    };
-    for (let pass = 0; pass < 8; pass++) {
-      let improved = false;
-      for (let i = 0; i < parts.length; i++) {
-        if (parts[i].members.length < 2) continue;
-        const posMap = new Map<number, Point>();
-        for (const k of parts[i].members) posMap.set(k, [pts[k][0], pts[k][1]]);
-        const [u, v] = lsqShift(posMap);
-        if (hyp(u, v) < 0.05) continue;
-        // Largest fraction of the shift that stays clear of every other part
-        // and obstacle, found by bisection (the available slack is often much
-        // smaller than the wanted shift, so fixed fractions starve).
-        const clearAt = (t: number): boolean => {
-          const trial = shiftedRect(parts[i], u * t, v * t);
-          for (const b of obstacles) if (overlaps(trial, b)) return false;
-          for (let j = 0; j < parts.length; j++) {
-            if (j !== i && overlaps(trial, rectOf(parts[j]))) return false;
-          }
-          return true;
-        };
-        let lo = 0;
-        if (clearAt(1)) lo = 1;
-        else {
-          let hi = 1;
-          for (let b = 0; b < 8; b++) {
-            const mid = (lo + hi) / 2;
-            if (clearAt(mid)) lo = mid; else hi = mid;
-          }
-        }
-        if (lo * hyp(u, v) < 0.05) continue;
-        for (const k of parts[i].members) { pts[k][0] += u * lo; pts[k][1] += v * lo; }
-        improved = true;
-      }
-      if (!improved) break;
-    }
-    // PAIR BALANCING: two capsules pressed against each other over a contested
-    // junction cannot both center individually (the greedy pass gives the
-    // first-comer everything). A joint least-squares shift over BOTH parts'
-    // members moves the pressed pair as ONE unit to the residual-balancing
-    // position, bisected against everything else, so the unavoidable
-    // displacement splits between the capsules and each line still passes
-    // through its box. Singleton parts stay out (they are exactly on-lane).
-    for (let pass = 0; pass < 4; pass++) {
-      let improved = false;
-      for (let i = 0; i < parts.length; i++) {
-        if (parts[i].members.length < 2) continue;
-        for (let j = i + 1; j < parts.length; j++) {
-          if (parts[j].members.length < 2) continue;
-          const a = rectOf(parts[i]);
-          const b = rectOf(parts[j]);
-          const gx = Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1);
-          const gy = Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1);
-          if (Math.max(gx, gy) > capGap + 0.35) continue; // not pressed together
-          const union = new Map<number, Point>();
-          for (const k of parts[i].members) union.set(k, [pts[k][0], pts[k][1]]);
-          for (const k of parts[j].members) union.set(k, [pts[k][0], pts[k][1]]);
-          const [u, v] = lsqShift(union);
-          if (hyp(u, v) < 0.05) continue;
-          const pairClearAt = (t: number): boolean => {
-            for (const pi of [i, j]) {
-              const trial = shiftedRect(parts[pi], u * t, v * t);
-              for (const ob of obstacles) if (overlaps(trial, ob)) return false;
-              for (let k = 0; k < parts.length; k++) {
-                if (k !== i && k !== j && overlaps(trial, rectOf(parts[k]))) return false;
-              }
-            }
-            return true;
-          };
-          let lo = 0;
-          if (pairClearAt(1)) lo = 1;
-          else {
-            let hi = 1;
-            for (let bi = 0; bi < 8; bi++) {
-              const mid = (lo + hi) / 2;
-              if (pairClearAt(mid)) lo = mid; else hi = mid;
-            }
-          }
-          if (lo * hyp(u, v) < 0.05) continue;
-          for (const k of union.keys()) { pts[k][0] += u * lo; pts[k][1] += v * lo; }
-          improved = true;
-        }
-      }
-      if (!improved) break;
-    }
   }
 
   // Emit: FLUSH capsule per part; per-station connectors over its own parts.
