@@ -25,16 +25,14 @@ test('pure diagonal offset -> single 45 segment (corner to corner)', () => {
   assert.equal(Math.abs(Math.abs(dx) - Math.abs(dy)) < 1e-6, true); // 45 degrees
 });
 
-test('dead zone (all projections disjoint) -> two-segment octilinear path', () => {
-  // A unit-ish box at origin, B far right + slightly up: 5x,2y offset, small boxes
-  const c = octiConnect(R(0, 0, 4, 4), R(50, 20, 4, 4));
-  assert.equal(c.points.length, 3);               // one bend
-  // every leg is octilinear (dx==0, dy==0, or |dx|==|dy|)
-  for (let i = 1; i < c.points.length; i++) {
-    const dx = Math.abs(c.points[i][0] - c.points[i - 1][0]);
-    const dy = Math.abs(c.points[i][1] - c.points[i - 1][1]);
-    assert.ok(dx < 1e-6 || dy < 1e-6 || Math.abs(dx - dy) < 1e-6, `leg ${i} octilinear`);
-  }
+test('both axes disjoint -> single straight corner-to-corner segment facing B', () => {
+  // A box at origin, B far right + down: offset on both axes -> a diagonal
+  // connector from A's facing corner to B's facing corner (no L-bend).
+  const A = R(0, 0, 4, 4), B = R(50, 20, 4, 4);
+  const c = octiConnect(A, B);
+  assert.equal(c.points.length, 2);               // one straight segment
+  assert.deepEqual(c.points[0], [4, 4]);           // A's bottom-right corner (toward B)
+  assert.deepEqual(c.points[1], [50, 20]);         // B's top-left corner (toward A)
 });
 
 test('deterministic: same input -> identical output', () => {
@@ -55,13 +53,15 @@ const onBoundary = (p: number[], r: { x: number; y: number; w: number; h: number
   return (onX && inY) || (onY && inX);
 };
 
-test('diagonal single segment lands on both rect boundaries on a common 45 line', () => {
+test('offset-both-axes connector lands on the facing corner of each rect', () => {
   const A = R(0, 0, 20, 4), B = R(30, 30, 4, 20);
   const c = octiConnect(A, B);
   assert.equal(c.points.length, 2);
   const [p0, p1] = c.points;
-  const dx = Math.abs(p1[0] - p0[0]), dy = Math.abs(p1[1] - p0[1]);
-  assert.ok(Math.abs(dx - dy) < 1e-6, 'endpoints on a common 45 line');
+  // The true facing direction (not forced to 45): A's bottom-right corner to
+  // B's top-left corner.
+  assert.deepEqual(p0, [20, 4]);
+  assert.deepEqual(p1, [30, 30]);
   assert.ok(onBoundary(p0, A), 'p0 on boundary of A');
   assert.ok(onBoundary(p1, B), 'p1 on boundary of B');
 });
