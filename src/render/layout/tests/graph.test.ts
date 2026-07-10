@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildStationGroups, buildTransitGraph, getOrBuildStationGroups, buildGroupMaps } from '../graph';
+import type { StationGroup } from '../types';
 import type { Station, Route, Track } from '../../../types/game-state';
 
 const stations = [
@@ -12,13 +13,10 @@ const stations = [
     buildType: 'constructed', stNodeIds: ['n3'], routeIds: ['r1'], createdAt: 0, nearbyStations: [] },
 ] as unknown as Station[];
 
-test('buildStationGroups collapses by trackGroupId', () => {
+test('buildStationGroups does not collapse stations (keeps separate)', () => {
   const groups = buildStationGroups(stations);
-  assert.equal(groups.length, 2);
-  const g1 = groups.find((g) => g.id === 'g1')!;
-  assert.deepEqual(g1.stationIds.sort(), ['s1', 's2']);
-  // center is the mean of members
-  assert.ok(Math.abs(g1.center[1] - 47.005) < 1e-9);
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups.map((g) => g.id).sort(), ['s1', 's2', 's3']);
 });
 
 test('buildTransitGraph builds edges between consecutive distinct groups', () => {
@@ -34,8 +32,8 @@ test('buildTransitGraph builds edges between consecutive distinct groups', () =>
   const _tracks = [] as unknown as Track[];
   void _tracks;
   const graph = buildTransitGraph(stations, routes, buildStationGroups(stations));
-  assert.equal(graph.nodes.size, 2); // g1, g2
-  assert.equal(graph.edges.length, 1); // g1<->g2
+  assert.equal(graph.nodes.size, 2); // s1, s3 (s2 is unserved and pruned)
+  assert.equal(graph.edges.length, 1); // s1<->s3
   assert.deepEqual([...graph.lineTraversals.keys()], ['r1']);
 });
 
@@ -45,7 +43,7 @@ test('buildTransitGraph collapses same-bullet+colour routes (loop directions) in
   const cw = { id: 'rCW', bullet: 'A', color: '#ee352e', stCombos: [{ startStNodeId: 'n1', endStNodeId: 'n3', path: [], distance: 0 }], stComboTimings: [] };
   const ccw = { id: 'rCCW', bullet: 'A', color: '#EE352E', stCombos: [{ startStNodeId: 'n3', endStNodeId: 'n1', path: [], distance: 0 }], stComboTimings: [] };
   const graph = buildTransitGraph(stations, [cw, ccw] as unknown as Route[], buildStationGroups(stations));
-  assert.equal(graph.edges.length, 1, 'one shared edge g1<->g2');
+  assert.equal(graph.edges.length, 1, 'one shared edge s1<->s3');
   assert.equal(graph.edges[0].lines.length, 1, 'both directions bundle as ONE line');
   assert.equal(graph.edges[0].lines[0].id, 'rCW', 'collapsed onto the first route id');
   assert.deepEqual([...graph.lineTraversals.keys()], ['rCW'], 'one traversal under the canonical id');
@@ -78,10 +76,10 @@ test('buildTransitGraph keeps a BRANCH (same bullet+colour, DIVERGENT edges) as 
   const graph = buildTransitGraph(brStations, [r1, r2] as unknown as Route[], buildStationGroups(brStations));
   assert.equal(graph.lineTraversals.size, 2, 'divergent branch arms stay distinct lines (no collapse)');
   const edge = (x: string, y: string) => graph.edges.find((e) => (e.from === x && e.to === y) || (e.from === y && e.to === x))!;
-  assert.equal(edge('gT', 'gJ').lines.length, 2, 'the shared trunk edge carries BOTH line ids (for the Y-split)');
-  assert.equal(edge('gJ', 'gA').lines.length, 1, 'branch A edge carries one line');
-  assert.equal(edge('gJ', 'gB').lines.length, 1, 'branch B edge carries one line');
-  assert.notEqual(edge('gJ', 'gA').lines[0].id, edge('gJ', 'gB').lines[0].id, 'the two arms are different lines');
+  assert.equal(edge('sT', 'sJ').lines.length, 2, 'the shared trunk edge carries BOTH line ids (for the Y-split)');
+  assert.equal(edge('sJ', 'sA').lines.length, 1, 'branch A edge carries one line');
+  assert.equal(edge('sJ', 'sB').lines.length, 1, 'branch B edge carries one line');
+  assert.notEqual(edge('sJ', 'sA').lines[0].id, edge('sJ', 'sB').lines[0].id, 'the two arms are different lines');
 });
 
 test('parallel forward/back tracks in one API station group attach one corridor geo', () => {
@@ -193,7 +191,7 @@ test('walkRouteVisits suppresses redundant positioning legs', () => {
   // X-Y and Y-Z survive; the 60km Z-X hop must NOT create an edge
   assert.equal(graph.edges.length, 2);
   assert.ok(!graph.edges.some((e) =>
-    (e.from === 'gx' && e.to === 'gz') || (e.from === 'gz' && e.to === 'gx')));
+    (e.from === 'px' && e.to === 'pz') || (e.from === 'pz' && e.to === 'px')));
 });
 
 test('walkRouteVisits keeps a long leg that is the sole link (safety guard)', () => {
@@ -215,7 +213,7 @@ test('walkRouteVisits keeps a long leg that is the sole link (safety guard)', ()
   const graph = buildTransitGraph(positioningStations, routes, buildStationGroups(positioningStations));
   assert.equal(graph.edges.length, 2); // X-Y AND Y-Z both drawn
   assert.ok(graph.edges.some((e) =>
-    (e.from === 'gy' && e.to === 'gz') || (e.from === 'gz' && e.to === 'gy')));
+    (e.from === 'py' && e.to === 'pz') || (e.from === 'pz' && e.to === 'py')));
 });
 
 test('walkRouteVisits keeps symmetric long legs (express)', () => {
@@ -252,7 +250,13 @@ test('perStationNodes: multi-member group splits into platform nodes labelled as
   const combo = (a: string, b: string) => ({ startStNodeId: a, endStNodeId: b, path: [], distance: 0 });
   const red = { id: 'red', bullet: '1', color: '#ff0000', stCombos: [combo('nW1', 'nP1'), combo('nP1', 'nE1')], stComboTimings: [] };
   const blue = { id: 'blue', bullet: '2', color: '#0000ff', stCombos: [combo('nW2', 'nP2'), combo('nP2', 'nE2')], stComboTimings: [] };
-  const groups = buildStationGroups(st);
+  const groups: StationGroup[] = [
+    { id: 'hubTG', name: 'Hub', center: [-122.0, 47.001], stationIds: ['sP1', 'sP2'] },
+    { id: 'gW1', name: 'W1', center: [-122.01, 47.0], stationIds: ['sW1'] },
+    { id: 'gE1', name: 'E1', center: [-121.99, 47.0], stationIds: ['sE1'] },
+    { id: 'gW2', name: 'W2', center: [-122.01, 47.002], stationIds: ['sW2'] },
+    { id: 'gE2', name: 'E2', center: [-121.99, 47.002], stationIds: ['sE2'] },
+  ];
 
   const classic = buildTransitGraph(st, [red, blue] as unknown as Route[], groups);
   assert.ok(classic.nodes.has('hubTG'), 'classic build keeps the single group node');
@@ -271,4 +275,45 @@ test('perStationNodes: multi-member group splits into platform nodes labelled as
     'red rides platform 1 only');
   assert.deepEqual(touches('sP2').flatMap((e) => e.lines.map((l) => l.id)), ['blue', 'blue'],
     'blue rides platform 2 only');
+});
+
+test('perStationNodes: numberByGroup keys multi-platform stops by GROUP id', () => {
+  // Station numbers render per interchange GROUP, and nodeSeqFromSupport looks
+  // them up by the support station's group id. Under perStationNodes a multi-
+  // platform group's stops walk as per-platform station ids, so numberByGroup
+  // must re-key those onto the group id or the number is lost at every fused hub.
+  const mk = (id: string, name: string, tg: string, node: string, track: string, lng: number, lat: number) =>
+    ({ id, name, coords: [lng, lat], trackIds: [track], trackGroupId: tg, buildType: 'constructed',
+       stNodeIds: [node], routeIds: [], createdAt: 0, nearbyStations: [] });
+  const st = [
+    mk('sP1', 'Hub', 'hubTG', 'nP1', 'tP1', -122.0, 47.0),
+    mk('sP2', 'Hub', 'hubTG', 'nP2', 'tP2', -122.0, 47.002),
+    mk('sW1', 'W1', 'gW1', 'nW1', 'tW1', -122.01, 47.0),
+    mk('sE1', 'E1', 'gE1', 'nE1', 'tE1', -121.99, 47.0),
+    mk('sW2', 'W2', 'gW2', 'nW2', 'tW2', -122.01, 47.002),
+    mk('sE2', 'E2', 'gE2', 'nE2', 'tE2', -121.99, 47.002),
+  ] as unknown as Station[];
+  const combo = (a: string, b: string) => ({ startStNodeId: a, endStNodeId: b, path: [], distance: 0 });
+  const red = { id: 'red', bullet: '1', color: '#ff0000', stCombos: [combo('nW1', 'nP1'), combo('nP1', 'nE1')], stComboTimings: [] };
+  const blue = { id: 'blue', bullet: '2', color: '#0000ff', stCombos: [combo('nW2', 'nP2'), combo('nP2', 'nE2')], stComboTimings: [] };
+  // Hand-built groups: the API is the sole source of multi-member interchange
+  // groups (the fallback keeps every station separate).
+  const groups: StationGroup[] = [
+    { id: 'hubTG', name: 'Hub', center: [-122.0, 47.001], stationIds: ['sP1', 'sP2'] },
+    { id: 'gW1', name: 'W1', center: [-122.01, 47.0], stationIds: ['sW1'] },
+    { id: 'gE1', name: 'E1', center: [-121.99, 47.0], stationIds: ['sE1'] },
+    { id: 'gW2', name: 'W2', center: [-122.01, 47.002], stationIds: ['sW2'] },
+    { id: 'gE2', name: 'E2', center: [-121.99, 47.002], stationIds: ['sE2'] },
+  ];
+  const split = buildTransitGraph(st, [red, blue] as unknown as Route[], groups, undefined, { perStationNodes: true });
+
+  // Each line stops W* (1) -> Hub (2) -> E* (3). The Hub number is keyed by the
+  // GROUP id, not the per-platform station id.
+  assert.equal(split.numberByGroup.get('red|hubTG'), 2, 'red numbers the Hub group');
+  assert.equal(split.numberByGroup.get('blue|hubTG'), 2, 'blue numbers the Hub group');
+  assert.equal(split.numberByGroup.get('red|sP1'), undefined, 'no per-platform number key');
+  assert.equal(split.numberByGroup.get('blue|sP2'), undefined, 'no per-platform number key');
+  // Singleton groups are unaffected.
+  assert.equal(split.numberByGroup.get('red|gW1'), 1);
+  assert.equal(split.numberByGroup.get('red|gE1'), 3);
 });

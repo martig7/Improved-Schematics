@@ -18,26 +18,14 @@ import type {
 
 /** Group constructed stations into interchange nodes by trackGroupId (fallback). */
 export function buildStationGroups(stations: Station[]): StationGroup[] {
-  const byGroup = new Map<string, Station[]>();
+  const groups: StationGroup[] = [];
   for (const s of stations) {
     if (s.buildType !== 'constructed') continue;
-    const arr = byGroup.get(s.trackGroupId) ?? [];
-    arr.push(s);
-    byGroup.set(s.trackGroupId, arr);
-  }
-  const groups: StationGroup[] = [];
-  for (const [id, members] of byGroup) {
-    let lng = 0;
-    let lat = 0;
-    for (const m of members) {
-      lng += m.coords[0];
-      lat += m.coords[1];
-    }
     groups.push({
-      id,
-      name: members[0].name,
-      center: [lng / members.length, lat / members.length],
-      stationIds: members.map((m) => m.id),
+      id: s.id,
+      name: s.name,
+      center: s.coords,
+      stationIds: [s.id],
     });
   }
   return groups;
@@ -87,6 +75,7 @@ export function getOrBuildStationGroups(
   for (const s of stations) stationById.set(s.id, s);
 
   const groups: StationGroup[] = [];
+  const groupedStationIds = new Set<string>();
   for (const raw of normalized) {
     if (!raw || typeof raw !== 'object') continue;
     const g = raw as Record<string, unknown>;
@@ -109,7 +98,7 @@ export function getOrBuildStationGroups(
       let n = 0;
       for (const sid of stationIds) {
         const s = stationById.get(sid);
-        if (!s) continue;
+        if (!s || s.buildType !== 'constructed') continue;
         lng += s.coords[0];
         lat += s.coords[1];
         n++;
@@ -126,6 +115,22 @@ export function getOrBuildStationGroups(
       id;
 
     groups.push({ id, name, center, stationIds });
+    for (const sid of stationIds) {
+      groupedStationIds.add(sid);
+    }
+  }
+
+  // Append any constructed/custom stations that are missing from apiGroups
+  for (const s of stations) {
+    if (s.buildType !== 'constructed') continue;
+    if (!groupedStationIds.has(s.id)) {
+      groups.push({
+        id: s.id,
+        name: s.name,
+        center: s.coords,
+        stationIds: [s.id],
+      });
+    }
   }
 
   return groups.length > 0 ? groups : buildStationGroups(stations);
@@ -516,6 +521,13 @@ export function buildTransitGraph(
   const lineTraversals = new Map<string, TraversalStep[]>();
   // Per line: the ordered stop groups of its longest route, for intake numbering.
   const lineStopOrder = new Map<string, string[]>();
+  // Station numbers render per interchange GROUP, and the renderer looks them up
+  // by the support station's group id. Under perStationNodes a multi-platform
+  // group walks as per-platform station ids, so re-key each platform stop onto
+  // its group id here. Single-member group node ids already ARE group ids and are
+  // not member ids, so they fall through unchanged (classic build byte-identical).
+  const platformToGroup = new Map<string, string>();
+  for (const g of groups) for (const sid of g.stationIds ?? []) platformToGroup.set(sid, g.id);
 
   for (const route of routes) {
     if (route.tempParentId) continue;
@@ -527,7 +539,9 @@ export function buildTransitGraph(
     const line: LineRef = { id: canonLineId.get(route.id) ?? route.id, label: String(route.bullet ?? '').trim(), color: normalizeColor(route.color), textColor: route.textColor ? normalizeColor(route.textColor) : undefined };
     // Station numbers = the raw route stop order at intake; keep the longest
     // route per line so branches / loop directions still cover every stop.
-    const stopGroups = visits.filter((v) => v.isStop && v.groupId).map((v) => v.groupId as string);
+    const stopGroups = visits
+      .filter((v) => v.isStop && v.groupId)
+      .map((v) => platformToGroup.get(v.groupId as string) ?? (v.groupId as string));
     const prevStops = lineStopOrder.get(line.id);
     if (!prevStops || stopGroups.length > prevStops.length) lineStopOrder.set(line.id, stopGroups);
     const traversal: TraversalStep[] = [];
