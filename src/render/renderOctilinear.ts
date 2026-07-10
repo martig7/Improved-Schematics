@@ -25,8 +25,9 @@ import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
+import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
-import { cropLaneToBox } from './laneCrop';
+import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
@@ -118,8 +119,10 @@ export function buildDByLine(
 export interface LaneCropTarget {
   lineId: string;
   flagNode: string;
-  boxCenter: [number, number];
-  boxSide: number;
+  /** The DRAWN capsule rect the line's box belongs to (a group rounded-rect for a
+   *  multi-line interchange, the single-stop box for a lone stop). The lane is
+   *  cropped to this exact painted shape, not a guessed per-line square. */
+  box: Box;
   shared: boolean;
 }
 
@@ -164,10 +167,62 @@ export function computeTokyuLaneCrops(
     }
   }
 
+  // FREE-END gate: a lane end may be cropped or extended only when it is a true
+  // END of the line's drawn course, i.e. no other lane of the SAME line has an
+  // endpoint continuing from it and no fillet join bridges away from it. The
+  // endpoint set is the lanes' own ends PLUS every joinCurve bridge point (a
+  // filleted interior join separates the raw lane ends by several px, with the
+  // arc living outside segPath, so the bridge points stand in for continuity).
+  // Built once from the INPUT segPath so in-loop cropping cannot change the gate.
+  const FREE_TOL2 = 3 * 3;
+  const endsByLine = new Map<string, Pixel[]>();
+  const pushEnd = (lineId: string, p: Pixel) => {
+    let arr = endsByLine.get(lineId);
+    if (!arr) endsByLine.set(lineId, (arr = []));
+    arr.push(p);
+  };
+  for (const [key, poly] of segPath) {
+    if (poly.length < 2) continue;
+    const lineId = key.slice(key.indexOf('|') + 1);
+    pushEnd(lineId, poly[0]);
+    pushEnd(lineId, poly[poly.length - 1]);
+  }
+  for (const jc of joinCurves) {
+    pushEnd(jc.lineId, jc.a);
+    pushEnd(jc.lineId, jc.b);
+  }
+  const isFreeEnd = (lineId: string, p: Pixel): boolean => {
+    const arr = endsByLine.get(lineId);
+    if (!arr) return false;
+    let hits = 0;
+    for (const q of arr) {
+      const dx = p[0] - q[0], dy = p[1] - q[1];
+      if (dx * dx + dy * dy <= FREE_TOL2) { hits++; if (hits > 1) return false; }
+    }
+    return hits === 1; // only itself
+  };
+  // Second, independent signal: the line has exactly ONE incident drawn lane at
+  // the node (it arrives and stops). BOTH signals must agree before an end is
+  // touched, so neither a fillet shuffle nor a stray extra lane can ever expose
+  // an interior end to the crop.
+  const laneCountAt = (lineId: string, flagNode: string): number => {
+    const inc = incidentByNode.get(flagNode);
+    if (!inc) return 0;
+    let c = 0;
+    for (const e of inc) if (segPath.has(e.id + '|' + lineId)) c++;
+    return c;
+  };
+
   for (const t of targets) {
     if (t.shared) continue; // shared terminus: leave the lane at its tip
     const inc = incidentByNode.get(t.flagNode);
     if (!inc) continue;
+    if (laneCountAt(t.lineId, t.flagNode) !== 1) continue; // endings only
+    // Extension cap: the near-terminus trims a lane back by a marker's worth of
+    // arc, so allow a short straight extension to the capsule wall, scaled by
+    // the capsule's thin side and hard-bounded so no long fabrication can slip
+    // through even at a wide row capsule.
+    const maxExt = Math.min(4 * Math.min(t.box.x1 - t.box.x0, t.box.y1 - t.box.y0), 48);
     for (const e of inc) {
       const key = e.id + '|' + t.lineId;
       const poly = cropSeg.get(key);
@@ -175,7 +230,8 @@ export function computeTokyuLaneCrops(
       // orient node-end-first (poly[0] near flagNode), as trimLaneAt/arcToPoint do
       const atStart = e.from === t.flagNode;
       const nodeFirst = atStart ? poly : [...poly].reverse();
-      const cropped = cropLaneToBox(nodeFirst, t.boxCenter, t.boxSide);
+      if (!isFreeEnd(t.lineId, nodeFirst[0])) continue; // endings only
+      const cropped = cropLaneToRect(nodeFirst, t.box, maxExt);
       const back = atStart ? cropped : [...cropped].reverse();
       cropSeg.set(key, back);
     }
@@ -388,14 +444,23 @@ export interface RibbonGeometry {
 const RECT_R0 = LINE_WIDTH * 0.7;
 const RECT_RCAP = RECT_R0 * MARKER_SCALE;
 const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
+// Above this member count a hub is seated by the LANE-AWARE path (matching
+// rectSeat's ENUM_MAX): each box slides along its own drawn lane instead of being
+// packed into an abstract row.
+const LANECROP_SPREAD_MIN = 6;
 
 // One gathered station's data the rect-capsule seating needs: its nodeId and the
 // marks whose pre-solve home/axis feed the solver, plus each mark's final marker
 // position (single stops seat at pos, not home). Matches the StMarks shape.
 export interface RectSeatStation {
   nodeId: string;
-  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean; pos?: Pixel }>;
+  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean; pos?: Pixel; flagNode?: string }>;
 }
+
+/** Build the drawn lane curve + on-lane anchor for one mark, so large hubs seat by
+ *  sliding boxes along their real lanes. Returns null when the mark has no drawn
+ *  lane (then the caller falls back to the abstract seater). */
+export type LaneItemFor = (lineId: string, flagNode: string, anchor: Pixel) => LaneItem | null;
 
 /** Compute-time rect placement for the full Tokyu stop set: the multi-line
  *  capsules keyed by nodeId (already cross-station deconflicted), plus the
@@ -420,36 +485,103 @@ export interface RectPlacement {
  * visited in their given order (the caller passes them in the deterministic
  * placement order), so the maps are stable.
  */
-export function computeRectByNode(gathered: RectSeatStation[], box: number = RECT_BOX): RectPlacement {
+// Unit direction of an octilinear run-axis (0..3, mod 180 deg), or undefined when
+// no axis was captured. Sign is irrelevant (the rescue slides both ways). Uses a
+// literal sqrt(1/2) so it is byte-identical across V8 versions.
+const AXIS_S = 0.7071067811865476;
+function axisDir(axis: number | undefined): [number, number] | undefined {
+  switch (axis) {
+    case 0: return [1, 0];
+    case 1: return [AXIS_S, AXIS_S];
+    case 2: return [0, 1];
+    case 3: return [-AXIS_S, AXIS_S];
+    default: return undefined;
+  }
+}
+
+/** The dominant run-axis unit direction of a capsule's marks (the corridor the
+ *  capsule sits on): the mode of the member axes, ties to the lower axis. Used to
+ *  constrain the cross-station rescue so a capsule slides ALONG its corridor
+ *  instead of freely off its lines. */
+function dominantDir(marks: RectSeatStation['marks']): [number, number] | undefined {
+  const counts = [0, 0, 0, 0];
+  for (const m of marks) if (m.axis !== undefined) counts[((m.axis % 4) + 4) % 4]++;
+  let best = 0;
+  for (let a = 1; a < 4; a++) if (counts[a] > counts[best]) best = a;
+  return axisDir(best);
+}
+
+export function computeRectByNode(
+  gathered: RectSeatStation[],
+  box: number = RECT_BOX,
+  laneItemFor?: LaneItemFor,
+): RectPlacement {
   const rectByNode = new Map<string, RectCapsule>();
+  const capDir = new Map<string, [number, number] | undefined>();
   const singles: SingleStop[] = [];
   // Single-stop box side: side 3*R0 centered at the marker position, matching the
   // box the rect design draws for a lone stop. RECT_BOX equals 3*R0 already.
   const singleBox = 3 * RECT_R0;
+  const gap = box * 0.14;
+  // Partition: stations whose EVERY mark has a drawn lane curve join the global
+  // lane-true pool (each box slides only along its own line, cross-station
+  // deconfliction included); the rest fall back to the abstract seater + the
+  // rigid rescue. Singles without a lane stay put as static obstacles.
+  const pool: LaneStation[] = [];
+  const poolStations = new Map<string, RectSeatStation>();
   for (const s of gathered) {
+    if (s.marks.length === 0) continue;
+    const items: LaneItem[] = [];
+    let ok = laneItemFor !== undefined;
+    for (const m of s.marks) {
+      const li = ok && m.flagNode && m.pos ? laneItemFor!(m.lineId, m.flagNode, m.pos) : null;
+      if (!li) { ok = false; break; }
+      items.push(li);
+    }
+    if (ok && (s.marks.length === 1 || s.marks.every((m) => m.pos))) {
+      pool.push({ station: s.nodeId, items });
+      poolStations.set(s.nodeId, s);
+      continue;
+    }
     if (s.marks.length === 1) {
       const m = s.marks[0];
       if (m.pos) singles.push({ nodeId: s.nodeId, pos: [m.pos[0], m.pos[1]], box: singleBox });
       continue;
     }
-    if (s.marks.length < 2) continue;
-    // Any multi-line station whose marks all carry a pre-solve home and run axis
-    // is seated, mega included. In the Tokyu (rectRows) design the cached capsule
-    // IS the drawn shape, so a mega interchange becomes a compact grid of numbered
-    // boxes (one per line) instead of an opaque cover, and its footprint is real,
-    // not a phantom. Non-rectRows designs never read rectByNode, so seating this
-    // extra data is inert for them.
+    // Fallback: abstract row seat from pre-solve homes (mega included; the
+    // cached capsule IS the drawn shape for the rect design, and non-rectRows
+    // designs never read it).
     if (!s.marks.every((m) => m.home && m.axis !== undefined)) continue;
     const members: RectMember[] = s.marks.map((m) => ({
       lineId: m.lineId, home: m.home as Pixel, axis: m.axis as number,
     }));
-    const seat = rectSeat(members, box, box * 0.14);
-    rectByNode.set(s.nodeId, rectSeatToCapsule(seat, box));
+    rectByNode.set(s.nodeId, rectSeatToCapsule(rectSeat(members, box, gap), box));
+    capDir.set(s.nodeId, dominantDir(s.marks));
   }
-  // Slide overlapping capsules AND single boxes apart at compute time so the
-  // cached geometry is already deconflicted (the former draw-time rescue over the
-  // full stop set, hoisted). Returns each single's rescued marker position.
-  const tokyuStopPos = rescueRectAndSingles(rectByNode, singles);
+  // Fallback capsules and static singles deconflict rigidly first (the old
+  // rescue), then their footprints become immovable obstacles for the pool.
+  const tokyuStopPos = rescueRectAndSingles(rectByNode, singles, capDir);
+  const obstacles: LaneObstacle[] = [];
+  for (const [, cap] of rectByNode) {
+    for (const g of cap.groups) obstacles.push({ x0: g.x, y0: g.y, x1: g.x + g.w, y1: g.y + g.h });
+  }
+  for (const s of singles) {
+    const p = tokyuStopPos.get(s.nodeId)!;
+    const h = s.box / 2;
+    obstacles.push({ x0: p[0] - h, y0: p[1] - h, x1: p[0] + h, y1: p[1] + h });
+  }
+  // Global lane-true seat: every pooled box (single or interchange member)
+  // deconflicts along its OWN lane against every other, then clusters into its
+  // station's flush capsule parts. No box ever translates off its line.
+  const seated = laneSeatAll(pool, box, gap, obstacles);
+  for (const [nodeId, seat] of seated.byStation) {
+    rectByNode.set(nodeId, rectSeatToCapsule(seat, box));
+  }
+  for (const st of pool) {
+    if (st.items.length !== 1) continue;
+    const p = seated.posByStation.get(st.station)?.[0];
+    if (p) tokyuStopPos.set(st.station, [p[0], p[1]]);
+  }
   return { rectByNode, tokyuStopPos };
 }
 
@@ -1546,7 +1678,17 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (let qi = 0; qi < placeQueue.length; qi++) {
       const s = placeQueue[qi];
       if (s.marks.length === 1) {
-        s.marks[0].chain = 0;
+        const mk = s.marks[0];
+        mk.chain = 0;
+        // Octilinear run-axis of the lone stop's lane, so the cross-station
+        // rescue can slide its box ALONG the line (keeping it on the line) rather
+        // than perpendicular into empty space. Same quantized-atan2 method the
+        // multi-line block uses, for cross-V8 determinism.
+        if (mk.axis === undefined) {
+          const curve = buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT);
+          const tg = curveTangent(curve, curve.anchorT);
+          mk.axis = (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
+        }
       } else if (s.marks.length > 1) {
         // pre-solve home (lane position where the line passes the node), a
         // geometric fact consumed by the rectangle capsule seating. The guard
@@ -3052,36 +3194,60 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // exhausted, so every mark's pre-solve home/axis and final pos are set.
     // Design-agnostic: built from geometry, never from the active design; inert
     // for non-rect designs. gathered is in the deterministic placement order, so
-    // the maps are stable.
-    ({ rectByNode, tokyuStopPos } = computeRectByNode(gathered));
+    // the maps are stable. laneItemFor lets the large-hub path seat boxes by
+    // sliding along their real drawn lanes (windowed to the seat-slide arc), so a
+    // box stays on its line and cannot slide past a terminus.
+    const LANE_SEAT_ARC = 160;
+    const laneItemFor: LaneItemFor = (lineId, flagNode, anchor) => {
+      const polys = lanePolysAt(lineId, flagNode);
+      if (!polys || polys.length === 0) return null;
+      const curve = buildLaneCurve(polys, anchor, LANE_SEAT_ARC);
+      return { lineId, curve, t0: curve.anchorT };
+    };
+    ({ rectByNode, tokyuStopPos } = computeRectByNode(gathered, RECT_BOX, laneItemFor));
 
     // Lane-crop targets: for every mark that resolved to a seated rect box, the
-    // box center + side and whether its terminus is shared (the same guard the
-    // terminus trim uses). A multi-line mark reads its own box center from the
-    // capsule's per-line centers (side = capsule box); a single stop reads the
-    // rescued marker position (side = the single-stop box). Marks without a box
-    // are skipped. Consumed after the draw-fillet finalizes segPath.
+    // exact DRAWN capsule rect its lane should end on. A multi-line mark crops to
+    // the GROUP rect (capsule) its box sits inside, so the lane ends precisely on
+    // the painted shape rather than a guessed per-line square; a single stop crops
+    // to its single-stop box. Marks without a box are skipped. `shared` reuses the
+    // terminus-trim shared-anchor guard. Consumed after the draw-fillet finalizes
+    // segPath.
     const singleBoxSide = 3 * RECT_R0;
+    const boxEps = 1e-6;
+    const containingGroup = (groups: RectCapsule['groups'], cx: number, cy: number): Box | undefined => {
+      for (const g of groups) {
+        if (cx >= g.x - boxEps && cx <= g.x + g.w + boxEps && cy >= g.y - boxEps && cy <= g.y + g.h + boxEps) {
+          return { x0: g.x, y0: g.y, x1: g.x + g.w, y1: g.y + g.h };
+        }
+      }
+      return undefined;
+    };
+    // Targets are pushed for every boxed mark; the ENDINGS-ONLY rule is enforced
+    // geometrically inside computeTokyuLaneCrops (a lane end is touched only when
+    // it is a free end of the line's drawn course), so a through lane can never
+    // be cut and the gate always agrees with the final drawn geometry.
     for (const s of gathered) {
       const cap = rectByNode.get(s.nodeId);
       const singlePos = tokyuStopPos.get(s.nodeId);
       for (const mk of s.marks) {
-        // A mega interchange in the rectangle design is a compact GRID of numbered
-        // boxes (one per line, seated in computeRectByNode), not one opaque cover,
-        // so its lane ends crop to their own grid box too. The mega flag only means
-        // the dot row solve fell back; the per-line box still exists in centers.
-        let boxCenter: [number, number] | undefined;
-        let boxSide = 0;
+        let box: Box | undefined;
         if (cap) {
           const c = cap.centers.find((e) => e.lineId === mk.lineId);
-          if (c) { boxCenter = [c.x, c.y]; boxSide = cap.box; }
+          if (c) {
+            // Crop to the capsule the box is drawn inside; fall back to the box
+            // itself only if no group rect contains its center.
+            box = containingGroup(cap.groups, c.x, c.y);
+            if (!box) { const h = cap.box / 2; box = { x0: c.x - h, x1: c.x + h, y0: c.y - h, y1: c.y + h }; }
+          }
         } else if (singlePos && s.marks.length === 1) {
-          boxCenter = [singlePos[0], singlePos[1]]; boxSide = singleBoxSide;
+          const h = singleBoxSide / 2;
+          box = { x0: singlePos[0] - h, x1: singlePos[0] + h, y0: singlePos[1] - h, y1: singlePos[1] + h };
         }
-        if (!boxCenter) continue;
+        if (!box) continue;
         const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
         const shared = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(s.nodeId));
-        cropTargets.push({ lineId: mk.lineId, flagNode: mk.flagNode, boxCenter, boxSide, shared });
+        cropTargets.push({ lineId: mk.lineId, flagNode: mk.flagNode, box, shared });
       }
     }
   } else {

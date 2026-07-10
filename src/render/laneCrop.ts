@@ -15,8 +15,8 @@
 
 export type Vec2 = [number, number];
 
-// Axis-aligned square boundary from center + side.
-interface Box {
+// Axis-aligned rectangle boundary.
+export interface Box {
   x0: number;
   x1: number;
   y0: number;
@@ -63,59 +63,45 @@ function firstBoundaryHit(a: Vec2, b: Vec2, box: Box): { s: number; p: Vec2 } | 
   return { s: bestS, p: bestP };
 }
 
-// Intersect the ray from `origin` in direction `u` (need not be unit) with the box
-// boundary, returning the nearest strictly-positive-t hit. Same fixed wall scan
-// order. Used to EXTEND a lane that stopped short of the box.
-function nearestRayHit(origin: Vec2, u: Vec2, box: Box): Vec2 | null {
-  let bestT = Infinity;
-  let bestP: Vec2 | null = null;
-  const consider = (t: number, p: Vec2) => {
-    if (t > EPS && t < bestT) {
-      bestT = t;
-      bestP = p;
-    }
-  };
-  for (const wx of [box.x0, box.x1]) {
-    if (Math.abs(u[0]) < EPS) continue;
-    const t = (wx - origin[0]) / u[0];
-    const y = origin[1] + t * u[1];
-    if (y >= box.y0 - EPS && y <= box.y1 + EPS) consider(t, [wx, y]);
-  }
-  for (const wy of [box.y0, box.y1]) {
-    if (Math.abs(u[1]) < EPS) continue;
-    const t = (wy - origin[1]) / u[1];
-    const x = origin[0] + t * u[0];
-    if (x >= box.x0 - EPS && x <= box.x1 + EPS) consider(t, [x, wy]);
-  }
-  if (!bestP) return null;
-  return bestP;
-}
-
 /**
- * Crop or extend a node-end-first lane polyline so its node end lands on the box
+ * Crop (CUT ONLY) a node-end-first lane polyline so its node end lands on the box
  * boundary. `boxCenter` is the box center, `boxSide` its side length.
  *
- * - poly[0] INSIDE the box: drop leading inside vertices, cut at the first exit
- *   crossing (the exit becomes the new node end).
- * - poly[0] OUTSIDE and the polyline reaches the box: CUT to the first boundary
- *   crossing walking from the node end outward (keep the crossing and every
- *   vertex beyond it).
- * - poly[0] OUTSIDE and the polyline never reaches the box: EXTEND. Cast a ray
- *   from the node end along the node-end direction unit(poly[0]-poly[1]) and
- *   prepend the nearest boundary hit.
+ * - poly[0] INSIDE the box: drop leading inside vertices, cut at the first exit.
+ * - poly[0] OUTSIDE and the polyline reaches the box: CUT to the first crossing.
+ * - the lane never reaches the box: left UNCHANGED. The crop only trims a lane
+ *   back to the capsule; it never fabricates geometry to reach it, so no stray
+ *   segments are ever drawn.
  *
- * The input is never mutated. A polyline shorter than two points is returned
- * as a shallow copy unchanged (nothing to crop).
+ * The input is never mutated; a polyline shorter than two points is copied
+ * unchanged.
  */
 export function cropLaneToBox(poly: Vec2[], boxCenter: Vec2, boxSide: number): Vec2[] {
-  if (poly.length < 2) return poly.map((p) => [p[0], p[1]] as Vec2);
   const h = boxSide / 2;
-  const box: Box = {
+  return cropLaneToRect(poly, {
     x0: boxCenter[0] - h,
     x1: boxCenter[0] + h,
     y0: boxCenter[1] - h,
     y1: boxCenter[1] + h,
-  };
+  });
+}
+
+/**
+ * Crop a node-end-first lane polyline so its node end lands exactly on the
+ * boundary of an arbitrary axis-aligned rectangle `box`. This is the capsule-
+ * aware crop: pass the drawn CAPSULE rect (the group rounded-rect the line's box
+ * belongs to) so the lane ends precisely at the shape that is painted.
+ *
+ * A lane that reaches the box is CUT at the boundary. A lane that stops short
+ * of it is EXTENDED straight along its own end direction to the near wall, but
+ * only when `maxExt` allows it: the extension must hit the box within `maxExt`
+ * px or the lane is left unchanged. The default `maxExt` of 0 disables
+ * extension entirely (pure cut). Extension never bends the lane and never
+ * exceeds the cap, so it closes a short terminus gap without fabricating
+ * branches toward distant geometry.
+ */
+export function cropLaneToRect(poly: Vec2[], box: Box, maxExt = 0): Vec2[] {
+  if (poly.length < 2) return poly.map((p) => [p[0], p[1]] as Vec2);
 
   // Case A: node end already inside the box -> walk outward to the first exit.
   if (isInside(poly[0], box)) {
@@ -141,16 +127,40 @@ export function cropLaneToBox(poly: Vec2[], boxCenter: Vec2, boxSide: number): V
     }
   }
 
-  // Case C: the whole lane is outside and never reaches the box -> EXTEND. The
-  // node-end direction points from poly[1] toward poly[0] (outward past the node
-  // end); casting a ray that way toward the box gives the near wall.
-  const u: Vec2 = [poly[0][0] - poly[1][0], poly[0][1] - poly[1][1]];
-  const hit = nearestRayHit(poly[0], u, box);
-  if (hit) {
-    return [hit, ...poly.map((p) => [p[0], p[1]] as Vec2)];
+  // The lane never reaches the box. With a positive maxExt, extend the node end
+  // straight along its own direction (poly[1] -> poly[0], i.e. outward past the
+  // node end) to the near wall, accepting the hit only within maxExt px. The
+  // scan order is fixed (left, right, top, bottom) and the direction is the
+  // lane's own, so nothing bends and nothing reaches far geometry.
+  if (maxExt > 0) {
+    const ux = poly[0][0] - poly[1][0];
+    const uy = poly[0][1] - poly[1][1];
+    const ulen = Math.sqrt(ux * ux + uy * uy);
+    if (ulen > EPS) {
+      let bestT = Infinity;
+      let bestP: Vec2 | null = null;
+      const consider = (t: number, p: Vec2) => {
+        if (t > EPS && t < bestT) { bestT = t; bestP = p; }
+      };
+      for (const wx of [box.x0, box.x1]) {
+        if (Math.abs(ux) < EPS) continue;
+        const t = (wx - poly[0][0]) / ux;
+        const y = poly[0][1] + t * uy;
+        if (y >= box.y0 - EPS && y <= box.y1 + EPS) consider(t, [wx, y]);
+      }
+      for (const wy of [box.y0, box.y1]) {
+        if (Math.abs(uy) < EPS) continue;
+        const t = (wy - poly[0][1]) / uy;
+        const x = poly[0][0] + t * ux;
+        if (x >= box.x0 - EPS && x <= box.x1 + EPS) consider(t, [x, wy]);
+      }
+      if (bestP && bestT * ulen <= maxExt) {
+        return [bestP, ...poly.map((p) => [p[0], p[1]] as Vec2)];
+      }
+    }
   }
 
-  // No reachable box in either direction (the lane points away from the box):
-  // leave it unchanged rather than fabricate geometry.
+  // Unreachable within the extension cap: leave the lane unchanged rather than
+  // fabricate geometry.
   return poly.map((p) => [p[0], p[1]] as Vec2);
 }

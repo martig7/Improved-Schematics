@@ -117,44 +117,71 @@ test('computeRectByNode: single stops are recorded in tokyuStopPos', () => {
   assert.deepEqual(tokyuStopPos.get('s2'), [500, 500]);
 });
 
-test('computeRectByNode: two overlapping single boxes are separated', () => {
-  // Two single boxes almost on top of each other overlap; the rescue pushes one
-  // out so their painted boxes clear on at least one axis.
+// A straight horizontal lane through the anchor, mirroring what laneItemFor
+// supplies in production: the rescue slides singles ALONG this curve.
+const hLaneItem = (lineId: string, _flagNode: string, anchor: [number, number]) => ({
+  lineId,
+  curve: {
+    pts: [[anchor[0] - 200, anchor[1]], [anchor[0] + 200, anchor[1]]] as [number, number][],
+    cum: [0, 400],
+    anchorT: 200,
+  },
+  t0: 200,
+});
+
+test('computeRectByNode: two overlapping single boxes are separated ALONG their lanes', () => {
+  // Two single boxes almost on top of each other overlap; the mutual along-lane
+  // relaxation slides both apart so their painted boxes clear on one axis.
   const stations: RectSeatStation[] = [
-    { nodeId: 's1', marks: [{ lineId: 'A', home: [0, 0], axis: 0, pos: [0, 0] }] },
-    { nodeId: 's2', marks: [{ lineId: 'B', home: [4, 0], axis: 0, pos: [4, 0] }] },
+    { nodeId: 's1', marks: [{ lineId: 'A', home: [0, 0], axis: 0, pos: [0, 0], flagNode: 'f1' }] },
+    { nodeId: 's2', marks: [{ lineId: 'B', home: [4, 0], axis: 0, pos: [4, 0], flagNode: 'f2' }] },
   ];
-  const { tokyuStopPos } = computeRectByNode(stations);
+  const { tokyuStopPos } = computeRectByNode(stations, undefined, hLaneItem);
   const a = tokyuStopPos.get('s1')!, b = tokyuStopPos.get('s2')!;
   const half = 3 * (LINE_WIDTH * 0.7) / 2;
   const overlapX = (half + half) - Math.abs(a[0] - b[0]);
   const overlapY = (half + half) - Math.abs(a[1] - b[1]);
   assert.ok(overlapX <= 1e-6 || overlapY <= 1e-6, 'single boxes still overlap after rescue');
+  // On-lane invariant: sliding follows the (horizontal) lane, never leaves it.
+  assert.ok(Math.abs(a[1]) < 1e-9 && Math.abs(b[1]) < 1e-9, 'a box left its lane');
+});
+
+test('computeRectByNode: a curveless single stays put (static obstacle)', () => {
+  // Without a drawn lane there is nothing safe to slide along; the box holds
+  // its position rather than drift off-line.
+  const stations: RectSeatStation[] = [
+    { nodeId: 's1', marks: [{ lineId: 'A', home: [0, 0], axis: 0, pos: [0, 0] }] },
+    { nodeId: 's2', marks: [{ lineId: 'B', home: [4, 0], axis: 0, pos: [4, 0] }] },
+  ];
+  const { tokyuStopPos } = computeRectByNode(stations);
+  assert.deepEqual(tokyuStopPos.get('s1'), [0, 0]);
+  assert.deepEqual(tokyuStopPos.get('s2'), [4, 0]);
 });
 
 test('computeRectByNode: a single box is pushed clear of an interchange capsule', () => {
-  // The interchange (2 members) anchors; the single sits on top of it and yields.
+  // The interchange (2 members) anchors; the single sits on top of it and slides
+  // out along its own lane.
   const stations: RectSeatStation[] = [
     { nodeId: 'inter', marks: [
       { lineId: 'A', home: [0, 0], axis: 0, pos: [0, 0] },
       { lineId: 'B', home: [40, 0], axis: 0, pos: [40, 0] },
     ] },
-    { nodeId: 'single', marks: [{ lineId: 'C', home: [10, 0], axis: 0, pos: [10, 0] }] },
+    { nodeId: 'single', marks: [{ lineId: 'C', home: [10, 0], axis: 0, pos: [10, 0], flagNode: 'f3' }] },
   ];
-  const { rectByNode, tokyuStopPos } = computeRectByNode(stations);
-  // The interchange capsule union.
+  const { rectByNode, tokyuStopPos } = computeRectByNode(stations, undefined, hLaneItem);
+  // The single must clear every DRAWN capsule part rect (sitting in the empty
+  // gap between two separated parts is legitimate).
   const cap = rectByNode.get('inter')!;
-  let cx0 = Infinity, cy0 = Infinity, cx1 = -Infinity, cy1 = -Infinity;
-  for (const g of cap.groups) {
-    cx0 = Math.min(cx0, g.x); cy0 = Math.min(cy0, g.y);
-    cx1 = Math.max(cx1, g.x + g.w); cy1 = Math.max(cy1, g.y + g.h);
-  }
   const s = tokyuStopPos.get('single')!;
   const half = 3 * (LINE_WIDTH * 0.7) / 2;
   const sx0 = s[0] - half, sy0 = s[1] - half, sx1 = s[0] + half, sy1 = s[1] + half;
-  const overlapX = Math.min(cx1, sx1) - Math.max(cx0, sx0);
-  const overlapY = Math.min(cy1, sy1) - Math.max(cy0, sy0);
-  assert.ok(overlapX <= 1e-6 || overlapY <= 1e-6, 'single still overlaps the capsule after rescue');
+  for (const g of cap.groups) {
+    const overlapX = Math.min(g.x + g.w, sx1) - Math.max(g.x, sx0);
+    const overlapY = Math.min(g.y + g.h, sy1) - Math.max(g.y, sy0);
+    assert.ok(overlapX <= 1e-6 || overlapY <= 1e-6, 'single overlaps a drawn capsule part');
+  }
+  // On-lane invariant: the single stayed on its horizontal lane.
+  assert.ok(Math.abs(s[1]) < 1e-9, 'single left its lane');
 });
 
 test('computeRectByNode: deterministic on repeat', () => {

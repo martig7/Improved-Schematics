@@ -42,25 +42,19 @@ test('CUT: lane enters box after a bend keeps the outward vertices', () => {
   assert.equal(out.length, 2);
 });
 
-test('EXTEND: a short lane that falls short reaches the boundary', () => {
-  // Node end at [-30,0], runs +x but stops at [-20,0], short of the box wall -10.
+test('NO-EXTEND: a lane that never reaches the box is left unchanged', () => {
+  // Node end at [-20,0] (outside), running further away to [-30,0]. It never
+  // reaches the box, so the crop leaves it untouched (never fabricates geometry).
   const poly: P[] = [[-20, 0], [-30, 0]];
   const out = cropLaneToBox(poly, [0, 0], 20);
-  // A new node-end vertex is prepended on the near (left) wall at [-10,0].
-  assert.deepEqual(out[0], [-10, 0]);
-  assert.ok(onBoundary(out[0], [0, 0], 20));
-  // Original vertices are preserved after the prepended hit.
-  assert.deepEqual(out[out.length - 1], [-30, 0]);
+  assert.deepEqual(out, [[-20, 0], [-30, 0]]);
 });
 
-test('EXTEND: extension is collinear with the node-end segment', () => {
-  // Diagonal lane heading toward the box at 45deg but stopping short.
+test('NO-EXTEND: a short diagonal lane that never reaches the box is unchanged', () => {
+  // Diagonal lane pointing away from the box; nothing to cut, nothing extended.
   const poly: P[] = [[-20, -20], [-30, -30]];
   const out = cropLaneToBox(poly, [0, 0], 20);
-  // Ray from [-20,-20] toward [10,10] direction hits the square corner region;
-  // first boundary hit is x=-10 -> y=-10 (the corner), on the boundary.
-  assert.ok(onBoundary(out[0], [0, 0], 20));
-  assert.deepEqual(out[0], [-10, -10]);
+  assert.deepEqual(out, [[-20, -20], [-30, -30]]);
 });
 
 test('inside-start: leading inside vertices are dropped, cut at first exit', () => {
