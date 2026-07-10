@@ -142,6 +142,32 @@ test('merged row centers EXACTLY on crossing lanes, terminus tip included', () =
   assert.ok(segDist([b[0], b[1]], laneB.pts as Array<[number, number]>) < 0.2, 'B box centered on its lane');
 });
 
+test('terminus column stays at its route ends beside a slightly tilted through lane', () => {
+  // Two lanes END at x=100 (anchors at the tip) and one nearly parallel lane
+  // runs through with a slight tilt. The perpendicular residuals barely
+  // determine the along direction here, so an exact normal-equation solve
+  // would trade a large along-lane drift for a marginal perpendicular gain
+  // and drag the merged column far off the route ends. The anchor pull must
+  // hold the column at the ends.
+  const tilted: LaneCurve = {
+    pts: [[-100, -8], [300, 8]],
+    cum: [0, Math.sqrt(400 * 400 + 16 * 16)],
+    anchorT: Math.sqrt(200 * 200 + 8 * 8), // anchor near (100, 0)
+  };
+  const out = laneSeat(
+    [
+      { lineId: 'T', curve: tilted, t0: tilted.anchorT },
+      item('A', hLane(6, 100, -100, 100)),   // terminus: anchor at the lane end
+      item('B', hLane(12, 100, -100, 100)),  // terminus: anchor at the lane end
+    ],
+    BOX, GAP,
+  );
+  for (const [id, c] of out.centers) {
+    assert.ok(Math.abs(c[0] - 100) < 3, `${id} drifted along its lane: x=${c[0].toFixed(1)}`);
+  }
+  assertNoBoxOverlap(out);
+});
+
 test('deterministic: identical input yields identical output', () => {
   const mk = () => [item('A', hLane(0, 0)), item('B', hLane(7.5, 0)), item('C', hLane(15, 6))];
   const a = laneSeat(mk(), BOX, GAP);

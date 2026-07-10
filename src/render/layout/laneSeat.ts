@@ -81,6 +81,16 @@ const SLIDE_CAP_FRAC = 8;
 // ambiguous and the tie breaks by index (opposite signs), so a coincident pair
 // splits instead of co-drifting.
 const EPS_TIE = 1e-9;
+// Tangential anchor pull for the row-centering solve. The perpendicular
+// residuals leave the along-lane direction undetermined when a row's lanes run
+// nearly parallel, and the exact normal-equation solution then explodes along
+// it (a slight segment tilt trades huge along-lane drift for marginal
+// perpendicular gain, dragging a terminus row off its route ends). The pull
+// ramps in as the smallest eigenvalue of the normal matrix falls below
+// ANCHOR_EIG_FRAC of the member count and vanishes for a well-determined
+// crossing, which keeps its exact both-on-line solution.
+const ANCHOR_W = 0.25;
+const ANCHOR_EIG_FRAC = 0.05;
 
 /**
  * Seat every station's boxes together: global mutual along-lane deconflict, then
@@ -105,8 +115,10 @@ export function laneSeatAll(
   const chainGap = 2 * pitch;           // max along gap that still joins a row
   const half = box / 2 + box * 0.12;    // box half footprint incl clearance margin
 
-  // Flatten with station tags; per-item arc state.
-  interface Slot { station: string; lineId: string; curve: LaneCurve; t: number; lo: number; hi: number }
+  // Flatten with station tags; per-item arc state. `anchor` keeps the seed
+  // position (the station's true spot on its lane) for the degenerate-system
+  // pull in lsqShift.
+  interface Slot { station: string; lineId: string; curve: LaneCurve; t: number; lo: number; hi: number; anchor: Point }
   const slots: Slot[] = [];
   const indexByStation = new Map<string, number[]>();
   for (const st of stationsIn) {
@@ -114,10 +126,13 @@ export function laneSeatAll(
     for (const it of st.items) {
       const total = it.curve.cum[it.curve.cum.length - 1];
       const cap = box * SLIDE_CAP_FRAC;
+      const t0 = Math.max(0, Math.min(total, it.t0));
+      const a = curvePoint(it.curve, t0);
       slots.push({
         station: st.station, lineId: it.lineId, curve: it.curve,
-        t: Math.max(0, Math.min(total, it.t0)),
+        t: t0,
         lo: Math.max(0, it.t0 - cap), hi: Math.min(total, it.t0 + cap),
+        anchor: [a[0], a[1]],
       });
       idx.push(slots.length - 1);
     }
@@ -289,8 +304,10 @@ export function laneSeatAll(
     let m00 = 0, m01 = 0, m11 = 0, r0 = 0, r1 = 0;
     let n0: Point | null = null;
     let sNx = 0, sNy = 0, sE = 0, cnt = 0;
+    const feet: Array<{ i: number; p: Point; t: Point }> = [];
     for (const [i, p] of posMap) {
       const f = laneFoot(i, p);
+      feet.push({ i, p, t: f.t });
       let nx: number, ny: number, e: number;
       if (f.d > 1e-6) {
         nx = (p[0] - f.q[0]) / f.d;
@@ -309,6 +326,21 @@ export function laneSeatAll(
       cnt++;
     }
     if (cnt === 0) return [0, 0];
+    // Degenerate-system anchor pull (see ANCHOR_W): when the perpendicular
+    // system barely determines one direction, pin it with a tangential pull
+    // toward each member's seed anchor instead of solving the near-null
+    // direction exactly.
+    const trM = m00 + m11;
+    const det0 = m00 * m11 - m01 * m01;
+    const lmin = (trM - Math.sqrt(Math.max(0, trM * trM - 4 * det0))) / 2;
+    const wa = ANCHOR_W * Math.max(0, 1 - lmin / (ANCHOR_EIG_FRAC * cnt));
+    if (wa > 0) {
+      for (const { i, p, t } of feet) {
+        const e = (p[0] - slots[i].anchor[0]) * t[0] + (p[1] - slots[i].anchor[1]) * t[1];
+        m00 += wa * t[0] * t[0]; m01 += wa * t[0] * t[1]; m11 += wa * t[1] * t[1];
+        r0 -= wa * e * t[0]; r1 -= wa * e * t[1];
+      }
+    }
     const det = m00 * m11 - m01 * m01;
     let u = 0, v = 0;
     if (Math.abs(det) > 1e-9) {
