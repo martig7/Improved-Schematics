@@ -261,6 +261,14 @@ export function laneSeatAll(
         t = [dx / len, dy / len];
       }
     }
+    // A curve whose every segment is sub-pixel has no usable segment above;
+    // the honest distance is to its first vertex. Returning Infinity instead
+    // would turn the least-squares residual into Infinity * 0 = NaN and poison
+    // the whole part.
+    if (best === Infinity && cpts.length > 0) {
+      q = [cpts[0][0], cpts[0][1]];
+      best = hyp(p[0] - q[0], p[1] - q[1]);
+    }
     return { q, t, d: best };
   };
   const distToLane = (i: number, p: Point): number => laneFoot(i, p).d;

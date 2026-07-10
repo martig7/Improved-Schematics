@@ -207,6 +207,34 @@ test('computeRectByNode: a station with a non-finite mark is left unseated, othe
   }
 });
 
+test('computeRectByNode: a station with a sub-pixel stub curve seats via the fallback', () => {
+  // One mark's lane resolves to a synthetic sub-pixel stub (no real drawn
+  // lane). The station must not join the lane-true pool (a box cannot slide
+  // on a point); with homes and axes present it seats via the abstract
+  // fallback and every output stays finite.
+  const stubItem = (lineId: string, _flagNode: string, anchor: [number, number]) => ({
+    lineId,
+    curve: {
+      pts: [anchor, [anchor[0] + 1e-6, anchor[1]]] as [number, number][],
+      cum: [0, 1e-6],
+      anchorT: 0,
+    },
+    t0: 0,
+  });
+  const stations: RectSeatStation[] = [
+    { nodeId: 'st', marks: [
+      { lineId: 'A', home: [0, 0], axis: 0, pos: [0, 0], flagNode: 'f1' },
+      { lineId: 'B', home: [8, 0], axis: 0, pos: [8, 0], flagNode: 'f2' },
+    ] },
+  ];
+  const { rectByNode } = computeRectByNode(stations, undefined, stubItem);
+  const cap = rectByNode.get('st')!;
+  assert.ok(cap, 'station seated via fallback');
+  for (const c of cap.centers) {
+    assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y), 'fallback output stays finite');
+  }
+});
+
 test('computeRectByNode: deterministic on repeat', () => {
   const stations: RectSeatStation[] = [
     { nodeId: 'n1', marks: [

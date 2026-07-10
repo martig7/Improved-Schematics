@@ -168,6 +168,29 @@ test('terminus column stays at its route ends beside a slightly tilted through l
   assertNoBoxOverlap(out);
 });
 
+test('a sub-pixel stub curve in a mixed station stays finite', () => {
+  // When a line has no usable drawn lane, the curve builder emits a synthetic
+  // sub-pixel stub. Its lane distance used to come back Infinity, and in a
+  // part mixed with real curves the least-squares residual became
+  // Infinity * 0 = NaN, poisoning every position in the part. All outputs
+  // must stay finite.
+  const stub: LaneCurve = {
+    pts: [[100, 6], [100 + 1e-6, 6]],
+    cum: [0, 1e-6],
+    anchorT: 0,
+  };
+  const out = laneSeat(
+    [item('A', hLane(0, 100)), { lineId: 'S', curve: stub, t0: 0 }],
+    BOX, GAP,
+  );
+  for (const [id, c] of out.centers) {
+    assert.ok(Number.isFinite(c[0]) && Number.isFinite(c[1]), `${id} center non-finite: ${c}`);
+  }
+  for (const g of out.groups) {
+    assert.ok(Number.isFinite(g.x) && Number.isFinite(g.y) && Number.isFinite(g.w) && Number.isFinite(g.h), 'group non-finite');
+  }
+});
+
 test('deterministic: identical input yields identical output', () => {
   const mk = () => [item('A', hLane(0, 0)), item('B', hLane(7.5, 0)), item('C', hLane(15, 6))];
   const a = laneSeat(mk(), BOX, GAP);

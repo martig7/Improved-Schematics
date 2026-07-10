@@ -536,10 +536,17 @@ export function computeRectByNode(
   // and reported, so the rest of the map still seats and the log names the
   // offender for root-causing.
   const finitePt = (p?: Pixel): boolean => !!p && Number.isFinite(p[0]) && Number.isFinite(p[1]);
-  const finiteCurve = (li: LaneItem): boolean =>
-    Number.isFinite(li.t0) &&
-    Number.isFinite(li.curve.anchorT) &&
-    Number.isFinite(li.curve.cum[li.curve.cum.length - 1]);
+  // A pooled box slides along its curve, so the curve must offer real arc to
+  // slide on. When a line has no usable drawn lane at its flag node the curve
+  // builder falls back to a synthetic sub-pixel stub; a box cannot seat on a
+  // point, and its infinite lane distance used to poison the shared least
+  // squares. Such stations belong to the abstract fallback seater.
+  const MIN_LANE_ARC = 0.5;
+  const usableCurve = (li: LaneItem): boolean => {
+    const total = li.curve.cum[li.curve.cum.length - 1];
+    return Number.isFinite(li.t0) && Number.isFinite(li.curve.anchorT) &&
+      Number.isFinite(total) && total >= MIN_LANE_ARC;
+  };
   for (const s of gathered) {
     if (s.marks.length === 0) continue;
     if (s.marks.some((m) => (m.pos && !finitePt(m.pos)) || (m.home && !finitePt(m.home)))) {
@@ -550,7 +557,7 @@ export function computeRectByNode(
     let ok = laneItemFor !== undefined;
     for (const m of s.marks) {
       const li = ok && m.flagNode && m.pos ? laneItemFor!(m.lineId, m.flagNode, m.pos) : null;
-      if (!li || !finiteCurve(li)) { ok = false; break; }
+      if (!li || !usableCurve(li)) { ok = false; break; }
       items.push(li);
     }
     if (ok && (s.marks.length === 1 || s.marks.every((m) => m.pos))) {
