@@ -303,7 +303,19 @@ export function renderGeographic(input: GeoInput): string {
     return renderGeographicTopo(input, opts);
   }
 
-  const lines = extractRouteLines(input.routes, input.tracks, input.stations as never, input.stationGroups);
+  // Canonicalize input ORDER by id, the same as the topo and smoothed paths do.
+  // Node draw order (Map insertion order) and the line paint order both follow the
+  // input array order, so the offline dump and the game's live data (iterated in a
+  // different order) would otherwise paint DIFFERENT SVG from the SAME network.
+  // Sorting by id makes this render order-independent.
+  const byId = <T extends { id: string }>(arr: ReadonlyArray<T>): T[] =>
+    [...arr].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const sStations = byId(input.stations as ReadonlyArray<{ id: string }>) as never;
+  const sRoutes = byId(input.routes);
+  const sTracks = input.tracks ? byId(input.tracks) : input.tracks;
+  const sGroups = input.stationGroups ? byId(input.stationGroups) : input.stationGroups;
+
+  const lines = extractRouteLines(sRoutes, sTracks, sStations, sGroups);
   const bounds = (() => {
     const b = computeBounds([...lines, ...geoFramePts(input.geography)]);
     return b ? padBounds(b, 0.08) : ([-1, -1, 1, 1] as [number, number, number, number]);
@@ -329,8 +341,8 @@ export function renderGeographic(input: GeoInput): string {
 
   // Build the station-group graph (real proximity-merged groups when available)
   // for nodes, transfer pairs, and labels.
-  const groups = getOrBuildStationGroups(input.stations as never, input.stationGroups);
-  const graph = buildTransitGraph(input.stations as never, input.routes, groups);
+  const groups = getOrBuildStationGroups(sStations, sGroups);
+  const graph = buildTransitGraph(sStations, sRoutes, groups);
   if (graph.nodes.size > 0) {
     const nodePx = new Map<string, Pixel>();
     for (const n of graph.nodes.values()) nodePx.set(n.id, proj.toSVG(n.lngLat));

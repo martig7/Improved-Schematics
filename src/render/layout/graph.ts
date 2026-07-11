@@ -1,8 +1,9 @@
 // Build a transit graph (station-group nodes + edges + line traversals) from the
 // modding API's routes/tracks/stations. Ported from the game
 // (dev/reference/buildTransitGraph.js, walkRouteVisits.js, normalizeColor.js,
-// edgeKey_1.js, projectFactory.js); buildStationGroups is new glue that derives
-// the game's interchange groups from Station.trackGroupId.
+// edgeKey_1.js, projectFactory.js); buildStationGroups is new glue that emits one
+// singleton interchange group per constructed station, the fallback used when the
+// API exposes no real stationGroups.
 
 import type { Station, Route, Track } from '../../types/game-state';
 import type { Coordinate } from '../../types/core';
@@ -16,7 +17,7 @@ import type {
   TraversalStep,
 } from './types';
 
-/** Group constructed stations into interchange nodes by trackGroupId (fallback). */
+/** Fallback grouping: one singleton interchange group per constructed station. */
 export function buildStationGroups(stations: Station[]): StationGroup[] {
   const groups: StationGroup[] = [];
   for (const s of stations) {
@@ -380,16 +381,21 @@ export function walkRouteVisits(
   return visits;
 }
 
-/** Collapse to stop visits only. Matches how geographic mode connects stations. */
-export function stopOnlyVisits(visits: Visit[]): Visit[] {
-  const out: Visit[] = [];
-  for (const v of visits) {
-    if (!v.isStop) continue;
-    const last = out[out.length - 1];
-    if (last && last.groupId === v.groupId) continue;
-    out.push({ groupId: v.groupId, isStop: true });
-  }
-  return out;
+/** Memoize a route walk by route id so callers that need the same route's visits
+ *  more than once compute them a single time. The wrapped walker must be a pure
+ *  function of the route and the (already-final) group maps, and the returned
+ *  Visit[] is treated as read-only by callers, so the shared instance is safe. */
+export function makeVisitsMemo(
+  walk: (route: Route) => Visit[],
+): (route: Route) => Visit[] {
+  const cache = new Map<string, Visit[]>();
+  return (route: Route): Visit[] => {
+    const hit = cache.get(route.id);
+    if (hit) return hit;
+    const v = walk(route);
+    cache.set(route.id, v);
+    return v;
+  };
 }
 
 interface GroupTransition {
@@ -475,6 +481,11 @@ export function buildTransitGraph(
     }
   }
 
+  // Both the canonical-line pre-pass and the edge-building loop below need each
+  // route's group visits, and the group maps are now final. Compute walkRouteVisits
+  // once per route and share it across the two passes instead of walking twice.
+  const getVisits = makeVisitsMemo((route) => walkRouteVisits(route, stNodeToGroup, trackToGroup));
+
   // Routes that share a (non-empty) bullet AND colour MIGHT be one logical line the game
   // models as two routes (e.g. a loop's clockwise + counter-clockwise directions). Collapse
   // such a pair onto ONE line id so it bundles as a single ribbon, but ONLY when they are
@@ -488,7 +499,7 @@ export function buildTransitGraph(
   const canonLineId = new Map<string, string>(); // route.id -> canonical line id
   {
     const routeEdgeSet = (route: Route): Set<string> => {
-      const visits = walkRouteVisits(route, stNodeToGroup, trackToGroup);
+      const visits = getVisits(route);
       const s = new Set<string>();
       for (let i = 0; i < visits.length - 1; i++) {
         const a = visits[i], b = visits[i + 1];
@@ -531,7 +542,7 @@ export function buildTransitGraph(
 
   for (const route of routes) {
     if (route.tempParentId) continue;
-    const visits = walkRouteVisits(route, stNodeToGroup, trackToGroup);
+    const visits = getVisits(route);
     // label = the bullet printed inside dots; an empty/whitespace bullet prints
     // NOTHING (a blank dot), not the route's UUID. Lines are matched by id, so
     // the label is display-only and may safely be empty. The id is canonicalized

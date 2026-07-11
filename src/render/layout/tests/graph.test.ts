@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStationGroups, buildTransitGraph, getOrBuildStationGroups, buildGroupMaps } from '../graph';
-import type { StationGroup } from '../types';
+import { buildStationGroups, buildTransitGraph, getOrBuildStationGroups, buildGroupMaps, makeVisitsMemo } from '../graph';
+import type { StationGroup, Visit } from '../types';
 import type { Station, Route, Track } from '../../../types/game-state';
 
 const stations = [
@@ -17,6 +17,29 @@ test('buildStationGroups does not collapse stations (keeps separate)', () => {
   const groups = buildStationGroups(stations);
   assert.equal(groups.length, 3);
   assert.deepEqual(groups.map((g) => g.id).sort(), ['s1', 's2', 's3']);
+});
+
+test('makeVisitsMemo walks each route once no matter how often it is looked up', () => {
+  // buildTransitGraph looks a route's visits up twice (canonical-line pre-pass +
+  // edge-building loop); the memo must run the underlying walk once per route id.
+  let calls = 0;
+  const seen: string[] = [];
+  const memo = makeVisitsMemo((route: Route) => {
+    calls++;
+    seen.push(route.id);
+    return [{ groupId: route.id, isStop: true }] as Visit[];
+  });
+  const rA = { id: 'rA' } as unknown as Route;
+  const rB = { id: 'rB' } as unknown as Route;
+  const a1 = memo(rA);
+  const a2 = memo(rA); // second pass reuses the cached walk
+  const b1 = memo(rB);
+  memo(rB);
+  memo(rA);
+  assert.equal(calls, 2, 'exactly one underlying walk per distinct route id');
+  assert.deepEqual(seen, ['rA', 'rB'], 'each route walked once, in first-seen order');
+  assert.strictEqual(a1, a2, 'repeat lookups return the SAME cached Visit[] instance');
+  assert.strictEqual(b1, memo(rB), 'second route is cached too');
 });
 
 test('buildTransitGraph builds edges between consecutive distinct groups', () => {
