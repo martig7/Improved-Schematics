@@ -23,7 +23,7 @@
 import type { Point } from '../stations/types';
 import type { LaneCurve } from './chainPlace';
 import { curvePoint, curveTangent } from './chainPlace';
-import { mstConnectors, type RectSeatOut } from './rectSeat';
+import { mstConnectors, PAD_FRAC, CAP_GAP_FRAC, type RectSeatOut } from './rectSeat';
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
@@ -57,8 +57,6 @@ export interface LaneSeatAllOut {
   posByStation: Map<string, Point[]>;
 }
 
-const PAD_FRAC = 0.16;      // capsule padding around the box centers
-const CAP_GAP_FRAC = 0.12;  // clear gap kept outside a capsule
 const CLUSTER_FRAC = 1.5;   // center-distance (in box units) that still clusters
 const DECONFLICT_ITERS = 300;
 // Max distance a box may FLOAT off its own lane for its station's parts to merge

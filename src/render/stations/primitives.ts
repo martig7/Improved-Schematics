@@ -1,7 +1,7 @@
-import { LINE_WIDTH, MARKER_SCALE } from '../constants';
+import { MARKER_SCALE, MARK_R0 } from '../constants';
 import type { Glyph, Capsule, Point } from './types';
 
-const R0 = LINE_WIDTH * 0.7; // base dot radius (matches the solver)
+const R0 = MARK_R0; // base dot radius (matches the solver)
 
 /** Readable bullet ink (near-black or white) for text on a solid fill. */
 export function contrastInk(hex: string): string {

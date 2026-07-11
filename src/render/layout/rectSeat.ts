@@ -95,11 +95,16 @@ const ENUM_MAX = 6;
 // instead of splitting into singleton capsules whose padded rects would touch.
 const OVERLAP_PEN = 1e6;
 
+// Capsule padding around the box centers, as a fraction of the box side. Also
+// the corner-radius fraction in the rounded-rect derivation. Shared with the
+// lane-seating solver so both designs pad and round capsules identically.
+export const PAD_FRAC = 0.16;
+
 // Minimum clear gap required between the padded rects of two DIFFERENT groups.
 // Two capsules closer than this along both axes count as touching and are
 // penalized so the solver prefers merging them into one row over a split whose
-// capsules kiss at the corner.
-const CAP_GAP_FRAC = 0.12;
+// capsules kiss at the corner. Shared with the lane-seating solver.
+export const CAP_GAP_FRAC = 0.12;
 
 /**
  * Count pairs of DIFFERENT groups whose padded capsule rects overlap or sit
@@ -318,8 +323,8 @@ function spreadSeat(
  */
 export function rectSeat(members: RectMember[], box: number, gap: number): RectSeatOut {
   const pitch = box + gap;
-  const pad = box * 0.16;
-  const rx = (box + 2 * pad) * 0.16;
+  const pad = box * PAD_FRAC;
+  const rx = (box + 2 * pad) * PAD_FRAC;
   // Minimum clear gap two split capsules must keep between their padded rects.
   const capGap = box * CAP_GAP_FRAC;
 

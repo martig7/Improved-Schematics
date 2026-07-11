@@ -5,13 +5,13 @@
  */
 
 import type { Pixel, StopMark } from '../layout/types';
-import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from '../constants';
+import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE, MARK_R0 } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
 import { type RectCapsule } from '../layout/rectSeat';
 import { debugMegaBox } from '../debug/stops.debug';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
-const R0 = LINE_WIDTH * 0.7;
+const R0 = MARK_R0;
 const RCAP = R0 * MARKER_SCALE;
 const SPACING = LINE_WIDTH + LINE_GAP;
 

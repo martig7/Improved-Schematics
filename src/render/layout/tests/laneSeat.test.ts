@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { laneSeat, type LaneItem } from '../laneSeat';
+import { PAD_FRAC } from '../rectSeat';
 import type { LaneCurve } from '../chainPlace';
 
 const BOX = 10;
 const GAP = 1.4;
-const PAD = BOX * 0.16;
+const PAD = BOX * PAD_FRAC;
 
 // Straight horizontal lane through y=cy spanning x in [x0, x1]; anchor at x=ax.
 const hLane = (cy: number, ax: number, x0 = -200, x1 = 200): LaneCurve => ({

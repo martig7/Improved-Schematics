@@ -29,7 +29,7 @@ import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
-import { LINE_WIDTH, LINE_GAP } from './constants';
+import { LINE_WIDTH, LINE_GAP, regimeDivisor } from './constants';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
@@ -724,9 +724,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   };
   // ĉ estimate for the contraction oracle: mirrors the real post-warp
   // cellSize = max(12, medianSupportEdgeLen / divisor). graph edge count is a
-  // PROXY for the support edge count (topo merge hasn't run yet) — the demand
-  // safety factor covers the regime mismatch.
-  const divisorEst = graph.edges.length > 800 ? 1.2 : 1.6;
+  // PROXY for the support edge count (topo merge hasn't run yet); the demand
+  // safety factor covers the regime mismatch. Same regimeDivisor helper as the
+  // real grid, so the OCTI_DIVISOR override reaches both in dev sweeps.
+  const divisorEst = regimeDivisor(graph.edges.length);
   const cellFromMedLen = (m: number) => Math.max(12, m / divisorEst);
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   // Capsule-demand oracle (spec 2026-07-02): marker geometry constants +
@@ -981,11 +982,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // >= 1 cell so unmerged parallels read as separate lines instead of a
   // crammed band. Larger divisors stay compressed; too small a divisor
   // reintroduces spiral wraps at terminal loops.
-  // NOTE: mirrored pre-warp as `divisorEst` (box-warp contraction oracle).
-  // Keep the threshold + constants in sync if tuned here.
-  const divisor =
-    (typeof process !== 'undefined' && envNum('OCTI_DIVISOR')) ||
-    (support.edges.size > 800 ? 1.2 : 1.6);
+  // The threshold + constants live in regimeDivisor, which is also mirrored
+  // pre-warp as `divisorEst` (box-warp contraction oracle), so both stay in
+  // sync and the OCTI_DIVISOR override reaches both.
+  const divisor = regimeDivisor(support.edges.size);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
   // (dev A/B pin: OCTI_CELL=<px> fixes the grid cell absolutely, so upstream
   //  structural changes are measured on the SAME ruler instead of re-rolling

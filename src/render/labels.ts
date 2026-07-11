@@ -4,7 +4,7 @@
 
 import { envStr } from '../env';
 import type { GraphNode, StopMark, Pixel } from './layout/types';
-import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET } from './constants';
+import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, MARK_R0 } from './constants';
 import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
 
@@ -136,7 +136,7 @@ export function placeLabels(
   const result = new Map<string, Placement>();
   const placedBoxes: Box[] = [];
   const stationBoxes: Box[] = [];
-  const markerR = LINE_WIDTH * 0.7;
+  const markerR = MARK_R0;
   // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
   // counts only HARD overlaps (integers), so many labels tie; without the tie-break
   // those ties resolve by enumeration order. Among cost-tied placements, prefer the

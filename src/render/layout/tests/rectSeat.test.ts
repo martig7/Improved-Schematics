@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rectSeat, mstConnectors } from '../rectSeat';
+import { rectSeat, mstConnectors, CAP_GAP_FRAC } from '../rectSeat';
 
 const near = (a: number, b: number, e = 1e-6) => Math.abs(a - b) < e;
 
@@ -82,9 +82,8 @@ test('homes closer than box footprint -> centers spread into a row', () => {
 });
 
 // The rendered capsule rect for a group is the bbox of its box centers expanded
-// by box/2 + pad on each side (pad = box*0.16); mirror that here so the test
+// by box/2 + pad on each side (pad = box*PAD_FRAC); mirror that here so the test
 // measures the same rect the solver draws.
-const CAP_GAP_FRAC = 0.12;
 const capsuleRect = (group: { x: number; y: number; w: number; h: number }) => ({
   x0: group.x, y0: group.y, x1: group.x + group.w, y1: group.y + group.h,
 });

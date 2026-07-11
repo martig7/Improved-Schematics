@@ -24,6 +24,23 @@ export const LINE_WIDTH =
   LINE_WIDTH_DEFAULT;
 export const LINE_GAP = 2;
 
+/** Base station-marker (dot) radius, shared by the octilinear renderer, the
+ *  station placement/primitive geometry, and label collision boxes so every
+ *  site sizes the marker identically. Derived from the line width. */
+export const MARK_R0 = LINE_WIDTH * 0.7;
+
+/** Octilinear grid divisor selected by graph regime. Metro-scale graphs
+ *  (<= 800 support edges) use a finer grid (1.6) so parallel corridors read as
+ *  separate lines; larger bus-scale graphs use a coarser grid (1.2) that forces
+ *  clean radial fans and stays fast. The OCTI_DIVISOR dev override applies here
+ *  so the pre-warp contraction-oracle estimate and the real cell-size grid use
+ *  the SAME divisor during tuning sweeps.
+ *  @param edgeCount support edge count, or its pre-warp proxy (graph edge count).
+ *  @returns the divisor for cellSize = max(12, medianEdgeLen / divisor). */
+export function regimeDivisor(edgeCount: number): number {
+  return envNum('OCTI_DIVISOR') || (edgeCount > 800 ? 1.2 : 1.6);
+}
+
 /** Capsule markers render at this fraction of full radius so bullet rings
  *  inside a capsule clear each other. SHARED so the rigid-row solver's
  *  intra-capsule gap floor (renderOctilinear) uses the SAME scale the markers

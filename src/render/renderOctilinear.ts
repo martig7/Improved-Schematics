@@ -17,7 +17,7 @@ import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
-import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE } from './constants';
+import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE, MARK_R0 } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
@@ -437,7 +437,7 @@ export interface RibbonGeometry {
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
 // RCAP are defined exactly as the placement geometry defines them so the seated
 // box matches the marker sizing; S = 3*RCAP/MARKER_SCALE = the single-stop box.
-const RECT_R0 = LINE_WIDTH * 0.7;
+const RECT_R0 = MARK_R0;
 const RECT_RCAP = RECT_R0 * MARKER_SCALE;
 const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
 // Above this member count a hub is seated by the LANE-AWARE path (matching
@@ -916,6 +916,19 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (siblingSurvives) continue;
       suppressed.add(key);
       segPath.delete(key);
+    }
+  }
+
+  // The drawn-lane order map was built from drawsOn, BEFORE jog-sliver
+  // suppression removed lane ends from segPath. Re-filter it to the lanes that
+  // actually survived so every later consumer (node lane-degree counts and the
+  // node-connector bundle-span cap) measures drawn lanes only, not slivers that
+  // were dropped. Only touches edges that lost a lane, so untouched hubs are
+  // unchanged.
+  if (suppressed.size > 0) {
+    for (const [edgeId, order] of orderOf) {
+      const kept = order.filter((lineId) => segPath.has(edgeId + '|' + lineId));
+      if (kept.length !== order.length) orderOf.set(edgeId, kept);
     }
   }
 
@@ -1509,7 +1522,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return n;
     };
-    const r = LINE_WIDTH * 0.7;
+    const r = MARK_R0;
     // Intra-capsule dot floor. Markers shrink to MARKER_SCALE inside a capsule
     // (stops.ts), so two adjacent dots' rings clear once their centers are one
     // SCALED ring-diameter (2·r·MARKER_SCALE ≈ 3.19px) apart. The old floor used
