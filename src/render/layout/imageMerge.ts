@@ -11,7 +11,7 @@
 // support graph + image whose edges are those runs. Line traversals, station
 // anchors, and stop flags are remapped onto the new edges.
 
-import { debugMergeChains } from './debug/imageMerge.debug';
+import { debugMergeChains, traceFoldCollapse } from './debug/imageMerge.debug';
 import type {
   Pixel,
   SupportGraph,
@@ -300,6 +300,152 @@ export function mergeCoincidentPaths(
     },
     img: { placement, paths, cellSize: img.cellSize },
   };
+}
+
+// ---- manufactured fold-stub collapse ----------------------------------------
+// The octilinear solver can place a mid-course station OFF the line between its
+// neighbors, routing both incident edges through an identical approach. The
+// coincident-path merge above then honestly turns that shared approach into a
+// stub edge hanging off a junction, and every line's course goes out and back
+// over the stub. A non-stopping line's detour is spliced later by the hook
+// pass, but a STOP pins the fold forever: a mid-route station renders as a
+// fake branch tip.
+//
+// Such a fold is MANUFACTURED: the support traversal runs straight through the
+// station. A REAL out-and-back (a terminus platform, a genuine stub track)
+// retraces in the support traversal too, and keeps its stub. Collapsing moves
+// the station onto the fold base, which sits on its actual course, and drops
+// the stub edge plus the retrace from every traversal.
+
+// Longest stub the collapse treats as a placement artifact, in grid cells. A
+// manufactured fold spans the station's displacement off its course (one or
+// two cells); anything longer is real geometry that must stay visible.
+const FOLD_STUB_MAX_CELLS = 2;
+
+/**
+ * Collapse manufactured fold stubs in the merged graph, in place.
+ *
+ * A candidate stub is a degree-1 node S whose single edge E carries at least
+ * one stop flag at S, where EVERY line on E immediately retraces E (out and
+ * back through S), no line has a REAL retrace at S's drawn position in the
+ * pre-merge support traversals, and E's arc stays within the stub cap.
+ * S's stations, stop flags, and traversals remap onto the fold base node.
+ *
+ * @param h    merged support graph (mutated)
+ * @param img  merged image (mutated)
+ * @param pre  pre-merge support graph (the course-topology reference)
+ * @param prePos pre-merge node id -> drawn position (octi placement)
+ * @returns number of stubs collapsed
+ */
+export function collapseFoldStubs(
+  h: SupportGraph,
+  img: Image,
+  pre: SupportGraph,
+  prePos: (nodeId: string) => Pixel | undefined,
+): number {
+  // Real out-and-back tips per line, keyed by drawn position: the shared node
+  // of any immediate same-edge retrace in the PRE-merge traversals.
+  const realTips = new Set<string>();
+  for (const [lineId, steps] of pre.lineTraversals) {
+    for (let i = 1; i < steps.length; i++) {
+      if (steps[i].edgeId !== steps[i - 1].edgeId || steps[i].reversed === steps[i - 1].reversed) continue;
+      const e = pre.edges.get(steps[i - 1].edgeId);
+      if (!e) continue;
+      const tip = steps[i - 1].reversed ? e.from : e.to;
+      const p = prePos(tip);
+      if (p) realTips.add(lineId + '|' + vKey(p));
+    }
+  }
+
+  const arcOf = (pts: Pixel[]): number => {
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0] - pts[i - 1][0];
+      const dy = pts[i][1] - pts[i - 1][1];
+      acc += Math.sqrt(dx * dx + dy * dy);
+    }
+    return acc;
+  };
+  const maxArc = FOLD_STUB_MAX_CELLS * (img.cellSize ?? 16);
+
+  let collapsed = 0;
+  const nodeIds = [...h.nodes.keys()].sort();
+  for (const sid of nodeIds) {
+    const inc = h.adj.get(sid) ?? [];
+    if (inc.length !== 1) continue;
+    const eid = inc[0];
+    const e = h.edges.get(eid);
+    if (!e) continue;
+    const jid = e.from === sid ? e.to : e.from;
+    if (jid === sid) continue;
+    // the stub must host a stop: a stop-less fold belongs to the hook splice
+    let hasStop = false;
+    for (const l of e.lineIds) if (h.stopAt.has(l + '|' + sid)) { hasStop = true; break; }
+    if (!hasStop) continue;
+    if (arcOf(e.points) > maxArc) continue;
+    const sPos = h.nodes.get(sid)?.pos;
+    if (!sPos) continue;
+    // every line on the stub must go out and back over it WITH S AS THE TIP
+    // (each visit is an adjacent flipped pair whose turnaround point is S).
+    // A lone step means the line TERMINATES on the stub, and a pair whose tip
+    // is the OTHER end means S is a terminus station whose lines turn around
+    // beyond it; both are real geometry. None of the lines may have a REAL
+    // support-level out-and-back at this drawn position either.
+    let ok = true;
+    for (const l of e.lineIds) {
+      if (realTips.has(l + '|' + vKey(sPos))) { ok = false; break; }
+      const steps = h.lineTraversals.get(l) ?? [];
+      let visits = 0;
+      for (let i = 0; i < steps.length; i++) {
+        if (steps[i].edgeId !== eid) continue;
+        const next = steps[i + 1];
+        if (!next || next.edgeId !== eid || next.reversed === steps[i].reversed) { ok = false; break; }
+        const tip = steps[i].reversed ? e.from : e.to;
+        if (tip !== sid) { ok = false; break; }
+        visits++;
+        i++; // consume the pair
+      }
+      if (visits === 0) ok = false;
+      if (!ok) break;
+    }
+    if (!ok) continue;
+
+    // collapse: drop the stub, remap everything at S onto the fold base J
+    h.edges.delete(eid);
+    img.paths.delete(eid);
+    h.adj.delete(sid);
+    const jAdj = h.adj.get(jid);
+    if (jAdj) h.adj.set(jid, jAdj.filter((x) => x !== eid));
+    h.nodes.delete(sid);
+    img.placement.delete(sid);
+    for (const [l, steps] of h.lineTraversals) {
+      if (!e.lineIds.has(l)) continue;
+      const out: TraversalStep[] = [];
+      for (let i = 0; i < steps.length; i++) {
+        if (steps[i].edgeId === eid) continue;
+        out.push(steps[i]);
+      }
+      h.lineTraversals.set(l, out);
+    }
+    for (const st of h.stations.values()) {
+      if (st.nodeId === sid) st.nodeId = jid;
+      if (st.stopNodes) {
+        for (const [l, n] of st.stopNodes) if (n === sid) st.stopNodes.set(l, jid);
+      }
+    }
+    const remapped: string[] = [];
+    for (const key of h.stopAt) {
+      const sep = key.indexOf('|');
+      if (key.slice(sep + 1) === sid) remapped.push(key);
+    }
+    for (const key of remapped) {
+      h.stopAt.delete(key);
+      h.stopAt.add(key.slice(0, key.indexOf('|')) + '|' + jid);
+    }
+    traceFoldCollapse(sid, jid, eid, [...e.lineIds], arcOf(e.points));
+    collapsed++;
+  }
+  return collapsed;
 }
 
 // ---- per-group station separation ------------------------------------------

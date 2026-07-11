@@ -30,7 +30,7 @@ import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/t
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP, regimeDivisor } from './constants';
-import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
+import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { nodeSeqFromSupport } from './layout/stopSeq';
@@ -1120,6 +1120,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (lid) => merged.h.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
   );
   lap('mergeCoincident');
+  // A station the solver placed off its course draws both incident edges
+  // through one shared approach; the merge above turns that into a stub the
+  // course retraces, and a stop pins it against the later hook splice (a
+  // mid-route station renders as a fake branch tip). Collapse such stubs
+  // back onto the fold base; support-level retraces (real branch tips and
+  // terminus platforms) keep their stubs.
+  collapseFoldStubs(merged.h, merged.img, support, (nid) => imageRaw.placement.get(nid) ?? support.nodes.get(nid)?.pos);
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation
   // exceeds the merge radius; closer pairs stay a shared interchange capsule.

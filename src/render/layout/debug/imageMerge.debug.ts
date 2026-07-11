@@ -7,6 +7,22 @@ import type { Pixel } from '../types';
 
 /** OCTI_MERGEDBG=<edgeId,edgeId>: dump an old edge's vertex list and its run
  *  chain after pass 4 (which runs cover it, in what order/orientation). */
+/** OCTI_FOLD_TRACE=1: one line per collapsed manufactured fold stub - the
+ *  removed tip node, the fold base it remapped onto, the stub edge, its
+ *  lines, and arc length. */
+export function traceFoldCollapse(
+  tip: string,
+  base: string,
+  edgeId: string,
+  lineIds: string[],
+  arc: number,
+): void {
+  if (typeof process === 'undefined' || envStr('OCTI_FOLD_TRACE') !== '1') return;
+  console.error(
+    `[foldstub] ${tip} -> ${base} via ${edgeId} lines=[${lineIds.map((l) => l.slice(0, 6)).join(' ')}] arc=${arc.toFixed(1)}px`,
+  );
+}
+
 export function debugMergeChains(
   edgeVerts: Map<string, string[]>,
   vPos: Map<string, Pixel>,
