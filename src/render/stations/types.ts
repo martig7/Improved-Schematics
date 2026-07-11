@@ -28,6 +28,9 @@ export type Capsule =
       box: number;                                   // box side length (world px)
       groups: Array<{ x: number; y: number; w: number; h: number; rx: number }>; // one rounded-rect per aligned row
       connectors: Array<{ points: Point[] }>;        // octilinear polyline (2 pts = 1 segment, 3 = one bend)
+      /** Compute-time extruded neck paths for the connectors; absent for a
+       *  capsule cached before the field existed (paint re-extrudes then). */
+      necks?: string[];
     };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots

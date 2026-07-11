@@ -432,7 +432,22 @@ export interface RibbonGeometry {
    *  doubles the lane-string storage, accepted under the cache-over-recompute
    *  rule since it degrades gracefully. */
   tokyuLaneByLine?: Map<string, string>;
+  /** Fallback content frame (drawn extent + margin), scanned once at compute
+   *  time. Used only when no geography frame is passed. OPTIONAL: absent in
+   *  geometry serialized before it existed; paint then rescans inline. */
+  contentFrame?: FrameRect;
 }
+
+// Repaint memo of label placements per geometry (see the paintRibbons label
+// block). Weakly keyed so an evicted precompute releases its placements. The
+// layout/nodePx the placements were computed against ride along so a caller
+// pairing this geometry with a DIFFERENT layout can never be served stale
+// placements; identity mismatch recomputes.
+const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
+  layout: Layout;
+  nodePx: Map<string, Pixel>;
+  placements: ReturnType<typeof placeLabels>;
+}>();
 
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
 // RCAP are defined exactly as the placement geometry defines them so the seated
@@ -3524,7 +3539,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [lineId, parts] of tokyuDParts) tokyuLaneByLine.set(lineId, parts.join(' '));
   }
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, tokyuLaneByLine };
+  // The fallback content frame is pure in the drawn nodes/edges, so scan them
+  // once here instead of on every repaint that lacks a geography frame.
+  const frameRect = contentFrame(nodePx, layout.edges, edgePolyline, args.width, args.height);
+
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, tokyuLaneByLine, contentFrame: frameRect };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3650,7 +3669,21 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   );
   const stopParts = stationOut.svg;
   if (sceneOut) for (const p of stationOut.prims) stopsPrims.push(p);
-  const placements = showLabels ? placeLabels(layout, nodePx, stopsByNode, segments) : new Map();
+  // Label placement is pure in the cached geometry (marks, segments) and the
+  // layout, none of which change between repaints of one precompute, so the
+  // greedy collision packer runs once per geometry and every later repaint
+  // reuses its placements. Keyed on the geometry object; a deserialized cache
+  // has a fresh identity and refills on its first labeled paint.
+  let placements: ReturnType<typeof placeLabels>;
+  if (!showLabels) placements = new Map();
+  else {
+    const hit = labelPlacementsMemo.get(geom);
+    if (hit && hit.layout === layout && hit.nodePx === nodePx) placements = hit.placements;
+    else {
+      placements = placeLabels(layout, nodePx, stopsByNode, segments);
+      labelPlacementsMemo.set(geom, { layout, nodePx, placements });
+    }
+  }
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];
   for (const n of layout.nodes.values()) {
@@ -3669,7 +3702,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.
-  const fr = args.frame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
+  const fr = args.frame ?? geom.contentFrame ?? contentFrame(nodePx, layout.edges, edgePolyline, width, height);
   const frameAttr =
     ' data-frame="' + fr.x.toFixed(1) + ' ' + fr.y.toFixed(1) + ' ' + fr.w.toFixed(1) + ' ' + fr.h.toFixed(1) + '"';
 

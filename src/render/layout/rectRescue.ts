@@ -17,7 +17,7 @@
 // / Date, and any distance uses Math.sqrt (Math.hypot is not correctly rounded
 // across V8 versions).
 
-import type { RectCapsule } from './rectSeat';
+import { neckPath, type RectCapsule } from './rectSeat';
 
 // Clearance kept between footprints and applied when a stop is pushed out,
 // scaled so it reads the same at every zoom. Cleared stops keep this gap, so
@@ -162,12 +162,23 @@ function capsuleFootprint(cap: RectCapsule): { box: AABB; margin: number } | nul
   return { box: { x0, y0, x1, y1 }, margin: cap.box * MARGIN_FRAC };
 }
 
-/** Shift every positional field of a rect capsule by (dx, dy) in place. */
+/** Shift every positional field of a rect capsule by (dx, dy) in place. The
+ *  baked neck paths are re-extruded from the moved connectors, since a path
+ *  string cannot be translated in place; a capsule without the field (older
+ *  cached shape) keeps degrading to paint-time extrusion. */
 function translateCapsule(cap: RectCapsule, dx: number, dy: number): void {
   for (const c of cap.centers) { c.x += dx; c.y += dy; }
   for (const g of cap.groups) { g.x += dx; g.y += dy; }
   for (const cn of cap.connectors) {
     cn.points = cn.points.map((p): [number, number] => [p[0] + dx, p[1] + dy]);
+  }
+  if (cap.necks) {
+    const necks: string[] = [];
+    for (const cn of cap.connectors) {
+      const d = neckPath(cn.points, cap.box);
+      if (d != null) necks.push(d);
+    }
+    cap.necks = necks;
   }
 }
 

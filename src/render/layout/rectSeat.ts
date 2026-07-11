@@ -65,13 +65,92 @@ export interface RectCapsule {
   centers: Array<{ lineId: string; x: number; y: number }>;      // seated box center per line
   groups: Array<{ x: number; y: number; w: number; h: number; rx: number }>; // one rounded-rect per aligned row
   connectors: Array<{ points: Array<[number, number]> }>;        // octilinear polylines between rows
+  /** Closed neck-polygon path per drawable connector, extruded once here at
+   *  compute time so repaints never resample. OPTIONAL: capsules serialized
+   *  before this field existed deserialize without it; the paint side falls
+   *  back to extruding from `connectors`. */
+  necks?: string[];
+}
+
+const NECK_LEG_SAMPLES = 10; // extrusion samples per centerline leg (smooth bends)
+// Connector neck half-width (fraction of box). A thin constant-width line joining
+// the two capsules; tune here to taste.
+export const NECK_HW_FRAC = 0.15;
+
+const f1 = (n: number): string => n.toFixed(1);
+
+/** Unit vector a -> b, or null when the two points coincide. Uses sqrt (not
+ *  hypot) for cross-V8 determinism. */
+const unitVec = (a: Point, b: Point): Point | null => {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return null;
+  return [dx / len, dy / len];
+};
+
+/**
+ * Closed polygon `d` of one connector neck: a thin CONSTANT-WIDTH line joining
+ * two capsules. The centerline is a 4-point polyline [tuckA, faceA, faceB, tuckB]:
+ * the middle leg faceA->faceB is the visible gap between the two capsule edges,
+ * and the two outer legs run PERPENDICULAR into each capsule (the edge inward
+ * normal) so the line's ends are buried under the capsule fill and the join is
+ * seamless (no dividing line, no overshoot). The width is uniform, so the neck
+ * reads as a slim link that follows the true direction between the boxes.
+ *
+ * @param points connector centerline (4 pts; 2 for a legacy straight connector)
+ * @param box    box side length (world px); the width scales with it
+ * @returns closed path d-string, or null for a degenerate centerline
+ */
+export function neckPath(points: Point[], box: number): string | null {
+  if (points.length < 2) return null;
+  // A degenerate connector (coincident endpoints, emitted when two capsules
+  // already overlap) has no direction; skip it so it paints no stray sliver.
+  if (!unitVec(points[0], points[points.length - 1])) return null;
+
+  const hw = box * NECK_HW_FRAC; // constant half-width
+
+  // Resample every leg into a dense spine so the perpendicular-to-diagonal bends
+  // turn smoothly rather than as hard vertices.
+  const spine: Point[] = [];
+  for (let leg = 0; leg < points.length - 1; leg++) {
+    const a = points[leg], b = points[leg + 1];
+    for (let k = 0; k <= NECK_LEG_SAMPLES; k++) {
+      if (leg > 0 && k === 0) continue; // shared vertex already pushed
+      const t = k / NECK_LEG_SAMPLES;
+      spine.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+
+  const m = spine.length;
+  if (m < 2) return null;
+  const left: Point[] = [];
+  const right: Point[] = [];
+  for (let i = 0; i < m; i++) {
+    // Unit tangent from adjacent samples, then left-normal N = (-Ty, Tx).
+    const a = spine[i === 0 ? 0 : i - 1];
+    const b = spine[i === m - 1 ? m - 1 : i + 1];
+    let tx = b[0] - a[0], ty = b[1] - a[1];
+    const len = Math.sqrt(tx * tx + ty * ty);
+    if (len === 0) { tx = 1; ty = 0; } else { tx /= len; ty /= len; }
+    const nx = -ty, ny = tx;
+    const p = spine[i];
+    left.push([p[0] + hw * nx, p[1] + hw * ny]);
+    right.push([p[0] - hw * nx, p[1] - hw * ny]);
+  }
+
+  let d = 'M ' + f1(left[0][0]) + ' ' + f1(left[0][1]);
+  for (let i = 1; i < m; i++) d += ' L ' + f1(left[i][0]) + ' ' + f1(left[i][1]);
+  for (let i = m - 1; i >= 0; i--) d += ' L ' + f1(right[i][0]) + ' ' + f1(right[i][1]);
+  return d + ' Z';
 }
 
 /**
  * Convert a solver `RectSeatOut` into the serialization-safe `RectCapsule`:
  * flatten the `centers` Map into an array and round connector points to one
- * decimal (matching the emitted-SVG coordinate precision). `RectSeatOut` stays
- * the solver's native shape; this converts at the compute/cache boundary.
+ * decimal (matching the emitted-SVG coordinate precision). Connector necks are
+ * extruded here, once, from the same rounded points the paint side would use.
+ * `RectSeatOut` stays the solver's native shape; this converts at the
+ * compute/cache boundary.
  */
 export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
   const centers: RectCapsule['centers'] = [];
@@ -80,7 +159,12 @@ export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
   const connectors = out.connectors.map((cn) => ({
     points: cn.points.map((p): [number, number] => [+p[0].toFixed(1), +p[1].toFixed(1)]),
   }));
-  return { box, centers, groups, connectors };
+  const necks: string[] = [];
+  for (const cn of connectors) {
+    const d = neckPath(cn.points, box);
+    if (d != null) necks.push(d);
+  }
+  return { box, centers, groups, connectors, necks };
 }
 
 // Above this member count the set-partition enumeration is skipped and the hub is

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rectSeat, mstConnectors, CAP_GAP_FRAC } from '../rectSeat';
+import { rectSeat, rectSeatToCapsule, mstConnectors, neckPath, CAP_GAP_FRAC } from '../rectSeat';
 
 const near = (a: number, b: number, e = 1e-6) => Math.abs(a - b) < e;
 
@@ -33,6 +33,37 @@ test('deterministic: identical output on repeat', () => {
   const args = () => rectSeat(
     [{ lineId: 'A', home: [0, 0], axis: 2 }, { lineId: 'B', home: [3, 60], axis: 2 }], 30, 4);
   assert.deepEqual(args(), args());
+});
+
+test('rectSeatToCapsule bakes a neck path per NON-degenerate connector', () => {
+  // The capsule caches its extruded neck polygons at compute time; they must
+  // equal what the paint-side fallback would extrude from the same rounded
+  // connector points. Degenerate connectors (coincident endpoints) bake
+  // nothing, so necks can be shorter than connectors.
+  const out = rectSeat([
+    { lineId: 'A', home: [0, 0], axis: 0 },
+    { lineId: 'B', home: [34, 0], axis: 0 },
+    { lineId: 'C', home: [68, 0], axis: 0 },
+    { lineId: 'D', home: [34, 120], axis: 0 },
+  ], 30, 4);
+  const cap = rectSeatToCapsule(out, 30);
+  const expected = cap.connectors
+    .map((c) => neckPath(c.points, 30))
+    .filter((d): d is string => d != null);
+  assert.ok(expected.length > 0, 'fixture yields at least one drawable connector');
+  assert.deepEqual(cap.necks, expected);
+
+  // A degenerate connector bakes no neck: shorter necks than connectors.
+  const degenerate = rectSeatToCapsule({
+    centers: new Map([['A', [0, 0]], ['B', [40, 40]]]),
+    groups: [
+      { x: -15, y: -15, w: 30, h: 30, rx: 3 },
+      { x: 25, y: 25, w: 30, h: 30, rx: 3 },
+    ],
+    connectors: [{ points: [[20, 20], [20, 20]] }],
+  }, 30);
+  assert.equal(degenerate.connectors.length, 1);
+  assert.deepEqual(degenerate.necks, [], 'coincident endpoints bake nothing');
 });
 
 test('mstConnectors survives a non-finite rect instead of spanning into it', () => {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeRectByNode, type RectSeatStation } from '../renderOctilinear';
-import { rectSeat, rectSeatToCapsule, type RectMember } from '../layout/rectSeat';
+import { rectSeat, rectSeatToCapsule, neckPath, type RectMember } from '../layout/rectSeat';
 
 // Reproduce the box the compute helper uses so a direct seat+convert can be
 // compared against it (R0 = LINE_WIDTH*0.7, RCAP = R0*MARKER_SCALE,
@@ -232,6 +232,28 @@ test('computeRectByNode: a station with a sub-pixel stub curve seats via the fal
   assert.ok(cap, 'station seated via fallback');
   for (const c of cap.centers) {
     assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y), 'fallback output stays finite');
+  }
+});
+
+test('computeRectByNode: baked necks track the cross-station rescue translation', () => {
+  // The rescue translates overlapping fallback capsules AFTER their necks were
+  // baked; every capsule's necks must equal a fresh extrusion from its FINAL
+  // connector points, or a moved capsule would paint its necks at the
+  // pre-rescue position.
+  const at = (nodeId: string): RectSeatStation => ({
+    nodeId,
+    marks: [
+      { lineId: nodeId + 'A', home: [0, 0], axis: 0 },
+      { lineId: nodeId + 'B', home: [0, 60], axis: 0 },
+    ],
+  });
+  const { rectByNode } = computeRectByNode([at('n1'), at('n2')]);
+  for (const [nid, cap] of rectByNode) {
+    if (!cap.necks) continue;
+    const expected = cap.connectors
+      .map((c) => neckPath(c.points, cap.box))
+      .filter((d): d is string => d != null);
+    assert.deepEqual(cap.necks, expected, `necks stale after rescue at ${nid}`);
   }
 });
 
