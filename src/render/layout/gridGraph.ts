@@ -39,14 +39,6 @@ export interface Penalties {
    *  so corridors don't slice through bundles gratuitously, but well below
    *  the cost of a staircase detour around them. */
   crossingPen: number;
-  /** Surcharge for two LINE-SHARING edges attaching to a node through the
-   *  SAME port (a drawn fold: the course leaves the way it came). The 4-entry
-   *  bend table cannot see this case: ang() maps the same-port pair (i, i) to
-   *  0, the same class as a straight pass, so a 180-degree fold prices as the
-   *  CHEAPEST node configuration and a mid-course station parked one cell off
-   *  its corridor draws both incident edges through one shared approach.
-   *  0 disables (byte-identical legacy). */
-  foldPen: number;
 }
 
 /** LOOM's shipped defaults (octi/basegraph/BaseGraph.h). */
@@ -67,9 +59,6 @@ export const DEFAULT_PENALTIES: Penalties = {
   // stays below the cost of a single extra hop so it never buys a switchback.
   densityPen: 0.5,
   crossingPen: 4,
-  // 2x crossingPen: dearer than any legal turn or crossing, cheap enough
-  // that a genuinely cornered configuration still places (soft, not a ban).
-  foldPen: 8,
 };
 
 /** Cost of using a soft-closed edge: feasible but counted as a topology
