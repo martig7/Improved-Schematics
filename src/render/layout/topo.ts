@@ -2092,7 +2092,7 @@ export function buildSupportGraph(
   }
 
   debugSupportSummary(nodes.keys(), nodes.size, edges.size);
-  debugSupportBox(nodes, edges, adj, (lid) => lineRefs.get(lid)?.label || lid.slice(0, 6));
+  debugSupportBox(nodes, edges, adj, (lid) => lineRefs.get(lid)?.label || lid.slice(0, 6), stations, lineTraversals);
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
 

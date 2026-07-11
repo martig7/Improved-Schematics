@@ -125,6 +125,8 @@ export function debugSupportBox(
   edges: ReadonlyMap<string, { id: string; from: string; to: string; points: Array<[number, number]>; lineIds: Set<string> }>,
   adj: ReadonlyMap<string, string[]>,
   label: (lineId: string) => string,
+  stations?: ReadonlyMap<string, { label?: string; nodeId: string; stopNodes?: Map<string, string> }>,
+  lineTraversals?: ReadonlyMap<string, Array<{ edgeId: string; reversed: boolean }>>,
 ): void {
   const box = typeof process !== 'undefined' ? envStr('OCTI_SUPPORT_BOX') : undefined;
   if (!box) return;
@@ -142,6 +144,27 @@ export function debugSupportBox(
     console.error(
       `[supportbox] ${e.id} ${fmt(e.from)} -> ${fmt(e.to)} pts=${e.points.length} lines=[${[...e.lineIds].map(label).join(' ')}]`,
     );
+  }
+  if (stations) {
+    for (const st of stations.values()) {
+      if (!nin(st.nodeId)) continue;
+      const stops = st.stopNodes ? [...st.stopNodes].map(([l, n]) => label(l) + '->' + fmt(n)).join(' ') : '';
+      console.error(`[supportbox] station "${st.label ?? ''}" anchor=${fmt(st.nodeId)} stops: ${stops}`);
+    }
+  }
+  if (lineTraversals) {
+    for (const [lid, trav] of lineTraversals) {
+      const parts: string[] = [];
+      for (let i = 0; i < trav.length; i++) {
+        const e = edges.get(trav[i].edgeId);
+        if (!e || (!nin(e.from) && !nin(e.to))) continue;
+        const from = trav[i].reversed ? e.to : e.from;
+        const to = trav[i].reversed ? e.from : e.to;
+        const retrace = i > 0 && trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed;
+        parts.push(`${retrace ? 'RETRACE ' : ''}${trav[i].edgeId}(${from}->${to})@${i}`);
+      }
+      if (parts.length > 0) console.error(`[supportbox] trav ${label(lid)}: ${parts.join(' ')}`);
+    }
   }
 }
 
