@@ -16,6 +16,13 @@
 // FLOAT slightly off their line to snap into an exact packed row, or the cluster
 // SPLITS into several flush parts joined by the shared thin connectors.
 //
+// FLOAT invariant: no seated box ever sits farther than the float cap from its
+// own lane. Every stage that packs boxes into rigid rows (the initial bands,
+// the singleton-minimizing merge, and the same-station overlap backstop) is
+// gated on that cap; a row that cannot satisfy it splits or stays split, and a
+// stuck same-station pair is left as two overlapping flush parts rather than
+// seated off its lines.
+//
 // Fully deterministic: fixed (i < j) scan order, fixed slide steps, sqrt-based
 // distance (Math.hypot is not correctly rounded across V8), and lane evaluation
 // through curvePoint / curveTangent, so offline output equals in-game output.
@@ -24,6 +31,7 @@ import type { Point } from '../stations/types';
 import type { LaneCurve } from './chainPlace';
 import { curvePoint, curveTangent } from './chainPlace';
 import { mstConnectors, PAD_FRAC, CAP_GAP_FRAC, type RectSeatOut } from './rectSeat';
+import { debugLaneSeatPhase1 } from './debug/laneSeat.debug';
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
@@ -146,7 +154,10 @@ export function laneSeatAll(
   // Phase 1: GLOBAL mutual deconflict along lanes. Every overlapping box pair
   // (any two stations) steps apart along each box's own lane; a box overlapping
   // an immovable obstacle steps away alone. Ties break by index so coincident
-  // pairs split instead of marching together.
+  // pairs split instead of marching together. A pair deadlocked against its
+  // lane clamps is deliberately LEFT overlapping: it stays compact at its
+  // anchors for the banding below, and the part-level solve and gated merges
+  // own the resolution.
   for (let iter = 0; iter < DECONFLICT_ITERS; iter++) {
     let moved = false;
     const P = slots.map((_, i) => posOf(i));
@@ -179,6 +190,10 @@ export function laneSeatAll(
 
   const pts = slots.map((_, i) => posOf(i));
   const tgs = slots.map((_, i) => curveTangent(slots[i].curve, slots[i].t));
+  debugLaneSeatPhase1(slots.map((s, i) => ({
+    station: s.station, lineId: s.lineId, t: s.t, lo: s.lo, hi: s.hi,
+    pos: pts[i], anchor: s.anchor, tangent: tgs[i],
+  })));
 
   // Per-STATION clustering: members of one station that settled close AND run
   // roughly parallel share a capsule part; crossing corridors stay separate and
@@ -380,6 +395,34 @@ export function laneSeatAll(
   };
   for (const part of parts) snapPart(part);
 
+  // FLOAT GATE on the initial band parts: banding groups by proximity alone,
+  // and a snapped band can strand a member (a near-pinned terminus stub packed
+  // into a row that settles down the corridor) beyond the sanctioned float of
+  // its own lane. Such a part reverts to on-lane singletons; the part-level
+  // solve and the float-gated merges below re-form whatever row is actually
+  // achievable. The merge and backstop stages check the same cap, so after
+  // this gate NO stage can seat a box beyond the float cap of its line.
+  const floatCap = box * FLOAT_CAP_FRAC;
+  {
+    const gated: Part[] = [];
+    for (const part of parts) {
+      let worst = 0;
+      for (const k of part.members) {
+        const d = distToLane(k, pts[k]);
+        if (d > worst) worst = d;
+      }
+      if (part.members.length < 2 || worst <= floatCap) { gated.push(part); continue; }
+      for (const k of part.members) {
+        const p = posOf(k);
+        pts[k][0] = p[0];
+        pts[k][1] = p[1];
+        gated.push({ station: part.station, members: [k], horiz: part.horiz });
+      }
+    }
+    parts.length = 0;
+    parts.push(...gated);
+  }
+
   // Rigid part-level deconflict over ALL stations' parts plus the obstacles:
   // overlapping part capsules slide apart as whole units along their own row
   // axis (flush packing preserved), with index tie-breaks. MERGE backstop for a
@@ -407,7 +450,6 @@ export function laneSeatAll(
   // genuinely at the crossing (small bounded float), while far-flung platforms
   // keep their own on-line parts and a connector. Deterministic: fixed scan
   // order, first acceptable merge applies, part count strictly decreases.
-  const floatCap = box * FLOAT_CAP_FRAC;
   const mergeReach = box * MERGE_REACH_FRAC;
   // Trial positions for a merged member set: exact pitch row, then rigidly
   // centered on the members' own lanes (same placement snapPart applies).
@@ -495,8 +537,32 @@ export function laneSeatAll(
   // parts stay exactly on their lanes (projected motion) and carry no
   // centering error. Deterministic: fixed iteration order, fixed damping,
   // index tie-breaks, bounded iterations.
+  //
+  // Separation-axis choice: the minimal-translation axis is overridden when
+  // both parties can freely yield ALONG their lanes on the other axis. Two
+  // stacked rows of one corridor (all lanes near-parallel to one axis) pushed
+  // apart on the minimal CROSS axis just get dragged straight back by the
+  // centering pull, deadlock, and end up force-merged into a row that
+  // overhangs the bundle; pushed apart along the corridor they separate for
+  // free and settle each on its own lanes.
   const CENTER_DAMP = 0.6;
   const SOLVE_ITERS = 48;
+  // A part yields freely along axis 0 (x) or 1 (y) when its members' lane
+  // tangents all run near that axis; -1 = mixed (no shared free direction).
+  const AXIS_DOM = 0.8; // dominance fraction of summed |tangent| components
+  const yieldAxisOf = (part: Part): 0 | 1 | -1 => {
+    let sx = 0, sy = 0;
+    for (const k of part.members) {
+      const tg = curveTangent(slots[k].curve, slots[k].t);
+      sx += Math.abs(tg[0]);
+      sy += Math.abs(tg[1]);
+    }
+    const s = sx + sy;
+    if (s < 1e-9) return -1;
+    if (sx >= AXIS_DOM * s) return 0;
+    if (sy >= AXIS_DOM * s) return 1;
+    return -1;
+  };
   const runSolve = (): void => {
     for (let iter = 0; iter < SOLVE_ITERS; iter++) {
       let maxMove = 0;
@@ -521,7 +587,9 @@ export function laneSeatAll(
           if (ox <= 0 || oy <= 0) continue;
           const ci = centerOf(parts[i]);
           let dx = 0, dy = 0;
-          if (ox <= oy) dx = (ci[0] >= (b.x0 + b.x1) / 2 ? 1 : -1) * ox;
+          const ya = yieldAxisOf(parts[i]);
+          const alongX = ya === 0 || (ya !== 1 && ox <= oy);
+          if (alongX) dx = (ci[0] >= (b.x0 + b.x1) / 2 ? 1 : -1) * ox;
           else dy = (ci[1] >= (b.y0 + b.y1) / 2 ? 1 : -1) * oy;
           if (movePart(parts[i], dx, dy)) {
             a = rectOf(parts[i]);
@@ -538,7 +606,10 @@ export function laneSeatAll(
           const ci = centerOf(parts[i]);
           const cj = centerOf(parts[j]);
           let dx = 0, dy = 0;
-          if (ox <= oy) {
+          const yi = yieldAxisOf(parts[i]);
+          const yj = yieldAxisOf(parts[j]);
+          const alongX = yi === 0 && yj === 0 ? true : yi === 1 && yj === 1 ? false : ox <= oy;
+          if (alongX) {
             const d = ci[0] - cj[0];
             const sgn = d > EPS_TIE ? 1 : d < -EPS_TIE ? -1 : -1;
             dx = sgn * ox / 2;
@@ -560,29 +631,50 @@ export function laneSeatAll(
   };
   // Solve, with the same-station MERGE backstop: a pair of one station's parts
   // that stays overlapping after the solve fuses into one row and the solve
-  // resumes (part count strictly decreases, so this terminates). Cross-station
-  // or obstacle residue after the budget is accepted (bounded, rare).
+  // resumes (part count strictly decreases, so this terminates). The fuse goes
+  // through the same FLOAT-GATED trial as the regular merge stage: both axes
+  // are tried and the fused row must keep every member within the float cap of
+  // its own lane, or the fuse is refused. A refused pair stays as two
+  // overlapping parts of ONE station (they read as a single fused station
+  // shape), never as a row whose end boxes leave their lines; each refusal is
+  // remembered so the loop still terminates. Cross-station or obstacle residue
+  // after the budget is accepted (bounded, rare).
+  const refused = new Set<string>();
+  const pairKey = (a: Part, b: Part): string => {
+    const ka = Math.min(...a.members), kb = Math.min(...b.members);
+    return ka <= kb ? ka + ':' + kb : kb + ':' + ka;
+  };
   for (;;) {
     runSolve();
     let mi = -1, mj = -1;
     outer: for (let i = 0; i < parts.length; i++) {
       for (let j = i + 1; j < parts.length; j++) {
         if (parts[i].station !== parts[j].station) continue; // groups never mix
+        if (refused.has(pairKey(parts[i], parts[j]))) continue;
         if (overlaps(rectOf(parts[i]), rectOf(parts[j]))) { mi = i; mj = j; break outer; }
       }
     }
     if (mi < 0) break;
     const union = parts[mi].members.concat(parts[mj].members);
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const k of union) {
-      if (pts[k][0] < x0) x0 = pts[k][0];
-      if (pts[k][0] > x1) x1 = pts[k][0];
-      if (pts[k][1] < y0) y0 = pts[k][1];
-      if (pts[k][1] > y1) y1 = pts[k][1];
+    let bestAxis: boolean | null = null;
+    let bestFloat = Infinity;
+    let bestPos: Map<number, Point> | null = null;
+    for (const horiz of [true, false]) {
+      const trial = trialSnap(union, horiz);
+      let worst = 0;
+      for (const [k, p] of trial) {
+        const d = distToLane(k, p);
+        if (d > worst) worst = d;
+      }
+      if (worst < bestFloat - 1e-9) { bestFloat = worst; bestAxis = horiz; bestPos = trial; }
     }
-    parts[mi] = { station: parts[mi].station, members: union, horiz: (x1 - x0) >= (y1 - y0) };
+    if (bestAxis === null || bestFloat > floatCap) {
+      refused.add(pairKey(parts[mi], parts[mj]));
+      continue;
+    }
+    for (const [k, p] of bestPos!) { pts[k][0] = p[0]; pts[k][1] = p[1]; }
+    parts[mi] = { station: parts[mi].station, members: union, horiz: bestAxis };
     parts.splice(mj, 1);
-    snapPart(parts[mi]);
   }
 
   // Emit: FLUSH capsule per part; per-station connectors over its own parts.
