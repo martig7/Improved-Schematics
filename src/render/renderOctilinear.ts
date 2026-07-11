@@ -551,13 +551,23 @@ export function computeRectByNode(
   // slide on. When a line has no usable drawn lane at its flag node the curve
   // builder falls back to a synthetic sub-pixel stub; a box cannot seat on a
   // point, and its infinite lane distance used to poison the shared least
-  // squares. Such stations belong to the abstract fallback seater.
+  // squares.
   const MIN_LANE_ARC = 0.5;
   const usableCurve = (li: LaneItem): boolean => {
     const total = li.curve.cum[li.curve.cum.length - 1];
     return Number.isFinite(li.t0) && Number.isFinite(li.curve.anchorT) &&
       Number.isFinite(total) && total >= MIN_LANE_ARC;
   };
+  // A mark whose lane is missing or degenerate (a terminus stub consumed by the
+  // corner joins, for instance) is PINNED instead of evicting its whole station
+  // into the abstract fallback: it enters the pool on a point curve at its own
+  // stop, so it cannot slide anywhere, least of all past its line's end, and
+  // the station's other members still seat lane-true.
+  const pinnedItem = (lineId: string, pos: Pixel): LaneItem => ({
+    lineId,
+    curve: { pts: [[pos[0], pos[1]], [pos[0] + 1e-6, pos[1]]], cum: [0, 1e-6], anchorT: 0 },
+    t0: 0,
+  });
   for (const s of gathered) {
     if (s.marks.length === 0) continue;
     if (s.marks.some((m) => (m.pos && !finitePt(m.pos)) || (m.home && !finitePt(m.home)))) {
@@ -565,13 +575,17 @@ export function computeRectByNode(
       continue;
     }
     const items: LaneItem[] = [];
-    let ok = laneItemFor !== undefined;
-    for (const m of s.marks) {
-      const li = ok && m.flagNode && m.pos ? laneItemFor!(m.lineId, m.flagNode, m.pos) : null;
-      if (!li || !usableCurve(li)) { ok = false; break; }
-      items.push(li);
+    let usable = 0;
+    if (laneItemFor !== undefined && s.marks.every((m) => m.pos)) {
+      for (const m of s.marks) {
+        const li = m.flagNode ? laneItemFor(m.lineId, m.flagNode, m.pos as Pixel) : null;
+        if (li && usableCurve(li)) { items.push(li); usable++; }
+        else items.push(pinnedItem(m.lineId, m.pos as Pixel));
+      }
     }
-    if (ok && (s.marks.length === 1 || s.marks.every((m) => m.pos))) {
+    // Pool when at least one member can really slide; an all-pinned station has
+    // nothing to deconflict with and belongs to the abstract fallback below.
+    if (usable > 0) {
       pool.push({ station: s.nodeId, items });
       poolStations.set(s.nodeId, s);
       continue;

@@ -207,11 +207,10 @@ test('computeRectByNode: a station with a non-finite mark is left unseated, othe
   }
 });
 
-test('computeRectByNode: a station with a sub-pixel stub curve seats via the fallback', () => {
-  // One mark's lane resolves to a synthetic sub-pixel stub (no real drawn
-  // lane). The station must not join the lane-true pool (a box cannot slide
-  // on a point); with homes and axes present it seats via the abstract
-  // fallback and every output stays finite.
+test('computeRectByNode: a station whose EVERY lane is a sub-pixel stub seats via the fallback', () => {
+  // Every mark's lane resolves to a synthetic sub-pixel stub (no real drawn
+  // lane anywhere). Such a station has nothing to slide on at all; with homes
+  // and axes present it seats via the abstract fallback and stays finite.
   const stubItem = (lineId: string, _flagNode: string, anchor: [number, number]) => ({
     lineId,
     curve: {
@@ -233,6 +232,58 @@ test('computeRectByNode: a station with a sub-pixel stub curve seats via the fal
   for (const c of cap.centers) {
     assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y), 'fallback output stays finite');
   }
+});
+
+test('computeRectByNode: one degenerate lane pins its box instead of evicting the station', () => {
+  // One mark has a real lane, the other a sub-pixel stub (a terminus lane the
+  // corner joins consumed). The station must STAY lane-true: the stub mark's
+  // box pins at its own stop, and the abstract fallback (which would pack a
+  // row at the homes, far away) never runs.
+  const mixedItem = (lineId: string, _flagNode: string, anchor: [number, number]) =>
+    lineId === 'B'
+      ? { lineId, curve: { pts: [anchor, [anchor[0] + 1e-6, anchor[1]]] as [number, number][], cum: [0, 1e-6], anchorT: 0 }, t0: 0 }
+      : hLaneItem(lineId, _flagNode, anchor);
+  const stations: RectSeatStation[] = [
+    { nodeId: 'st', marks: [
+      // homes far from the stops: a fallback seat would land near the homes
+      { lineId: 'A', home: [100, 50], axis: 0, pos: [0, 0], flagNode: 'f1' },
+      { lineId: 'B', home: [140, 50], axis: 0, pos: [30, 0], flagNode: 'f2' },
+    ] },
+  ];
+  const { rectByNode } = computeRectByNode(stations, undefined, mixedItem);
+  const cap = rectByNode.get('st')!;
+  assert.ok(cap, 'mixed station still seats');
+  const b = cap.centers.find((c) => c.lineId === 'B')!;
+  assert.ok(Math.abs(b.x - 30) < 1e-6 && Math.abs(b.y) < 1e-6, 'pinned box holds its own stop');
+  const a = cap.centers.find((c) => c.lineId === 'A')!;
+  assert.ok(Math.abs(a.y) < 1e-6, 'laned box stays on its lane');
+});
+
+test('computeRectByNode: a laned box slides around a pinned box, never the reverse', () => {
+  // The two stops overlap. The pinned box cannot move; the laned box must
+  // yield along its own lane, and both must end clear of each other with the
+  // pinned box within a small float of its stop.
+  const mixedItem = (lineId: string, _flagNode: string, anchor: [number, number]) =>
+    lineId === 'B'
+      ? { lineId, curve: { pts: [anchor, [anchor[0] + 1e-6, anchor[1]]] as [number, number][], cum: [0, 1e-6], anchorT: 0 }, t0: 0 }
+      : hLaneItem(lineId, _flagNode, anchor);
+  const stations: RectSeatStation[] = [
+    { nodeId: 'st', marks: [
+      { lineId: 'A', home: [0, 0], axis: 0, pos: [4, 0], flagNode: 'f1' },
+      { lineId: 'B', home: [0, 0], axis: 0, pos: [0, 0], flagNode: 'f2' },
+    ] },
+  ];
+  const { rectByNode } = computeRectByNode(stations, undefined, mixedItem);
+  const cap = rectByNode.get('st')!;
+  const a = cap.centers.find((c) => c.lineId === 'A')!;
+  const b = cap.centers.find((c) => c.lineId === 'B')!;
+  // Row packing may settle the shared row so the pinned stop is honored as
+  // closely as the pitch allows; it must never drift beyond the sanctioned
+  // float cap (1.25 box), and the laned box must stay on its horizontal lane.
+  const floatCap = 1.25 * cap.box;
+  assert.ok(Math.sqrt(b.x * b.x + b.y * b.y) <= floatCap + 1e-6, 'pinned box drifted past the float cap');
+  assert.ok(Math.abs(a.y) <= floatCap + 1e-6, 'laned box drifted past the float cap');
+  assert.ok(Math.abs(a.x - b.x) >= cap.box - 1e-6 || Math.abs(a.y - b.y) >= cap.box - 1e-6, 'boxes still overlap');
 });
 
 test('computeRectByNode: baked necks track the cross-station rescue translation', () => {
