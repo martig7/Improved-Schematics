@@ -1348,16 +1348,22 @@ export function weldServiceLadders(
         [...new Set(chain.flatMap((e) => [...e.lineIds]))].sort().join(',');
       cands.push({ A, chain, cpts, key });
     }
-    // Phase 2: apply only service pairs with at least two rungs (counting
-    // welds already applied in earlier passes). A candidate whose edges were
-    // consumed by an earlier weld this pass is skipped; the next pass
-    // re-detects against the mutated graph.
+    // Phase 2: apply candidates that carry a real service-ladder signature,
+    // via either of two admission routes. (a) The service pair forms at
+    // least two rungs (counting welds from earlier passes): ladders
+    // alternate by definition, and every harmful weld in the falsification
+    // runs was an isolated pair. (b) The chain passes through at least TWO
+    // interior nodes: a rung bypassing two-plus structural points is a
+    // multi-station express bypass, a shape no observed geometric accident
+    // produced (the harmful singletons all had exactly one interior).
+    // A candidate whose edges were consumed by an earlier weld this pass is
+    // skipped; the next pass re-detects against the mutated graph.
     const passPairs = new Map<string, number>();
     for (const c of cands) passPairs.set(c.key, (passPairs.get(c.key) ?? 0) + 1);
     let changed = false;
     for (const c of cands) {
       const total = (passPairs.get(c.key) ?? 0) + (appliedPairs.get(c.key) ?? 0);
-      if (total < 2) continue;
+      if (total < 2 && c.chain.length < 3) continue;
       if (!edges.has(c.A.id) || c.chain.some((e) => !edges.has(e.id))) continue;
       traceLadderWeld({
         rungId: c.A.id,

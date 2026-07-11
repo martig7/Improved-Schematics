@@ -794,6 +794,37 @@ test('weldServiceLadders refuses an ISOLATED rung (no repeated service pair)', (
   assert.ok((f.edges as Map<string, unknown>).has('e-rung0'), 'singleton rung stays: a ladder repeats by definition');
 });
 
+test('weldServiceLadders welds an ISOLATED rung bypassing TWO interior stations', () => {
+  // One rung j0 -> j1 beside a chain j0 -> s0 -> s1 -> j1 (two interior
+  // stations): the multi-station express-bypass signature admits a singleton
+  // that the repeated-pair rule alone would refuse.
+  const nodes = new Map<string, { id: string; pos: Pixel }>();
+  const edges = new Map<string, { id: string; from: string; to: string; points: Pixel[]; lineIds: Set<string> }>();
+  const N = (id: string, x: number, y: number) => nodes.set(id, { id, pos: [x, y] });
+  const E = (id: string, from: string, to: string, pts: Pixel[], lines: string[]) =>
+    edges.set(id, { id, from, to, points: pts, lineIds: new Set(lines) });
+  N('w0', -50, 0); N('j0', 0, 0); N('s0', 70, 1); N('s1', 140, 1); N('j1', 210, 0); N('wEnd', 260, 0);
+  E('e-w0', 'w0', 'j0', [[-50, 0], [0, 0]], ['L', 'X']);
+  E('e-wEnd', 'j1', 'wEnd', [[210, 0], [260, 0]], ['L', 'X']);
+  E('e-rung0', 'j0', 'j1', [[0, 0], [210, 0]], ['X']);
+  E('e-c0', 'j0', 's0', [[0, 0], [70, 1]], ['L']);
+  E('e-c1', 's0', 's1', [[70, 1], [140, 1]], ['L']);
+  E('e-c2', 's1', 'j1', [[140, 1], [210, 0]], ['L']);
+  const adj = new Map<string, string[]>();
+  for (const e of edges.values()) {
+    for (const nd of [e.from, e.to]) {
+      if (!adj.has(nd)) adj.set(nd, []);
+      adj.get(nd)!.push(e.id);
+    }
+  }
+  const welded = weldServiceLadders(nodes as never, edges as never, adj, 16);
+  assert.equal(welded, 1);
+  assert.ok(!edges.has('e-rung0'), 'two-interior singleton rung welds');
+  for (const id of ['e-c0', 'e-c1', 'e-c2']) {
+    assert.deepEqual([...edges.get(id)!.lineIds].sort(), ['L', 'X'], id + ' carries the union');
+  }
+});
+
 test('weldServiceLadders refuses chains that genuinely diverge', () => {
   const f = ladderFixture(['L'], ['X'], 40, 2); // both chains bow far beyond tol
   weldServiceLadders(f.nodes, f.edges, f.adj, 16);
