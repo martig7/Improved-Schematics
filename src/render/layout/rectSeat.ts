@@ -84,8 +84,8 @@ export function rectSeatToCapsule(out: RectSeatOut, box: number): RectCapsule {
 }
 
 // Above this member count the set-partition enumeration is skipped and the hub is
-// seated by a greedy agglomerative merge instead; at or below it, partitions are
-// enumerated.
+// seated by corridor instead (members grouped by run axis, then spread apart); at
+// or below it, partitions are enumerated.
 const ENUM_MAX = 6;
 
 // Per overlapping-or-touching capsule-pair penalty. Large enough that any layout
@@ -387,10 +387,11 @@ export function rectSeat(members: RectMember[], box: number, gap: number): RectS
       idx++;
     }
   } else {
-    // Large hub: greedy agglomerative merge over the same objective. Enumerating
-    // partitions is infeasible (Bell numbers explode), so start from every line on
-    // its own box and merge the pair that most reduces cost until none helps. Its
-    // rows flow through the same group-rect and connector code below.
+    // Large hub: seat by corridor instead of enumerating partitions (Bell numbers
+    // explode). Members are grouped by their octilinear run axis, each group packs
+    // into one row, and the group rows are spread apart along their corridors until
+    // their capsules clear. Its rows flow through the same group-rect and connector
+    // code below.
     const rows = spreadSeat(members, pitch, box, pad, capGap);
     best = { parts: rows.map((_, i) => [i]), rows };
   }

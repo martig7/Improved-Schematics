@@ -329,10 +329,6 @@ export interface RenderRibbonsArgs {
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
   water?: WaterCollection;
-  /** Ids of routing-only ghost nodes. Renderer MUST NOT draw markers or
-   *  labels for these — the ghost is invisible by design (lines pass through
-   *  it but no circle is drawn). */
-  ghostNodeIds?: Set<string>;
   /** Geography backdrop (water/green groups), built at DRAW time by
    *  drawSmoothed from the pre's projected rings — faithful polygons or the
    *  simplified landmass blobs, per the landmass style. Drawn under
@@ -3563,10 +3559,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   }
   const edgeParts: string[] = [...casingParts, ...strokeParts];
 
-  if (args.ghostNodeIds) {
-    for (const gid of args.ghostNodeIds) stopsByNode.delete(gid);
-  }
-
   // LINE degree: total drawn lines across the node's incident edges. This is
   // the mega-capsule trigger. A thin capsule only fails when the crossing
   // bundles are large enough.
@@ -3649,7 +3641,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const labelParts: string[] = [];
   const labelPrims: Prim[] = [];
   for (const n of layout.nodes.values()) {
-    if (args.ghostNodeIds?.has(n.id)) continue;
     const placement = placements.get(n.id);
     const center = nodePx.get(n.id);
     if (!placement || !center) continue;

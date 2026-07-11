@@ -130,9 +130,11 @@ not cell shape*); revive `computeCanonicalOffsets` (*abandoned subsystem*); per-
 **Batch 2 rejects / dead-ends:**
 - **Do NOT delete `ghostNodes.ts`** — though it has zero *current* callers, the **active
   2026-06-14 hub-split-capsule spec** explicitly reserves it ("§10 Out of scope: no modification of
-  `ghostNodes.splitHighRouteNodes`; parallel station-aware mechanism"). It's a retained reference
-  baseline for in-flight work, not abandoned code. Same reason: keep the `ghostNodeIds` plumbing in
-  renderOctilinear (the spec plans to extend that exact invisible-sub-node pattern).
+  `ghostNodes.splitHighRouteNodes`; parallel station-aware mechanism"). It is now retained under
+  `old/` as a reference baseline for that in-flight work, not abandoned code. The dead `ghostNodeIds`
+  plumbing in renderOctilinear (args field, cached-map mutation, and label skip) has since been
+  removed; re-plumb the invisible-sub-node pattern from the `old/` reference when the reserved spec
+  work resumes.
 - **`simplifyLayout` convergence early-exit — rejected**: it has no monotone convergence (spring vs
   repulsion forces compete), so a "stop when settled" break assumes a property the routine lacks.
 - **buildSupportGraph triple-cleanup dedup — rejected**: the *second* `sanitizeEdgeGeometry` is
