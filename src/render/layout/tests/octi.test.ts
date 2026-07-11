@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { medianEdgeLength, octi, DEFAULT_OCTI_OPTIONS, cutSubCellFolds, cutDrawnFolds } from '../octi';
+import { medianEdgeLength, octi, DEFAULT_OCTI_OPTIONS, cutSubCellFolds, cutDrawnFolds, courseNodeSeqs } from '../octi';
 import { OctiGridGraph, DEFAULT_PENALTIES } from '../gridGraph';
 import type { SupportGraph } from '../types';
 
@@ -223,4 +223,47 @@ test('geographicAffinity=1 keeps a curved input near its course', () => {
     const courseMid = e.points[Math.floor(e.points.length / 2)];
     assert.ok(Math.hypot(mid[0] - courseMid[0], mid[1] - courseMid[1]) <= 3 * dg + 1e-6);
   }
+});
+
+test('courseNodeSeqs joins a traversal run and survives a deg-2 collapse filter', () => {
+  // n0 -e1- n1 -e2- n2 -e3- n3, one line riding all three edges
+  const mk = (id: string, from: string, to: string) =>
+    [id, { id, from, to, points: [[0, 0], [1, 0]] as Array<[number, number]>, lineIds: new Set(['L']) }] as const;
+  const h = {
+    nodes: new Map(['n0', 'n1', 'n2', 'n3'].map((n, i) => [n, { id: n, pos: [i * 10, 0] }])),
+    edges: new Map([mk('e1', 'n0', 'n1'), mk('e2', 'n1', 'n2'), mk('e3', 'n2', 'n3')]),
+    lineTraversals: new Map([['L', [
+      { edgeId: 'e1', reversed: false },
+      { edgeId: 'e2', reversed: false },
+      { edgeId: 'e3', reversed: false },
+    ]]]),
+  } as never as SupportGraph;
+  const seqs = courseNodeSeqs(h);
+  assert.deepEqual(seqs, [['n0', 'n1', 'n2', 'n3']]);
+  // Survivor filtering (the caller's regime): only 2 survivors -> the run
+  // drops (no phantom window); 3 survivors -> ONE joined sequence spanning
+  // the collapsed hop, which the pre-fix per-edge walk could never produce.
+  const surv1 = new Set(['n0', 'n3', 'x']);
+  const f1 = seqs.map((s) => s.filter((nd) => surv1.has(nd))).filter((s) => s.length > 2);
+  assert.deepEqual(f1, []);
+  const surv2 = new Set(['n0', 'n2', 'n3']);
+  const f2 = seqs.map((s) => s.filter((nd) => surv2.has(nd))).filter((s) => s.length > 2);
+  assert.deepEqual(f2, [['n0', 'n2', 'n3']]);
+});
+
+test('courseNodeSeqs breaks runs only at genuine discontinuities', () => {
+  // two disjoint runs of one line (service break between e2 and e9)
+  const mk = (id: string, from: string, to: string) =>
+    [id, { id, from, to, points: [[0, 0], [1, 0]] as Array<[number, number]>, lineIds: new Set(['L']) }] as const;
+  const h = {
+    nodes: new Map(['a', 'b', 'c', 'p', 'q', 'r'].map((n, i) => [n, { id: n, pos: [i * 10, 0] }])),
+    edges: new Map([mk('e1', 'a', 'b'), mk('e2', 'b', 'c'), mk('e9', 'p', 'q'), mk('e10', 'q', 'r')]),
+    lineTraversals: new Map([['L', [
+      { edgeId: 'e1', reversed: false },
+      { edgeId: 'e2', reversed: false },
+      { edgeId: 'e9', reversed: false },
+      { edgeId: 'e10', reversed: false },
+    ]]]),
+  } as never as SupportGraph;
+  assert.deepEqual(courseNodeSeqs(h), [['a', 'b', 'c'], ['p', 'q', 'r']]);
 });
