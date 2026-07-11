@@ -1073,9 +1073,25 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     const jlog = makeJoinLog(JOIN_TRACE, lineId);
-    for (let i = 1; i < traversal.length; i++) {
+    // A CLOSED circular course meets itself at its seam node: the pair
+    // (last step, first step) is a real corner there, but consecutive-pair
+    // iteration never visits it and the two lane ends stop short of each
+    // other unjoined. Append the wrap pair for circular traversals; an
+    // out-and-back course also ends where it starts but its seam pair
+    // retraces ONE edge, which the same-edge guard below already skips.
+    let wrap = 0;
+    if (traversal.length > 1) {
+      const f = traversal[0];
+      const l = traversal[traversal.length - 1];
+      const ef = edgeById.get(f.edgeId);
+      const el = edgeById.get(l.edgeId);
+      const firstStart = f.reversed ? ef?.to : ef?.from;
+      const lastEnd = l.reversed ? el?.from : el?.to;
+      if (firstStart !== undefined && firstStart === lastEnd) wrap = 1;
+    }
+    for (let i = 1; i < traversal.length + wrap; i++) {
       const a = traversal[i - 1];
-      const b = traversal[i];
+      const b = traversal[i % traversal.length];
       if (a.edgeId === b.edgeId) continue;
       const ea = edgeById.get(a.edgeId);
       const eb = edgeById.get(b.edgeId);
