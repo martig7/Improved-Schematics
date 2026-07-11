@@ -1385,12 +1385,6 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
   // (shared) traversals reference. tryDraw's loop-area penalty defends the
   // enclosed area of the surviving nodes.
   const loopCycles = detectLoopCycles(h, dg);
-  // Course windows: the same regime. Node sequences derive on the ORIGINAL
-  // graph, then filter to collapse survivors, so a window can span a hop the
-  // deg-2 collapse absorbed instead of silently fragmenting there.
-  const courseSeqs = courseNodeSeqs(h)
-    .map((seq) => seq.filter((nd) => hC.nodes.has(nd)))
-    .filter((seq) => seq.length > 2);
 
   const finish = (imgP: Image): Image => {
     blockageStats.report();
@@ -1450,7 +1444,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
 
   for (let attempt = 0; ; attempt++) {
     const grid = new OctiGridGraph(bounds(h), dg, pens);
-    const result = tryDraw(hC, grid, opts, info, loopCycles, courseSeqs);
+    const result = tryDraw(hC, grid, opts, info, loopCycles);
     if (result) {
       // Drawn-level detour-loop excision: a routed path that returns within
       // ~3/4 cell of itself after 3+ cells of arc is a port-congestion
@@ -1739,37 +1733,12 @@ function detectLoopCycles(h: SupportGraph, cellSize: number): Array<{ nds: strin
   return out;
 }
 
-/** Per-run node sequences of every line's traversal, walked on a graph whose
- *  edges the traversal ids actually reference (the ORIGINAL support graph).
- *  A missing edge or a discontinuity ends the run, so on the original graph
- *  a break means a genuine service break, never a collapse artifact. Runs
- *  shorter than three nodes carry no window and drop. */
-export function courseNodeSeqs(h: SupportGraph): string[][] {
-  const seqs: string[][] = [];
-  for (const steps of h.lineTraversals.values()) {
-    let seq: string[] = [];
-    let prevEnd: string | null = null;
-    for (const s of steps) {
-      const e = h.edges.get(s.edgeId);
-      if (!e) { if (seq.length > 2) seqs.push(seq); seq = []; prevEnd = null; continue; }
-      const a = s.reversed ? e.to : e.from;
-      const b = s.reversed ? e.from : e.to;
-      if (prevEnd !== a) { if (seq.length > 2) seqs.push(seq); seq = [a]; }
-      seq.push(b);
-      prevEnd = b;
-    }
-    if (seq.length > 2) seqs.push(seq);
-  }
-  return seqs;
-}
-
 function tryDraw(
   h: SupportGraph,
   grid: OctiGridGraph,
   opts: OctiOptions,
   info: CollapseInfo,
   loopCycles: Array<{ nds: string[]; target: number }>,
-  courseSeqs: string[][],
 ): Image | null {
   const ctx = buildCombCtx(h, grid, opts, info);
   const empty = new Map<string, number>();
@@ -1826,15 +1795,21 @@ function tryDraw(
   const allWindows: CourseWindow[] = []; // deduped, for the final census
   {
     const SPANS = [2, 3]; // hops per window: 2 = switchbacks, 3 = staircases
-    // Sequences arrive from the caller, derived on the ORIGINAL support graph
-    // (where traversals and edge ids agree) and filtered to the nodes that
-    // survived contraction and the deg-2 collapse, exactly like loopCycles.
-    // A window can therefore span a collapsed hop. Walking THIS graph's
-    // traversals by edge id cannot represent that: every absorbed edge would
-    // silently break the sequence, blinding the penalty on the quiet deg-2
-    // stretches beside dense knots where the artifacts it prices are born. No
-    // consumer of the collapsed graph may walk lineTraversals by edge id.
-    const seqs = courseSeqs;
+    const seqs: string[][] = [];
+    for (const steps of h.lineTraversals.values()) {
+      let seq: string[] = [];
+      let prevEnd: string | null = null;
+      for (const s of steps) {
+        const e = h.edges.get(s.edgeId);
+        if (!e) { if (seq.length > 2) seqs.push(seq); seq = []; prevEnd = null; continue; }
+        const a = s.reversed ? e.to : e.from;
+        const b = s.reversed ? e.from : e.to;
+        if (prevEnd !== a) { if (seq.length > 2) seqs.push(seq); seq = [a]; }
+        seq.push(b);
+        prevEnd = b;
+      }
+      if (seq.length > 2) seqs.push(seq);
+    }
     const ratioOf = (nds: string[], posOf: (id: string) => Pixel | null): number => {
       let arc = 0;
       let ok = true;
