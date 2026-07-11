@@ -3537,7 +3537,17 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // boxes: consult the cached tokyuLaneByLine, falling back to dByLine per line
   // (and when the cache is absent). EVERY other design reads dByLine only, so
   // their drawn output is byte-identical.
+  //
+  // The three rectangle-geometry fields (cropped lanes, seated capsules, rescued
+  // single positions) are ONE atomic group. They were added to the serialized
+  // geometry in separate steps, so a pre serialized in between can carry the
+  // capsules WITHOUT the cropped lanes. Consuming the capsules then would seat
+  // boxes over uncropped lanes. Gate all three on the SAME predicate (the cropped
+  // lanes being present) so a partial geometry degrades the whole rectangle
+  // design to the plain fallback, never a mixed state.
   const isRect = getStationDesign(args.stationDesign)?.capsule === 'rectRows' && !!geom.tokyuLaneByLine;
+  const rectByNode = isRect ? geom.rectByNode : undefined;
+  const rectStopPos = isRect ? geom.tokyuStopPos : undefined;
   for (const [lineId, line] of lineById) {
     const d = dByLine.get(lineId);
     if (!d || d.length < 2) continue;
@@ -3584,9 +3594,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // moved capsule. Every other design keeps the classic mark anchors.
     const rectDots = (nid: string): Pixel[] | undefined => {
       if (!isRect) return undefined;
-      const cap = geom.rectByNode?.get(nid);
+      const cap = rectByNode?.get(nid);
       if (cap && cap.centers.length > 0) return cap.centers.map((c): Pixel => [c.x, c.y]);
-      const sp = geom.tokyuStopPos?.get(nid);
+      const sp = rectStopPos?.get(nid);
       return sp ? [[sp[0], sp[1]]] : undefined;
     };
     for (const [base, unitIds] of splitGroups) {
@@ -3630,7 +3640,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode: geom.rectByNode, tokyuStopPos: geom.tokyuStopPos },
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;
