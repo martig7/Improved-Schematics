@@ -971,7 +971,9 @@ class Drawing {
         if (!shared) continue;
         const dirB = this.dirAt(nd, f, pf, grid);
         if (dirB < 0) continue;
-        c += grid.getBendPen(dirA, dirB);
+        // same-port pair = a drawn fold; the bend table aliases it with a
+        // straight pass (ang(i,i)=0), so it carries its own surcharge
+        c += grid.getBendPen(dirA, dirB) + (dirA === dirB ? grid.pens.foldPen : 0);
       }
     }
     return c / 2;
@@ -1087,7 +1089,7 @@ function writeNdCosts(
     }
     if (!shared) continue;
     for (let j = 0; j < 8; j++) {
-      if (addC[j] !== -Infinity) addC[j] += grid.getBendPen(i, j);
+      if (addC[j] !== -Infinity) addC[j] += grid.getBendPen(i, j) + (i === j ? grid.pens.foldPen : 0);
     }
   }
 
@@ -1364,6 +1366,11 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
   // station distance), but route the planarized, deg-2-collapsed skeleton.
   let dg = opts.cellSize ?? Math.max(4, medianEdgeLength(h) / (opts.cellDivisor ?? 1.5));
   const pens: Penalties = { ...DEFAULT_PENALTIES, ...(opts.penalties ?? {}) };
+  {
+    // OCTI_FOLD_PEN=<px>: same-port fold surcharge override (diagnostic A/B)
+    const fp = envNum('OCTI_FOLD_PEN');
+    if (Number.isFinite(fp) && fp >= 0) pens.foldPen = fp;
+  }
   const { hK, merged } = contractShortEdges(h, dg / 2);
   const { hP, splits } = planarize(hK);
   // DIAGNOSTIC bypass (opts.combineDeg2 === false): route the planarized
