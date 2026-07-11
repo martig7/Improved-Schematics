@@ -1616,6 +1616,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return { x0, y0, x1, y1, mega };
     };
+    // A station is "boxed" (renders as a rect, no rings) when either it is a
+    // STRUCTURAL mega box (boxOf().mega: members>1 and ldeg>=12) OR a per-mark
+    // mega flag was set (placement mega fallback, mega-escape slide, or the
+    // no-overlap floor's last resort). boxOf().mega does NOT read mk.mega, so
+    // both must be checked. THE box-membership predicate: every pass that
+    // treats box-vs-capsule as a fact consults this, never boxOf().mega alone.
+    const isBoxed = (s: StMarks): boolean => boxOf(s).mega || s.marks.some((m) => m.mega);
     const lanePointAt = (
       lineId: string,
       nodeId: string,
@@ -2077,7 +2084,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
     reportMegaFallbacks(megaFallbacks);
     reportCapsOvlStats({ capPlaceDebug, stats: capOvlStats, guardOn: capGuardOn, noOvlOn: capNoOvlOn });
-    const megas = gathered.filter((s) => boxOf(s).mega);
+    // LIVE box obstacle list: seeded with everything boxed by placement (the
+    // structural deg test AND the placement mega fallback's mark flags), and
+    // appended to by boxStation whenever a later pass boxes a station, so no
+    // pass ever clearance-checks against a stale box set.
+    const megas = gathered.filter((s) => isBoxed(s));
+    const boxStation = (s: StMarks): void => {
+      for (const mk of s.marks) mk.mega = true;
+      if (!megas.includes(s)) megas.push(s);
+    };
     // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
     // image-merge stations (ms3/ms4) carries stop flags for BOTH — e.g. the
     // W-only me365_a4 (~13px) and the V-only me251_b3 anchor at the same node.
@@ -2114,7 +2129,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // guards.
     const capsHullClash = (self: StMarks, hull: Hull): string | null => {
       for (const T of gathered) {
-        if (T === self || T.marks.length < 2 || boxOf(T).mega || T.marks.some((m) => m.mega)) continue;
+        if (T === self || T.marks.length < 2 || isBoxed(T)) continue;
         if (penBetween(hull, capsHullOf(T.marks)) > 0.5) return T.nodeId;
       }
       return null;
@@ -2144,7 +2159,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (!capPlaceDebug) return;
       const items: Array<{ nodeId: string; hull: Hull }> = [];
       for (const s of gathered) {
-        if (s.marks.length < 2 || boxOf(s).mega || s.marks.some((m) => m.mega)) continue;
+        if (s.marks.length < 2 || isBoxed(s)) continue;
         const hull = capsHullOf(s.marks);
         if (hull.length) items.push({ nodeId: s.nodeId, hull });
       }
@@ -2222,8 +2237,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       return true;
     };
     for (const s of gathered) {
+      if (isBoxed(s) || s.marks.length === 0) continue;
       const sb = boxOf(s);
-      if (sb.mega || s.marks.length === 0) continue;
       for (const m of megas) {
         const mb = boxOf(m);
         const overlaps = sb.x0 < mb.x1 + 2 && sb.x1 > mb.x0 - 2 && sb.y0 < mb.y1 + 2 && sb.y1 > mb.y0 - 2;
@@ -2261,7 +2276,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               if (incident <= 1 && !sharedWithOther) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
             }
             applyCorners(cap); // recompute corners on the slid dots (spec R1)
-            if (!spineOctilinear(s.marks)) { for (const mk of s.marks) mk.mega = true; slideBoxed++; reportSlideBoxed(s.nodeId); }
+            if (!spineOctilinear(s.marks)) { boxStation(s); slideBoxed++; reportSlideBoxed(s.nodeId); }
             slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
             break;
           }
@@ -2551,7 +2566,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const mutualEnabled = !(
         envStr('OCTI_MUTUAL_SLIDE') === '0'
       );
-      const smalls = gathered.filter((s) => s.marks.length > 0 && !boxOf(s).mega);
+      const smalls = gathered.filter((s) => s.marks.length > 0 && !isBoxed(s));
       const slidNodes = new Set<string>(); // pinned after one slide (mutual mode)
       const MAX_SWEEPS = mutualEnabled ? 3 : 1;
       for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
@@ -2642,11 +2657,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           const v = envNum('OCTI_NOOVL_BOX');
           return Number.isFinite(v) && v >= 0 ? v : 0;
         })();
-        // A station is "boxed" (renders as a rect, no rings) when either it is a
-        // STRUCTURAL mega box (boxOf().mega: members>1 & ldeg≥12) OR a per-mark
-        // mega flag was set (mega-escape slide, or this floor's last resort).
-        // boxOf().mega does NOT read mk.mega, so both must be checked.
-        const isBoxed = (s: StMarks): boolean => boxOf(s).mega || s.marks.some((m) => m.mega);
         // nearest dot-pair between two stations (correctly-rounded hyp), plus the
         // midpoint push-apart pivot. Returns dist=Infinity for an empty side.
         const nearestMarks = (
@@ -3034,7 +3044,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             if (corridorPairs.has(pairKey(ai, bi))) continue; // spread, not boxed
             if (nearestMarks(A, B).dist >= boxFloor) continue;
             const S = A.marks.length <= B.marks.length ? A : B;
-            for (const mk of S.marks) mk.mega = true;
+            boxStation(S);
             floorBoxed++;
             const O = S === A ? B : A;
             reportNoOverlapFloorBoxed({ layout, boxedNodeId: S.nodeId, otherNodeId: O.nodeId });
@@ -3145,20 +3155,37 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const OCT: Pixel[] = [
         [1, 0], [S2, S2], [0, 1], [-S2, S2], [-1, 0], [-S2, -S2], [0, -1], [S2, -S2],
       ];
-      const capsules = gathered.filter((o) => o.marks.length >= 2 && !boxOf(o).mega);
-      // candidate dot clear of every FOREIGN capsule (spine segments + member bullets)?
+      const capsules = gathered.filter((o) => o.marks.length >= 2 && !isBoxed(o));
+      const singleDots = gathered.filter((o) => o.marks.length === 1 && !isBoxed(o));
+      // candidate dot clear of every FOREIGN capsule (spine segments + member
+      // bullets), of every box rect, and of every lone foreign dot? An escape
+      // that lands the dot inside a box or on top of a single bullet trades one
+      // trap for another the old capsule-only check could not see.
       const dotClear = (p: Pixel, selfNode: string): boolean => {
         for (const o of capsules) {
           if (o.nodeId === selfNode) continue;
           for (const [a, b] of spineSegsOf(o)) if (ptSegD(p[0], p[1], a, b) < need) return false;
           for (const om of o.marks) if (hyp(p[0] - om.pos[0], p[1] - om.pos[1]) < 2 * r) return false;
         }
+        for (const o of megas) {
+          if (o.nodeId === selfNode) continue;
+          const b = boxOf(o);
+          if (p[0] > b.x0 - r && p[0] < b.x1 + r && p[1] > b.y0 - r && p[1] < b.y1 + r) return false;
+        }
+        for (const o of singleDots) {
+          if (o.nodeId === selfNode) continue;
+          const q = o.marks[0].pos;
+          if (hyp(p[0] - q[0], p[1] - q[1]) < 2 * r) return false;
+        }
         return true;
       };
       // the new stub may legitimately lie inside the anchor's capsule for the
       // first ~capHalf (every line leaves a capsule through its fill), but
       // BEYOND that it must run in open space. Otherwise the rotated stub
-      // just slices across the foreign capsule.
+      // just slices across the foreign capsule. Box rects are NOT sampled
+      // here: boxes are opaque covers that lanes legitimately pass beneath,
+      // and lone dots sit ON lanes by construction, so only capsule fills
+      // veto the stub's course.
       const stubClear = (anchor: Pixel, dir: Pixel, L: number, selfNode: string): boolean => {
         const steps = Math.max(2, Math.ceil(L));
         for (let i = 1; i <= steps; i++) {
@@ -3175,9 +3202,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       };
       const evicted: Array<{ node: string; to: Pixel }> = [];
       for (const s of gathered) {
-        if (boxOf(s).mega) continue;
+        if (isBoxed(s)) continue;
         for (const mk of s.marks) {
-          if (mk.mega) continue;
           if (dotClear(mk.pos, s.nodeId)) continue; // not trapped
           // terminus = exactly one drawn incident lane
           let incEdge: string | null = null;
@@ -3221,6 +3247,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       reportEvictedStations({ layout, evicted });
     }
+    // Eviction is the last pass that moves a marker; nothing may audit-drift
+    // after it unobserved.
+    capsAudit('post-eviction');
 
     for (const s of gathered) {
       for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis);
