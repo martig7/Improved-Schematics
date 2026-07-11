@@ -1068,20 +1068,36 @@ function shortestAnyPath(
   return steps;
 }
 
-/** Brute-force nearest support node (NodeIndex only searches a 3×3 cell hood). */
-function nearestSupportNode(
+/** Brute-force nearest support node (NodeIndex only searches a 3×3 cell hood).
+ *  The ONE nearest-node search every mapping site shares: `within` is the max
+ *  accepted distance (inclusive), and `servingLine` restricts candidates to
+ *  nodes with at least one incident edge carrying that line. Ties keep the
+ *  first candidate in node-map iteration order (deterministic: insertion
+ *  order). Returns null on a miss; each call site owns its own fallback
+ *  policy, stated explicitly at the call. */
+export function nearestSupport(
   p: Pixel,
   nodes: Map<string, SupportNode>,
-  maxDist: number,
+  opts: {
+    within: number;
+    servingLine?: { lineId: string; adj: Map<string, string[]>; edges: Map<string, SupportEdge> };
+  },
 ): string | null {
+  const sl = opts.servingLine;
   let best: string | null = null;
-  let bestD = maxDist;
+  let bestD = opts.within;
   for (const [id, n] of nodes) {
     const d = dist(n.pos, p);
-    if (d <= bestD) {
-      bestD = d;
-      best = id;
+    if (d > bestD || (d === bestD && best !== null)) continue;
+    if (sl) {
+      let carries = false;
+      for (const eid of sl.adj.get(id) ?? []) {
+        if (sl.edges.get(eid)?.lineIds.has(sl.lineId)) { carries = true; break; }
+      }
+      if (!carries) continue;
     }
+    bestD = d;
+    best = id;
   }
   return best;
 }
@@ -1594,9 +1610,11 @@ export function buildSupportGraph(
     for (const [id, n] of nodes) {
       if (dist(n.pos, gp.pos) < 1) return id;
     }
+    // Fallback policy: nearest within 2x dHat, else nearest anywhere (an
+    // unmapped node would drop its station, worse than a long snap).
     return (
-      nearestSupportNode(gp.pos, nodes, mapRadius) ??
-      nearestSupportNode(gp.pos, nodes, Infinity)
+      nearestSupport(gp.pos, nodes, { within: mapRadius }) ??
+      nearestSupport(gp.pos, nodes, { within: Infinity })
     );
   };
 
@@ -1652,22 +1670,12 @@ export function buildSupportGraph(
   const mapToSupportForLine = (nid: string, lineId: string): string | null => {
     const gp = g.nodes.get(nid);
     if (!gp) return null;
-    let bestLine: string | null = null;
-    let bestLineD = Infinity;
-    for (const [id, n] of nodes) {
-      const d = dist(n.pos, gp.pos);
-      if (d >= bestLineD) continue;
-      let carries = false;
-      for (const eid of adj.get(id) ?? []) {
-        if (edges.get(eid)?.lineIds.has(lineId)) { carries = true; break; }
-      }
-      if (carries) {
-        bestLineD = d;
-        bestLine = id;
-      }
-    }
-    if (bestLine && bestLineD <= mapRadius * 3) return bestLine;
-    return mapToSupport(nid);
+    // Fallback policy: a line-carrying node within 6x dHat, else the plain
+    // (line-unaware) mapping so the node still maps somewhere.
+    return (
+      nearestSupport(gp.pos, nodes, { within: mapRadius * 3, servingLine: { lineId, adj, edges } }) ??
+      mapToSupport(nid)
+    );
   };
 
   const lineTraversals = new Map<string, TraversalStep[]>();
@@ -1884,16 +1892,14 @@ export function buildSupportGraph(
         if (!nodeServesLine(sn, lineId)) {
           const gp = g.nodes.get(nodeId)?.pos ?? nodes.get(sn)?.pos;
           if (gp) {
-            let bestN: string | null = null;
-            let bestD = params.stationCandidateRadius * 2;
-            for (const [nid, n] of nodes) {
-              if (!nodeServesLine(nid, lineId)) continue;
-              const d = dist(n.pos, gp);
-              if (d < bestD) {
-                bestD = d;
-                bestN = nid;
-              }
-            }
+            // Fallback policy: a line-serving node within 4x dHat, else keep
+            // the original anchor (a distant re-home would detach the flag
+            // from its station; the marker gathering re-anchor guard is the
+            // final net downstream).
+            const bestN = nearestSupport(gp, nodes, {
+              within: params.stationCandidateRadius * 2,
+              servingLine: { lineId, adj, edges },
+            });
             if (bestN) sn = bestN;
           }
         }

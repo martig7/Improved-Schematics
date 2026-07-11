@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, cutPolylineFolds, weldSubCellNodes, type TopoParams } from '../topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, cutPolylineFolds, weldSubCellNodes, nearestSupport, type TopoParams } from '../topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from '../types';
 
 test('dist computes euclidean distance', () => {
@@ -713,4 +713,33 @@ test('merge rounds still weld genuinely close parallels', () => {
     if (e.lineIds.has('LA') && e.lineIds.has('LB')) weldedLen += len;
   }
   assert.ok(weldedLen > total * 0.5, `close parallels failed to weld: ${weldedLen}/${total}px`);
+});
+
+test('nearestSupport: radius is inclusive, ties keep the first node, line filter applies', () => {
+  const nodes = new Map<string, { id: string; pos: [number, number] }>([
+    ['a', { id: 'a', pos: [10, 0] }],
+    ['b', { id: 'b', pos: [-10, 0] }],   // equidistant with a from the origin
+    ['c', { id: 'c', pos: [30, 0] }],
+  ]);
+  const edges = new Map<string, { id: string; from: string; to: string; points: [number, number][]; lineIds: Set<string> }>([
+    ['e1', { id: 'e1', from: 'b', to: 'c', points: [[-10, 0], [30, 0]], lineIds: new Set(['L']) }],
+  ]);
+  const adj = new Map<string, string[]>([['b', ['e1']], ['c', ['e1']], ['a', []]]);
+
+  // inclusive boundary: a node at exactly `within` is accepted
+  assert.equal(nearestSupport([0, 0], nodes as never, { within: 10 }), 'a');
+  // miss: nothing within range
+  assert.equal(nearestSupport([100, 100], nodes as never, { within: 5 }), null);
+  // tie: a and b are both 10 away; the first in map iteration order wins
+  assert.equal(nearestSupport([0, 0], nodes as never, { within: 50 }), 'a');
+  // line filter: a carries nothing, so the nearest L-serving node wins
+  assert.equal(
+    nearestSupport([0, 0], nodes as never, { within: 50, servingLine: { lineId: 'L', adj, edges: edges as never } }),
+    'b',
+  );
+  // line filter + radius miss: c serves L but sits beyond the radius
+  assert.equal(
+    nearestSupport([29, 0], nodes as never, { within: 0.5, servingLine: { lineId: 'L', adj, edges: edges as never } }),
+    null,
+  );
 });
