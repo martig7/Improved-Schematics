@@ -246,7 +246,6 @@ function pipelineMetrics(stations: Station[], routes: Route[], tracks: Track[], 
     convergenceEpsilon: 0.002,
     maxRounds: 8,
     stationCandidateRadius: 2 * dHat,
-    preserveStations: false,
   };
   console.log('  buildSupportGraph…');
   const support = buildSupportGraph(graph, groups, topoParams);

@@ -37,7 +37,6 @@ const topoParams: TopoParams = {
   convergenceEpsilon: 0.002,
   maxRounds: 8,
   stationCandidateRadius: 2 * dHat,
-  preserveStations: false,
 };
 
 function dist(a: Pixel, b: Pixel): number {
@@ -177,11 +176,7 @@ console.log('dHat (render tuning)', dHat, 'px  |  paper formula', (2.5 * LINE_WI
 
 section('Topo merge');
 const support = buildSupportGraph(graph, groups, topoParams);
-reportTopo('with preserveStations', support, graph.edges.length);
-
-const noPreserveParams = { ...topoParams, preserveStations: false };
-const supportLean = buildSupportGraph(graph, groups, noPreserveParams);
-reportTopo('without preserveStations (paper-like)', supportLean, graph.edges.length);
+reportTopo('topo merge', support, graph.edges.length);
 
 function reportTopo(label: string, h: SupportGraph, inputEdgeCount: number) {
   const mergeRatio = 1 - h.edges.size / inputEdgeCount;
@@ -194,7 +189,7 @@ function reportTopo(label: string, h: SupportGraph, inputEdgeCount: number) {
   console.log('  traversal discontinuities', disc.total);
 }
 
-// Continue full pipeline on production settings (preserveStations=true)
+// Continue full pipeline on production settings.
 const mergeRatio = 1 - support.edges.size / graph.edges.length;
 const multiLineEdges = [...support.edges.values()].filter((e) => e.lineIds.size > 1).length;
 const supDisc = countDiscontinuities(support.lineTraversals, support.edges);

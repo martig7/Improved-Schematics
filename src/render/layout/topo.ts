@@ -491,10 +491,6 @@ export interface TopoParams {
   convergenceEpsilon: number;    // edge-length-gap stop (0.002 = 0.2%)
   maxRounds: number;             // hard cap on the outer loop
   stationCandidateRadius: number;// station-insertion search radius (px)
-  /** When true, anchor junction/terminus nodes during merge and re-insert
-   *  pass-through stop positions afterward. Pass-through stops on a single line
-   *  may contract; see anchorGraphStops. */
-  preserveStations?: boolean;
   /** When set, corridor `GraphEdge.geo` polylines are projected and used for
    *  merge-round input instead of straight station-to-station chords. */
   projectGeo?: (c: Coordinate) => Pixel;
@@ -1559,7 +1555,7 @@ export function buildSupportGraph(
   // folds into the joined polylines. Sanitize again so octi's spring cost
   // never sees phantom length (it pays it back as candy-cane grid detours).
   builder.sanitizeEdgeGeometry(params.dHat);
-  if (!params.preserveStations) builder.intersectionSmoothing(params.dHat);
+  builder.intersectionSmoothing(params.dHat);
   // Smoothing MOVES nodes (each to the average of its cropped edge endpoints)
   // and can pull a pair inside the spacing floor with no contraction pass left
   // to repair it. The last writer of node positions must re-enforce the
@@ -1920,25 +1916,3 @@ export function buildSupportGraph(
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
 
-export interface TopoOptions {
-  /** theme.lineWidth in SVG units. */
-  lineWidth: number;
-}
-
-export function topo(
-  g: TransitGraph,
-  groups: StationGroup[],
-  opts: TopoOptions,
-): SupportGraph {
-  let maxLines = 2;
-  for (const e of g.edges) maxLines = Math.max(maxLines, e.lines.length);
-  const dHat = 2.5 * opts.lineWidth * maxLines;
-  const params: TopoParams = {
-    dHat,
-    step: Math.max(2, dHat / 4),
-    convergenceEpsilon: 0.002,
-    maxRounds: 8,
-    stationCandidateRadius: 2 * dHat,
-  };
-  return buildSupportGraph(g, groups, params);
-}

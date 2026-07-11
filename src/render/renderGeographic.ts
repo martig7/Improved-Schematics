@@ -28,7 +28,6 @@ import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
-import { buildDensityWarp2D } from './layout/densityWarp2d';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP } from './constants';
 import { mergeCoincidentPaths, separateFusedStations } from './layout/imageMerge';
@@ -391,8 +390,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 
   // LOOM topo merge (same tuning as smoothed mode; see renderSmoothed). In
   // geographic mode we don't go through octi, so support edges keep their
-  // merged corridor geometry directly. preserveStations keeps every transit-
-  // graph node alive so intermediate stops along trunks remain visible.
+  // merged corridor geometry directly.
   // dHat is a corridor-merge radius, not a stroke property: pinned >= 16px so
   // thinner theme line widths don't shrink the tuned merge radius.
   const dHat = Math.max(16, theme.lineWidth * 4);
@@ -402,7 +400,6 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
     convergenceEpsilon: 0.002,
     maxRounds: 8,
     stationCandidateRadius: 2 * dHat,
-    preserveStations: false,
   };
   const h = buildSupportGraph(graph, groups, topoParams);
   const { layout, nodePx } = supportToLayout(h);
@@ -608,9 +605,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // pairs closer than their combined marker-row needs), sizes each box's
   // expansion to exactly what its own targets need (contraction threshold ĉ/2;
   // capsule pair separations), and GROWS the output canvas (up to
-  // OCTI_BOX_GROWTH) to absorb the demand instead of clawing it back. OCTI_WARP_MODE=separable = separable only (the proven baseline); =box =
-  // box demand only (no global magnification); =2d = the (rejected) density-
-  // equalizing 2D warp.
+  // OCTI_BOX_GROWTH) to absorb the demand instead of clawing it back.
+  // OCTI_WARP_MODE=separable = separable only (the proven baseline); =box =
+  // box demand only (no global magnification).
   // Box knobs (tune by eye): OCTI_BOX_FRAC (density cutoff as fraction of peak,
   // default 0.4), OCTI_BOX_EXPAND (demand MULTIPLIER; 1 = expand each box by
   // exactly its survival need, >1 magnifies aesthetically, default 1),
@@ -653,19 +650,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (Number.isFinite(gv) && gv >= 1) return gv; // dev sweep override wins
     if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
     return 2.5;
-  })();
-  const warpSigmaPx = (() => {
-    const env =
-      envNum('OCTI_WARP_SIGMA');
-    return Number.isFinite(env) && env > 0 ? env : width / 49;
-  })();
-  // Flow iterations for the 2D warp (Gastner–Newman). 1 = weak single pass;
-  // higher composes small fold-safe steps into a stronger local warp. Default 10
-  // is the MILD setting (keeps the map geographically faithful).
-  const warpIters = (() => {
-    const env =
-      envNum('OCTI_WARP_ITERS');
-    return Number.isFinite(env) && env >= 1 ? Math.floor(env) : 10;
   })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
@@ -766,8 +750,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   let warpGrowth: [number, number] = [1, 1];
   const warp = (() => {
     if (warpMode === 'separable') return buildDensityWarp(warpSamples, warpBox, sepOpts);
-    if (warpMode === '2d')
-      return buildDensityWarp2D(warpSamples, warpBox, { alpha: warpAlpha, sigmaPx: warpSigmaPx, iterations: warpIters });
     const r =
       warpMode === 'box'
         ? buildDemandBoxWarp(warpSamples, boxGraph, warpBox, boxOpts, warpOut)
@@ -946,7 +928,6 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     convergenceEpsilon: 0.002,
     maxRounds: Number.isFinite(roundsEnv) && roundsEnv > 0 ? roundsEnv : 8,
     stationCandidateRadius: 2 * dHat,
-    preserveStations: false,
   };
   lap('warpBuild');
   auditTraversals(
@@ -1230,9 +1211,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // non-station nodes. Splice an octilinear shortcut past such folds. Runs
   // AFTER the spur-step cleanup and BEFORE orderLines (lanes don't exist yet).
   {
-    const env = typeof process !== 'undefined' ? (process as { env?: Record<string, string> }).env : undefined;
-    const ratioEnv = Number(env?.OCTI_HOOK_RATIO);
-    const foldEnv = Number(env?.OCTI_HOOK_FOLD);
+    const ratioEnv = envNum('OCTI_HOOK_RATIO');
+    const foldEnv = envNum('OCTI_HOOK_FOLD');
     const hookOpts: { ratio?: number; fold?: number } = {};
     if (Number.isFinite(ratioEnv) && ratioEnv > 0) hookOpts.ratio = ratioEnv;
     if (Number.isFinite(foldEnv)) hookOpts.fold = foldEnv;
@@ -1519,9 +1499,8 @@ function buildOctiGridSvg(grid: OctiGrid, dark: boolean): string {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const e of grid.edges) {
-    if (e.kind !== 'grid') continue;
-    const fromBase = e.from.split(':')[0];
-    const toBase = e.to.split(':')[0];
+    const fromBase = e.from;
+    const toBase = e.to;
     const key = fromBase < toBase ? fromBase + '|' + toBase : toBase + '|' + fromBase;
     if (seen.has(key)) continue;
     seen.add(key);

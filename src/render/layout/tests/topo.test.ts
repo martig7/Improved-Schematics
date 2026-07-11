@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, topo, cutPolylineFolds, weldSubCellNodes, type TopoParams } from '../topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, cutPolylineFolds, weldSubCellNodes, type TopoParams } from '../topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from '../types';
 
 test('dist computes euclidean distance', () => {
@@ -649,26 +649,6 @@ test('insertStations joins per-station platform nodes into ONE SupportStation wi
   assert.ok(n1 && n2, 'both lines flagged a stop at the hub');
   assert.notEqual(n1, n2, 'each line stops on its own platform support node');
   assert.ok(h.stopAt.has('L1|' + n1) && h.stopAt.has('L2|' + n2));
-});
-
-test('topo derives d̂ from line width and corridor capacity', () => {
-  const g = graphFrom(
-    { a0: [0, 0], a1: [100, 0], b0: [0, 8], b1: [100, 8] },
-    [
-      { id: 'e0', from: 'a0', to: 'a1', lines: ['L1', 'L2'] },
-      { id: 'e1', from: 'b0', to: 'b1', lines: ['L3'] },
-    ],
-  );
-  const groups: StationGroup[] = [
-    { id: 'a0', name: 'A0', center: [0, 0], stationIds: [] },
-    { id: 'a1', name: 'A1', center: [100 / 1e5, 0], stationIds: [] },
-    { id: 'b0', name: 'B0', center: [0, 8 / 1e5], stationIds: [] },
-    { id: 'b1', name: 'B1', center: [100 / 1e5, 8 / 1e5], stationIds: [] },
-  ];
-  // lineWidth 4, maxLinesPerCorridor = 2 → d̂ = 2.5*4*2 = 20
-  const h = topo(g, groups, { lineWidth: 4 });
-  assert.ok(h.nodes.size > 0);
-  assert.ok(h.edges.size > 0);
 });
 
 test('merge rounds keep bowed parallel corridors separate (no chord-refeed weld)', () => {

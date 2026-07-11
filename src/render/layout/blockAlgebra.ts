@@ -84,19 +84,3 @@ export function reorderToGroups(
   });
   return { order: target, swaps: bubbleDistance(order, target) };
 }
-
-/** Split planning: make each exit-group contiguous with minimal crossings.
- *  Group order = first appearance in the current order (the least-motion
- *  choice: groups keep their current center of mass ordering). Callers with
- *  geometric exit ranks use reorderToGroups directly. */
-export function splitPlan(
-  order: string[],
-  groupOf: Map<string, number>,
-): SplitPlanResult {
-  const seen: number[] = [];
-  for (const l of order) {
-    const g = groupOf.get(l)!;
-    if (!seen.includes(g)) seen.push(g);
-  }
-  return reorderToGroups(order, groupOf, seen);
-}
