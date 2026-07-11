@@ -115,3 +115,55 @@ export function debugSupportSummary(nodeIds: Iterable<string>, nodeCount: number
     `[topo] support: ${nodeCount} nodes (${anchors} anchor splits), ${edgeCount} edges`,
   );
 }
+
+/** OCTI_SUPPORT_BOX=<x0,y0,x1,y1>: dump every support edge with an endpoint
+ *  inside the px box - endpoints (id, pos, degree), line ids, and point count.
+ *  Placement-stage structure questions (parallel per-service ladders, joint
+ *  degrees) answer from this instead of guessing from the drawn layout. */
+export function debugSupportBox(
+  nodes: ReadonlyMap<string, { pos: [number, number] }>,
+  edges: ReadonlyMap<string, { id: string; from: string; to: string; points: Array<[number, number]>; lineIds: Set<string> }>,
+  adj: ReadonlyMap<string, string[]>,
+  label: (lineId: string) => string,
+): void {
+  const box = typeof process !== 'undefined' ? envStr('OCTI_SUPPORT_BOX') : undefined;
+  if (!box) return;
+  const [x0, y0, x1, y1] = box.split(',').map(Number);
+  const nin = (nid: string): boolean => {
+    const p = nodes.get(nid)?.pos;
+    return !!p && p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+  };
+  const fmt = (nid: string): string => {
+    const p = nodes.get(nid)?.pos;
+    return `${nid}@${p ? p.map((v) => v.toFixed(0)) : '?'}(d${(adj.get(nid) ?? []).length})`;
+  };
+  for (const e of edges.values()) {
+    if (!nin(e.from) && !nin(e.to)) continue;
+    console.error(
+      `[supportbox] ${e.id} ${fmt(e.from)} -> ${fmt(e.to)} pts=${e.points.length} lines=[${[...e.lineIds].map(label).join(' ')}]`,
+    );
+  }
+}
+
+/** OCTI_WELD_TRACE=1: one line per service-ladder weld - the rung edge, its
+ *  lines, endpoints, and the chain it fused onto (edges, interior nodes,
+ *  deviations, arc ratio) - so an over-firing weld identifies itself. */
+export function traceLadderWeld(d: {
+  rungId: string;
+  rungLines: string[];
+  from: [number, number];
+  to: [number, number];
+  chainIds: string[];
+  chainLines: string[];
+  interior: Array<[number, number]>;
+  devAtoC: number;
+  devCtoA: number;
+  arcRatio: number;
+}): void {
+  if (typeof process === 'undefined' || envStr('OCTI_WELD_TRACE') !== '1') return;
+  console.error(
+    `[weld] ${d.rungId}[${d.rungLines.join(',')}] ${d.from.map((v) => v.toFixed(0))}->${d.to.map((v) => v.toFixed(0))} ` +
+    `onto [${d.chainIds.join('+')}][${d.chainLines.join(',')}] interior=${d.interior.map((p) => '(' + p.map((v) => v.toFixed(0)) + ')').join('')} ` +
+    `dev=${d.devAtoC.toFixed(1)}/${d.devCtoA.toFixed(1)} arcRatio=${d.arcRatio.toFixed(2)}`,
+  );
+}

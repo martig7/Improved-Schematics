@@ -14,6 +14,8 @@ import {
   traceTraversal,
   auditHealLadder,
   debugSupportSummary,
+  debugSupportBox,
+  traceLadderWeld,
 } from './debug/topo.debug';
 import type { Coordinate } from '../../types/core';
 import type {
@@ -1224,6 +1226,173 @@ function weldRedundantStubs(
  *  separateFusedStations re-splits if it ever lands on another station with
  *  true separation > dHat. Real termini keep their stubs: their neighbor is
  *  the degree-2 corridor through the previous station, not a junction. */
+/** Max deviation of polyline `a` from polyline `b`: for each vertex of `a`,
+ *  the distance to the nearest point on `b`, maximized. Directed; callers
+ *  check both directions for a corridor-parallelism test. */
+function polyDeviation(a: Pixel[], b: Pixel[]): number {
+  let worst = 0;
+  for (const p of a) {
+    let best = Infinity;
+    for (let k = 1; k < b.length; k++) {
+      const ax = b[k - 1][0], ay = b[k - 1][1];
+      const dx = b[k][0] - ax, dy = b[k][1] - ay;
+      const l2 = dx * dx + dy * dy;
+      const u = l2 > 1e-12 ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2)) : 0;
+      const d = dist(p, [ax + dx * u, ay + dy * u]);
+      if (d < best) best = d;
+    }
+    if (best === Infinity && b.length > 0) best = dist(p, b[0]);
+    if (best > worst) worst = best;
+  }
+  return worst;
+}
+
+/** Fuse per-service LADDER RUNGS. A local service that stops where an express
+ *  does not enters the merge as its own course; the merge welds the shared
+ *  stretches into common joints but keeps a separate express edge beside each
+ *  local-station chain, leaving a ladder: alternating shared segments and
+ *  parallel per-service rungs. The extra deg-3 joints crowd the placement
+ *  grid and every rung routes independently, so a straight shared track draws
+ *  as bows and weaves. Here every rung edge whose geometry stays within dHat
+ *  of a parallel station chain between the SAME joints fuses onto the chain
+ *  as a PASS-THROUGH: the chain's edges gain the rung's lines, the rung edge
+ *  deletes, and no stop flags are added (flags come from the transit graph's
+ *  own stop data later). One geometric corridor is one support corridor, with
+ *  its stations inline.
+ *
+ *  Constraints keep it surgical: the rung is a single edge between two
+ *  joints; the chain has at least one interior node and every interior node
+ *  is degree 2 (a rung exists BECAUSE the local service stops mid-stretch;
+ *  a single parallel edge with no interior structure is a real double
+ *  corridor); every chain edge's line set is DISJOINT from the rung's
+ *  (same-line parallels are real double corridors too); both directed
+ *  deviations stay within dHat/4, since a true rung rides the SAME track
+ *  geometry (about a pixel apart after the merge) while genuinely distinct
+ *  parallel corridors keep several pixels between them; and the SAME
+ *  service pair must form at least two rungs before any of them welds. A
+ *  ladder is a repeated alternation by construction (an express bypassing
+ *  successive local stops of one companion service); an isolated parallel
+ *  rung has other causes, and fusing one re-rolls the placement equilibrium
+ *  for no structural gain. Deterministic: sorted edge scan, lexicographic
+ *  first acceptable chain, candidates collected before any mutation,
+ *  repeat-until-quiet with a bounded pass count. */
+export function weldServiceLadders(
+  nodes: Map<string, SupportNode>,
+  edges: Map<string, SupportEdge>,
+  adj: Map<string, string[]>,
+  dHat: number,
+): number {
+  const MAX_HOPS = 6;
+  const tol = dHat / 4;
+  let welded = 0;
+  const appliedPairs = new Map<string, number>(); // service-pair key -> welds applied
+  for (let pass = 0; pass < 4; pass++) {
+    // Phase 1: collect candidates against the CURRENT graph, no mutation.
+    interface Cand { A: SupportEdge; chain: SupportEdge[]; cpts: Pixel[]; key: string }
+    const cands: Cand[] = [];
+    for (const eid of [...edges.keys()].sort()) {
+      const A = edges.get(eid);
+      if (!A || A.from === A.to) continue;
+      // DFS for a simple parallel chain A.from -> A.to: interior nodes deg 2,
+      // every edge line-disjoint from A, lexicographic edge order so the
+      // first acceptable chain is deterministic.
+      const disjoint = (e: SupportEdge): boolean => {
+        for (const l of e.lineIds) if (A.lineIds.has(l)) return false;
+        return true;
+      };
+      const chainOf = (): SupportEdge[] | null => {
+        const stack: Array<{ node: string; path: SupportEdge[] }> = [{ node: A.from, path: [] }];
+        while (stack.length) {
+          const { node, path } = stack.pop()!;
+          if (node === A.to && path.length > 0) return path;
+          if (path.length >= MAX_HOPS) continue;
+          if (path.length > 0 && (adj.get(node) ?? []).length !== 2) continue; // interior joints end the chain
+          const nexts: SupportEdge[] = [];
+          for (const nid of adj.get(node) ?? []) {
+            const e = edges.get(nid);
+            if (!e || e.id === A.id || path.some((pe) => pe.id === e.id)) continue;
+            if (!disjoint(e)) continue;
+            nexts.push(e);
+          }
+          // push in REVERSE lexicographic order so the stack pops ascending
+          nexts.sort((x, y) => (x.id < y.id ? 1 : x.id > y.id ? -1 : 0));
+          for (const e of nexts) {
+            const far = e.from === node ? e.to : e.from;
+            stack.push({ node: far, path: [...path, e] });
+          }
+        }
+        return null;
+      };
+      const chain = chainOf();
+      if (!chain || chain.length < 2) continue; // no interior station structure: not a rung
+      // chain polyline in walk order (each edge oriented from the walk node)
+      const cpts: Pixel[] = [];
+      let at = A.from;
+      for (const e of chain) {
+        const pts = e.from === at ? e.points : [...e.points].reverse();
+        for (const p of pts) {
+          const last = cpts[cpts.length - 1];
+          if (!last || last[0] !== p[0] || last[1] !== p[1]) cpts.push(p);
+        }
+        at = e.from === at ? e.to : e.from;
+      }
+      // Lateral deviation is blind to a LONGITUDINAL fold: a chain that
+      // overshoots a joint to reach its station and doubles back lies on the
+      // corridor line at every point, yet welding a rung onto it would force
+      // the rung's lines through the out-and-back. A folded chain is
+      // necessarily longer than the rung it parallels, so bound the arc.
+      if (polylineLength(cpts) > polylineLength(A.points) * 1.1 + dHat / 2) continue;
+      if (polyDeviation(A.points, cpts) > tol || polyDeviation(cpts, A.points) > tol) continue;
+      const key =
+        [...A.lineIds].sort().join(',') + '|' +
+        [...new Set(chain.flatMap((e) => [...e.lineIds]))].sort().join(',');
+      cands.push({ A, chain, cpts, key });
+    }
+    // Phase 2: apply only service pairs with at least two rungs (counting
+    // welds already applied in earlier passes). A candidate whose edges were
+    // consumed by an earlier weld this pass is skipped; the next pass
+    // re-detects against the mutated graph.
+    const passPairs = new Map<string, number>();
+    for (const c of cands) passPairs.set(c.key, (passPairs.get(c.key) ?? 0) + 1);
+    let changed = false;
+    for (const c of cands) {
+      const total = (passPairs.get(c.key) ?? 0) + (appliedPairs.get(c.key) ?? 0);
+      if (total < 2) continue;
+      if (!edges.has(c.A.id) || c.chain.some((e) => !edges.has(e.id))) continue;
+      traceLadderWeld({
+        rungId: c.A.id,
+        rungLines: [...c.A.lineIds],
+        from: nodes.get(c.A.from)?.pos ?? [0, 0],
+        to: nodes.get(c.A.to)?.pos ?? [0, 0],
+        chainIds: c.chain.map((e) => e.id),
+        chainLines: [...new Set(c.chain.flatMap((e) => [...e.lineIds]))],
+        interior: c.chain.slice(0, -1).map((e, i) => {
+          let node = c.A.from;
+          for (let k = 0; k <= i; k++) node = c.chain[k].from === node ? c.chain[k].to : c.chain[k].from;
+          return nodes.get(node)?.pos ?? [0, 0];
+        }),
+        devAtoC: polyDeviation(c.A.points, c.cpts),
+        devCtoA: polyDeviation(c.cpts, c.A.points),
+        arcRatio: polylineLength(c.cpts) / Math.max(1, polylineLength(c.A.points)),
+      });
+      for (const e of c.chain) for (const l of c.A.lineIds) e.lineIds.add(l);
+      edges.delete(c.A.id);
+      for (const nd of [c.A.from, c.A.to]) {
+        const arr = adj.get(nd);
+        if (arr) {
+          const k = arr.indexOf(c.A.id);
+          if (k >= 0) arr.splice(k, 1);
+        }
+      }
+      appliedPairs.set(c.key, (appliedPairs.get(c.key) ?? 0) + 1);
+      welded++;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return welded;
+}
+
 function absorbJunctionStubs(
   nodes: Map<string, SupportNode>,
   edges: Map<string, SupportEdge>,
@@ -1598,6 +1767,10 @@ export function buildSupportGraph(
     weldRedundantStubs(nodes, edges, adj, params.dHat, () => 'he' + edgeSeq++);
     // Sub-dHat stubs at junctions fold into the junction node entirely.
     absorbJunctionStubs(nodes, edges, adj, params.dHat);
+    // Per-service ladder rungs: an express edge running rung-for-rung beside
+    // the local's station chain fuses onto it as a pass-through, so one
+    // geometric corridor is one support corridor with its stations inline.
+    weldServiceLadders(nodes, edges, adj, params.dHat);
   }
 
   const lineRefs = new Map<string, LineRef>();
@@ -1919,6 +2092,7 @@ export function buildSupportGraph(
   }
 
   debugSupportSummary(nodes.keys(), nodes.size, edges.size);
+  debugSupportBox(nodes, edges, adj, (lid) => lineRefs.get(lid)?.label || lid.slice(0, 6));
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
 }
 

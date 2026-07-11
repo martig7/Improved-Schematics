@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, cutPolylineFolds, weldSubCellNodes, nearestSupport, type TopoParams } from '../topo';
+import { dist, polylineLength, densify, creepBlocked, runMergeRounds, buildSupportGraph, cutPolylineFolds, weldSubCellNodes, nearestSupport, weldServiceLadders, type TopoParams } from '../topo';
 import type { Pixel, TransitGraph, GraphEdge, LineRef, StationGroup, SupportGraph } from '../types';
 
 test('dist computes euclidean distance', () => {
@@ -742,4 +742,134 @@ test('nearestSupport: radius is inclusive, ties keep the first node, line filter
     nearestSupport([29, 0], nodes as never, { within: 0.5, servingLine: { lineId: 'L', adj, edges: edges as never } }),
     null,
   );
+});
+
+// A ladder of rungCount repeats: each repeat is a rung edge j(k)->j(k+1)
+// beside a chain j(k)->s(k)->j(k+1), all collinear on y=0 except a bowPx
+// offset on the chain's interior station. Joints continue outward so every
+// joint is a genuine deg-3 node.
+const ladderFixture = (chainLines: string[], rungLines: string[], bowPx = 0, rungCount = 2) => {
+  const nodes = new Map<string, { id: string; pos: Pixel }>();
+  const edges = new Map<string, { id: string; from: string; to: string; points: Pixel[]; lineIds: Set<string> }>();
+  const N = (id: string, x: number, y: number) => nodes.set(id, { id, pos: [x, y] });
+  const E = (id: string, from: string, to: string, pts: Pixel[], lines: string[]) =>
+    edges.set(id, { id, from, to, points: pts, lineIds: new Set(lines) });
+  const all = [...chainLines, ...rungLines];
+  N('w0', -50, 0);
+  for (let k = 0; k <= rungCount; k++) N('j' + k, k * 200, 0);
+  N('wEnd', rungCount * 200 + 50, 0);
+  E('e-w0', 'w0', 'j0', [[-50, 0], [0, 0]], all);
+  E('e-wEnd', 'j' + rungCount, 'wEnd', [[rungCount * 200, 0], [rungCount * 200 + 50, 0]], all);
+  for (let k = 0; k < rungCount; k++) {
+    const x0 = k * 200, x1 = (k + 1) * 200, xs = x0 + 100;
+    N('s' + k, xs, bowPx);
+    E('e-rung' + k, 'j' + k, 'j' + (k + 1), [[x0, 0], [x1, 0]], rungLines);
+    E('e-c' + k + 'a', 'j' + k, 's' + k, [[x0, 0], [xs, bowPx]], chainLines);
+    E('e-c' + k + 'b', 's' + k, 'j' + (k + 1), [[xs, bowPx], [x1, 0]], chainLines);
+  }
+  const adj = new Map<string, string[]>();
+  for (const e of edges.values()) {
+    for (const nd of [e.from, e.to]) {
+      if (!adj.has(nd)) adj.set(nd, []);
+      adj.get(nd)!.push(e.id);
+    }
+  }
+  return { nodes: nodes as never, edges: edges as never, adj };
+};
+
+test('weldServiceLadders fuses a repeated express rung pair onto the local chains', () => {
+  const { nodes, edges, adj } = ladderFixture(['L'], ['X', 'Y'], 1, 2);
+  const welded = weldServiceLadders(nodes, edges, adj, 16);
+  assert.equal(welded, 2);
+  assert.ok(!edges.has('e-rung0') && !edges.has('e-rung1'), 'both rungs deleted');
+  for (const id of ['e-c0a', 'e-c0b', 'e-c1a', 'e-c1b']) {
+    const e = (edges as Map<string, { lineIds: Set<string> }>).get(id)!;
+    assert.deepEqual([...e.lineIds].sort(), ['L', 'X', 'Y'], id + ' carries the union');
+  }
+});
+
+test('weldServiceLadders refuses an ISOLATED rung (no repeated service pair)', () => {
+  const f = ladderFixture(['L'], ['X'], 1, 1); // a single rung, otherwise perfect
+  weldServiceLadders(f.nodes, f.edges, f.adj, 16);
+  assert.ok((f.edges as Map<string, unknown>).has('e-rung0'), 'singleton rung stays: a ladder repeats by definition');
+});
+
+test('weldServiceLadders refuses chains that genuinely diverge', () => {
+  const f = ladderFixture(['L'], ['X'], 40, 2); // both chains bow far beyond tol
+  weldServiceLadders(f.nodes, f.edges, f.adj, 16);
+  const e = f.edges as Map<string, unknown>;
+  assert.ok(e.has('e-rung0') && e.has('e-rung1'), 'far parallels are real double corridors');
+});
+
+test('weldServiceLadders refuses same-line parallels', () => {
+  const f = ladderFixture(['L'], ['L', 'X'], 1, 2); // rungs share L with the chains
+  weldServiceLadders(f.nodes, f.edges, f.adj, 16);
+  const e = f.edges as Map<string, unknown>;
+  assert.ok(e.has('e-rung0') && e.has('e-rung1'), 'shared-line parallels stay split');
+});
+
+test('weldServiceLadders refuses longitudinally folded chains', () => {
+  // Chains reach their station by overshooting PAST the far joint and
+  // doubling back: zero lateral deviation, arcs far longer than the rungs.
+  const N2 = (id: string, x: number, y: number) => [id, { id, pos: [x, y] as Pixel }] as const;
+  const E2 = (id: string, from: string, to: string, pts: Pixel[], lines: string[]) =>
+    [id, { id, from, to, points: pts, lineIds: new Set(lines) }] as const;
+  const nodes = new Map([
+    N2('w0', -50, 0), N2('j0', 0, 0), N2('s0', 260, 0), N2('j1', 200, 0),
+    N2('s1', 460, 0), N2('j2', 400, 0), N2('wEnd', 450, 40),
+  ]);
+  const edges = new Map([
+    E2('e-w0', 'w0', 'j0', [[-50, 0], [0, 0]], ['L', 'X']),
+    E2('e-rung0', 'j0', 'j1', [[0, 0], [200, 0]], ['X']),
+    E2('e-c0a', 'j0', 's0', [[0, 0], [260, 0]], ['L']),
+    E2('e-c0b', 's0', 'j1', [[260, 0], [200, 0]], ['L']),
+    E2('e-rung1', 'j1', 'j2', [[200, 0], [400, 0]], ['X']),
+    E2('e-c1a', 'j1', 's1', [[200, 0], [460, 0]], ['L']),
+    E2('e-c1b', 's1', 'j2', [[460, 0], [400, 0]], ['L']),
+    E2('e-wEnd', 'j2', 'wEnd', [[400, 0], [450, 40]], ['L', 'X']),
+  ]);
+  const adj = new Map<string, string[]>();
+  for (const e of edges.values()) {
+    for (const nd of [e.from, e.to]) {
+      if (!adj.has(nd)) adj.set(nd, []);
+      adj.get(nd)!.push(e.id);
+    }
+  }
+  weldServiceLadders(nodes as never, edges as never, adj, 16);
+  assert.ok(edges.has('e-rung0') && edges.has('e-rung1'), 'folded chains must not absorb rungs');
+});
+
+test('weldServiceLadders refuses single parallel edges with no interior structure', () => {
+  const N2 = (id: string, x: number, y: number) => [id, { id, pos: [x, y] as Pixel }] as const;
+  const E2 = (id: string, from: string, to: string, pts: Pixel[], lines: string[]) =>
+    [id, { id, from, to, points: pts, lineIds: new Set(lines) }] as const;
+  const nodes = new Map([N2('j1', 0, 0), N2('j2', 200, 0), N2('j3', 400, 0), N2('x1', -50, 0), N2('x2', 450, 0)]);
+  const edges = new Map([
+    E2('e-a1', 'j1', 'j2', [[0, 0], [200, 0]], ['X']),
+    E2('e-b1', 'j1', 'j2', [[0, 1], [200, 1]], ['L']),
+    E2('e-a2', 'j2', 'j3', [[200, 0], [400, 0]], ['X']),
+    E2('e-b2', 'j2', 'j3', [[200, 1], [400, 1]], ['L']),
+    E2('e-w1', 'x1', 'j1', [[-50, 0], [0, 0]], ['L', 'X']),
+    E2('e-w2', 'j3', 'x2', [[400, 0], [450, 0]], ['L', 'X']),
+  ]);
+  const adj = new Map<string, string[]>();
+  for (const e of edges.values()) {
+    for (const nd of [e.from, e.to]) {
+      if (!adj.has(nd)) adj.set(nd, []);
+      adj.get(nd)!.push(e.id);
+    }
+  }
+  weldServiceLadders(nodes as never, edges as never, adj, 16);
+  assert.ok(edges.has('e-a1') && edges.has('e-b1') && edges.has('e-a2') && edges.has('e-b2'), 'no-interior parallels survive');
+});
+
+test('weldServiceLadders is deterministic on repeat', () => {
+  const run = () => {
+    const f = ladderFixture(['L'], ['X'], 1, 2);
+    weldServiceLadders(f.nodes, f.edges, f.adj, 16);
+    return [...(f.edges as Map<string, { id: string; lineIds: Set<string> }>).values()]
+      .map((e) => e.id + ':' + [...e.lineIds].sort().join(','))
+      .sort();
+  };
+  assert.deepEqual(run(), run());
 });
