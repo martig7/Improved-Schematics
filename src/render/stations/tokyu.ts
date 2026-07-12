@@ -15,8 +15,8 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
   const g: Glyph[] = [
     rect(cx - s / 2, cy - s / 2, s, s, s * 0.19, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
   ];
-  if (showBullets && ln.bullet) g.push(text(cx, cy - s * 0.11, ln.bullet, { fontSize: s * 0.3, fill: ink, fontFamily: SIGN_LETTER_FONT }));
-  if (ln.seq != null) g.push(text(cx, cy + s * 0.34, pad2(ln.seq), { fontSize: s * 0.53, fill: ink, fontFamily: SIGN_DIGIT_FONT }));
+  if (showBullets && ln.bullet) g.push(text(cx, cy - s * 0.09, ln.bullet, { fontSize: s * 0.36, fill: ink, fontFamily: SIGN_LETTER_FONT }));
+  if (ln.seq != null) g.push(text(cx, cy + s * 0.38, pad2(ln.seq), { fontSize: s * 0.64, fill: ink, fontFamily: SIGN_DIGIT_FONT }));
   return g;
 }
 
