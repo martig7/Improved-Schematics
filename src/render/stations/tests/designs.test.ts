@@ -5,6 +5,7 @@ import { nycSolid } from '../nycSolid';
 import { nycMap } from '../nycMap';
 import { tokyu } from '../tokyu';
 import { tokyo } from '../tokyo';
+import { tokyoMetro } from '../tokyoMetro';
 import type { StopScene } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -240,6 +241,48 @@ test('tokyo interchange rides the shared rectRows capsule painter', () => {
   assert.equal(rects.length, 6);
   assert.ok(rects.some((r) => r.fill === '#111111'), 'group border rect');
   assert.ok(rects.some((r) => r.fill === '#6f6f73' && r.stroke === 'none'), 'group fill rect');
+  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
+  assert.ok(texts.some((t) => t.text === '05') && texts.some((t) => t.text === '09'));
+});
+
+test('tokyoMetro: route-color ring (1/8 diameter) around a white disc, concentric and on the emit grid', () => {
+  for (const cx of [10, 10.04, 10.13, 317.77]) {
+    const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#f39700', bullet: 'G', textColor: '', pos: [cx, cx / 3], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [cx, cx / 3], dotRadius: 12 };
+    const gs = tokyoMetro.paint(sc, ctx);
+    const circles = gs.filter((g) => g.kind === 'circle') as Array<{ cx: number; cy: number; r: number; fill: string }>;
+    assert.equal(circles.length, 2);
+    const [outer, inner] = circles;
+    assert.equal(outer.fill, '#f39700', 'outer disc carries the route color');
+    assert.equal(inner.fill, '#ffffff', 'interior is white');
+    assert.ok(Math.abs(outer.cx - inner.cx) < 1e-9 && Math.abs(outer.cy - inner.cy) < 1e-9, 'concentric');
+    for (const v of [outer.cx, outer.cy, outer.r, inner.r]) {
+      assert.ok(Math.abs(v - +v.toFixed(1)) < 1e-9, `coordinate ${v} off the emit grid at cx=${cx}`);
+    }
+    const ring = outer.r - inner.r;
+    assert.ok(Math.abs(ring - (2 * outer.r) / 8) <= 0.1 + 1e-9, `ring ${ring} not ~1/8 of diameter ${2 * outer.r}`);
+    const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string; fontWeight: string }>;
+    assert.ok(texts.some((t) => t.text === 'G' && t.fill === '#111111' && t.fontWeight === 'bold'), 'bold bullet in dark ink');
+    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111' && t.fontWeight === 'bold'), 'bold zero-padded number');
+  }
+});
+
+test('tokyoMetro interchange rides the shared rectRows capsule painter', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#f39700', bullet: 'G', textColor: '', pos: [0, 0], chain: 0, seq: 5 },
+      { lineId: 'L2', color: '#0067c0', bullet: 'T', textColor: '', pos: [34, 0], chain: 1, seq: 9 },
+    ],
+    capsule: { kind: 'rectRows', box: 30, groups: [{ x: -20, y: -20, w: 74, h: 40, rx: 6 }], connectors: [] },
+    anchor: [17, 0],
+    dotRadius: 6,
+  };
+  const gs = tokyoMetro.paint(sc, ctx);
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ fill: string }>;
+  assert.equal(rects.length, 2, 'group border + fill rects');
+  assert.ok(rects.some((r) => r.fill === '#111111') && rects.some((r) => r.fill === '#6f6f73'));
+  const circles = gs.filter((g) => g.kind === 'circle');
+  assert.equal(circles.length, 4, 'two discs per line box');
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
   assert.ok(texts.some((t) => t.text === '05') && texts.some((t) => t.text === '09'));
 });
