@@ -1,6 +1,7 @@
 import type { StationDesign, StopLine, Glyph } from './types';
 import { circle, text } from './primitives';
 import { paintRectCapsule, pad2 } from './rectCapsule';
+import { SIGN_LETTER_FONT, SIGN_DIGIT_FONT } from './signFonts';
 
 // Interchange capsule in the shared silhouette colors, with fully rounded
 // stadium ends to match the round discs.
@@ -32,8 +33,8 @@ function disc(cx: number, cy: number, s: number, ln: StopLine, showBullets: bool
   // Reference-exact text metrics, measured from the source icons: letter cap
   // height 0.265 and digit height 0.288 of the diameter, optical centers
   // 0.196 above and 0.128 below the disc center (cap height ~0.716em).
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.06, ln.bullet, { fontSize: s * 0.37, fill: INK }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.27, pad2(ln.seq), { fontSize: s * 0.4, fill: INK }));
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.06, ln.bullet, { fontSize: s * 0.37, fill: INK, fontFamily: SIGN_LETTER_FONT }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.27, pad2(ln.seq), { fontSize: s * 0.4, fill: INK, fontFamily: SIGN_DIGIT_FONT }));
   return g;
 }
 

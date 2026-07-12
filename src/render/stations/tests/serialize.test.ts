@@ -57,3 +57,30 @@ test('direct-emit prims agree with sceneFromSvg on NON-integer geometry (roundin
   for (const k of ['x', 'y', 'fontSize']) assert.equal(pick(direct, 'text')[k], pick(parsed, 'text')[k], `text ${k}`);
   assert.equal(pick(direct, 'path').strokeWidth, pick(parsed, 'path').strokeWidth, 'path strokeWidth');
 });
+
+test('text glyph fontFamily round-trips: svg emit -> scene parse equals direct prim', () => {
+  const glyph = {
+    kind: 'text' as const, x: 10, y: 20, text: '05', fontSize: 3.2, fontWeight: 'bold',
+    align: 'middle' as const, fill: '#1e1a1b',
+    fontFamily: '"TRTA Numbers Sharp", "Open Sans", Helvetica, sans-serif',
+  };
+  const svg = glyphsToSvg([glyph]);
+  assert.ok(svg.includes('font-family="&quot;TRTA Numbers Sharp&quot;, &quot;Open Sans&quot;, Helvetica, sans-serif"'), 'family emitted escaped');
+  const direct = glyphsToPrims([glyph])[0];
+  assert.equal((direct as { fontFamily?: string }).fontFamily, glyph.fontFamily);
+  const scene = sceneFromSvg(`<svg viewBox="0 0 100 100"><g class="imp-stop" data-ax="10" data-ay="20"><g data-stops="L" data-station-id="n">${svg}</g></g></svg>`);
+  const t = scene.prims.find((p) => p.kind === 'text') as { fontFamily?: string };
+  assert.equal(t.fontFamily, glyph.fontFamily, 'parsed family matches (entities decoded)');
+});
+
+test('text glyph WITHOUT fontFamily emits the default stack and parses back with none', () => {
+  const glyph = {
+    kind: 'text' as const, x: 10, y: 20, text: 'A', fontSize: 3, fontWeight: 'bold',
+    align: 'middle' as const, fill: '#111111',
+  };
+  const svg = glyphsToSvg([glyph]);
+  assert.ok(svg.includes('font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif"'), 'default stack byte-stable');
+  const scene = sceneFromSvg(`<svg viewBox="0 0 100 100"><g class="imp-stop" data-ax="10" data-ay="20"><g data-stops="L" data-station-id="n">${svg}</g></g></svg>`);
+  const t = scene.prims.find((p) => p.kind === 'text') as { fontFamily?: string };
+  assert.equal(t.fontFamily, undefined, 'default stack stays implicit');
+});

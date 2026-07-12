@@ -8,6 +8,11 @@ const alignToCanvas = (a: 'start' | 'middle' | 'end'): CanvasTextAlign => (a ===
 const dataAttrs = (d?: Record<string, string>): string =>
   d ? Object.entries(d).map(([k, v]) => ` ${k}="${escapeXml(v)}"`).join('') : '';
 
+/** The stack every text glyph carried before per-glyph families existed.
+ *  Emitted verbatim for glyphs without one, so their output is byte-stable,
+ *  and recognized by the SVG->scene parser as "no explicit family". */
+export const DEFAULT_TEXT_FONT = 'Helvetica, "Helvetica Neue", Arial, sans-serif';
+
 /** One glyph -> its SVG element string. */
 export function glyphToSvg(g: Glyph): string {
   switch (g.kind) {
@@ -20,7 +25,7 @@ export function glyphToSvg(g: Glyph): string {
     case 'line':
       return `<line x1="${g.x1.toFixed(1)}" y1="${g.y1.toFixed(1)}" x2="${g.x2.toFixed(1)}" y2="${g.y2.toFixed(1)}" stroke="${escapeXml(g.stroke)}" stroke-width="${g.strokeWidth.toFixed(1)}"/>`;
     case 'text':
-      return `<text x="${g.x.toFixed(1)}" y="${g.y.toFixed(1)}" text-anchor="${alignToAnchor(g.align)}" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="${g.fontSize.toFixed(2)}" font-weight="${g.fontWeight}" fill="${escapeXml(g.fill)}">${escapeXml(g.text)}</text>`;
+      return `<text x="${g.x.toFixed(1)}" y="${g.y.toFixed(1)}" text-anchor="${alignToAnchor(g.align)}" font-family="${escapeXml(g.fontFamily ?? DEFAULT_TEXT_FONT)}" font-size="${g.fontSize.toFixed(2)}" font-weight="${g.fontWeight}" fill="${escapeXml(g.fill)}">${escapeXml(g.text)}</text>`;
   }
 }
 
@@ -48,7 +53,7 @@ export function glyphToPrim(g: Glyph): Prim {
     case 'line':
       return { kind: 'line', x1: r1(g.x1), y1: r1(g.y1), x2: r1(g.x2), y2: r1(g.y2), stroke: g.stroke, strokeWidth: r1(g.strokeWidth), ...base };
     case 'text':
-      return { kind: 'text', text: g.text, x: r1(g.x), y: r1(g.y), ax: 0, ay: 0, fontSize: r2(g.fontSize), fontWeight: g.fontWeight, align: alignToCanvas(g.align), fill: g.fill, ...base };
+      return { kind: 'text', text: g.text, x: r1(g.x), y: r1(g.y), ax: 0, ay: 0, fontSize: r2(g.fontSize), fontWeight: g.fontWeight, align: alignToCanvas(g.align), fill: g.fill, ...(g.fontFamily ? { fontFamily: g.fontFamily } : {}), ...base };
   }
 }
 

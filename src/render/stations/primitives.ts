@@ -42,8 +42,8 @@ export function line(x1: number, y1: number, x2: number, y2: number, o: { stroke
   return { kind: 'line', x1, y1, x2, y2, stroke: o.stroke, strokeWidth: o.strokeWidth };
 }
 
-export function text(x: number, y: number, s: string, o: { fontSize: number; fill: string; fontWeight?: string; align?: 'start' | 'middle' | 'end' }): Glyph {
-  return { kind: 'text', x, y, text: s, fontSize: o.fontSize, fontWeight: o.fontWeight ?? 'bold', align: o.align ?? 'middle', fill: o.fill };
+export function text(x: number, y: number, s: string, o: { fontSize: number; fill: string; fontWeight?: string; align?: 'start' | 'middle' | 'end'; fontFamily?: string }): Glyph {
+  return { kind: 'text', x, y, text: s, fontSize: o.fontSize, fontWeight: o.fontWeight ?? 'bold', align: o.align ?? 'middle', fill: o.fill, ...(o.fontFamily ? { fontFamily: o.fontFamily } : {}) };
 }
 
 /** Route-bullet text centered in a dot, offset like the classic marker. */

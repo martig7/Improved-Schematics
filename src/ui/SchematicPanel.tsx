@@ -21,6 +21,7 @@ import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescripto
 import { decideAreaAction } from './areaLifecycle';
 import { Icon } from './icons';
 import { StationDesignPicker } from './StationDesignPicker';
+import { ensureSignFonts } from './fonts';
 import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stations';
 import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
@@ -506,6 +507,11 @@ export function SchematicPanel() {
   // customizations (and the smoothed fingerprint they feed → the :pre: hit) carry into both
   // modes instead of resetting to defaults. Runs first (declared before persist); idempotent
   // (the per-mode-entry-absent guard skips once entries exist).
+  // Bundled sign fonts (Japanese-design letters/digits): register once so the
+  // SVG panel, canvas scene, and in-page raster exports all resolve them.
+  useEffect(() => {
+    ensureSignFonts();
+  }, []);
   useEffect(() => {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;

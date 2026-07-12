@@ -88,6 +88,8 @@ export interface TextPrim extends PrimBase {
   ay: number;
   fontSize: number;
   fontWeight: string;
+  /** Optional font-family stack; absent = the painter's default stack. */
+  fontFamily?: string;
   align: CanvasTextAlign;
   fill: string;
 }

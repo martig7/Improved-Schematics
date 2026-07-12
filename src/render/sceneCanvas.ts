@@ -192,7 +192,7 @@ export function drawScene(
       }
       case 'text': {
         // worldScale text (route bullets) draws under the camera at world size.
-        ctx.font = `${p.fontWeight} ${p.fontSize}px ${LABEL_FONT}`;
+        ctx.font = `${p.fontWeight} ${p.fontSize}px ${p.fontFamily ?? LABEL_FONT}`;
         ctx.textAlign = p.align;
         ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = p.fill;

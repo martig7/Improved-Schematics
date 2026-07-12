@@ -1,6 +1,7 @@
 import type { StationDesign, StopLine, Glyph } from './types';
 import { rect, text } from './primitives';
 import { paintRectCapsule, pad2 } from './rectCapsule';
+import { SIGN_LETTER_FONT, SIGN_DIGIT_FONT } from './signFonts';
 
 // Interchange capsule silhouette shared with the other square-box design, so
 // mixed maps read as one visual language.
@@ -33,8 +34,8 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
     rect(x0, y0, w, h, s * 0.19, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
     rect(q(x0 + bw), q(y0 + bw), q(w - 2 * bw), q(h - 2 * bw), 0, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.08, ln.bullet, { fontSize: s * 0.3, fill: INK }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.31, pad2(ln.seq), { fontSize: s * 0.44, fill: INK }));
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.08, ln.bullet, { fontSize: s * 0.3, fill: INK, fontFamily: SIGN_LETTER_FONT }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.31, pad2(ln.seq), { fontSize: s * 0.44, fill: INK, fontFamily: SIGN_DIGIT_FONT }));
   return g;
 }
 

@@ -207,6 +207,12 @@ export function sceneFromSvg(svg: string): Scene {
       ay: ty,
       fontSize: num(attrs['font-size'], 12),
       fontWeight: attrs['font-weight'] || 'normal',
+      // The default stack is implicit (glyphToPrim omits it), so only a
+      // non-default family survives the round trip explicitly. Attribute
+      // values arrive entity-escaped; decode before comparing and storing.
+      ...(attrs['font-family'] && decodeEntities(attrs['font-family']) !== 'Helvetica, "Helvetica Neue", Arial, sans-serif'
+        ? { fontFamily: decodeEntities(attrs['font-family']) }
+        : {}),
       align: anchorToAlign(attrs['text-anchor']),
       fill: attrs['fill'] ?? inherited('fill') ?? '#000',
       layer: leafLayer(),
