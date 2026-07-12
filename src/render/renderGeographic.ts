@@ -73,8 +73,9 @@ export interface GeoInput {
   smooth?: boolean;
 }
 
-const STATION_R = 3;
-const INTERCHANGE_R = 4.2;
+// Interchange pill half-height as a multiple of the station dot radius
+// (theme.stationRadius), preserving the tuned 3 : 4.2 proportion.
+const INTERCHANGE_R_FRAC = 1.4;
 
 const r = (n: number): number => Math.round(n * 10) / 10;
 
@@ -156,6 +157,8 @@ function renderGeoNodes(
   if (opts.showStations) {
     const colors = nodeRingColors(graph);
     const routeCounts = nodeRouteCount(graph);
+    const stationR = { ...DEFAULT_OPTIONS.theme, ...(opts.theme ?? {}) }.stationRadius;
+    const interR = stationR * INTERCHANGE_R_FRAC;
     let dots = '';
     for (const node of graph.nodes.values()) {
       const px = nodePx.get(node.id);
@@ -165,10 +168,10 @@ function renderGeoNodes(
       const routeN = routeCounts.get(node.id) ?? 1;
       if (routeN > 1) {
         // pill scaled by route count, capped so it stays readable
-        const halfW = INTERCHANGE_R + Math.min(routeN - 1, 4) * 1.6;
-        dots += `<rect x="${r(px[0] - halfW)}" y="${r(px[1] - INTERCHANGE_R)}" width="${r(halfW * 2)}" height="${r(INTERCHANGE_R * 2)}" rx="${INTERCHANGE_R}" ry="${INTERCHANGE_R}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+        const halfW = interR + Math.min(routeN - 1, 4) * 1.6;
+        dots += `<rect x="${r(px[0] - halfW)}" y="${r(px[1] - interR)}" width="${r(halfW * 2)}" height="${r(interR * 2)}" rx="${r(interR)}" ry="${r(interR)}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
       } else {
-        dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${STATION_R}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+        dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${r(stationR)}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
       }
     }
     out += `<g class="stations-dots">${dots}</g>`;

@@ -154,7 +154,9 @@ export const DEFAULT_THEME: SchematicTheme = {
   stationFill: '#ffffff',
   stationStroke: '#444444',
   lineWidth: 4,
-  stationRadius: 2.5,
+  // Geographic-mode station dot radius (px). The smoothed renderer sizes its
+  // markers from the line width and never reads this.
+  stationRadius: 3,
 };
 
 /** Dark-theme palette: land is distinctly lighter than the panel so the map area reads. */

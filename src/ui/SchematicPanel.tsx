@@ -63,7 +63,9 @@ type ExportFormat = 'svg' | 'png' | 'jpeg';
 // three feed the renderer via SchematicOptions (theme.lineWidth, theme
 // .stationRadius, padding); the last two are applied during raster export.
 const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
-const DEFAULT_STATION_RADIUS = 2.5; // matches DEFAULT_THEME.stationRadius
+// Geographic-mode dot radius; matches DEFAULT_THEME.stationRadius. The smoothed
+// renderer sizes its markers from the line width, so its settings omit this.
+const DEFAULT_STATION_RADIUS = 3;
 const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
 // Labels render at a constant WORLD size — i.e. constant relative to the map
 // image, scaling WITH zoom (like text printed on the map), not pinned to a fixed
@@ -1981,15 +1983,17 @@ export function SchematicPanel() {
                 display={`${lineWidth.toFixed(1)} px`}
                 onChange={setLineWidth}
               />
-              <Slider
-                label="Station size"
-                value={stationRadius}
-                min={1}
-                max={6}
-                step={0.5}
-                display={`${stationRadius.toFixed(1)} px`}
-                onChange={setStationRadius}
-              />
+              {mode === 'geographic' && (
+                <Slider
+                  label="Station size"
+                  value={stationRadius}
+                  min={1}
+                  max={6}
+                  step={0.5}
+                  display={`${stationRadius.toFixed(1)} px`}
+                  onChange={setStationRadius}
+                />
+              )}
               <Slider
                 label="Map margin"
                 value={mapMargin}
