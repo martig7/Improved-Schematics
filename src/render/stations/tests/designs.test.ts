@@ -278,9 +278,12 @@ test('tokyoMetro interchange rides the shared rectRows capsule painter', () => {
     dotRadius: 6,
   };
   const gs = tokyoMetro.paint(sc, ctx);
-  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ fill: string }>;
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ fill: string; w: number; h: number; rx: number }>;
   assert.equal(rects.length, 2, 'group border + fill rects');
   assert.ok(rects.some((r) => r.fill === '#111111') && rects.some((r) => r.fill === '#6f6f73'));
+  for (const r of rects) {
+    assert.ok(Math.abs(r.rx - Math.min(r.w, r.h) / 2) < 1e-9, 'capsule has stadium ends (rx = half the short side)');
+  }
   const circles = gs.filter((g) => g.kind === 'circle');
   assert.equal(circles.length, 4, 'two discs per line box');
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;

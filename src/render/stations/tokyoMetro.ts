@@ -2,9 +2,9 @@ import type { StationDesign, StopLine, Glyph } from './types';
 import { circle, text } from './primitives';
 import { paintRectCapsule, pad2 } from './rectCapsule';
 
-// Interchange capsule silhouette shared with the other square-box designs, so
-// mixed maps read as one visual language.
-const STYLE = { capFill: '#6f6f73', capBorder: '#111111' };
+// Interchange capsule in the shared silhouette colors, with fully rounded
+// stadium ends to match the round discs.
+const STYLE = { capFill: '#6f6f73', capBorder: '#111111', roundEnds: true };
 
 // Route-color ring width as a fraction of the glyph diameter (the metro-style
 // sign's bold colored ring).

@@ -20,6 +20,10 @@ export type BoxGlyphFn = (cx: number, cy: number, s: number, ln: StopLine, showB
 export interface RectCapsuleStyle {
   capFill: string;
   capBorder: string;
+  /** Fully round the capsule (stadium ends: corner radius = half the short
+   *  side) instead of the seated group's own slight corner radius. Suits
+   *  designs whose boxes are round. */
+  roundEnds?: boolean;
 }
 
 /** Zero-padded two-digit station number, the numbering style shared by the
@@ -56,13 +60,15 @@ export function paintRectCapsule(
     // color. The fattened pieces union into one outer silhouette, so only a
     // uniform border rim survives and the capsules and necks read as ONE
     // seamless shape, flush at every junction with no seam line.
+    const rxOf = (gr: { w: number; h: number; rx: number }): number =>
+      style.roundEnds ? Math.min(gr.w, gr.h) / 2 : gr.rx;
     // BORDER LAYER: each piece stroked and filled in the border color, fattening
     // it by bw on every side.
-    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: style.capBorder, stroke: style.capBorder, strokeWidth: 2 * bw }));
+    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, rxOf(gr), { fill: style.capBorder, stroke: style.capBorder, strokeWidth: 2 * bw }));
     for (const d of necks) g.push({ kind: 'path', d, fill: style.capBorder, stroke: style.capBorder, strokeWidth: 2 * bw, lineCap: 'round', lineJoin: 'round' });
     // FILL LAYER: each interior in the fill color, no stroke, covering all but
     // the border rim.
-    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, gr.rx, { fill: style.capFill, stroke: 'none', strokeWidth: 0 }));
+    for (const gr of cap.groups) g.push(rect(gr.x, gr.y, gr.w, gr.h, rxOf(gr), { fill: style.capFill, stroke: 'none', strokeWidth: 0 }));
     for (const d of necks) g.push({ kind: 'path', d, fill: style.capFill, stroke: 'none', strokeWidth: 0, lineCap: 'round', lineJoin: 'round' });
 
     for (const ln of scene.lines) g.push(...box(ln.pos[0], ln.pos[1], s, ln, ctx.showBullets));
@@ -71,7 +77,8 @@ export function paintRectCapsule(
 
   if (cap.kind === 'box') {
     // Mega-fallback interchange: the opaque rounded box, still rendered.
-    return [rect(cap.x, cap.y, cap.w, cap.h, cap.rx, { fill: style.capFill, stroke: style.capBorder, strokeWidth: 3 })];
+    const rx = style.roundEnds ? Math.min(cap.w, cap.h) / 2 : cap.rx;
+    return [rect(cap.x, cap.y, cap.w, cap.h, rx, { fill: style.capFill, stroke: style.capBorder, strokeWidth: 3 })];
   }
 
   // Single stop, degenerate interchange, or preview: one box per line at its pos.
