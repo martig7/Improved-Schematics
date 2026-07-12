@@ -1,6 +1,7 @@
 import type { StationDesign, StopLine, Glyph } from './types';
 import { rect, text } from './primitives';
 import { paintRectCapsule, pad2 } from './rectCapsule';
+import { SIGN_LETTER_FONT, SIGN_DIGIT_FONT } from './signFonts';
 
 // The interchange capsule and its connectors always read as dark gray with a
 // black border, matching the Japanese-metro reference in both themes.
@@ -14,8 +15,8 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
   const g: Glyph[] = [
     rect(cx - s / 2, cy - s / 2, s, s, s * 0.19, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
   ];
-  if (showBullets && ln.bullet) g.push(text(cx, cy - s * 0.125, ln.bullet, { fontSize: s * 0.25, fill: ink }));
-  if (ln.seq != null) g.push(text(cx, cy + s * 0.31, pad2(ln.seq), { fontSize: s * 0.44, fill: ink }));
+  if (showBullets && ln.bullet) g.push(text(cx, cy - s * 0.125, ln.bullet, { fontSize: s * 0.25, fill: ink, fontFamily: SIGN_LETTER_FONT }));
+  if (ln.seq != null) g.push(text(cx, cy + s * 0.31, pad2(ln.seq), { fontSize: s * 0.44, fill: ink, fontFamily: SIGN_DIGIT_FONT }));
   return g;
 }
 
