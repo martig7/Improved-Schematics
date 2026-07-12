@@ -4,6 +4,7 @@ import { classic } from '../classic';
 import { nycSolid } from '../nycSolid';
 import { nycMap } from '../nycMap';
 import { tokyu } from '../tokyu';
+import { tokyo } from '../tokyo';
 import type { StopScene } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -185,4 +186,43 @@ test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded 
   assert.equal(rects[0].w, 40);
   assert.equal(rects[0].fill, '#6f6f73');
   assert.equal(rects[0].stroke, '#111111');
+});
+
+test('tokyo: route-color frame (1/15 side) around a sharp-cornered white interior, dark ink', () => {
+  const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#9acd32', bullet: 'JY', textColor: '#ffffff', pos: [10, 10], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 12 };
+  const gs = tokyo.paint(sc, ctx);
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; w: number; rx: number; fill: string }>;
+  assert.equal(rects.length, 2);
+  const [outer, inner] = rects;
+  assert.equal(outer.fill, '#9acd32', 'outer square carries the route color');
+  assert.ok(outer.rx > 0, 'outer corners rounded');
+  assert.equal(inner.fill, '#ffffff', 'interior is white');
+  assert.equal(inner.rx, 0, 'interior corners sharp');
+  const frame = (outer.w - inner.w) / 2;
+  assert.ok(Math.abs(frame - outer.w / 15) < 1e-9, `frame width is 1/15 of the side (got ${frame})`);
+  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string }>;
+  assert.ok(texts.some((t) => t.text === 'JY' && t.fill === '#111111'), 'bullet in dark ink');
+  assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111'), 'zero-padded number in dark ink');
+});
+
+test('tokyo interchange rides the shared rectRows capsule painter', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#9acd32', bullet: 'JY', textColor: '', pos: [0, 0], chain: 0, seq: 5 },
+      { lineId: 'L2', color: '#0067c0', bullet: 'JK', textColor: '', pos: [34, 0], chain: 1, seq: 9 },
+    ],
+    capsule: { kind: 'rectRows', box: 30, groups: [{ x: -20, y: -20, w: 74, h: 40, rx: 6 }], connectors: [] },
+    anchor: [17, 0],
+    dotRadius: 6,
+  };
+  const gs = tokyo.paint(sc, ctx);
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ fill: string; stroke: string }>;
+  // border rect + fill rect for the group, plus TWO rects per line box
+  // (route-color frame + white interior) = 6.
+  assert.equal(rects.length, 6);
+  assert.ok(rects.some((r) => r.fill === '#111111'), 'group border rect');
+  assert.ok(rects.some((r) => r.fill === '#6f6f73' && r.stroke === 'none'), 'group fill rect');
+  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
+  assert.ok(texts.some((t) => t.text === '05') && texts.some((t) => t.text === '09'));
 });
