@@ -40,6 +40,7 @@ import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { rescueTwists } from './layout/twistRescue';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
+import { projectPlaces, placesSvg, type PlacePx } from './neighborhoods';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
@@ -327,6 +328,11 @@ export function renderGeographic(input: GeoInput): string {
   const backdrop = geographyBackdrop(input.geography, proj, theme, dark);
   if (backdrop) parts.push(backdrop);
 
+  // Neighborhood-name area labels: under the network, over the backdrop.
+  if (opts.showNeighborhoods) {
+    parts.push(placesSvg(projectPlaces(input.geography, proj, width, height), dark));
+  }
+
   const segments: Segment[] = [];
   let linePaths = '';
   for (const line of lines) {
@@ -454,6 +460,10 @@ export interface SmoothedPrecomputed {
    *  reshaped — it is NOT drawn (a hull-bounded land fill and boundary bleed
    *  were tried and reverted: in-game they painted giant false land). */
   geoHullPx?: Pixel[];
+  /** Neighborhood labels projected through the WARPED projection, decluttered,
+   *  ready to paint when the neighborhoods toggle is on. Absent on pres built
+   *  before the field existed or when the geography carries no places. */
+  placesPx?: PlacePx[];
   width: number;
   height: number;
   dark: boolean;
@@ -1292,6 +1302,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // BACKDROP is built from them at draw time (drawSmoothed), which is what lets
   // the landmass style re-render as a cheap repaint instead of a re-sim.
   const geoRingsPx = projectGeoRings(input.geography, proj, theme, dark);
+  // Neighborhood label points ride the same warped projection, so the names
+  // deform with the network exactly like the water does.
+  const placesPx = projectPlaces(input.geography, proj, outW, outH);
   // Data-region hull to render px: sample each hull edge densely (the warp
   // bends straight edges into curves) through the final projection.
   let geoHullPx: Pixel[] | undefined;
@@ -1321,7 +1334,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // geography), renderRibbons frames on the rendered network instead.
   const frame = geographyFrame(input.geography, proj) ?? undefined;
 
-  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
@@ -1428,7 +1441,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1470,6 +1483,8 @@ export function drawSmoothed(
     showStations: opts.showStations,
     megaFallback: opts.megaFallback ?? 'curve',
     stationDesign: opts.stationDesign,
+    // Neighborhood labels: pre-projected at precompute; painted only when on.
+    placesPx: opts.showNeighborhoods ? pre.placesPx : undefined,
     backdrop,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
@@ -1485,7 +1500,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

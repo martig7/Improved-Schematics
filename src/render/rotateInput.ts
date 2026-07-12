@@ -129,6 +129,7 @@ export function rotateSchematicInput<T extends {
       });
     const water = rotFeats(geography.water);
     const green = rotFeats(geography.green);
+    const places = geography.places?.map((pl) => ({ ...pl, coord: rot(pl.coord, f) }));
     // The rotated harvest rect is a DIAMOND in the new frame; the square canvas
     // fitted to its extremes has data-void triangles at the corners. NOTHING is
     // cropped, since cropping would cut real network and backdrop. Instead the
@@ -146,7 +147,7 @@ export function rotateSchematicInput<T extends {
         Math.max(hull[0][1], hull[1][1], hull[2][1], hull[3][1]),
       ];
     }
-    geography = { bbox, water, green, hull };
+    geography = { bbox, water, green, hull, ...(places ? { places } : {}) };
   }
   return { ...input, stations, tracks, routes, stationGroups, geography } as T;
 }

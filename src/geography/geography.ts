@@ -59,7 +59,7 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
       return null;
     }
     const raw = await deps.harvest(map, probe, harvestBbox);
-    const { water: rawWater, green: rawGreen } = bucketFeatures(raw, probe.schema);
+    const { water: rawWater, green: rawGreen, places } = bucketFeatures(raw, probe.schema);
     const bbox = featuresBbox([...rawWater, ...rawGreen]);
     if (!bbox) {
       console.warn(`${TAG} harvested 0 polygons from '${probe.sourceId}' (${probe.schema}, layers: ${probe.sourceLayers.join(', ')})`);
@@ -89,8 +89,8 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
       console.warn(`${TAG} all polygons trimmed away (raw ${rawWater.length}+${rawGreen.length})`);
       return null;
     }
-    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green (raw ${rawWater.length}+${rawGreen.length} → ${mergedGreen.length} merged parks), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
-    return { bbox, water, green };
+    console.info(`${TAG} ${probe.schema}: ${water.length} water + ${green.length} green + ${places.length} places (raw ${rawWater.length}+${rawGreen.length} → ${mergedGreen.length} merged parks), bbox [${bbox.map((n) => n.toFixed(3)).join(', ')}]`);
+    return { bbox, water, green, ...(places.length > 0 ? { places } : {}) };
   } catch (err) {
     console.warn(`${TAG} build failed:`, err);
     return null;

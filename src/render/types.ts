@@ -64,6 +64,9 @@ export interface SchematicOptions {
   bounds?: BoundingBox;
   showStations: boolean;
   showLabels: boolean;
+  /** Draw neighborhood-name area labels from the harvested geography places.
+   *  Draw-time only (repaint, no relayout). Default false. */
+  showNeighborhoods?: boolean;
   /** How to render the fallback marker for an over-dense bundle that can't seat
    *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
    *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It

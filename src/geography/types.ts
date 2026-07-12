@@ -14,6 +14,14 @@ export interface GeoPolyFeature {
   geometry: { type: 'Polygon'; coordinates: Coordinate[][] };
 }
 
+/** A named place point (neighborhood-class label) in geographic coords. */
+export interface GeoPlaceFeature {
+  name: string;
+  coord: Coordinate;
+  /** Place class from the tile schema (neighbourhood / suburb / quarter ...). */
+  kind: string;
+}
+
 /** Tile-derived geography for one city, ready to project + render. */
 export interface GeographyData {
   bbox: BoundingBox;
@@ -25,6 +33,10 @@ export interface GeographyData {
    *  frame. The renderer draws LAND only inside this hull. The canvas
    *  outside it is data void and paints as background, never as fake land. */
   hull?: Coordinate[];
+  /** Neighborhood-class place labels harvested from the tiles. OPTIONAL:
+   *  geography cached before this field existed loads without it (the
+   *  neighborhoods toggle then has nothing to draw until a re-harvest). */
+  places?: GeoPlaceFeature[];
 }
 
 /** A raw harvested feature tagged with the source-layer it came from. */

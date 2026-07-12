@@ -1,5 +1,5 @@
 import { toPolyFeatures } from './normalize';
-import type { GeoCategory, GeoPolyFeature, GeoSchema, TaggedFeature } from './types';
+import type { GeoCategory, GeoPlaceFeature, GeoPolyFeature, GeoSchema, TaggedFeature } from './types';
 
 /** Land-use/land-cover/natural values we treat as green space, across schemas
  *  (OpenMapTiles `class`, Protomaps `pmap:kind`, Tilezen/Subway-Builder `kind`). */
@@ -28,11 +28,46 @@ export function classifyFeature(
   return GREEN_VALUES.has(value) ? 'green' : null;
 }
 
-/** Classify every feature and normalize the kept ones into polygon collections. */
+/** Label-point source-layers across schemas (see schemaProbe SIGNATURES). */
+const PLACE_LAYERS = new Set(['place', 'places', 'place_label']);
+
+/** Neighborhood-scale place classes we label; city/town/village stay off the
+ *  schematic (station labels already carry that scale of orientation). */
+const PLACE_KINDS = new Set(['neighbourhood', 'neighborhood', 'suburb', 'quarter', 'borough', 'district']);
+
+/** Extract named neighborhood-class points from the place source-layers. */
+export function extractPlaces(features: TaggedFeature[]): GeoPlaceFeature[] {
+  const out: GeoPlaceFeature[] = [];
+  const seen = new Set<string>();
+  for (const f of features) {
+    if (!PLACE_LAYERS.has(f.sourceLayer)) continue;
+    const props = f.properties ?? {};
+    const kind = String(
+      props['class'] ?? props['kind'] ?? props['pmap:kind'] ?? props['subclass'] ?? props['type'] ?? '',
+    ).toLowerCase();
+    if (!PLACE_KINDS.has(kind)) continue;
+    const name = String(props['name:en'] ?? props['name_en'] ?? props['name'] ?? '').trim();
+    if (!name) continue;
+    // Point / MultiPoint only; tiles repeat a label point per tile, so dedupe
+    // by kind+name (first occurrence wins, deterministic in harvest order).
+    let coord: [number, number] | null = null;
+    if (f.geometry.type === 'Point') coord = f.geometry.coordinates as [number, number];
+    else if (f.geometry.type === 'MultiPoint') coord = (f.geometry.coordinates as [number, number][])[0] ?? null;
+    if (!coord || !Number.isFinite(coord[0]) || !Number.isFinite(coord[1])) continue;
+    const key = kind + '|' + name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, coord: [coord[0], coord[1]], kind });
+  }
+  return out;
+}
+
+/** Classify every feature and normalize the kept ones into polygon collections,
+ *  plus the named neighborhood place points. */
 export function bucketFeatures(
   features: TaggedFeature[],
   schema: GeoSchema,
-): { water: GeoPolyFeature[]; green: GeoPolyFeature[] } {
+): { water: GeoPolyFeature[]; green: GeoPolyFeature[]; places: GeoPlaceFeature[] } {
   const water: TaggedFeature[] = [];
   const green: TaggedFeature[] = [];
   for (const f of features) {
@@ -40,5 +75,5 @@ export function bucketFeatures(
     if (cat === 'water') water.push(f);
     else if (cat === 'green') green.push(f);
   }
-  return { water: toPolyFeatures(water), green: toPolyFeatures(green) };
+  return { water: toPolyFeatures(water), green: toPolyFeatures(green), places: extractPlaces(features) };
 }

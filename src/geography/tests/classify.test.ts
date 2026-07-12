@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyFeature, bucketFeatures } from '../classify';
+import { classifyFeature, bucketFeatures, extractPlaces } from '../classify';
 import type { TaggedFeature } from '../types';
 
 test('classifyFeature: water source-layer is always water', () => {
@@ -43,4 +43,32 @@ test('bucketFeatures: splits + normalizes into water/green polygon sets', () => 
   assert.equal(water.length, 1);
   assert.equal(green.length, 1);
   assert.deepEqual(green[0].geometry.coordinates[0][0], [2, 2]);
+});
+
+test('extractPlaces keeps named neighborhood-class points, dedupes tile repeats', () => {
+  const feats = [
+    { sourceLayer: 'place', properties: { class: 'neighbourhood', name: 'Ballard' }, geometry: { type: 'Point', coordinates: [-122.38, 47.66] } },
+    // tile repeat of the same label -> deduped
+    { sourceLayer: 'place', properties: { class: 'neighbourhood', name: 'Ballard' }, geometry: { type: 'Point', coordinates: [-122.381, 47.661] } },
+    // suburb kept; name:en preferred over name
+    { sourceLayer: 'place', properties: { class: 'suburb', 'name:en': 'Fremont', name: 'フリーモント' }, geometry: { type: 'Point', coordinates: [-122.35, 47.65] } },
+    // city-scale places dropped
+    { sourceLayer: 'place', properties: { class: 'city', name: 'Seattle' }, geometry: { type: 'Point', coordinates: [-122.33, 47.6] } },
+    // wrong layer dropped
+    { sourceLayer: 'water', properties: { class: 'neighbourhood', name: 'Nope' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    // unnamed dropped
+    { sourceLayer: 'place', properties: { class: 'quarter' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+    // non-finite dropped
+    { sourceLayer: 'place', properties: { class: 'quarter', name: 'Bad' }, geometry: { type: 'Point', coordinates: [NaN, 1] } },
+    // MultiPoint takes its first point
+    { sourceLayer: 'place', properties: { kind: 'district', name: 'Downtown' }, geometry: { type: 'MultiPoint', coordinates: [[-122.34, 47.61], [-122.33, 47.6]] } },
+  ] as never[];
+  const places = extractPlaces(feats);
+  assert.deepEqual(
+    places.map((p) => p.name).sort(),
+    ['Ballard', 'Downtown', 'Fremont'],
+  );
+  const ballard = places.find((p) => p.name === 'Ballard')!;
+  assert.deepEqual(ballard.coord, [-122.38, 47.66], 'first occurrence wins');
+  assert.equal(places.find((p) => p.name === 'Downtown')!.kind, 'district');
 });

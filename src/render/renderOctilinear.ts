@@ -29,6 +29,7 @@ import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from 
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
+import { placesSvg, placesPrims, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -328,6 +329,9 @@ export interface RenderRibbonsArgs {
   /** Station design id (marker style); resolved via getStationDesign, unknown →
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
+  /** Neighborhood labels (pre-projected through the warped projection), drawn
+   *  between the backdrop and the route lanes when present. Draw-time only. */
+  placesPx?: PlacePx[];
   water?: WaterCollection;
   /** Geography backdrop (water/green groups), built at DRAW time by
    *  drawSmoothed from the pre's projected rings — faithful polygons or the
@@ -3779,6 +3783,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // static water/green backdrop + optional grid overlay (small + static)
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
+    // neighborhood-name area labels: under the network, over the backdrop
+    for (const p of placesPrims(args.placesPx, dark)) prims.push(p);
     // edges: the markup emits ALL casings first, THEN all strokes
     // (edgeParts = [...casingParts, ...strokeParts]); match that order exactly.
     const casingPrims: Prim[] = [];
@@ -3810,6 +3816,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     (waterPart ? waterPart + '\n' : '') +
     (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
+    (args.placesPx && args.placesPx.length > 0 ? placesSvg(args.placesPx, dark) + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
