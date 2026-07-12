@@ -188,21 +188,38 @@ test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded 
   assert.equal(rects[0].stroke, '#111111');
 });
 
-test('tokyo: route-color frame (1/15 side) around a sharp-cornered white interior, dark ink', () => {
-  const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#9acd32', bullet: 'JY', textColor: '#ffffff', pos: [10, 10], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 12 };
-  const gs = tokyo.paint(sc, ctx);
-  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; w: number; rx: number; fill: string }>;
-  assert.equal(rects.length, 2);
-  const [outer, inner] = rects;
-  assert.equal(outer.fill, '#9acd32', 'outer square carries the route color');
-  assert.ok(outer.rx > 0, 'outer corners rounded');
-  assert.equal(inner.fill, '#ffffff', 'interior is white');
-  assert.equal(inner.rx, 0, 'interior corners sharp');
-  const frame = (outer.w - inner.w) / 2;
-  assert.ok(Math.abs(frame - outer.w / 15) < 1e-9, `frame width is 1/15 of the side (got ${frame})`);
-  const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string }>;
-  assert.ok(texts.some((t) => t.text === 'JY' && t.fill === '#111111'), 'bullet in dark ink');
-  assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111'), 'zero-padded number in dark ink');
+test('tokyo: route-color frame around a sharp-cornered white interior, dark ink, symmetric at ANY center', () => {
+  // The SVG emit rounds each rect coordinate to 0.1px independently; a frame
+  // built from raw floats could round thicker on one side ("sometimes the
+  // left edge is thicker"). The box pre-quantizes to the emit grid, so all
+  // four frame sides must come out EXACTLY equal for arbitrary centers.
+  for (const cx of [10, 10.04, 10.05, 10.13, 317.77, 1234.56]) {
+    const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#9acd32', bullet: 'JY', textColor: '#ffffff', pos: [cx, cx / 3], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [cx, cx / 3], dotRadius: 12 };
+    const gs = tokyo.paint(sc, ctx);
+    const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; y: number; w: number; h: number; rx: number; fill: string }>;
+    assert.equal(rects.length, 2);
+    const [outer, inner] = rects;
+    assert.equal(outer.fill, '#9acd32', 'outer square carries the route color');
+    assert.ok(outer.rx > 0, 'outer corners rounded');
+    assert.equal(inner.fill, '#ffffff', 'interior is white');
+    assert.equal(inner.rx, 0, 'interior corners sharp');
+    // emit-grid quantization: every coordinate must already sit on the grid
+    for (const v of [outer.x, outer.y, outer.w, outer.h, inner.x, inner.y, inner.w, inner.h]) {
+      assert.ok(Math.abs(v - +v.toFixed(1)) < 1e-9, `coordinate ${v} off the emit grid at cx=${cx}`);
+    }
+    const left = inner.x - outer.x;
+    const right = (outer.x + outer.w) - (inner.x + inner.w);
+    const top = inner.y - outer.y;
+    const bottom = (outer.y + outer.h) - (inner.y + inner.h);
+    assert.ok(Math.abs(left - right) < 1e-9, `left ${left} != right ${right} at cx=${cx}`);
+    assert.ok(Math.abs(top - bottom) < 1e-9, `top ${top} != bottom ${bottom} at cx=${cx}`);
+    assert.ok(Math.abs(left - top) < 1e-9, `frame not uniform at cx=${cx}`);
+    // frame tracks the design fraction within the 0.1px emit quantum
+    assert.ok(Math.abs(left - outer.w / 8) <= 0.05 + 1e-9, `frame ${left} not ~1/8 of side ${outer.w}`);
+    const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string }>;
+    assert.ok(texts.some((t) => t.text === 'JY' && t.fill === '#111111'), 'bullet in dark ink');
+    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111'), 'zero-padded number in dark ink');
+  }
 });
 
 test('tokyo interchange rides the shared rectRows capsule painter', () => {
