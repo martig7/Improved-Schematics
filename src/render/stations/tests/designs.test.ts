@@ -245,7 +245,7 @@ test('tokyo interchange rides the shared rectRows capsule painter', () => {
   assert.ok(texts.some((t) => t.text === '05') && texts.some((t) => t.text === '09'));
 });
 
-test('tokyoMetro: route-color ring (1/8 diameter) around a white disc, concentric and on the emit grid', () => {
+test('tokyoMetro: route-color ring (1/8.5 diameter, reference spec) around a white disc, concentric and on the emit grid', () => {
   for (const cx of [10, 10.04, 10.13, 317.77]) {
     const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#f39700', bullet: 'G', textColor: '', pos: [cx, cx / 3], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [cx, cx / 3], dotRadius: 12 };
     const gs = tokyoMetro.paint(sc, ctx);
@@ -259,10 +259,10 @@ test('tokyoMetro: route-color ring (1/8 diameter) around a white disc, concentri
       assert.ok(Math.abs(v - +v.toFixed(1)) < 1e-9, `coordinate ${v} off the emit grid at cx=${cx}`);
     }
     const ring = outer.r - inner.r;
-    assert.ok(Math.abs(ring - (2 * outer.r) / 8) <= 0.1 + 1e-9, `ring ${ring} not ~1/8 of diameter ${2 * outer.r}`);
+    assert.ok(Math.abs(ring - (2 * outer.r) / 8.5) <= 0.1 + 1e-9, `ring ${ring} not ~1/8.5 of diameter ${2 * outer.r}`);
     const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string; fontWeight: string }>;
-    assert.ok(texts.some((t) => t.text === 'G' && t.fill === '#111111' && t.fontWeight === 'bold'), 'bold bullet in dark ink');
-    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111' && t.fontWeight === 'bold'), 'bold zero-padded number');
+    assert.ok(texts.some((t) => t.text === 'G' && t.fill === '#1e1a1b' && t.fontWeight === 'bold'), 'bold bullet in the reference near-black ink');
+    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#1e1a1b' && t.fontWeight === 'bold'), 'bold zero-padded number');
   }
 });
 

@@ -6,12 +6,13 @@ import { paintRectCapsule, pad2 } from './rectCapsule';
 // stadium ends to match the round discs.
 const STYLE = { capFill: '#6f6f73', capBorder: '#111111', roundEnds: true };
 
-// Route-color ring width as a fraction of the glyph diameter (the metro-style
-// sign's bold colored ring).
-const RING_FRAC = 1 / 8;
+// Route-color ring width as a fraction of the glyph diameter. The reference
+// icons (public-domain SVGs) draw the ring 1/8.5 of the diameter wide.
+const RING_FRAC = 1 / 8.5;
 
 // Ink on the white interior in both themes; the sign itself never inverts.
-const INK = '#111111';
+// The reference icons use a warm near-black rather than pure black.
+const INK = '#1e1a1b';
 
 // Quantize to the SVG emit grid so both circles carry the same rounded center
 // and radii; a circle is then symmetric by construction.
@@ -29,7 +30,7 @@ function disc(cx: number, cy: number, s: number, ln: StopLine, showBullets: bool
     circle(qcx, qcy, rInner, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
   if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.08, ln.bullet, { fontSize: s * 0.3, fill: INK }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.29, pad2(ln.seq), { fontSize: s * 0.37, fill: INK }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.26, pad2(ln.seq), { fontSize: s * 0.37, fill: INK }));
   return g;
 }
 
