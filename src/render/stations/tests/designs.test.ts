@@ -54,11 +54,20 @@ test('showBullets false omits bullet text', () => {
   assert.ok(!gs.some((g) => g.kind === 'text'));
 });
 
-test('tokyu: rounded square in the line color with bullet + zero-padded number', () => {
+test('tokyu: white base square under an inset line-color plate, bullet + zero-padded number', () => {
   const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#e10f2b', bullet: 'TY', textColor: '#ffffff', pos: [10, 10], chain: 0, seq: 1 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 12 };
   const gs = tokyu.paint(sc, ctx);
-  const r = gs.find((g) => g.kind === 'rect') as { fill: string };
-  assert.equal(r.fill, '#e10f2b');
+  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; y: number; w: number; h: number; fill: string }>;
+  assert.equal(rects.length, 2);
+  const [base, plate] = rects;
+  assert.equal(base.fill, '#ffffff', 'white base square (the sign rim)');
+  assert.equal(plate.fill, '#e10f2b', 'route-color plate');
+  // rim symmetric on all four sides
+  const left = plate.x - base.x;
+  const right = (base.x + base.w) - (plate.x + plate.w);
+  const top = plate.y - base.y;
+  const bottom = (base.y + base.h) - (plate.y + plate.h);
+  assert.ok(Math.abs(left - right) < 1e-9 && Math.abs(top - bottom) < 1e-9 && Math.abs(left - top) < 1e-9, 'rim uniform');
   const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string }>;
   assert.ok(texts.some((t) => t.text === 'TY'));
   assert.ok(texts.some((t) => t.text === '01')); // seq 1 -> '01'
@@ -89,10 +98,10 @@ test('tokyu interchange: a rectRows capsule renders the group as a border rect u
     dotRadius: 6,
   };
   const gs = tokyu.paint(sc, ctx);
-  // Expand-and-overdraw: one border rect + one fill rect for the group, plus one
-  // box per line = 4 rects.
+  // Expand-and-overdraw: one border rect + one fill rect for the group, plus
+  // TWO rects per line box (white base + color plate) = 6 rects.
   const rects = gs.filter((g) => g.kind === 'rect') as Array<{ w: number; fill: string; stroke: string }>;
-  assert.equal(rects.length, 4);
+  assert.equal(rects.length, 6);
   // The border rect is the black one; the fill rect sits on top in CAP_FILL with
   // no stroke.
   const borderRect = rects.find((r) => r.fill === '#111111');
@@ -216,10 +225,10 @@ test('tokyo: route-color frame around a sharp-cornered white interior, dark ink,
     assert.ok(Math.abs(top - bottom) < 1e-9, `top ${top} != bottom ${bottom} at cx=${cx}`);
     assert.ok(Math.abs(left - top) < 1e-9, `frame not uniform at cx=${cx}`);
     // frame tracks the design fraction within the 0.1px emit quantum
-    assert.ok(Math.abs(left - outer.w / 8) <= 0.05 + 1e-9, `frame ${left} not ~1/8 of side ${outer.w}`);
+    assert.ok(Math.abs(left - outer.w * 0.1) <= 0.05 + 1e-9, `frame ${left} not ~0.1 of side ${outer.w}`);
     const texts = gs.filter((g) => g.kind === 'text') as Array<{ text: string; fill: string }>;
-    assert.ok(texts.some((t) => t.text === 'JY' && t.fill === '#111111'), 'bullet in dark ink');
-    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#111111'), 'zero-padded number in dark ink');
+    assert.ok(texts.some((t) => t.text === 'JY' && t.fill === '#1e1a1b'), 'bullet in the reference near-black ink');
+    assert.ok(texts.some((t) => t.text === '01' && t.fill === '#1e1a1b'), 'zero-padded number in dark ink');
   }
 });
 
