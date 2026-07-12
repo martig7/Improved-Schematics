@@ -29,7 +29,7 @@ function disc(cx: number, cy: number, s: number, ln: StopLine, showBullets: bool
     circle(qcx, qcy, rInner, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
   if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.08, ln.bullet, { fontSize: s * 0.3, fill: INK }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.31, pad2(ln.seq), { fontSize: s * 0.44, fill: INK }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.29, pad2(ln.seq), { fontSize: s * 0.37, fill: INK }));
   return g;
 }
 
