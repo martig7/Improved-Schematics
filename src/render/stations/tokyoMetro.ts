@@ -29,8 +29,11 @@ function disc(cx: number, cy: number, s: number, ln: StopLine, showBullets: bool
     circle(qcx, qcy, rOuter, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
     circle(qcx, qcy, rInner, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.08, ln.bullet, { fontSize: s * 0.3, fill: INK }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.26, pad2(ln.seq), { fontSize: s * 0.37, fill: INK }));
+  // Reference-exact text metrics, measured from the source icons: letter cap
+  // height 0.265 and digit height 0.288 of the diameter, optical centers
+  // 0.196 above and 0.128 below the disc center (cap height ~0.716em).
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.06, ln.bullet, { fontSize: s * 0.37, fill: INK }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.27, pad2(ln.seq), { fontSize: s * 0.4, fill: INK }));
   return g;
 }
 
