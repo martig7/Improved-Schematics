@@ -1,13 +1,12 @@
 /**
  * Bundled station-design fonts, injected once into the page so the SVG panel,
  * the canvas scene painter, and in-page raster exports all resolve them.
- * Open Sans Bold carries the letters and TRTA Numbers Sharp the digits of the
- * Japanese-sign station designs; both are libre-licensed for embedding (see
- * assets/fonts/). Standalone .svg exports reference the families by name and
+ * Open Sans Bold carries the letters and digits of the Japanese-sign station
+ * designs; libre-licensed for embedding (see assets/fonts/). Standalone .svg exports reference the families by name and
  * fall back to the Helvetica stack on machines without them.
  */
 
-import { OPEN_SANS_BOLD_B64, TRTA_NUMBERS_SHARP_B64 } from './fontsData';
+import { OPEN_SANS_BOLD_B64 } from './fontsData';
 
 const toBuf = (b64: string): ArrayBuffer => {
   const bin = atob(b64);
@@ -27,7 +26,6 @@ export function ensureSignFonts(): void {
   try {
     const faces = [
       new FontFace('Open Sans', toBuf(OPEN_SANS_BOLD_B64), { weight: '700' }),
-      new FontFace('TRTA Numbers Sharp', toBuf(TRTA_NUMBERS_SHARP_B64)),
     ];
     for (const f of faces) {
       document.fonts.add(f);

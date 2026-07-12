@@ -62,10 +62,10 @@ test('text glyph fontFamily round-trips: svg emit -> scene parse equals direct p
   const glyph = {
     kind: 'text' as const, x: 10, y: 20, text: '05', fontSize: 3.2, fontWeight: 'bold',
     align: 'middle' as const, fill: '#1e1a1b',
-    fontFamily: '"TRTA Numbers Sharp", "Open Sans", Helvetica, sans-serif',
+    fontFamily: '"Open Sans", Helvetica, "Helvetica Neue", Arial, sans-serif',
   };
   const svg = glyphsToSvg([glyph]);
-  assert.ok(svg.includes('font-family="&quot;TRTA Numbers Sharp&quot;, &quot;Open Sans&quot;, Helvetica, sans-serif"'), 'family emitted escaped');
+  assert.ok(svg.includes('font-family="&quot;Open Sans&quot;, Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif"'), 'family emitted escaped');
   const direct = glyphsToPrims([glyph])[0];
   assert.equal((direct as { fontFamily?: string }).fontFamily, glyph.fontFamily);
   const scene = sceneFromSvg(`<svg viewBox="0 0 100 100"><g class="imp-stop" data-ax="10" data-ay="20"><g data-stops="L" data-station-id="n">${svg}</g></g></svg>`);

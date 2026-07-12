@@ -8,5 +8,6 @@
 /** Sign LETTERS (route bullets): Open Sans Bold. */
 export const SIGN_LETTER_FONT = '"Open Sans", Helvetica, "Helvetica Neue", Arial, sans-serif';
 
-/** Sign DIGITS (station numbers): TRTA Numbers Sharp, then the letter face. */
-export const SIGN_DIGIT_FONT = '"TRTA Numbers Sharp", "Open Sans", Helvetica, sans-serif';
+/** Sign DIGITS (station numbers): same face as the letters. Kept as its own
+ *  constant so a digit-specific face stays a one-line change. */
+export const SIGN_DIGIT_FONT = SIGN_LETTER_FONT;
