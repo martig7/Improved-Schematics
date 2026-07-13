@@ -1,6 +1,7 @@
 import type { Glyph, StationDesign, ExampleStation, StopScene } from './types';
 import type { Prim } from '../sceneIR';
 import { escapeXml } from '../escape';
+import { LINE_WIDTH, MARK_R0 } from '../constants';
 
 const alignToAnchor = (a: 'start' | 'middle' | 'end'): string => a;
 const alignToCanvas = (a: 'start' | 'middle' | 'end'): CanvasTextAlign => (a === 'middle' ? 'center' : a === 'end' ? 'right' : 'left');
@@ -99,8 +100,31 @@ function syntheticInterchange(ex: ExampleStation): StopScene {
   };
 }
 
+/** One stop on a horizontal route line, drawn at true map scale (so a tick's
+ *  width matches the line it strikes) and framed by a zoomed viewBox so the
+ *  stubby marker reads at tile size. The line runs horizontally, so the tick is
+ *  struck straight up. */
+function onLinePreview(design: StationDesign, ex: ExampleStation, dark: boolean): string {
+  const len = MARK_R0 * 2.6; // matches the single-stop tick length in london.ts
+  const pad = 3;
+  const top = -len - pad;                 // the tick rises to -len above the line
+  const side = LINE_WIDTH / 2 + pad - top; // square window enclosing tick + line
+  const x0 = -side / 2;
+  const scene: StopScene = {
+    nodeId: 'preview',
+    lines: [{ lineId: 'L', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [0, 0], chain: 0, seq: 1, dir: [1, 0], outward: [0, -1] }],
+    capsule: { kind: 'none' },
+    anchor: [0, 0],
+    dotRadius: MARK_R0,
+  };
+  const marker = glyphsToSvg(design.paint(scene, { dark, showBullets: true }));
+  const routeLine = `<line x1="${x0.toFixed(2)}" y1="0" x2="${(x0 + side).toFixed(2)}" y2="0" stroke="${escapeXml(ex.color)}" stroke-width="${LINE_WIDTH}"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0.toFixed(2)} ${top.toFixed(2)} ${side.toFixed(2)} ${side.toFixed(2)}" width="44" height="44">${routeLine}${marker}</svg>`;
+}
+
 /** Standalone, resizable preview SVG for a design + example route. */
 export function previewSvg(design: StationDesign, ex: ExampleStation, dark: boolean): string {
+  if (design.previewKind === 'onLine') return onLinePreview(design, ex, dark);
   const scene = design.previewKind === 'interchange' ? syntheticInterchange(ex) : syntheticSingle(ex);
   const glyphs = design.paint(scene, { dark, showBullets: true });
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44">${glyphsToSvg(glyphs)}</svg>`;

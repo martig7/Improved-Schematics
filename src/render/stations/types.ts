@@ -83,6 +83,8 @@ export interface StationDesign {
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];
   /** What the preview tile depicts. 'single' (default) = one dot; 'interchange'
-   *  = a two-line station so a capsule-distinct design shows its capsule. */
-  previewKind?: 'single' | 'interchange';
+   *  = a two-line station so a capsule-distinct design shows its capsule;
+   *  'onLine' = one stop drawn on a horizontal route line (for a tick marker
+   *  that only reads against the line it strikes). */
+  previewKind?: 'single' | 'interchange' | 'onLine';
 }

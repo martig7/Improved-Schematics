@@ -26,6 +26,21 @@ test('renderStationPreview returns an <svg> with the bullet and expected color',
   assert.ok(svg.includes('>A</text>'));
 });
 
+test('london preview: a horizontal route line with a perpendicular tick over it', () => {
+  const svg = renderStationPreview(getStationDesign('london'), { bullet: 'A', color: '#dc2626', textColor: '' }, false);
+  assert.ok(svg.startsWith('<svg'));
+  // a horizontal route line in the route color (y1 == y2)
+  const routeLine = svg.match(/<line x1="([^"]+)" y1="([^"]+)" x2="([^"]+)" y2="([^"]+)" stroke="#dc2626"[^>]*\/>/);
+  assert.ok(routeLine, 'route line present in the route color');
+  assert.equal(routeLine![2], routeLine![4], 'route line is horizontal');
+  // the tick is another route-color line, struck vertically (x1 == x2)
+  const lines = [...svg.matchAll(/<line x1="([^"]+)" y1="([^"]+)" x2="([^"]+)" y2="([^"]+)" stroke="#dc2626"[^>]*\/>/g)];
+  const tick = lines.find((m) => Math.abs(+m[1] - +m[3]) < 1e-6);
+  assert.ok(tick, 'a strictly vertical tick over the horizontal line');
+  // the tick rises above the line (negative y), i.e. toward the top of the tile
+  assert.ok(Math.min(+tick![2], +tick![4]) < 0, 'tick strikes up from the line');
+});
+
 test('renderStations emits svg fragments + matching stops prims', () => {
   const marks: StopMark[] = [{ lineId: 'L', color: '#dc2626', pos: [5, 5] as Pixel, name: 'A' }];
   const stops = new Map([['n1', marks]]);

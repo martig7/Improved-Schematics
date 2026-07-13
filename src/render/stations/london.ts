@@ -88,4 +88,4 @@ function paint(scene: StopScene): Glyph[] {
   return ticks(scene);
 }
 
-export const london: StationDesign = { id: 'london', name: 'London', paint, capsule: 'londonBubbles' };
+export const london: StationDesign = { id: 'london', name: 'London', paint, capsule: 'londonBubbles', previewKind: 'onLine' };
