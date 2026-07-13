@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 10; // bump to invalidate every cached entry on a format change
+const VERSION = 11; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -43,6 +43,9 @@ const VERSION = 10; // bump to invalidate every cached entry on a format change
 // precompute from the harvested geography. Old pres predate the places harvest,
 // so a cached smoothed map couldn't show labels without a manual Regenerate.
 // Purge so every cached pre refreshes with its baked places.
+// v11: the places harvest gained the city tier (three-tier area labels) and the
+// baked placesPx are no longer pre-decluttered (the collision cull runs at
+// paint). Purge so every cached pre refreshes with all tiers' points.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

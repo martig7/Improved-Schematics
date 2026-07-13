@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectPlaces, placesSvg, placesPrims, filterPlacesKind, placeKinds, kindLabel, placeFrameScale, PLACE_FONT_SIZE } from '../neighborhoods';
+import { projectPlaces, placesSvg, placesPrims, filterPlacesTiers, declutterPlaces, placeTiers, tierRank, kindLabel, placeFrameScale, PLACE_FONT_SIZE } from '../neighborhoods';
 import type { GeographyData } from '../../geography/types';
 
 const identity = { toSVG: (c: [number, number]): [number, number] => [c[0], c[1]] };
@@ -48,27 +48,48 @@ test('projectPlaces returns empty for absent places and empty geography', () => 
   assert.deepEqual(projectPlaces(geo([]), identity, 100, 100), []);
 });
 
-test('filterPlacesKind narrows to one kind; undefined shows all', () => {
+test('filterPlacesTiers is cumulative to the chosen detail; undefined shows all', () => {
   const kept = projectPlaces(geo([
+    { name: 'Metropolis', coord: [400, 400], kind: 'city' },
     { name: 'Ballard', coord: [500, 500], kind: 'suburb' },
     { name: 'Fremont', coord: [900, 900], kind: 'neighbourhood' },
   ]), identity, 2700, 2700);
-  assert.deepEqual(filterPlacesKind(kept, 'suburb').map((p) => p.name), ['Ballard']);
-  assert.deepEqual(filterPlacesKind(kept, undefined).map((p) => p.name).sort(), ['Ballard', 'Fremont']);
-  assert.deepEqual(filterPlacesKind(undefined, 'suburb'), []);
+  assert.deepEqual(filterPlacesTiers(kept, 'city').map((p) => p.name), ['Metropolis']);
+  assert.deepEqual(filterPlacesTiers(kept, 'suburb').map((p) => p.name).sort(), ['Ballard', 'Metropolis']);
+  assert.deepEqual(filterPlacesTiers(kept, 'neighbourhood').map((p) => p.name).sort(), ['Ballard', 'Fremont', 'Metropolis']);
+  assert.deepEqual(filterPlacesTiers(kept, undefined).map((p) => p.name).sort(), ['Ballard', 'Fremont', 'Metropolis']);
+  assert.deepEqual(filterPlacesTiers(undefined, 'suburb'), []);
 });
 
-test('placeKinds lists distinct kinds sorted; kindLabel names them', () => {
+test('tierRank orders city < suburb < neighbourhood; placeTiers lists present tiers coarse-to-fine', () => {
+  assert.ok(tierRank('city') < tierRank('suburb'));
+  assert.ok(tierRank('suburb') < tierRank('neighbourhood'));
+  assert.equal(tierRank('neighborhood'), tierRank('neighbourhood')); // spelling alias
+  assert.ok(tierRank('mystery') >= 3);
   const g = geo([
-    { name: 'A', coord: [1, 1], kind: 'suburb' },
-    { name: 'B', coord: [2, 2], kind: 'neighbourhood' },
+    { name: 'A', coord: [1, 1], kind: 'neighbourhood' },
+    { name: 'B', coord: [2, 2], kind: 'city' },
     { name: 'C', coord: [3, 3], kind: 'suburb' },
   ]);
-  assert.deepEqual(placeKinds(g), ['neighbourhood', 'suburb']);
-  assert.deepEqual(placeKinds(undefined), []);
-  assert.equal(kindLabel('neighbourhood'), 'Neighborhoods');
-  assert.equal(kindLabel('suburb'), 'Suburbs');
-  assert.equal(kindLabel('locality'), 'Localitys');
+  assert.deepEqual(placeTiers(g), ['city', 'suburb', 'neighbourhood']);
+  assert.deepEqual(placeTiers(undefined), []);
+  assert.equal(kindLabel('city'), 'Cities');
+});
+
+test('declutterPlaces culls overlapping labels, bigger tier wins, deterministic', () => {
+  // Two labels whose boxes overlap at the paint font: the bigger tier (suburb)
+  // survives over the neighbourhood; a distant one is always kept.
+  const near = [
+    { name: 'Small', px: [1000, 1000] as [number, number], kind: 'neighbourhood' },
+    { name: 'Big', px: [1010, 1000] as [number, number], kind: 'suburb' },
+    { name: 'FarAway', px: [2000, 2000] as [number, number], kind: 'neighbourhood' },
+  ];
+  const kept = declutterPlaces(near, 30);
+  assert.deepEqual(kept.map((p) => p.name).sort(), ['Big', 'FarAway'], 'suburb beats neighbourhood, far one kept');
+  // A tiny font makes the boxes not overlap, so both near ones survive.
+  const keptSmall = declutterPlaces(near, 1);
+  assert.equal(keptSmall.length, 3);
+  assert.deepEqual(declutterPlaces(near, 30), kept, 'deterministic on repeat');
 });
 
 test('placesSvg emits an uppercase text layer at the given size; empty input emits nothing', () => {

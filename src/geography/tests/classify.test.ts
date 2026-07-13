@@ -52,7 +52,7 @@ test('extractPlaces keeps named neighborhood-class points, dedupes tile repeats'
     { sourceLayer: 'place', properties: { class: 'neighbourhood', name: 'Ballard' }, geometry: { type: 'Point', coordinates: [-122.381, 47.661] } },
     // suburb kept; name:en preferred over name
     { sourceLayer: 'place', properties: { class: 'suburb', 'name:en': 'Fremont', name: 'フリーモント' }, geometry: { type: 'Point', coordinates: [-122.35, 47.65] } },
-    // city-scale places dropped
+    // city-scale places kept (coarsest tier)
     { sourceLayer: 'place', properties: { class: 'city', name: 'Seattle' }, geometry: { type: 'Point', coordinates: [-122.33, 47.6] } },
     // wrong layer dropped
     { sourceLayer: 'water', properties: { class: 'neighbourhood', name: 'Nope' }, geometry: { type: 'Point', coordinates: [0, 0] } },
@@ -66,7 +66,7 @@ test('extractPlaces keeps named neighborhood-class points, dedupes tile repeats'
   const places = extractPlaces(feats);
   assert.deepEqual(
     places.map((p) => p.name).sort(),
-    ['Ballard', 'Downtown', 'Fremont'],
+    ['Ballard', 'Downtown', 'Fremont', 'Seattle'],
   );
   const ballard = places.find((p) => p.name === 'Ballard')!;
   assert.deepEqual(ballard.coord, [-122.38, 47.66], 'first occurrence wins');

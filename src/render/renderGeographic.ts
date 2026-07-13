@@ -40,7 +40,7 @@ import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { rescueTwists } from './layout/twistRescue';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
-import { projectPlaces, placesSvg, filterPlacesKind, placeFrameScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
+import { projectPlaces, placesSvg, filterPlacesTiers, declutterPlaces, placeFrameScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
@@ -331,14 +331,18 @@ export function renderGeographic(input: GeoInput): string {
   // Frame on the water/green geography extent — the region the panel fits to.
   const frame = geographyFrame(input.geography, proj);
 
-  // Neighborhood-name area labels: under the network, over the backdrop. One
-  // kind at a time (opts.neighborhoodKind); font and declutter scale by the
-  // FRAME (not the square canvas), so a tall city's labels stay the right size
-  // and density instead of oversized and over-decluttered.
+  // Area labels (cities/suburbs/neighborhoods): under the network, over the
+  // backdrop. Cumulative tiers to the chosen detail, then a collision cull that
+  // keeps bigger tiers over smaller. Font scales by the FRAME (not the square
+  // canvas), so a tall city's labels stay the right size in both modes.
   if (opts.showNeighborhoods) {
     const scale = frame ? placeFrameScale(frame.w, frame.h) : placeFrameScale(width, height);
-    const shown = filterPlacesKind(projectPlaces(input.geography, proj, width, height, scale), opts.neighborhoodKind);
-    parts.push(placesSvg(shown, dark, PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) * scale));
+    const fontPx = PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) * scale;
+    const shown = declutterPlaces(
+      filterPlacesTiers(projectPlaces(input.geography, proj, width, height, scale), opts.neighborhoodDetail),
+      fontPx,
+    );
+    parts.push(placesSvg(shown, dark, fontPx));
   }
 
   const segments: Segment[] = [];
@@ -1452,7 +1456,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodKind?: string; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodDetail?: string; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1498,7 +1502,7 @@ export function drawSmoothed(
     // chosen kind and the canvas-scaled paint font are draw-time. The grown
     // smoothed canvas magnifies the base font so it matches geographic on screen.
     placesPx: opts.showNeighborhoods ? pre.placesPx : undefined,
-    placesKind: opts.neighborhoodKind,
+    placesDetail: opts.neighborhoodDetail,
     placesFontPx: PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) *
       (pre.frame ? placeFrameScale(pre.frame.w, pre.frame.h) : placeFrameScale(pre.width, pre.height)),
     backdrop,
@@ -1516,7 +1520,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodKind: opts.neighborhoodKind, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodDetail: opts.neighborhoodDetail, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

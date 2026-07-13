@@ -36,13 +36,14 @@ const PLACE_LAYERS = new Map<string, string | null>([
   ['place', null],
   ['places', null],
   ['place_label', null],
-  ['neighborhood_labels', 'neighbourhood'],
+  ['city_labels', 'city'],
   ['suburb_labels', 'suburb'],
+  ['neighborhood_labels', 'neighbourhood'],
 ]);
 
-/** Neighborhood-scale place classes we label; city/town/village stay off the
- *  schematic (station labels already carry that scale of orientation). */
-const PLACE_KINDS = new Set(['neighbourhood', 'neighborhood', 'suburb', 'quarter', 'borough', 'district']);
+/** Place classes we label, coarse to fine (see neighborhoods.ts PLACE_TIERS).
+ *  A generic layer's feature must carry one of these; per-kind layers imply it. */
+const PLACE_KINDS = new Set(['city', 'suburb', 'neighbourhood', 'neighborhood', 'quarter', 'borough', 'district']);
 
 /** Extract named neighborhood-class points from the place source-layers. */
 export function extractPlaces(features: TaggedFeature[]): GeoPlaceFeature[] {

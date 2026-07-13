@@ -71,9 +71,10 @@ export interface SchematicOptions {
    *  across modes (the base is in base-2700 units, rescaled per canvas), so one
    *  value looks the same geographic and smoothed. Draw-time only. Default 1. */
   neighborhoodFontScale?: number;
-  /** Which harvested place kind to label (e.g. 'neighbourhood', 'suburb'). Only
-   *  one kind shows at a time. Undefined shows every kind. Draw-time only. */
-  neighborhoodKind?: string;
+  /** Finest area-label tier to show (see neighborhoods.ts PLACE_TIERS: 'city',
+   *  'suburb', 'neighbourhood'). Cumulative: this tier plus every coarser one.
+   *  Undefined shows all tiers. Draw-time only. */
+  neighborhoodDetail?: string;
   /** How to render the fallback marker for an over-dense bundle that can't seat
    *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
    *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It

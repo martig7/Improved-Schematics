@@ -29,7 +29,7 @@ import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from 
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
-import { placesSvg, placesPrims, filterPlacesKind, type PlacePx } from './neighborhoods';
+import { placesSvg, placesPrims, filterPlacesTiers, declutterPlaces, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -332,9 +332,10 @@ export interface RenderRibbonsArgs {
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
-  /** Which place kind to show (undefined = all); the pre bakes every kind. */
-  placesKind?: string;
-  /** Neighborhood-label paint size, already scaled for this grown canvas. */
+  /** Finest area-label tier to show, cumulative (undefined = all); the pre bakes
+   *  every tier's points and the cull runs at paint. */
+  placesDetail?: string;
+  /** Area-label paint size, already scaled for this grown canvas. */
   placesFontPx?: number;
   water?: WaterCollection;
   /** Geography backdrop (water/green groups), built at DRAW time by
@@ -3766,9 +3767,13 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
 
-  // Neighborhood labels: the pre bakes every kind; show only the selected one.
-  // Shared by both the scene-IR and the SVG-string emission below.
-  const shownPlaces = filterPlacesKind(args.placesPx, args.placesKind);
+  // Area labels: the pre bakes every tier's points; select the cumulative tiers
+  // for the chosen detail, then collision-cull at the paint font (bigger tiers
+  // win). Shared by both the scene-IR and the SVG-string emission below.
+  const shownPlaces = declutterPlaces(
+    filterPlacesTiers(args.placesPx, args.placesDetail),
+    args.placesFontPx ?? PLACE_FONT_SIZE,
+  );
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.

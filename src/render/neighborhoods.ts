@@ -33,26 +33,84 @@ export const PLACE_FONT_SIZE = LABEL_FONT_SIZE * 1.5;
 const FILL_DARK = 'rgba(190,193,201,0.55)';
 const FILL_LIGHT = 'rgba(90,92,100,0.55)';
 
-/** Human-facing name for each place kind (for the layer dropdown). */
+/** Area-label tiers by size, coarse (largest areas) to fine (smallest). This is
+ *  the basemap's own hierarchy: cities fade in at the lowest zoom, then suburbs,
+ *  then neighborhoods. The rank (index) is the size order; a lower rank is a
+ *  bigger area and wins a collision. Unknown kinds rank after every tier. */
+export const PLACE_TIERS = ['city', 'suburb', 'neighbourhood'] as const;
+
+const norm = (kind: string): string => (kind === 'neighborhood' ? 'neighbourhood' : kind);
+
 const KIND_LABEL: Record<string, string> = {
-  neighbourhood: 'Neighborhoods',
-  neighborhood: 'Neighborhoods',
+  city: 'Cities',
   suburb: 'Suburbs',
-  quarter: 'Quarters',
-  borough: 'Boroughs',
-  district: 'Districts',
+  neighbourhood: 'Neighborhoods',
 };
 
-/** Display name for a place kind, falling back to a capitalized raw value. */
-export function kindLabel(kind: string): string {
-  return KIND_LABEL[kind] ?? (kind ? kind[0].toUpperCase() + kind.slice(1) + 's' : kind);
+/** Size rank of a kind: 0 = biggest (city); unknown kinds rank last. */
+export function tierRank(kind: string): number {
+  const i = (PLACE_TIERS as readonly string[]).indexOf(norm(kind));
+  return i < 0 ? PLACE_TIERS.length : i;
 }
 
-/** The distinct place kinds present in the harvest, sorted for a stable dropdown. */
-export function placeKinds(geo: GeographyData | undefined): string[] {
-  const kinds = new Set<string>();
-  for (const p of geo?.places ?? []) kinds.add(p.kind);
-  return [...kinds].sort();
+/** Display name for a place tier, falling back to a capitalized raw value. */
+export function kindLabel(kind: string): string {
+  return KIND_LABEL[norm(kind)] ?? (kind ? kind[0].toUpperCase() + kind.slice(1) + 's' : kind);
+}
+
+/** The tiers present in the harvest, ordered coarse to fine (for the detail
+ *  dropdown). Only known tiers, in size order. */
+export function placeTiers(geo: GeographyData | undefined): string[] {
+  const present = new Set<string>();
+  for (const p of geo?.places ?? []) present.add(norm(p.kind));
+  return PLACE_TIERS.filter((t) => present.has(t));
+}
+
+// Approximate uppercase glyph advance as a fraction of the font size (labels
+// render in caps) and the collision padding as a fraction of the font size
+// (mirrors the basemap's per-label textPadding). Used only to size the boxes
+// the collision cull tests, never to draw.
+const CHAR_ADVANCE = 0.62;
+const PAD_FRAC = 0.6;
+
+/** Keep places at or coarser than the chosen detail tier (cumulative, like
+ *  zooming in). Undefined detail keeps every tier. */
+export function filterPlacesTiers(places: PlacePx[] | undefined, detail: string | undefined): PlacePx[] {
+  if (!places) return [];
+  if (!detail) return places;
+  const max = tierRank(detail);
+  return places.filter((p) => tierRank(p.kind) <= max);
+}
+
+/**
+ * Cull overlapping labels the way the basemap's draw-time symbol collision does
+ * (which our static fit does not inherit): keep bigger tiers first, then by name,
+ * dropping any label whose text box overlaps an already-kept one. `fontPx` is the
+ * paint size, so the cull matches what is actually drawn and re-runs when the
+ * size setting changes. Deterministic (tier then name order).
+ */
+export function declutterPlaces(places: PlacePx[], fontPx: number): PlacePx[] {
+  const sorted = [...places].sort((a, b) => {
+    const ra = tierRank(a.kind), rb = tierRank(b.kind);
+    if (ra !== rb) return ra - rb;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+  const pad = fontPx * PAD_FRAC;
+  const halfH = fontPx * 0.5 + pad * 0.5;
+  const kept: { cx: number; cy: number; hw: number }[] = [];
+  const out: PlacePx[] = [];
+  for (const p of sorted) {
+    const hw = p.name.length * CHAR_ADVANCE * fontPx * 0.5 + pad * 0.5;
+    const cx = p.px[0], cy = p.px[1];
+    let clear = true;
+    for (const k of kept) {
+      if (Math.abs(cx - k.cx) < hw + k.hw && Math.abs(cy - k.cy) < halfH * 2) { clear = false; break; }
+    }
+    if (!clear) continue;
+    kept.push({ cx, cy, hw });
+    out.push(p);
+  }
+  return out;
 }
 
 /** Per-mode world-unit scale from the CONTENT FRAME (the water/green extent the
@@ -92,13 +150,6 @@ export function projectPlaces(
     out.push({ name: p.name, px: [+x.toFixed(1), +y.toFixed(1)], kind: p.kind });
   }
   return out;
-}
-
-/** Keep only the labels of the chosen kind; an unset kind shows every kind. */
-export function filterPlacesKind(places: PlacePx[] | undefined, kind: string | undefined): PlacePx[] {
-  if (!places) return [];
-  if (!kind) return places;
-  return places.filter((p) => p.kind === kind);
 }
 
 const fillFor = (dark: boolean): string => (dark ? FILL_DARK : FILL_LIGHT);
