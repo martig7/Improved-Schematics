@@ -53,12 +53,28 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
       console.warn(`${TAG} basemap style not loaded yet — deferring harvest`);
       return null;
     }
-    const probe = deps.probe(map.getStyle() as unknown as StyleLike);
+    const style = map.getStyle() as unknown as StyleLike;
+    const probe = deps.probe(style);
     if (!probe) {
       console.warn(`${TAG} no usable vector source in the basemap`);
       return null;
     }
+    // Operational probe summary (warn so every console surfaces it): which
+    // schema matched, which source-layers will be queried, and what OTHER
+    // source-layers the style exposes, so a missing layer class (e.g. the
+    // place labels) is diagnosable from a single in-game line.
+    {
+      const styled = new Set<string>();
+      for (const l of style.layers ?? []) if (l.source === probe.sourceId && l['source-layer']) styled.add(l['source-layer']!);
+      const unqueried = [...styled].filter((sl) => !probe.sourceLayers.includes(sl));
+      console.warn(`${TAG} probe: schema=${probe.schema} source='${probe.sourceId}' querying [${probe.sourceLayers.join(', ')}]; other style layers [${unqueried.join(', ')}]`);
+    }
     const raw = await deps.harvest(map, probe, harvestBbox);
+    {
+      const perLayer = new Map<string, number>();
+      for (const f of raw) perLayer.set(f.sourceLayer, (perLayer.get(f.sourceLayer) ?? 0) + 1);
+      console.warn(`${TAG} harvested features: ${[...perLayer].map(([k, n]) => k + '=' + n).join(' ') || 'none'}`);
+    }
     const { water: rawWater, green: rawGreen, places } = bucketFeatures(raw, probe.schema);
     const bbox = featuresBbox([...rawWater, ...rawGreen]);
     if (!bbox) {

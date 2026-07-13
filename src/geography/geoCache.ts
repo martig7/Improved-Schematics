@@ -16,7 +16,7 @@ import type { BoundingBox } from '../types/core';
 import type { KVStore } from '../render/mapCache';
 
 const KEY = 'improvedschematics:geocache';
-const VERSION = 2; // v2: GeographyData gained `places` (neighborhood labels)
+const VERSION = 3; // v3: re-harvest after the place-layer probe diagnostics (v2 entries may predate them)
 const key = (city: string) => `${KEY}:${city}`;
 
 /** A persisted harvest + the demand extent it was harvested at, so a later session can tell

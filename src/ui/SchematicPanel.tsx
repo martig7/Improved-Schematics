@@ -1735,7 +1735,21 @@ export function SchematicPanel() {
         <button onClick={() => requestToggle(() => setShowLabels((v) => !v))} style={toggleStyle(showLabels)}>
           {showLabels ? '✓ Labels' : 'Labels'}
         </button>
-        <button onClick={() => requestToggle(() => setShowNeighborhoods((v) => !v))} style={toggleStyle(showNeighborhoods)}>
+        <button
+          onClick={() => requestToggle(() => setShowNeighborhoods((v) => {
+            const on = !v;
+            // Actionable state report: labels need place points in the
+            // harvested geography, and a smoothed map generated after they
+            // arrived. Explain which precondition is missing.
+            if (on) {
+              if (!geographyRef.current) console.warn('[ImprovedSchematics] neighborhoods: no geography harvested yet for this city; watch the geography: lines above');
+              else if (!geographyRef.current.places?.length) console.warn('[ImprovedSchematics] neighborhoods: the harvested geography has no place points (see the geography: probe line for which source-layers the basemap exposes)');
+              else if (mode === 'smoothed' && smoothedCacheRef.current && typeof smoothedCacheRef.current.pre !== 'string' && !smoothedCacheRef.current.pre.placesPx?.length) console.warn('[ImprovedSchematics] neighborhoods: this smoothed map was generated before the places harvest; Regenerate to bake them in');
+            }
+            return on;
+          }))}
+          style={toggleStyle(showNeighborhoods)}
+        >
           {showNeighborhoods ? '✓ Neighborhoods' : 'Neighborhoods'}
         </button>
         {mode === 'smoothed' && smoothedReady && (
