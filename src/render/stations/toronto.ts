@@ -6,10 +6,15 @@ import { LINE_WIDTH, MARK_R0, MARKER_SCALE } from '../constants';
 const INK = '#111111';
 const PAPER = '#ffffff';
 
-// Every station marker shares the interchange capsule's cross-section, so a
-// plain stop, a crossing dot and a capsule end all read as the same size: a
-// black-ringed white circle whose outer/inner radii are the capsule's
-// border/fill half-widths.
+// A plain stop is LINE-FIT: its outer diameter is the route line width, so the
+// black-ringed white circle sits within the line, which runs continuously
+// behind it.
+const STOP_OUTER = LINE_WIDTH / 2;
+const STOP_RING = LINE_WIDTH * 0.2;
+
+// A crossing dot is INTERCHANGE-SIZED: the same cross-section as a capsule end
+// (its outer/inner radii are the capsule's border/fill half-widths), so a
+// perfect intersection reads as a one-station interchange, not a plain stop.
 const CAP_W = capsuleStrokeWidths(MARK_R0 * MARKER_SCALE);
 const MARK_OUTER = CAP_W.border / 2;
 const MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
@@ -64,9 +69,9 @@ function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
     return [rect(cap.x, cap.y, cap.w, cap.h, cap.rx, { fill: PAPER, stroke: INK, strokeWidth: 3 })];
   }
 
-  // Single stop: a blank capsule-sized circle centered on the line.
+  // Single stop: a blank line-fit circle embedded in the line.
   const g: Glyph[] = [];
-  for (const ln of scene.lines) g.push(...disc(ln.pos[0], ln.pos[1], MARK_OUTER, MARK_RING));
+  for (const ln of scene.lines) g.push(...disc(ln.pos[0], ln.pos[1], STOP_OUTER, STOP_RING));
   return g;
 }
 

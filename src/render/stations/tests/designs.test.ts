@@ -8,6 +8,7 @@ import { tokyo } from '../tokyo';
 import { tokyoMetro } from '../tokyoMetro';
 import { london } from '../london';
 import { toronto } from '../toronto';
+import { LINE_WIDTH } from '../../constants';
 import type { StopScene, Point } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -410,6 +411,7 @@ test('toronto: a single stop is a blank black-ringed white circle, no bullet', (
   assert.equal(ink.fill, '#111111');
   assert.equal(paper.fill, '#ffffff');
   assert.ok(ink.r > paper.r, 'the ink disc carries the ring');
+  assert.ok(Math.abs(ink.r - LINE_WIDTH / 2) < 1e-9, 'line-fit: outer diameter is the line width');
   // the white circle sits at the stop position
   assert.ok(Math.abs(paper.cx - 10) < 1e-9 && Math.abs(paper.cy - 10) < 1e-9);
 });
@@ -449,6 +451,8 @@ test('toronto crossing: a ring capsule is one white circle with a single black d
   assert.equal(paper.length, 1, 'white circle');
   assert.equal(ink.length, 2, 'black ring + black crossing dot');
   for (const c of cs) assert.ok(Math.abs(c.cx - 5) < 1e-9 && Math.abs(c.cy - 7) < 1e-9, 'all concentric at the crossing');
+  // a crossing is interchange-sized, larger than a line-fit plain stop
+  assert.ok(paper[0].r > LINE_WIDTH / 2, 'crossing circle is larger than a line-fit plain stop');
 });
 
 test('toronto: requests the toronto capsule regime and an interchange preview', () => {
