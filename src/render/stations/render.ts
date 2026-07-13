@@ -1,6 +1,7 @@
 import type { StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
 import type { RectCapsule } from '../layout/rectSeat';
+import type { LondonCapsule } from '../layout/londonBubbles';
 import type { StationDesign, StopScene } from './types';
 import { buildScene } from './placement';
 import { glyphsToSvg, glyphsToPrims, wrapMarker } from './serialize';
@@ -17,6 +18,9 @@ export interface RenderStationsCtx {
   /** Precomputed rescued marker position of each single Tokyu stop. Read only by
    *  the rectangle-capsule design. */
   tokyuStopPos?: Map<string, [number, number]>;
+  /** Precomputed London bubble-chain interchange geometry per node. Read only by
+   *  the London design. */
+  bubbleByNode?: Map<string, LondonCapsule>;
 }
 
 /** Draw every station's marker with the chosen design. Returns the per-marker
@@ -41,6 +45,7 @@ export function renderStations(
     const scene = buildScene(nodeId, marks, {
       megaFallback: ctx.megaFallback, members: ctx.members, deg: ctx.deg,
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
+      bubbleByNode: ctx.bubbleByNode,
     });
     built.push({ nodeId, marks, scene });
   }

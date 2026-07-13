@@ -323,20 +323,47 @@ test('london: a terminus gets a full two-sided tick centered on the dot', () => 
   assert.ok(lenTerm > lenInter + 1e-6, 'terminus tick spans both sides');
 });
 
-test('london: an interchange is one tick per line, each in its own route color', () => {
+const circlesOf = (gs: ReturnType<typeof london.paint>) => gs.filter((g) => g.kind === 'circle') as Array<{ cx: number; cy: number; r: number; fill: string }>;
+
+test('london: paints a bubble capsule as ink-then-paper discs and connector bars', () => {
   const sc: StopScene = {
-    nodeId: 'n',
-    lines: [
-      { lineId: 'L1', color: '#dc2626', bullet: 'A', textColor: '', pos: [0, 0], chain: 0, axis: 0 },
-      { lineId: 'L2', color: '#0000ff', bullet: 'B', textColor: '', pos: [0, 8], chain: 1, axis: 0 },
-    ],
-    capsule: { kind: 'pill', points: [[0, 0], [0, 8]], smooth: false },
-    anchor: [0, 4],
-    dotRadius: 3,
+    nodeId: 'n', lines: [],
+    capsule: {
+      kind: 'londonBubbles',
+      bubbles: [{ x: 0, y: 0, r: 6 }, { x: 0, y: 20, r: 4 }],
+      necks: [{ x0: 0, y0: 0, x1: 0, y1: 20, w: 4 }],
+    },
+    anchor: [0, 10], dotRadius: 6,
   };
-  const ls = lineOf(london.paint(sc, ctx));
-  assert.equal(ls.length, 2);
-  assert.deepEqual(ls.map((l) => l.stroke).sort(), ['#0000ff', '#dc2626']);
+  const gs = london.paint(sc, ctx);
+  const cs = circlesOf(gs);
+  const ink = cs.filter((c) => c.fill === '#111111');
+  const paper = cs.filter((c) => c.fill === '#ffffff');
+  assert.equal(ink.length, 2, 'one ink outline disc per bubble');
+  assert.equal(paper.length, 2, 'one paper fill disc per bubble');
+  assert.equal(lineOf(gs).length, 2, 'one connector bar in each layer');
+  // the ink disc is fattened by the rim under its paper disc
+  const inkAt0 = ink.find((c) => Math.abs(c.cy) < 1e-9)!;
+  const paperAt0 = paper.find((c) => Math.abs(c.cy) < 1e-9)!;
+  assert.ok(inkAt0.r > paperAt0.r, 'ink disc carries the rim');
+  // draw order: the whole ink layer first, then the paper layer over it
+  const lastInk = Math.max(...ink.map((c) => gs.indexOf(c)));
+  const firstPaper = Math.min(...paper.map((c) => gs.indexOf(c)));
+  assert.ok(firstPaper > lastInk, 'paper layer drawn over the ink layer');
+  // monochrome bubble: no route color anywhere
+  assert.ok(!gs.some((g) => (g as { fill?: string }).fill?.startsWith('#12')));
+});
+
+test('london: a mega (box) interchange paints a white ticket-hall block', () => {
+  const sc: StopScene = { nodeId: 'n', lines: [], capsule: { kind: 'box', x: 0, y: 0, w: 40, h: 40, rx: 6 }, anchor: [20, 20], dotRadius: 6 };
+  const rects = london.paint(sc, ctx).filter((g) => g.kind === 'rect') as Array<{ fill: string; stroke: string }>;
+  assert.equal(rects.length, 1);
+  assert.equal(rects[0].fill, '#ffffff');
+  assert.equal(rects[0].stroke, '#111111');
+});
+
+test('london: requests the londonBubbles capsule regime', () => {
+  assert.equal(london.capsule, 'londonBubbles');
 });
 
 test('london: tick weight never exceeds the line, and shrinks with a capsule-shrunk dot', () => {

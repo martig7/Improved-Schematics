@@ -27,6 +27,7 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
+import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
 import { placesSvg, placesPrims, selectPlaces, DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
@@ -447,6 +448,12 @@ export interface RibbonGeometry {
    *  time. Used only when no geography frame is passed. OPTIONAL: absent in
    *  geometry serialized before it existed; paint then rescans inline. */
   contentFrame?: FrameRect;
+  /** Per node: the London bubble-chain interchange geometry (paired ticket-hall
+   *  bubbles + connector bars), built from the final mark positions. Design-
+   *  agnostic and inert for non-London designs, which never read it. OPTIONAL:
+   *  absent in geometry serialized before it existed; the London design then
+   *  falls back to per-line ticks at those interchanges. */
+  bubbleByNode?: Map<string, LondonCapsule>;
 }
 
 // Repaint memo of label placements per geometry (see the paintRibbons label
@@ -3634,7 +3641,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // once here instead of on every repaint that lacks a geography frame.
   const frameRect = contentFrame(nodePx, layout.edges, edgePolyline, args.width, args.height);
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, tokyuLaneByLine, contentFrame: frameRect };
+  // London interchange bubbles: design-agnostic, from the final mark positions,
+  // so switching to the London design is a repaint that reads this map.
+  const bubbleByNode = computeLondonByNode(stopsByNode, LINE_WIDTH);
+
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, tokyuLaneByLine, contentFrame: frameRect, bubbleByNode };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3664,9 +3675,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // boxes over uncropped lanes. Gate all three on the SAME predicate (the cropped
   // lanes being present) so a partial geometry degrades the whole rectangle
   // design to the plain fallback, never a mixed state.
-  const isRect = getStationDesign(args.stationDesign)?.capsule === 'rectRows' && !!geom.tokyuLaneByLine;
+  const activeCapsule = getStationDesign(args.stationDesign)?.capsule;
+  const isRect = activeCapsule === 'rectRows' && !!geom.tokyuLaneByLine;
   const rectByNode = isRect ? geom.rectByNode : undefined;
   const rectStopPos = isRect ? geom.tokyuStopPos : undefined;
+  const bubbleByNode = activeCapsule === 'londonBubbles' ? geom.bubbleByNode : undefined;
   for (const [lineId, line] of lineById) {
     const d = dByLine.get(lineId);
     if (!d || d.length < 2) continue;
@@ -3755,7 +3768,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos },
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;

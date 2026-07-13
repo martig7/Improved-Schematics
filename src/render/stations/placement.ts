@@ -8,6 +8,7 @@ import type { Pixel, StopMark } from '../layout/types';
 import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE, MARK_R0 } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
 import { type RectCapsule } from '../layout/rectSeat';
+import { type LondonCapsule } from '../layout/londonBubbles';
 import { debugMegaBox } from '../debug/stops.debug';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
@@ -29,6 +30,9 @@ export interface PlacementCtx {
   /** Precomputed rescued marker position of each single Tokyu stop. Read only in
    *  the 'rectRows' branch; when set for a single stop the box is placed there. */
   tokyuStopPos?: Map<string, [number, number]>;
+  /** Precomputed London bubble-chain geometry per node. Read only in the
+   *  'londonBubbles' branch; when a node has an entry the scene is built from it. */
+  bubbleByNode?: Map<string, LondonCapsule>;
 }
 
 const toLine = (mk: StopMark): StopLine => ({
@@ -89,6 +93,21 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
     const groups = cachedRect.groups.map((g) => ({ ...g }));
     const connectors = cachedRect.connectors.map((cn) => ({ points: cn.points.map((p): Point => [p[0], p[1]]) }));
     return { nodeId, lines: rlines, capsule: { kind: 'rectRows', box: cachedRect.box, groups, connectors, necks: cachedRect.necks }, anchor: [cx / n, cy / n], dotRadius };
+  }
+
+  // London bubbles: a multi-line station uses its compute-time bubble chain when
+  // one is cached. Mega interchanges have no entry and fall through to the mega
+  // box below; single stops fall through to the none path (a tick).
+  const cachedBubble = ctx.capsuleMode === 'londonBubbles' && isCapsule
+    ? ctx.bubbleByNode?.get(nodeId)
+    : undefined;
+  if (cachedBubble) {
+    const bubbles = cachedBubble.bubbles.map((b) => ({ ...b }));
+    const necks = cachedBubble.necks.map((n) => ({ ...n }));
+    let cx = 0, cy = 0;
+    for (const b of bubbles) { cx += b.x; cy += b.y; }
+    const n = bubbles.length || 1;
+    return { nodeId, lines, capsule: { kind: 'londonBubbles', bubbles, necks }, anchor: [cx / n, cy / n], dotRadius };
   }
 
   // farthest pair: axis start (a) + max separation (best); memoized on the

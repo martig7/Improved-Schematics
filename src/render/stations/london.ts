@@ -1,8 +1,10 @@
 import type { StationDesign, StopScene, StopLine, Glyph, Point } from './types';
-import { line } from './primitives';
+import { line, circle, rect } from './primitives';
 import { MARK_R0, LINE_WIDTH } from '../constants';
 
 const R0 = MARK_R0;
+const INK = '#111111';
+const PAPER = '#ffffff';
 
 // Octilinear run-axis (0=-, 1=/, 2=|, 3=\, mod 180 deg) as a fallback tangent
 // when the exact one is absent (non-topo path, picker preview). An absent axis
@@ -28,26 +30,16 @@ function tickNormal(ln: StopLine): Point {
   return [-ty, tx];
 }
 
-/**
- * London: each stopping line is a short tick struck strictly perpendicular to
- * the line, in the route color. An intermediate stop roots the tick on the dot
- * and extends it to one side; a terminus (the line's end) gets a full two-sided
- * tick that caps the line. A loop has no terminus, so all its stops are
- * one-sided. No dot, no capsule; an interchange reads as a row of parallel
- * ticks. A starting point toward the fuller Underground marker vocabulary.
- */
-function paint(scene: StopScene): Glyph[] {
-  // Tick length scales with the dot so capsule members shorten and the picker
-  // preview fills its tile; weight matches the line and is never heavier than
-  // it, so bundled ticks and the preview stay clean.
+/** Single/terminus stop: a route-color tick struck perpendicular to the line.
+ *  Intermediate roots a one-sided stub on the dot; a terminus caps it with a
+ *  full two-sided tick. */
+function ticks(scene: StopScene): Glyph[] {
   const len = scene.dotRadius * 2.6;
   const sw = LINE_WIDTH * Math.min(1, scene.dotRadius / R0);
   const g: Glyph[] = [];
   for (const ln of scene.lines) {
     const [nx, ny] = tickNormal(ln);
     const [x, y] = ln.pos;
-    // A terminus is capped by a full tick centered on the dot (both sides); an
-    // intermediate stop by a one-sided stub rooted on it.
     const x0 = ln.terminus ? x - nx * len : x;
     const y0 = ln.terminus ? y - ny * len : y;
     g.push(line(x0, y0, x + nx * len, y + ny * len, { stroke: ln.color, strokeWidth: sw }));
@@ -55,4 +47,36 @@ function paint(scene: StopScene): Glyph[] {
   return g;
 }
 
-export const london: StationDesign = { id: 'london', name: 'London', paint };
+/**
+ * London: intermediate and terminus stops are route-color ticks struck strictly
+ * perpendicular to the line (a one-sided stub, or a full two-sided cap at a
+ * line's end). An interchange is a chain of white ticket-hall bubbles: adjacent
+ * lines pair into one bubble riding between them (an odd leftover gets its own),
+ * joined by connector bars. The bubble geometry is solved at compute time; this
+ * only paints it as one seamless white silhouette with a black outline via
+ * expand-and-overdraw (every piece fattened in ink, then redrawn in paper).
+ */
+function paint(scene: StopScene): Glyph[] {
+  const cap = scene.capsule;
+
+  if (cap.kind === 'londonBubbles') {
+    const bw = LINE_WIDTH * 0.85; // outline rim half-width (a thick Underground ring)
+    const g: Glyph[] = [];
+    // A connector's butt ends tuck inside the two bubbles it joins, so only its
+    // sides show as the waist between beads.
+    for (const n of cap.necks) g.push(line(n.x0, n.y0, n.x1, n.y1, { stroke: INK, strokeWidth: n.w + 2 * bw }));
+    for (const b of cap.bubbles) g.push(circle(b.x, b.y, b.r + bw, { fill: INK, stroke: 'none', strokeWidth: 0 }));
+    for (const n of cap.necks) g.push(line(n.x0, n.y0, n.x1, n.y1, { stroke: PAPER, strokeWidth: n.w }));
+    for (const b of cap.bubbles) g.push(circle(b.x, b.y, b.r, { fill: PAPER, stroke: 'none', strokeWidth: 0 }));
+    return g;
+  }
+
+  if (cap.kind === 'box') {
+    // Mega-fallback interchange: a white ticket-hall block, still rendered.
+    return [rect(cap.x, cap.y, cap.w, cap.h, cap.rx, { fill: PAPER, stroke: INK, strokeWidth: 3 })];
+  }
+
+  return ticks(scene);
+}
+
+export const london: StationDesign = { id: 'london', name: 'London', paint, capsule: 'londonBubbles' };

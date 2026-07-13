@@ -34,6 +34,10 @@ export type Capsule =
       /** Compute-time extruded neck paths for the connectors; absent for a
        *  capsule cached before the field existed (paint re-extrudes then). */
       necks?: string[];
+    }
+  | { kind: 'londonBubbles';                         // one white bubble per pair of lines, chained by connector bars
+      bubbles: Array<{ x: number; y: number; r: number }>;
+      necks: Array<{ x0: number; y0: number; x1: number; y1: number; w: number }>;
     };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots
@@ -70,8 +74,9 @@ export interface StationDesign {
   name: string;
   blurb?: string;
   /** Interchange capsule regime the design wants placement to produce. Default
-   *  'pill'. 'rectRows' triggers the upright-box rectangle seating. */
-  capsule?: 'pill' | 'rectRows';
+   *  'pill'. 'rectRows' triggers the upright-box rectangle seating;
+   *  'londonBubbles' the paired ticket-hall bubbles. */
+  capsule?: 'pill' | 'rectRows' | 'londonBubbles';
   /** Paint one station into a draw list (capsule glyphs first, dots/bullets
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];
