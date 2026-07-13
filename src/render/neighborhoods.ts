@@ -59,14 +59,15 @@ export function placeKinds(geo: GeographyData | undefined): string[] {
   return [...kinds].sort();
 }
 
-/** Per-mode world-unit scale: base-2700 measurements times this render at the
- *  same on-screen size in either mode. Geographic is exactly 2700x2700 (=1);
- *  smoothed grows past it, so labels scale up to survive the fit-to-viewport
- *  shrink. The panel fits the frame by min(VPW/FW, VPH/FH), so the limiting axis
- *  depends on the viewport aspect; the geometric mean of the two canvas
- *  dimensions bounds the residual symmetrically whichever axis limits, instead
- *  of being exact on one axis and doubled on the other. */
-export const placeCanvasScale = (width: number, height: number): number => Math.sqrt(width * height) / 2700;
+/** Per-mode world-unit scale from the CONTENT FRAME (the water/green extent the
+ *  panel actually fits to), NOT the canvas. Base-2700 measurements times this
+ *  render at the same on-screen size in either mode. The panel fits the frame by
+ *  min(VPW/FW, VPH/FH), so for a square-ish viewport the LARGER frame dimension
+ *  is what limits the zoom; scaling by max(FW, FH)/2700 therefore cancels the fit
+ *  exactly (on-screen size = const) whatever the frame aspect. Keying off the
+ *  frame (not the square 2700 geographic canvas) is what makes a tall city's
+ *  labels the right size and density instead of oversized and over-decluttered. */
+export const placeFrameScale = (frameW: number, frameH: number): number => Math.max(frameW, frameH) / 2700;
 
 /**
  * Project every harvested place through `proj` and declutter WITHIN each kind:
@@ -81,10 +82,10 @@ export function projectPlaces(
   proj: { toSVG: (c: [number, number]) => [number, number] },
   width: number,
   height: number,
+  scale = placeFrameScale(width, height),
 ): PlacePx[] {
   const places = geo?.places;
   if (!places || places.length === 0) return [];
-  const scale = placeCanvasScale(width, height);
   const minDist = MIN_DIST * scale;
   const margin = PLACE_FONT_SIZE * scale;
   const sorted = [...places].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

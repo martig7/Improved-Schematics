@@ -40,7 +40,7 @@ import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { rescueTwists } from './layout/twistRescue';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
-import { projectPlaces, placesSvg, filterPlacesKind, placeCanvasScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
+import { projectPlaces, placesSvg, filterPlacesKind, placeFrameScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
@@ -328,12 +328,17 @@ export function renderGeographic(input: GeoInput): string {
   const backdrop = geographyBackdrop(input.geography, proj, theme, dark);
   if (backdrop) parts.push(backdrop);
 
+  // Frame on the water/green geography extent — the region the panel fits to.
+  const frame = geographyFrame(input.geography, proj);
+
   // Neighborhood-name area labels: under the network, over the backdrop. One
-  // kind at a time (opts.neighborhoodKind); the font is the base size times the
-  // user multiplier (geographic is base-2700, so no canvas rescale here).
+  // kind at a time (opts.neighborhoodKind); font and declutter scale by the
+  // FRAME (not the square canvas), so a tall city's labels stay the right size
+  // and density instead of oversized and over-decluttered.
   if (opts.showNeighborhoods) {
-    const shown = filterPlacesKind(projectPlaces(input.geography, proj, width, height), opts.neighborhoodKind);
-    parts.push(placesSvg(shown, dark, PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1)));
+    const scale = frame ? placeFrameScale(frame.w, frame.h) : placeFrameScale(width, height);
+    const shown = filterPlacesKind(projectPlaces(input.geography, proj, width, height, scale), opts.neighborhoodKind);
+    parts.push(placesSvg(shown, dark, PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) * scale));
   }
 
   const segments: Segment[] = [];
@@ -363,8 +368,7 @@ export function renderGeographic(input: GeoInput): string {
     parts.push(renderGeoNodes(graph, nodePx, opts, dark, segments));
   }
 
-  // Frame on the water/green geography extent.
-  const frame = geographyFrame(input.geography, proj);
+  // Frame computed above (the fit/export crop on the geography extent).
   return svgWrap(parts, width, height, frame);
 }
 
@@ -1305,9 +1309,15 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // BACKDROP is built from them at draw time (drawSmoothed), which is what lets
   // the landmass style re-render as a cheap repaint instead of a re-sim.
   const geoRingsPx = projectGeoRings(input.geography, proj, theme, dark);
+  // Frame on the furthest water/green through the WARPED proj — the region the
+  // panel fits to. Computed here (not just before the return) so the label
+  // declutter can key its spacing off the frame like the paint font does.
+  const frame = geographyFrame(input.geography, proj) ?? undefined;
   // Neighborhood label points ride the same warped projection, so the names
-  // deform with the network exactly like the water does.
-  const placesPx = projectPlaces(input.geography, proj, outW, outH);
+  // deform with the network exactly like the water does. Declutter spacing
+  // scales by the frame so the on-screen label density matches geographic.
+  const placesScale = frame ? placeFrameScale(frame.w, frame.h) : placeFrameScale(outW, outH);
+  const placesPx = projectPlaces(input.geography, proj, outW, outH, placesScale);
   // Data-region hull to render px: sample each hull edge densely (the warp
   // bends straight edges into curves) through the final projection.
   let geoHullPx: Pixel[] | undefined;
@@ -1332,11 +1342,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     stopNodes: st.stopNodes ?? new Map<string, string>(),
   }));
 
-  // Frame on the furthest water/green through the WARPED proj, so smoothed
-  // fit/export hug the same backdrop extent geographic does. When undefined (no
-  // geography), renderRibbons frames on the rendered network instead.
-  const frame = geographyFrame(input.geography, proj) ?? undefined;
-
+  // Frame (computed above) hugs the same backdrop extent geographic does, so
+  // smoothed fit/export match. When undefined (no geography), renderRibbons
+  // frames on the rendered network instead.
   return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
 }
 
@@ -1491,7 +1499,8 @@ export function drawSmoothed(
     // smoothed canvas magnifies the base font so it matches geographic on screen.
     placesPx: opts.showNeighborhoods ? pre.placesPx : undefined,
     placesKind: opts.neighborhoodKind,
-    placesFontPx: PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) * placeCanvasScale(pre.width, pre.height),
+    placesFontPx: PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) *
+      (pre.frame ? placeFrameScale(pre.frame.w, pre.frame.h) : placeFrameScale(pre.width, pre.height)),
     backdrop,
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,

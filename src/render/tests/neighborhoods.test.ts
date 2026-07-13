@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectPlaces, placesSvg, placesPrims, filterPlacesKind, placeKinds, kindLabel, placeCanvasScale, PLACE_FONT_SIZE } from '../neighborhoods';
+import { projectPlaces, placesSvg, placesPrims, filterPlacesKind, placeKinds, kindLabel, placeFrameScale, PLACE_FONT_SIZE } from '../neighborhoods';
 import type { GeographyData } from '../../geography/types';
 
 const identity = { toSVG: (c: [number, number]): [number, number] => [c[0], c[1]] };
@@ -27,22 +27,25 @@ test('projectPlaces declutters within a kind, not across kinds', () => {
   assert.deepEqual(projectPlaces(g, identity, 2700, 2700), kept, 'deterministic on repeat');
 });
 
-test('projectPlaces declutter spacing scales with the canvas so density matches on screen', () => {
+test('projectPlaces declutter spacing scales with the given scale so density matches on screen', () => {
   // Two same-kind points 200px apart in world coords.
   const g = geo([
     { name: 'Alpha', coord: [1000, 1000], kind: 'suburb' },
     { name: 'Beta', coord: [1200, 1000], kind: 'suburb' },
   ]);
-  // Base-2700 canvas: minDist 150 (150 < 200), both survive.
+  // scale 1: minDist 150 (150 < 200), both survive.
+  assert.equal(projectPlaces(g, identity, 2700, 2700, 1).length, 2);
+  // scale 2: minDist 300 (> 200), the second is decluttered away.
+  assert.equal(projectPlaces(g, identity, 2700, 2700, 2).length, 1);
+  // Default scale derives from the frame (here the canvas): max(2700,2700)/2700 = 1.
   assert.equal(projectPlaces(g, identity, 2700, 2700).length, 2);
-  // Grown 2x canvas: minDist 300 (geometric-mean scale 2 > 200/150), decluttered.
-  assert.equal(projectPlaces(g, identity, 5400, 5400).length, 1);
 });
 
-test('placeCanvasScale is 1 on the square base canvas and the geometric mean otherwise', () => {
-  assert.equal(placeCanvasScale(2700, 2700), 1);
-  assert.equal(placeCanvasScale(5400, 1350), 1); // sqrt(5400*1350)=2700
-  assert.ok(Math.abs(placeCanvasScale(4050, 2700) - Math.sqrt(4050 * 2700) / 2700) < 1e-9);
+test('placeFrameScale keys off the larger frame dimension over the 2700 base', () => {
+  assert.equal(placeFrameScale(2700, 2700), 1);
+  assert.equal(placeFrameScale(1350, 2700), 1); // tall frame: max is the height
+  assert.equal(placeFrameScale(1196, 2000), 2000 / 2700);
+  assert.equal(placeFrameScale(4050, 2894), 4050 / 2700);
 });
 
 test('projectPlaces returns empty for absent places and empty geography', () => {
