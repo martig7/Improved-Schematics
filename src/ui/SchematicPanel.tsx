@@ -78,9 +78,9 @@ const LABEL_SCALE_MIN = 0.2;
 const LABEL_SCALE_MAX = 1.5;
 // Neighborhood-label size multiplier on the base area-label font. Normalized
 // across modes by the renderer, so one value looks the same geographic/smoothed.
-const DEFAULT_NBHD_FONT = 1;
-const NBHD_FONT_MIN = 0.5;
-const NBHD_FONT_MAX = 2;
+const DEFAULT_NBHD_FONT = 0.7;
+const NBHD_FONT_MIN = 0.2;
+const NBHD_FONT_MAX = 1.7;
 const DEFAULT_RASTER_SCALE = 2; // upscale factor for crisp PNG/JPEG
 const DEFAULT_JPEG_QUALITY = 0.92;
 
