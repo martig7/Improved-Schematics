@@ -32,7 +32,7 @@ import { cropSubgraph } from '../render/cropSubgraph';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
-import { placeTiers, kindLabel, ALL_DETAIL } from '../render/neighborhoods';
+import { DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX, LABEL_PAD_MIN, LABEL_PAD_MAX } from '../render/neighborhoods';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { peekGeography } from '../geography/geography';
 import { warmGeography } from '../geography/warm';
@@ -231,7 +231,8 @@ type RestoredSettings = {
   showLabels?: boolean;
   showNeighborhoods?: boolean;
   neighborhoodFont?: number;
-  neighborhoodDetail?: string;
+  neighborhoodZoom?: number;
+  neighborhoodPad?: number;
   megaFallback?: 'box' | 'curve';
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
@@ -297,9 +298,10 @@ export function SchematicPanel() {
   // (instant repaint), normalized across modes by the renderer. The kind is
   // reconciled against what the harvest actually exposes once geography loads.
   const [neighborhoodFont, setNeighborhoodFont] = useState(rvis.neighborhoodFont ?? DEFAULT_NBHD_FONT);
-  // Finest area-label tier to show (cumulative: this tier + all coarser). See
-  // neighborhoods.ts PLACE_TIERS. Reconciled against the harvest once it loads.
-  const [neighborhoodDetail, setNeighborhoodDetail] = useState<string | undefined>(rvis.neighborhoodDetail);
+  // Area-label controls: a virtual zoom picking the visible tiers (basemap bands)
+  // and a collision padding (basemap textPadding units). Both draw-time.
+  const [neighborhoodZoom, setNeighborhoodZoom] = useState(rvis.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
+  const [neighborhoodPad, setNeighborhoodPad] = useState(rvis.neighborhoodPad ?? DEFAULT_LABEL_PAD);
   // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
   // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
   const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? DEFAULT_MEGA_FALLBACK);
@@ -504,7 +506,8 @@ export function SchematicPanel() {
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
     setNeighborhoodFont(v.neighborhoodFont ?? DEFAULT_NBHD_FONT);
-    setNeighborhoodDetail(v.neighborhoodDetail);
+    setNeighborhoodZoom(v.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
+    setNeighborhoodPad(v.neighborhoodPad ?? DEFAULT_LABEL_PAD);
     setMegaFallback(v.megaFallback ?? DEFAULT_MEGA_FALLBACK);
     setStationDesign(v.stationDesign ?? DEFAULT_STATION_DESIGN);
     setLandmass(v.landmass ?? 'faithful');
@@ -536,7 +539,7 @@ export function SchematicPanel() {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     if (!shared) return;
-    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodDetail: shared.neighborhoodDetail, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodZoom: shared.neighborhoodZoom, neighborhoodPad: shared.neighborhoodPad, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
     for (const m of ['geographic', 'smoothed'] as const) {
       if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
     }
@@ -548,17 +551,6 @@ export function SchematicPanel() {
   // the live backdrop to validate a loaded file's fingerprint without re-creating itself.
   const geographyRef = useRef(geography);
   geographyRef.current = geography;
-  // The area-label tiers the current harvest exposes, coarse to fine (for the
-  // detail dropdown).
-  const availableTiers = useMemo(() => placeTiers(geography), [geography]);
-  // Keep the selected detail valid as harvests change: any present tier or 'All'.
-  // Default to 'All' (every tier, culled hard for a clean overview). An empty
-  // harvest leaves it unset.
-  useEffect(() => {
-    if (availableTiers.length === 0) return;
-    const valid = new Set([...availableTiers, ALL_DETAIL]);
-    setNeighborhoodDetail((d) => (d && valid.has(d) ? d : ALL_DETAIL));
-  }, [availableTiers]);
   // True while the tile harvest is in flight, so the top bar can show the small
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
   const [geoLoading, setGeoLoading] = useState(false);
@@ -665,7 +657,7 @@ export function SchematicPanel() {
         showLabels,
         showNeighborhoods,
         neighborhoodFontScale: neighborhoodFont,
-        neighborhoodDetail,
+        neighborhoodZoom, neighborhoodPad,
         dark,
         padding: applied.mapMargin,
         warpAlpha: warpAlphaFromPos(applied.warpPos),
@@ -681,7 +673,7 @@ export function SchematicPanel() {
         },
       },
     }, mapBearing);
-  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, applied, mapBearing]);
+  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing]);
 
   // The exact live render inputs, captured for offline repro (geojson reconstructions
   // drift from the live save and the game's station grouping). Formerly downloaded via a
@@ -811,7 +803,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodDetail, megaFallback, landmass, landmassDetail, stationDesign }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, stationDesign }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -824,7 +816,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -885,10 +877,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, landmass, landmassDetail, applied, labelScale, stationDesign });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, labelScale, stationDesign });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
+  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -1053,7 +1045,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
+    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
     // the displayed pre across load/generate sequences (a remembered ref can
@@ -1078,7 +1070,7 @@ export function SchematicPanel() {
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
@@ -1096,7 +1088,8 @@ export function SchematicPanel() {
       showLabels?: boolean;
       showNeighborhoods?: boolean;
       neighborhoodFont?: number;
-      neighborhoodDetail?: string;
+      neighborhoodZoom?: number;
+      neighborhoodPad?: number;
       megaFallback?: 'box' | 'curve';
       stationDesign?: string;
       landmass?: 'faithful' | 'rounded' | 'diagram';
@@ -1129,7 +1122,8 @@ export function SchematicPanel() {
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
     if (typeof s.showNeighborhoods === 'boolean') setShowNeighborhoods(s.showNeighborhoods);
     if (s.neighborhoodFont != null) setNeighborhoodFont(clamp(s.neighborhoodFont, NBHD_FONT_MIN, NBHD_FONT_MAX));
-    if (typeof s.neighborhoodDetail === 'string') setNeighborhoodDetail(s.neighborhoodDetail);
+    if (s.neighborhoodZoom != null) setNeighborhoodZoom(clamp(s.neighborhoodZoom, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX));
+    if (s.neighborhoodPad != null) setNeighborhoodPad(clamp(s.neighborhoodPad, LABEL_PAD_MIN, LABEL_PAD_MAX));
     if (s.megaFallback === 'box' || s.megaFallback === 'curve') setMegaFallback(s.megaFallback);
     if (typeof s.stationDesign === 'string') setStationDesign(STATION_DESIGNS.some((d) => d.id === s.stationDesign) ? s.stationDesign : DEFAULT_STATION_DESIGN);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
@@ -1681,7 +1675,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodDetail, megaFallback, stationDesign, landmass, landmassDetail]);
+  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, stationDesign, landmass, landmassDetail]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -2077,8 +2071,8 @@ export function SchematicPanel() {
                 display={`${labelScale.toFixed(1)}×`}
                 onChange={setLabelScale}
               />
-              {/* Area labels: size + detail tier (cumulative). Draw-time,
-                  normalized across modes by the renderer. */}
+              {/* Area labels: size, zoom (which tiers show), and spacing
+                  (collision padding). Draw-time, normalized across modes. */}
               {showNeighborhoods && (
                 <>
                   <Slider
@@ -2090,29 +2084,24 @@ export function SchematicPanel() {
                     display={`${neighborhoodFont.toFixed(1)}×`}
                     onChange={setNeighborhoodFont}
                   />
-                  {availableTiers.length > 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                      <span style={{ fontSize: 11, opacity: 0.7 }}>Label detail</span>
-                      <select
-                        value={neighborhoodDetail ?? ALL_DETAIL}
-                        onChange={(e) => setNeighborhoodDetail(e.target.value)}
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          padding: '4px 8px',
-                          borderRadius: 6,
-                          border: '1px solid rgba(136,136,136,0.4)',
-                          background: api.ui.getResolvedTheme() === 'dark' ? '#1f1f22' : '#ffffff',
-                          color: api.ui.getResolvedTheme() === 'dark' ? '#e4e4e7' : '#1a1a1a',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {[...availableTiers, ALL_DETAIL].map((t) => (
-                          <option key={t} value={t}>{kindLabel(t)}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                  <Slider
+                    label="Label zoom"
+                    value={neighborhoodZoom}
+                    min={LABEL_ZOOM_MIN}
+                    max={LABEL_ZOOM_MAX}
+                    step={1}
+                    display={`z${neighborhoodZoom}`}
+                    onChange={setNeighborhoodZoom}
+                  />
+                  <Slider
+                    label="Label padding"
+                    value={neighborhoodPad}
+                    min={LABEL_PAD_MIN}
+                    max={LABEL_PAD_MAX}
+                    step={2}
+                    display={`${neighborhoodPad} px`}
+                    onChange={setNeighborhoodPad}
+                  />
                 </>
               )}
 

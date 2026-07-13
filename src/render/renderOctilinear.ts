@@ -29,7 +29,7 @@ import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from 
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
-import { placesSvg, placesPrims, selectPlaces, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
+import { placesSvg, placesPrims, selectPlaces, DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -332,9 +332,11 @@ export interface RenderRibbonsArgs {
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
-  /** Finest area-label tier to show, cumulative (undefined = all); the pre bakes
-   *  every tier's points and the cull runs at paint. */
-  placesDetail?: string;
+  /** Virtual zoom picking the visible area-label tiers; the pre bakes every tier's
+   *  points and the tier select + cull run at paint. */
+  placesZoom?: number;
+  /** Area-label collision padding (basemap textPadding units). */
+  placesPad?: number;
   /** Area-label paint size, already scaled for this grown canvas. */
   placesFontPx?: number;
   water?: WaterCollection;
@@ -3767,10 +3769,15 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
 
-  // Area labels: the pre bakes every tier's points; select the tiers for the
-  // chosen detail and collision-cull at the paint font (bigger tiers win).
-  // Shared by both the scene-IR and the SVG-string emission below.
-  const shownPlaces = selectPlaces(args.placesPx, args.placesDetail, args.placesFontPx ?? PLACE_FONT_SIZE);
+  // Area labels: the pre bakes every tier's points; select the tiers visible at
+  // the chosen zoom and collision-cull at the padding (bigger tiers win). Shared
+  // by both the scene-IR and the SVG-string emission below.
+  const shownPlaces = selectPlaces(
+    args.placesPx,
+    args.placesZoom ?? DEFAULT_LABEL_ZOOM,
+    args.placesPad ?? DEFAULT_LABEL_PAD,
+    args.placesFontPx ?? PLACE_FONT_SIZE,
+  );
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.

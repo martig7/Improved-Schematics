@@ -33,25 +33,12 @@ export const PLACE_FONT_SIZE = LABEL_FONT_SIZE * 1.5;
 const FILL_DARK = 'rgba(190,193,201,0.55)';
 const FILL_LIGHT = 'rgba(90,92,100,0.55)';
 
-/** Area-label tiers by size, coarse (largest areas) to fine (smallest). This is
- *  the basemap's own hierarchy: cities fade in at the lowest zoom, then suburbs,
- *  then neighborhoods. The rank (index) is the size order; a lower rank is a
- *  bigger area and wins a collision. Unknown kinds rank after every tier. */
+/** Area-label tiers by size, coarse (largest areas) to fine (smallest). The rank
+ *  (index) is the size order; a lower rank is a bigger area and wins a collision.
+ *  Unknown kinds rank after every tier. */
 export const PLACE_TIERS = ['city', 'suburb', 'neighbourhood'] as const;
 
-/** Detail level naming an EVERY-tier view that culls hard, preferring the
- *  bigger-area labels (the ones a live map shows when zoomed out). Distinct from
- *  the finest tier, which shows the same set but at the normal spacing. */
-export const ALL_DETAIL = 'all';
-
 const norm = (kind: string): string => (kind === 'neighborhood' ? 'neighbourhood' : kind);
-
-const KIND_LABEL: Record<string, string> = {
-  city: 'Cities',
-  suburb: 'Suburbs',
-  neighbourhood: 'Neighborhoods',
-  all: 'All',
-};
 
 /** Size rank of a kind: 0 = biggest (city); unknown kinds rank last. */
 export function tierRank(kind: string): number {
@@ -59,54 +46,54 @@ export function tierRank(kind: string): number {
   return i < 0 ? PLACE_TIERS.length : i;
 }
 
-/** Display name for a place tier, falling back to a capitalized raw value. */
-export function kindLabel(kind: string): string {
-  return KIND_LABEL[norm(kind)] ?? (kind ? kind[0].toUpperCase() + kind.slice(1) + 's' : kind);
-}
+/** Each tier's zoom band [fadeIn, fadeOut] copied from the basemap style, so a
+ *  chosen zoom shows exactly the tiers the live map shows at that zoom. */
+const TIER_ZOOM: Record<string, [number, number]> = {
+  city: [8, 13],
+  suburb: [10, 14],
+  neighbourhood: [12, 15],
+};
 
-/** The tiers present in the harvest, ordered coarse to fine (for the detail
- *  dropdown). Only known tiers, in size order. */
-export function placeTiers(geo: GeographyData | undefined): string[] {
-  const present = new Set<string>();
-  for (const p of geo?.places ?? []) present.add(norm(p.kind));
-  return PLACE_TIERS.filter((t) => present.has(t));
-}
+/** Slider bounds and defaults for the label controls. The default zoom shows the
+ *  city + suburb bands; the default padding is the basemap's own textPadding. */
+export const LABEL_ZOOM_MIN = 8;
+export const LABEL_ZOOM_MAX = 15;
+export const DEFAULT_LABEL_ZOOM = 11;
+export const LABEL_PAD_MIN = 0;
+export const LABEL_PAD_MAX = 40;
+export const DEFAULT_LABEL_PAD = 8;
 
-// Approximate uppercase glyph advance as a fraction of the font size (labels
-// render in caps) and the collision padding as a fraction of the font size
-// (mirrors the basemap's per-label textPadding). Used only to size the boxes
-// the collision cull tests, never to draw.
+// A label's collision box: uppercase glyph advance as a fraction of the font
+// size, plus a padding derived from the slider. 8px against the basemap's ~13px
+// text is ~0.6 of the font, which matches the tuned default look.
 const CHAR_ADVANCE = 0.62;
-const PAD_FRAC = 0.6;
+const PAD_PX_TO_FRAC = 0.6 / 8;
 
-/** Keep places at or coarser than the chosen detail tier (cumulative, like
- *  zooming in). Undefined detail keeps every tier. */
-export function filterPlacesTiers(places: PlacePx[] | undefined, detail: string | undefined): PlacePx[] {
-  if (!places) return [];
-  if (!detail) return places;
-  const max = tierRank(detail);
-  return places.filter((p) => tierRank(p.kind) <= max);
+/** The tiers visible at a given zoom, per the basemap's per-tier zoom bands. */
+export function tiersAtZoom(zoom: number): Set<string> {
+  const out = new Set<string>();
+  for (const t of PLACE_TIERS) {
+    const [lo, hi] = TIER_ZOOM[t];
+    if (zoom >= lo && zoom <= hi) out.add(t);
+  }
+  return out;
 }
-
-// Padding multiple for the "All" view, which spaces labels far apart for a clean
-// every-tier overview (bigger areas win, small ones fill the gaps).
-const STRONG_PAD_SCALE = 5;
 
 /**
  * Cull overlapping labels the way the basemap's draw-time symbol collision does
  * (which our static fit does not inherit): keep bigger tiers first, then by name,
  * dropping any label whose text box overlaps an already-kept one. `fontPx` is the
- * paint size, so the cull matches what is actually drawn and re-runs when the
- * size setting changes. `padScale` widens the collision gap (the "All" view uses
- * a large one for a sparse overview). Deterministic (tier then name order).
+ * paint size, so the cull matches what is drawn and re-runs when the size setting
+ * changes. `padFrac` is the collision gap as a fraction of the font. Deterministic
+ * (tier then name order).
  */
-export function declutterPlaces(places: PlacePx[], fontPx: number, padScale = 1): PlacePx[] {
+export function declutterPlaces(places: PlacePx[], fontPx: number, padFrac: number): PlacePx[] {
   const sorted = [...places].sort((a, b) => {
     const ra = tierRank(a.kind), rb = tierRank(b.kind);
     if (ra !== rb) return ra - rb;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
-  const pad = fontPx * PAD_FRAC * padScale;
+  const pad = fontPx * padFrac;
   const halfH = fontPx * 0.5 + pad * 0.5;
   const kept: { cx: number; cy: number; hw: number }[] = [];
   const out: PlacePx[] = [];
@@ -125,15 +112,20 @@ export function declutterPlaces(places: PlacePx[], fontPx: number, padScale = 1)
 }
 
 /**
- * Resolve the labels to paint for a detail level: the cumulative tiers to a named
- * tier at normal spacing, or ALL_DETAIL ('all') for every tier culled hard so the
- * bigger areas win and small ones only fill the gaps. Undefined behaves like the
- * finest cumulative view (all tiers, normal spacing).
+ * Resolve the labels to paint: keep the tiers visible at `zoom` (the basemap's
+ * bands), then collision-cull at a gap set by `padPx` (the basemap's textPadding
+ * units). Bigger tiers win a collision. Zoom/pad default to the shown constants.
  */
-export function selectPlaces(places: PlacePx[] | undefined, detail: string | undefined, fontPx: number): PlacePx[] {
-  const strong = detail === ALL_DETAIL;
-  const tierSet = strong ? (places ?? []) : filterPlacesTiers(places, detail);
-  return declutterPlaces(tierSet, fontPx, strong ? STRONG_PAD_SCALE : 1);
+export function selectPlaces(
+  places: PlacePx[] | undefined,
+  zoom: number,
+  padPx: number,
+  fontPx: number,
+): PlacePx[] {
+  if (!places || places.length === 0) return [];
+  const tiers = tiersAtZoom(zoom);
+  const visible = places.filter((p) => tiers.has(norm(p.kind)));
+  return declutterPlaces(visible, fontPx, padPx * PAD_PX_TO_FRAC);
 }
 
 /** Per-mode world-unit scale from the CONTENT FRAME (the water/green extent the

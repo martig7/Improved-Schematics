@@ -71,10 +71,12 @@ export interface SchematicOptions {
    *  across modes (the base is in base-2700 units, rescaled per canvas), so one
    *  value looks the same geographic and smoothed. Draw-time only. Default 1. */
   neighborhoodFontScale?: number;
-  /** Finest area-label tier to show (see neighborhoods.ts PLACE_TIERS: 'city',
-   *  'suburb', 'neighbourhood'). Cumulative: this tier plus every coarser one.
-   *  Undefined shows all tiers. Draw-time only. */
-  neighborhoodDetail?: string;
+  /** Virtual zoom for area labels: shows the tiers the basemap shows at that zoom
+   *  (its per-tier zoom bands). Lower = fewer, bigger areas. Draw-time only. */
+  neighborhoodZoom?: number;
+  /** Area-label collision padding in the basemap's textPadding units; larger
+   *  spaces labels further apart (stronger declutter). Draw-time only. */
+  neighborhoodPad?: number;
   /** How to render the fallback marker for an over-dense bundle that can't seat
    *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
    *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It
