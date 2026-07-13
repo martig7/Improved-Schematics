@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 9; // bump to invalidate every cached entry on a format change
+const VERSION = 10; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -39,6 +39,10 @@ const VERSION = 9; // bump to invalidate every cached entry on a format change
 // additions can carry the seated capsules WITHOUT the cropped lanes. Reading one
 // back would seat boxes over uncropped lanes. Purge so every cached pre refreshes
 // with the full, self-consistent rectangle geometry.
+// v10: pres carry projected neighborhood-label points (placesPx), baked at
+// precompute from the harvested geography. Old pres predate the places harvest,
+// so a cached smoothed map couldn't show labels without a manual Regenerate.
+// Purge so every cached pre refreshes with its baked places.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {
