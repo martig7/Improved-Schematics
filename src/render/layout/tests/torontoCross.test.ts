@@ -46,6 +46,28 @@ test('a three-line star (all different axes through one point) collapses', () =>
   assert.equal(computeTorontoByNode(stops).size, 1);
 });
 
+test('the crossing dot sits at the EXACT-tangent intersection, not the quantized-axis one', () => {
+  // line A is vertical (x = 5); line B passes through the origin angled below its
+  // quantized (horizontal) axis, so the true meeting point is above y = 0.
+  const stops = new Map<string, M[]>([['n', [
+    { axis: 2, dir: [0, 1], pos: [5, 0] } as M,
+    { axis: 0, dir: [0.94, 0.35], pos: [0, 0] } as M,
+  ]]]);
+  const c = computeTorontoByNode(stops).get('n');
+  assert.ok(c, 'still detected as a crossing');
+  assert.ok(Math.abs(c!.cx - 5) < 1e-6, 'on the vertical line x=5');
+  // exact intersection: 0.94*s = 5 -> s = 5.319, y = 0.35*s = 1.862 (NOT 0)
+  assert.ok(Math.abs(c!.cy - 1.862) < 0.01, `exact-tangent y ~1.86, got ${c!.cy.toFixed(3)}`);
+});
+
+test('a shallow convergence whose meeting point is out of slide range is NOT a crossing', () => {
+  const stops = new Map<string, M[]>([['n', [
+    { axis: 0, dir: [1, 0], pos: [0, 0] } as M,
+    { axis: 1, dir: [0.7071, 0.7071], pos: [0, 40] } as M, // meets line A ~40px away
+  ]]]);
+  assert.equal(computeTorontoByNode(stops).size, 0, 'too far to slide -> pill fallback');
+});
+
 test('single stops and mega nodes are skipped', () => {
   const stops = new Map<string, M[]>([
     ['single', [{ axis: 0, pos: [0, 0] }]],
