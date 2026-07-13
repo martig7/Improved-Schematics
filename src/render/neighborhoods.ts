@@ -39,12 +39,18 @@ const FILL_LIGHT = 'rgba(90,92,100,0.55)';
  *  bigger area and wins a collision. Unknown kinds rank after every tier. */
 export const PLACE_TIERS = ['city', 'suburb', 'neighbourhood'] as const;
 
+/** Detail level naming an EVERY-tier view that culls hard, preferring the
+ *  bigger-area labels (the ones a live map shows when zoomed out). Distinct from
+ *  the finest tier, which shows the same set but at the normal spacing. */
+export const ALL_DETAIL = 'all';
+
 const norm = (kind: string): string => (kind === 'neighborhood' ? 'neighbourhood' : kind);
 
 const KIND_LABEL: Record<string, string> = {
   city: 'Cities',
   suburb: 'Suburbs',
   neighbourhood: 'Neighborhoods',
+  all: 'All',
 };
 
 /** Size rank of a kind: 0 = biggest (city); unknown kinds rank last. */
@@ -82,20 +88,25 @@ export function filterPlacesTiers(places: PlacePx[] | undefined, detail: string 
   return places.filter((p) => tierRank(p.kind) <= max);
 }
 
+// Padding multiple for the "All" view, which spaces labels far apart for a clean
+// every-tier overview (bigger areas win, small ones fill the gaps).
+const STRONG_PAD_SCALE = 5;
+
 /**
  * Cull overlapping labels the way the basemap's draw-time symbol collision does
  * (which our static fit does not inherit): keep bigger tiers first, then by name,
  * dropping any label whose text box overlaps an already-kept one. `fontPx` is the
  * paint size, so the cull matches what is actually drawn and re-runs when the
- * size setting changes. Deterministic (tier then name order).
+ * size setting changes. `padScale` widens the collision gap (the "All" view uses
+ * a large one for a sparse overview). Deterministic (tier then name order).
  */
-export function declutterPlaces(places: PlacePx[], fontPx: number): PlacePx[] {
+export function declutterPlaces(places: PlacePx[], fontPx: number, padScale = 1): PlacePx[] {
   const sorted = [...places].sort((a, b) => {
     const ra = tierRank(a.kind), rb = tierRank(b.kind);
     if (ra !== rb) return ra - rb;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
-  const pad = fontPx * PAD_FRAC;
+  const pad = fontPx * PAD_FRAC * padScale;
   const halfH = fontPx * 0.5 + pad * 0.5;
   const kept: { cx: number; cy: number; hw: number }[] = [];
   const out: PlacePx[] = [];
@@ -111,6 +122,18 @@ export function declutterPlaces(places: PlacePx[], fontPx: number): PlacePx[] {
     out.push(p);
   }
   return out;
+}
+
+/**
+ * Resolve the labels to paint for a detail level: the cumulative tiers to a named
+ * tier at normal spacing, or ALL_DETAIL ('all') for every tier culled hard so the
+ * bigger areas win and small ones only fill the gaps. Undefined behaves like the
+ * finest cumulative view (all tiers, normal spacing).
+ */
+export function selectPlaces(places: PlacePx[] | undefined, detail: string | undefined, fontPx: number): PlacePx[] {
+  const strong = detail === ALL_DETAIL;
+  const tierSet = strong ? (places ?? []) : filterPlacesTiers(places, detail);
+  return declutterPlaces(tierSet, fontPx, strong ? STRONG_PAD_SCALE : 1);
 }
 
 /** Per-mode world-unit scale from the CONTENT FRAME (the water/green extent the

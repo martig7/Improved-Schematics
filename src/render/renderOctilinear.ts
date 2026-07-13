@@ -29,7 +29,7 @@ import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from 
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
-import { placesSvg, placesPrims, filterPlacesTiers, declutterPlaces, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
+import { placesSvg, placesPrims, selectPlaces, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -3767,13 +3767,10 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
 
-  // Area labels: the pre bakes every tier's points; select the cumulative tiers
-  // for the chosen detail, then collision-cull at the paint font (bigger tiers
-  // win). Shared by both the scene-IR and the SVG-string emission below.
-  const shownPlaces = declutterPlaces(
-    filterPlacesTiers(args.placesPx, args.placesDetail),
-    args.placesFontPx ?? PLACE_FONT_SIZE,
-  );
+  // Area labels: the pre bakes every tier's points; select the tiers for the
+  // chosen detail and collision-cull at the paint font (bigger tiers win).
+  // Shared by both the scene-IR and the SVG-string emission below.
+  const shownPlaces = selectPlaces(args.placesPx, args.placesDetail, args.placesFontPx ?? PLACE_FONT_SIZE);
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.

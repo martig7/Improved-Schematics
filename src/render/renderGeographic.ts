@@ -40,7 +40,7 @@ import { auditTraversals, auditZigzags } from './layout/debug/travAudit';
 import { orderByBlocks } from './layout/bundleOrder';
 import { rescueTwists } from './layout/twistRescue';
 import { geographyBackdrop, projectGeoRings, backdropFromRings, type GeoRingsPx } from './geographyBackdrop';
-import { projectPlaces, placesSvg, filterPlacesTiers, declutterPlaces, placeFrameScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
+import { projectPlaces, placesSvg, selectPlaces, placeFrameScale, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { rasterizeRings, windingAt, type LandmassParams } from './geoSimplify';
 import type { GeographyData } from '../geography/types';
 
@@ -338,10 +338,7 @@ export function renderGeographic(input: GeoInput): string {
   if (opts.showNeighborhoods) {
     const scale = frame ? placeFrameScale(frame.w, frame.h) : placeFrameScale(width, height);
     const fontPx = PLACE_FONT_SIZE * (opts.neighborhoodFontScale ?? 1) * scale;
-    const shown = declutterPlaces(
-      filterPlacesTiers(projectPlaces(input.geography, proj, width, height, scale), opts.neighborhoodDetail),
-      fontPx,
-    );
+    const shown = selectPlaces(projectPlaces(input.geography, proj, width, height, scale), opts.neighborhoodDetail, fontPx);
     parts.push(placesSvg(shown, dark, fontPx));
   }
 

@@ -32,7 +32,7 @@ import { cropSubgraph } from '../render/cropSubgraph';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
-import { placeTiers, kindLabel } from '../render/neighborhoods';
+import { placeTiers, kindLabel, ALL_DETAIL } from '../render/neighborhoods';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { peekGeography } from '../geography/geography';
 import { warmGeography } from '../geography/warm';
@@ -551,12 +551,13 @@ export function SchematicPanel() {
   // The area-label tiers the current harvest exposes, coarse to fine (for the
   // detail dropdown).
   const availableTiers = useMemo(() => placeTiers(geography), [geography]);
-  // Keep the selected detail tier valid as harvests change: default to the FINEST
-  // available (the collision cull keeps it clean), and fall back to it if the
-  // current pick is absent. An empty harvest leaves it unset.
+  // Keep the selected detail valid as harvests change: any present tier or 'All'.
+  // Default to 'All' (every tier, culled hard for a clean overview). An empty
+  // harvest leaves it unset.
   useEffect(() => {
     if (availableTiers.length === 0) return;
-    setNeighborhoodDetail((d) => (d && availableTiers.includes(d) ? d : availableTiers[availableTiers.length - 1]));
+    const valid = new Set([...availableTiers, ALL_DETAIL]);
+    setNeighborhoodDetail((d) => (d && valid.has(d) ? d : ALL_DETAIL));
   }, [availableTiers]);
   // True while the tile harvest is in flight, so the top bar can show the small
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
@@ -2089,11 +2090,11 @@ export function SchematicPanel() {
                     display={`${neighborhoodFont.toFixed(1)}×`}
                     onChange={setNeighborhoodFont}
                   />
-                  {availableTiers.length > 1 && (
+                  {availableTiers.length > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                       <span style={{ fontSize: 11, opacity: 0.7 }}>Label detail</span>
                       <select
-                        value={neighborhoodDetail ?? availableTiers[availableTiers.length - 1]}
+                        value={neighborhoodDetail ?? ALL_DETAIL}
                         onChange={(e) => setNeighborhoodDetail(e.target.value)}
                         style={{
                           fontSize: 12,
@@ -2106,7 +2107,7 @@ export function SchematicPanel() {
                           cursor: 'pointer',
                         }}
                       >
-                        {availableTiers.map((t) => (
+                        {[...availableTiers, ALL_DETAIL].map((t) => (
                           <option key={t} value={t}>{kindLabel(t)}</option>
                         ))}
                       </select>

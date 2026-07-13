@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectPlaces, placesSvg, placesPrims, filterPlacesTiers, declutterPlaces, placeTiers, tierRank, kindLabel, placeFrameScale, PLACE_FONT_SIZE } from '../neighborhoods';
+import { projectPlaces, placesSvg, placesPrims, filterPlacesTiers, declutterPlaces, selectPlaces, ALL_DETAIL, placeTiers, tierRank, kindLabel, placeFrameScale, PLACE_FONT_SIZE } from '../neighborhoods';
 import type { GeographyData } from '../../geography/types';
 
 const identity = { toSVG: (c: [number, number]): [number, number] => [c[0], c[1]] };
@@ -90,6 +90,25 @@ test('declutterPlaces culls overlapping labels, bigger tier wins, deterministic'
   const keptSmall = declutterPlaces(near, 1);
   assert.equal(keptSmall.length, 3);
   assert.deepEqual(declutterPlaces(near, 30), kept, 'deterministic on repeat');
+});
+
+test('selectPlaces: named detail is cumulative + normal spacing; ALL takes every tier but culls harder', () => {
+  // A row of same-tier labels evenly spaced: 'All' (strong padding) keeps fewer
+  // than a named tier (normal padding) over the SAME set.
+  const row = Array.from({ length: 12 }, (_, i) => ({
+    name: `N${i}`, px: [1000 + i * 40, 1000] as [number, number], kind: 'neighbourhood',
+  }));
+  const normal = selectPlaces(row, 'neighbourhood', 20);
+  const all = selectPlaces(row, ALL_DETAIL, 20);
+  assert.ok(all.length < normal.length, `All (${all.length}) culls harder than a tier (${normal.length})`);
+  // Cumulative: 'suburb' detail excludes neighbourhoods; 'All' includes them.
+  const mixed = [
+    { name: 'City', px: [500, 500] as [number, number], kind: 'city' },
+    { name: 'Town', px: [1500, 500] as [number, number], kind: 'suburb' },
+    { name: 'Block', px: [2500, 500] as [number, number], kind: 'neighbourhood' },
+  ];
+  assert.deepEqual(selectPlaces(mixed, 'suburb', 10).map((p) => p.name).sort(), ['City', 'Town']);
+  assert.deepEqual(selectPlaces(mixed, ALL_DETAIL, 10).map((p) => p.name).sort(), ['Block', 'City', 'Town']);
 });
 
 test('placesSvg emits an uppercase text layer at the given size; empty input emits nothing', () => {
