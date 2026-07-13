@@ -115,7 +115,7 @@ const boxGrowthFromPos = (p: number) => Math.max(1, 2.5 * Math.pow(2, p));
 const DEFAULT_BOX_FRAC = 0.4;
 // Per-station complex split is the default layout (each platform of a
 // multi-station complex placed at its real position). Part of the fingerprint.
-const DEFAULT_STATION_SPLIT = true;
+const DEFAULT_STATION_SPLIT = false;
 // Dense-hub ("megabox") fallback shape default: 'curve' (squircle) vs 'box'.
 const DEFAULT_MEGA_FALLBACK: 'box' | 'curve' = 'curve';
 const BOX_FRAC_MIN = 0.1;
@@ -2157,11 +2157,11 @@ export function SchematicPanel() {
                     onChange={setBoxFrac}
                   />
 
-                  {/* Per-station complex split. Bakes into the layout
-                      (fingerprinted), so it rides the same draft→Save flow as
-                      the realism sliders. Save regenerates. */}
+                  {/* Split each station group into its member stations. Bakes
+                      into the layout (fingerprinted), so it rides the same
+                      draft to Save flow as the realism sliders. Save regenerates. */}
                   <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-                    <span>Split station complexes</span>
+                    <span>Split station groups</span>
                     <input
                       type="checkbox"
                       checked={stationSplit}
