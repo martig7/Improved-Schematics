@@ -126,6 +126,13 @@ export interface StopMark {
    *  the rectangle ("Tokyu") capsule seating at paint time. */
   home?: Pixel;
   axis?: number;
+  /** Exact unit tangent of the line at this stop (unquantized run direction).
+   *  Consumed by tick-style station markers to strike strictly perpendicular to
+   *  the line, where the octilinear `axis` would be off on a curved approach. */
+  dir?: Pixel;
+  /** The line ends at this stop (a single drawn lane is incident). A loop has
+   *  two lanes at every stop, so none are termini. Tick markers cap it fully. */
+  terminus?: boolean;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

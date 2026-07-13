@@ -16,6 +16,9 @@ export interface StopLine {
   pos: Point;         // solved dot center, world px
   chain: number;      // order within the capsule spine
   seq?: number;       // station number (1-based stop index along the line), when known
+  axis?: number;      // octilinear run-axis of the line at this stop (0=-, 1=/, 2=|, 3=\), mod 180 deg
+  dir?: Point;        // exact unit tangent of the line at this stop (unquantized); tick markers strike strictly perpendicular to it
+  terminus?: boolean; // the line ends at this stop (loops have no terminus); tick markers cap it with a full two-sided tick
 }
 
 /** Design-agnostic capsule (interchange) geometry, from placement. */

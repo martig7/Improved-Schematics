@@ -6,6 +6,7 @@ import { nycMap } from '../nycMap';
 import { tokyu } from '../tokyu';
 import { tokyo } from '../tokyo';
 import { tokyoMetro } from '../tokyoMetro';
+import { london } from '../london';
 import type { StopScene } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -273,6 +274,77 @@ test('tokyoMetro: route-color ring (1/8.5 diameter, reference spec) around a whi
     assert.ok(texts.some((t) => t.text === 'G' && t.fill === '#1e1a1b' && t.fontWeight === 'bold'), 'bold bullet in the reference near-black ink');
     assert.ok(texts.some((t) => t.text === '01' && t.fill === '#1e1a1b' && t.fontWeight === 'bold'), 'bold zero-padded number');
   }
+});
+
+const lineOf = (gs: ReturnType<typeof london.paint>) => gs.filter((g) => g.kind === 'line') as Array<{ x1: number; y1: number; x2: number; y2: number; stroke: string; strokeWidth: number }>;
+
+test('london: a single stop is one route-color tick rooted on the dot (one-sided), no disc or bullet', () => {
+  const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#dc2626', bullet: 'A', textColor: '', pos: [10, 20], chain: 0, axis: 0 }], capsule: { kind: 'none' }, anchor: [10, 20], dotRadius: 3 };
+  const gs = london.paint(sc, ctx);
+  assert.ok(!gs.some((g) => g.kind === 'circle' || g.kind === 'text'), 'no dot, no bullet');
+  const ls = lineOf(gs);
+  assert.equal(ls.length, 1);
+  assert.equal(ls[0].stroke, '#dc2626', 'tick in the route color');
+  // one endpoint is rooted at pos and the other is offset to a single side
+  assert.ok(Math.abs(ls[0].x1 - 10) < 1e-9 && Math.abs(ls[0].y1 - 20) < 1e-9, 'rooted at pos');
+  assert.ok(Math.abs(ls[0].x2 - 10) > 1e-6 || Math.abs(ls[0].y2 - 20) > 1e-6, 'extends to one side');
+});
+
+test('london: the tick is drawn strictly perpendicular to the exact line tangent', () => {
+  const withDir = (dx: number, dy: number): StopScene => ({ nodeId: 'n', lines: [{ lineId: 'L', color: '#000', bullet: '', textColor: '', pos: [0, 0], chain: 0, dir: [dx, dy] }], capsule: { kind: 'none' }, anchor: [0, 0], dotRadius: 3 });
+  // For any tangent (octilinear or not) the tick vector dotted with it is zero.
+  for (const [dx, dy] of [[1, 0], [0, 1], [3, 1], [-2, 5], [0.6, -0.8]]) {
+    const l = lineOf(london.paint(withDir(dx, dy), ctx))[0];
+    const tvx = l.x2 - l.x1, tvy = l.y2 - l.y1;
+    assert.ok(Math.abs(tvx * dx + tvy * dy) < 1e-6, `tick perpendicular to tangent (${dx},${dy})`);
+    assert.ok(tvx * tvx + tvy * tvy > 1e-6, 'tick has length');
+  }
+});
+
+test('london: with no exact tangent it falls back to the octilinear axis, still perpendicular', () => {
+  const mk = (axis: number | undefined): StopScene => ({ nodeId: 'n', lines: [{ lineId: 'L', color: '#000', bullet: '', textColor: '', pos: [0, 0], chain: 0, axis }], capsule: { kind: 'none' }, anchor: [0, 0], dotRadius: 3 });
+  const vec = (sc: StopScene) => { const l = lineOf(london.paint(sc, ctx))[0]; return [l.x2 - l.x1, l.y2 - l.y1]; };
+  const [hx] = vec(mk(0)); assert.ok(Math.abs(hx) < 1e-9, 'axis 0 (horizontal line) -> vertical tick');
+  const [, vy] = vec(mk(2)); assert.ok(Math.abs(vy) < 1e-9, 'axis 2 (vertical line) -> horizontal tick');
+  const [ax] = vec(mk(undefined)); assert.ok(Math.abs(ax) < 1e-9, 'no axis -> vertical tick');
+});
+
+test('london: a terminus gets a full two-sided tick centered on the dot', () => {
+  const term: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#dc2626', bullet: '', textColor: '', pos: [10, 20], chain: 0, axis: 0, terminus: true }], capsule: { kind: 'none' }, anchor: [10, 20], dotRadius: 3 };
+  const l = lineOf(london.paint(term, ctx))[0];
+  // midpoint sits on the dot, and the two ends are mirror images of it
+  assert.ok(Math.abs((l.x1 + l.x2) / 2 - 10) < 1e-9 && Math.abs((l.y1 + l.y2) / 2 - 20) < 1e-9, 'centered on pos');
+  assert.ok(Math.abs((10 - l.x1) - (l.x2 - 10)) < 1e-9 && Math.abs((20 - l.y1) - (l.y2 - 20)) < 1e-9, 'symmetric about pos');
+  // and it is longer than the one-sided intermediate stub (both arms present)
+  const inter: StopScene = { ...term, lines: [{ ...term.lines[0], terminus: false }] };
+  const li = lineOf(london.paint(inter, ctx))[0];
+  const lenTerm = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
+  const lenInter = Math.hypot(li.x2 - li.x1, li.y2 - li.y1);
+  assert.ok(lenTerm > lenInter + 1e-6, 'terminus tick spans both sides');
+});
+
+test('london: an interchange is one tick per line, each in its own route color', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#dc2626', bullet: 'A', textColor: '', pos: [0, 0], chain: 0, axis: 0 },
+      { lineId: 'L2', color: '#0000ff', bullet: 'B', textColor: '', pos: [0, 8], chain: 1, axis: 0 },
+    ],
+    capsule: { kind: 'pill', points: [[0, 0], [0, 8]], smooth: false },
+    anchor: [0, 4],
+    dotRadius: 3,
+  };
+  const ls = lineOf(london.paint(sc, ctx));
+  assert.equal(ls.length, 2);
+  assert.deepEqual(ls.map((l) => l.stroke).sort(), ['#0000ff', '#dc2626']);
+});
+
+test('london: tick weight never exceeds the line, and shrinks with a capsule-shrunk dot', () => {
+  const single: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#000', bullet: '', textColor: '', pos: [0, 0], chain: 0, axis: 0 }], capsule: { kind: 'none' }, anchor: [0, 0], dotRadius: 3 };
+  const shrunk: StopScene = { ...single, dotRadius: 1.5 };
+  const full = lineOf(london.paint(single, ctx))[0].strokeWidth;
+  const small = lineOf(london.paint(shrunk, ctx))[0].strokeWidth;
+  assert.ok(small < full, 'a smaller dot yields a thinner tick');
 });
 
 test('tokyoMetro interchange rides the shared rectRows capsule painter', () => {

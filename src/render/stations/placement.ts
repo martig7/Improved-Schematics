@@ -39,6 +39,9 @@ const toLine = (mk: StopMark): StopLine => ({
   pos: [mk.pos[0], mk.pos[1]],
   chain: mk.chain ?? 0,
   seq: mk.seq,
+  axis: mk.axis,
+  dir: mk.dir ? [mk.dir[0], mk.dir[1]] : undefined,
+  terminus: mk.terminus,
 });
 
 const median = (vals: number[]): number => {

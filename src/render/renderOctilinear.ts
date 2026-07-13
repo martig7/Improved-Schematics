@@ -521,6 +521,15 @@ function axisDir(axis: number | undefined): [number, number] | undefined {
   }
 }
 
+// Normalize a lane tangent to a unit vector (sqrt, not hypot, for cross-V8
+// byte-identity). The exact local direction of the line at a stop, unquantized:
+// tick-style markers strike strictly perpendicular to it, where the quantized
+// axis would be up to 22.5 deg off on a curved or non-octilinear approach.
+function unitTangent(tg: [number, number]): Pixel {
+  const len = Math.sqrt(tg[0] * tg[0] + tg[1] * tg[1]);
+  return len > 1e-9 ? [tg[0] / len, tg[1] / len] : [1, 0];
+}
+
 /** The dominant run-axis unit direction of a capsule's marks (the corridor the
  *  capsule sits on): the mode of the member axes, ties to the lower axis. Used to
  *  constrain the cross-station rescue so a capsule slides ALONG its corridor
@@ -1436,13 +1445,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     mega?: boolean,
     home?: Pixel,
     axis?: number,
+    dir?: Pixel,
+    terminus?: boolean,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis, dir, terminus,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -1512,6 +1523,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         mega?: boolean;
         home?: Pixel;
         axis?: number;
+        dir?: Pixel;
+        terminus?: boolean;
       }>;
     }
     const gathered: StMarks[] = [];
@@ -1779,17 +1792,24 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // than perpendicular into empty space. Same quantized-atan2 method the
         // multi-line block uses, for cross-V8 determinism.
         if (mk.axis === undefined) {
-          const curve = buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT);
+          const polys = lanePolysAt(mk.lineId, mk.flagNode);
+          const curve = buildLaneCurve(polys, mk.pos, CHAIN_ARC_LIMIT);
           const tg = curveTangent(curve, curve.anchorT);
           mk.axis = (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
+          mk.dir = unitTangent(tg);
+          // Terminus: the line has a single drawn lane here, so it ends at this
+          // stop. A loop has two lanes at every stop, so none of its stops are
+          // termini. Tick markers cap a terminus with a full (two-sided) tick.
+          mk.terminus = polys.length === 1;
         }
       } else if (s.marks.length > 1) {
         // pre-solve home (lane position where the line passes the node), a
         // geometric fact consumed by the rectangle capsule seating. The guard
         // keeps the ORIGINAL position when a split unit is re-queued.
         for (const mk of s.marks) if (mk.home === undefined) mk.home = [mk.pos[0], mk.pos[1]];
-        const curves = s.marks.map((mk) =>
-          buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT),
+        const polysByMark = s.marks.map((mk) => lanePolysAt(mk.lineId, mk.flagNode));
+        const curves = polysByMark.map((polys, i) =>
+          buildLaneCurve(polys, s.marks[i].pos, CHAIN_ARC_LIMIT),
         );
         // groups: marks sharing an incident drawn edge ride one corridor
         const sets = s.marks.map((mk) => {
@@ -1806,15 +1826,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // Park Av's F/G horizontal + A/B 135° + H/E 45°), each its own row
         // that pairs with a corner — grouping them into one row asks for a
         // straight line across diverging lanes, which has no solution → box.
-        const markAxis = s.marks.map((_, i) => {
-          const tg = curveTangent(curves[i], curves[i].anchorT);
+        const markTg = s.marks.map((_, i) => curveTangent(curves[i], curves[i].anchorT));
+        const markAxis = markTg.map((tg) =>
           // quantize atan2 (cross-V8) before the axis-index round so a 1-ULP
           // diff can't flip the grouping axis at a 22.5° boundary.
-          return (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
-        });
+          (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4),
+        );
         // octilinear run-axis per mark, a geometric fact for the rectangle
-        // capsule seating. The guard keeps the first axis a re-queued unit saw.
-        s.marks.forEach((mk, i) => { if (mk.axis === undefined) mk.axis = markAxis[i]; });
+        // capsule seating; the exact tangent (dir) is kept for tick markers. The
+        // guard keeps the first axis a re-queued unit saw.
+        s.marks.forEach((mk, i) => { if (mk.axis === undefined) { mk.axis = markAxis[i]; mk.dir = unitTangent(markTg[i]); mk.terminus = polysByMark[i].length === 1; } });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
           parent[x] === x ? x : (parent[x] = find(parent[x]));
@@ -3293,7 +3314,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     capsAudit('post-eviction');
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis, m.dir, m.terminus);
     }
 
     for (const s of gathered) {
