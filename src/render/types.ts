@@ -67,6 +67,13 @@ export interface SchematicOptions {
   /** Draw neighborhood-name area labels from the harvested geography places.
    *  Draw-time only (repaint, no relayout). Default false. */
   showNeighborhoods?: boolean;
+  /** Neighborhood-label size multiplier on the base area-label font. Normalized
+   *  across modes (the base is in base-2700 units, rescaled per canvas), so one
+   *  value looks the same geographic and smoothed. Draw-time only. Default 1. */
+  neighborhoodFontScale?: number;
+  /** Which harvested place kind to label (e.g. 'neighbourhood', 'suburb'). Only
+   *  one kind shows at a time. Undefined shows every kind. Draw-time only. */
+  neighborhoodKind?: string;
   /** How to render the fallback marker for an over-dense bundle that can't seat
    *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
    *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It

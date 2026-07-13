@@ -29,7 +29,7 @@ import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from 
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { cropLaneToRect, type Box } from './laneCrop';
 import { getStationDesign } from './stations';
-import { placesSvg, placesPrims, type PlacePx } from './neighborhoods';
+import { placesSvg, placesPrims, filterPlacesKind, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { escapeXml } from './escape';
@@ -332,6 +332,10 @@ export interface RenderRibbonsArgs {
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
+  /** Which place kind to show (undefined = all); the pre bakes every kind. */
+  placesKind?: string;
+  /** Neighborhood-label paint size, already scaled for this grown canvas. */
+  placesFontPx?: number;
   water?: WaterCollection;
   /** Geography backdrop (water/green groups), built at DRAW time by
    *  drawSmoothed from the pre's projected rings — faithful polygons or the
@@ -3762,6 +3766,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
 
+  // Neighborhood labels: the pre bakes every kind; show only the selected one.
+  // Shared by both the scene-IR and the SVG-string emission below.
+  const shownPlaces = filterPlacesKind(args.placesPx, args.placesKind);
 
   // Geographic-topo/smoothed pass an explicit geography frame; when absent (e.g.
   // no geography, or pure-octi schematic) fall back to the rendered network extent.
@@ -3784,7 +3791,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
     // neighborhood-name area labels: under the network, over the backdrop
-    for (const p of placesPrims(args.placesPx, dark)) prims.push(p);
+    for (const p of placesPrims(shownPlaces, dark, args.placesFontPx)) prims.push(p);
     // edges: the markup emits ALL casings first, THEN all strokes
     // (edgeParts = [...casingParts, ...strokeParts]); match that order exactly.
     const casingPrims: Prim[] = [];
@@ -3816,7 +3823,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     (waterPart ? waterPart + '\n' : '') +
     (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
-    (args.placesPx && args.placesPx.length > 0 ? placesSvg(args.placesPx, dark) + '\n' : '') +
+    (shownPlaces.length > 0 ? placesSvg(shownPlaces, dark, args.placesFontPx) + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'
