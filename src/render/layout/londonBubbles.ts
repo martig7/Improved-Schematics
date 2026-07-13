@@ -200,19 +200,38 @@ function snapOctilinear(bubbles: LondonBubble[], edges: Array<[number, number]>,
   }
 }
 
-/** Solve one node: the bubbles and connectors for its stopping lines. */
-function solveNode(lines: Line[], r: number, cover: number, reach: number, minSep: number): LondonCapsule {
-  // Whole-node single dot: one bubble slid to cover every line (a tight crossing
-  // or knot of any size).
-  const whole = coverCenter(lines, cover, reach);
-  if (whole) return { bubbles: [{ x: whole.x, y: whole.y, r }], necks: [] };
-
-  const N = lines.length;
-  if (N > NODE_MAX) {
-    // Rare mega crossing: fall back to one bubble per line so it still renders.
-    const bubbles = lines.map((L) => ({ x: L.px, y: L.py, r }));
-    return connect(bubbles, lines.map((L) => L.axisKey), r);
+/** Fallback for an over-large single bundle: pair adjacent lines by lateral
+ *  order, each pair a covering bubble (an uncoverable pair splits to singles). */
+function chainPair(lines: Line[], cover: number, reach: number): Array<{ x: number; y: number; axis: number }> {
+  const axis = lines[0].axisKey;
+  const [ux, uy] = axisUnit(axis < 0 ? 0 : axis);
+  const vx = -uy, vy = ux;
+  const sorted = [...lines].sort((a, b) => (a.px * vx + a.py * vy) - (b.px * vx + b.py * vy));
+  const out: Array<{ x: number; y: number; axis: number }> = [];
+  for (let i = 0; i < sorted.length; i += 2) {
+    const a = sorted[i];
+    if (i + 1 < sorted.length) {
+      const b = sorted[i + 1];
+      const c = coverCenter([a, b], cover, reach);
+      if (c) { out.push({ x: c.x, y: c.y, axis }); continue; }
+      out.push({ x: a.px, y: a.py, axis }, { x: b.px, y: b.py, axis });
+    } else out.push({ x: a.px, y: a.py, axis });
   }
+  return out;
+}
+
+/** Cluster one set of lines into placed bubbles (with each bubble's freedom
+ *  axis) by the scored partition. A set that fits under one bubble is a single
+ *  dot; otherwise it splits into the cheapest set of covering clusters. */
+function clusterLines(lines: Line[], r: number, cover: number, reach: number, minSep: number): Array<{ x: number; y: number; axis: number }> {
+  const whole = coverCenter(lines, cover, reach);
+  if (whole) {
+    let axis = lines[0].axisKey;
+    for (const L of lines) if (L.axisKey !== axis) { axis = -1; break; }
+    return [{ x: whole.x, y: whole.y, axis }];
+  }
+  const N = lines.length;
+  if (N > NODE_MAX) return chainPair(lines, cover, reach);
 
   // Coverable clusters (a bubble covers at most CLUSTER_MAX lines).
   const clusters: Cluster[] = [];
@@ -231,8 +250,7 @@ function solveNode(lines: Line[], r: number, cover: number, reach: number, minSe
     clusters.push({ mask, cx: c.x, cy: c.y, axis, slide });
   }
 
-  // Pick the partition (into clusters) of least cost: fewer bubbles, less slide,
-  // no touching.
+  // Pick the partition of least cost: fewer bubbles, less slide, no touching.
   let best: { cost: number; placed: ReturnType<typeof placePartition> } | null = null;
   for (const part of partitionsInto((1 << N) - 1, clusters)) {
     const placed = placePartition(part, r, minSep);
@@ -245,6 +263,40 @@ function solveNode(lines: Line[], r: number, cover: number, reach: number, minSe
     if (!best || cost < best.cost) best = { cost, placed };
   }
   const placed = best?.placed ?? lines.map((L) => ({ x: L.px, y: L.py, slide: 0, axis: L.axisKey }));
+  return placed.map((p) => ({ x: p.x, y: p.y, axis: p.axis }));
+}
+
+/** Solve one node: the bubbles and connectors for its stopping lines. */
+function solveNode(lines: Line[], r: number, cover: number, reach: number, minSep: number): LondonCapsule {
+  // Whole-node single dot: one bubble slid to cover every line (a tight crossing
+  // or knot of any size).
+  const whole = coverCenter(lines, cover, reach);
+  if (whole) return { bubbles: [{ x: whole.x, y: whole.y, r }], necks: [] };
+
+  let placed: Array<{ x: number; y: number; axis: number }>;
+  if (lines.length <= NODE_MAX) {
+    placed = clusterLines(lines, r, cover, reach, minSep);
+  } else {
+    // A large interchange (past the cross-axis search budget): pull the largest
+    // run-axis bundles out and pair each on its own until the rest fits the
+    // search, then cluster the rest together, so leftover junction lines of
+    // different axes can still share a crossing dot.
+    const byAxis = new Map<number, Line[]>();
+    for (const L of lines) {
+      let arr = byAxis.get(L.axisKey);
+      if (!arr) { arr = []; byAxis.set(L.axisKey, arr); }
+      arr.push(L);
+    }
+    const groups = [...byAxis.entries()].sort((a, b) => b[1].length - a[1].length || a[0] - b[0]);
+    placed = [];
+    const remaining: Line[] = [];
+    let remCount = lines.length;
+    for (const [, g] of groups) {
+      if (remCount > NODE_MAX) { placed.push(...clusterLines(g, r, cover, reach, minSep)); remCount -= g.length; }
+      else remaining.push(...g);
+    }
+    if (remaining.length) placed.push(...clusterLines(remaining, r, cover, reach, minSep));
+  }
   const bubbles = placed.map((p) => ({ x: p.x, y: p.y, r }));
   return connect(bubbles, placed.map((p) => p.axis), r);
 }

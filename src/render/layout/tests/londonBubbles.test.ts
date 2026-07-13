@@ -81,6 +81,15 @@ test('computeLondonByNode: same-axis-bundle connectors are snapped octilinear', 
 
 // ---- degenerate --------------------------------------------------------------
 
+test('computeLondonByNode: a large node clusters each run-axis bundle into pairs, not singles', () => {
+  // four vertical lines + four horizontal lines (8 > NODE_MAX): each bundle
+  // should pair into two bubbles, giving four, not split into eight singles
+  const vert = [-8.25, -2.75, 2.75, 8.25].map((x) => mark([x, 0], 2));
+  const horz = [-8.25, -2.75, 2.75, 8.25].map((y) => mark([0, y], 0));
+  const cap = compute([...vert, ...horz]);
+  assert.equal(cap.bubbles.length, 4, 'two bubbles per four-line bundle');
+});
+
 test('computeLondonByNode: single stops and mega nodes get no bubble', () => {
   const out = computeLondonByNode(new Map([
     ['single', [mark([0, 0])]],
