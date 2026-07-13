@@ -996,8 +996,12 @@ export function SchematicPanel() {
     const built = buildExportSvg();
     if (!built) return;
     const fmt = FORMATS.find((f) => f.id === exportFormat) ?? FORMATS[0];
+    // Tag the file with the displayed layout's city (same source as the map
+    // save), appended at the end like the dump filenames. Omitted if unknown.
+    const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || '';
+    const name = `improvedschematics-${mode}${city ? `-${city}` : ''}`;
     if (fmt.id === 'svg') {
-      triggerDownload(new Blob([built.markup], { type: fmt.mime }), fmt.ext);
+      triggerDownload(new Blob([built.markup], { type: fmt.mime }), fmt.ext, name);
       return;
     }
     const svgUrl = URL.createObjectURL(new Blob([built.markup], { type: 'image/svg+xml' }));
@@ -1019,7 +1023,7 @@ export function SchematicPanel() {
       URL.revokeObjectURL(svgUrl);
       canvas.toBlob(
         (blob) => {
-          if (blob) triggerDownload(blob, fmt.ext);
+          if (blob) triggerDownload(blob, fmt.ext, name);
         },
         fmt.mime,
         jpegQuality,
@@ -1027,7 +1031,7 @@ export function SchematicPanel() {
     };
     img.onerror = () => URL.revokeObjectURL(svgUrl);
     img.src = svgUrl;
-  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality]);
+  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality, mode, modState]);
 
   // Save the generated map to a JSON file, so reloading the mod can restore it instantly
   // instead of re-running the octi pipeline. The file mirrors EVERYTHING the per-city
