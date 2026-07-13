@@ -88,7 +88,7 @@ test('memoized geometry is reused across toggle changes (same object, not recomp
 // steps, so a pre serialized in between can carry the capsules WITHOUT the cropped
 // lanes. Drawing the rectangle design from such a partial geometry must degrade the
 // whole group together (plain fallback), not seat opaque boxes over uncropped lanes.
-test('a geometry missing tokyuLaneByLine degrades the whole rectangle group', () => {
+test('a geometry missing the cropped lanes degrades the whole rectangle group', () => {
   const pre = fresh();
   const rectOpts = { showLabels: true, showStations: true, stationDesign: 'tokyu' };
 
@@ -96,17 +96,17 @@ test('a geometry missing tokyuLaneByLine degrades the whole rectangle group', ()
   const svgRect = drawSmoothed(pre, rectOpts);
   const g = pre.geometry!;
   assert.ok(g.rectByNode && g.rectByNode.size > 0, 'fixture must seat at least one rectangle capsule');
-  assert.ok(g.tokyuLaneByLine && g.tokyuLaneByLine.size > 0, 'fixture must crop at least one lane');
+  assert.ok((g.croppedLaneByLine?.get('rectRows')?.size ?? 0) > 0, 'fixture must crop at least one lane');
 
   const rectMap = g.rectByNode;
   const stopMap = g.tokyuStopPos;
-  const laneMap = g.tokyuLaneByLine;
+  const laneMap = g.croppedLaneByLine;
 
   // Full fallback: none of the three rectangle fields present, so the rectangle
   // design paints its plain capsules over uncropped lanes.
   g.rectByNode = undefined;
   g.tokyuStopPos = undefined;
-  g.tokyuLaneByLine = undefined;
+  g.croppedLaneByLine = undefined;
   const svgFallback = drawSmoothed(pre, rectOpts);
 
   // The full rectangle draw really differs from the fallback, so the assertion
@@ -114,13 +114,13 @@ test('a geometry missing tokyuLaneByLine degrades the whole rectangle group', ()
   assert.notEqual(svgRect, svgFallback, 'rectangle geometry must change the drawn output');
 
   // Degraded cache: capsules and single positions present, cropped lanes absent.
-  // Because the three fields degrade as one group, this must equal the full
-  // fallback, never seat boxes over uncropped lanes.
+  // Because the group degrades together, this must equal the full fallback,
+  // never seat boxes over uncropped lanes.
   g.rectByNode = rectMap;
   g.tokyuStopPos = stopMap;
-  g.tokyuLaneByLine = undefined;
+  g.croppedLaneByLine = undefined;
   const svgDegraded = drawSmoothed(pre, rectOpts);
-  assert.equal(svgDegraded, svgFallback, 'a geometry missing tokyuLaneByLine must fully fall back');
+  assert.equal(svgDegraded, svgFallback, 'a geometry missing the cropped lanes must fully fall back');
 
-  g.tokyuLaneByLine = laneMap; // restore the memoized geometry
+  g.croppedLaneByLine = laneMap; // restore the memoized geometry
 });

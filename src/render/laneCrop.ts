@@ -23,6 +23,20 @@ export interface Box {
   y1: number;
 }
 
+/**
+ * A painted opaque marker shape a lane should terminate on. Any station design
+ * exposes its interchange footprint as CropShapes; the crop understands each
+ * kind, so a new design needs only to declare its shapes, never new crop code.
+ */
+export type CropShape =
+  | { kind: 'rect'; x0: number; y0: number; x1: number; y1: number }
+  | { kind: 'disc'; cx: number; cy: number; r: number };
+
+/** Shorter of a shape's two extents, for scaling the terminus extension cap. */
+export function shapeMinExtent(s: CropShape): number {
+  return s.kind === 'rect' ? Math.min(s.x1 - s.x0, s.y1 - s.y0) : 2 * s.r;
+}
+
 const EPS = 1e-9;
 
 const isInside = (p: Vec2, b: Box): boolean =>
@@ -162,5 +176,79 @@ export function cropLaneToRect(poly: Vec2[], box: Box, maxExt = 0): Vec2[] {
 
   // Unreachable within the extension cap: leave the lane unchanged rather than
   // fabricate geometry.
+  return poly.map((p) => [p[0], p[1]] as Vec2);
+}
+
+/**
+ * Crop a node-end-first lane polyline so its node end lands on an arbitrary
+ * painted marker shape. Dispatches to the shape-specific crop; the rect case is
+ * the unchanged rectangle crop, so a rectangle footprint stays byte-identical.
+ */
+export function cropLaneToShape(poly: Vec2[], shape: CropShape, maxExt = 0): Vec2[] {
+  if (shape.kind === 'rect') return cropLaneToRect(poly, { x0: shape.x0, x1: shape.x1, y0: shape.y0, y1: shape.y1 }, maxExt);
+  return cropLaneToDisc(poly, shape.cx, shape.cy, shape.r, maxExt);
+}
+
+// First crossing of segment a->b with the circle (center c, radius r), the
+// SMALLEST along-segment parameter s in (EPS, 1], or null when it does not
+// reach. Solves |a + s(b-a) - c|^2 = r^2. Math.sqrt only (correctly rounded
+// across V8), no transcendentals, so it is byte-identical offline and in-game.
+function firstCircleHit(a: Vec2, b: Vec2, cx: number, cy: number, r: number): { s: number; p: Vec2 } | null {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const A = dx * dx + dy * dy;
+  if (A < EPS) return null;
+  const fx = a[0] - cx, fy = a[1] - cy;
+  const B = 2 * (dx * fx + dy * fy);
+  const C = fx * fx + fy * fy - r * r;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  const inv = 1 / (2 * A);
+  let best = Infinity;
+  for (const s of [(-B - sq) * inv, (-B + sq) * inv]) if (s > EPS && s <= 1 + EPS && s < best) best = s;
+  if (!Number.isFinite(best)) return null;
+  return { s: best, p: [a[0] + best * dx, a[1] + best * dy] };
+}
+
+/** Crop (or, within maxExt, extend) a node-end-first lane to a disc boundary.
+ *  Mirrors cropLaneToRect: cut where the lane exits the disc (node end inside)
+ *  or where it first reaches it (node end outside), else extend the node end
+ *  straight along its own direction to the disc within maxExt. Never mutates. */
+function cropLaneToDisc(poly: Vec2[], cx: number, cy: number, r: number, maxExt: number): Vec2[] {
+  if (poly.length < 2) return poly.map((p) => [p[0], p[1]] as Vec2);
+  const inside = (p: Vec2): boolean => Math.sqrt((p[0] - cx) ** 2 + (p[1] - cy) ** 2) <= r + EPS;
+
+  if (inside(poly[0])) {
+    for (let i = 1; i < poly.length; i++) {
+      const hit = firstCircleHit(poly[i - 1], poly[i], cx, cy, r);
+      if (hit) return [hit.p, ...poly.slice(i).map((p) => [p[0], p[1]] as Vec2)];
+    }
+    return poly.map((p) => [p[0], p[1]] as Vec2);
+  }
+  for (let i = 1; i < poly.length; i++) {
+    const hit = firstCircleHit(poly[i - 1], poly[i], cx, cy, r);
+    if (hit) return [hit.p, ...poly.slice(i).map((p) => [p[0], p[1]] as Vec2)];
+  }
+
+  if (maxExt > 0) {
+    const ux = poly[0][0] - poly[1][0], uy = poly[0][1] - poly[1][1];
+    const ulen = Math.sqrt(ux * ux + uy * uy);
+    if (ulen > EPS) {
+      const A = ux * ux + uy * uy;
+      const fx = poly[0][0] - cx, fy = poly[0][1] - cy;
+      const B = 2 * (ux * fx + uy * fy);
+      const C = fx * fx + fy * fy - r * r;
+      const disc = B * B - 4 * A * C;
+      if (disc >= 0) {
+        const sq = Math.sqrt(disc);
+        const inv = 1 / (2 * A);
+        let bestT = Infinity;
+        for (const t of [(-B - sq) * inv, (-B + sq) * inv]) if (t > EPS && t < bestT) bestT = t;
+        if (Number.isFinite(bestT) && bestT * ulen <= maxExt) {
+          return [[poly[0][0] + bestT * ux, poly[0][1] + bestT * uy], ...poly.map((p) => [p[0], p[1]] as Vec2)];
+        }
+      }
+    }
+  }
   return poly.map((p) => [p[0], p[1]] as Vec2);
 }

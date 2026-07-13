@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeTokyuLaneCrops, type LaneCropTarget } from '../renderOctilinear';
+import { computeLaneCrops, type LaneCropTarget } from '../renderOctilinear';
 
 type P = [number, number];
 
@@ -22,9 +22,9 @@ test('crops a lane that overshoots through the box back to the box wall', () => 
   // Lane from A at [-30,0] running to B at [30,0]; box centered [0,0] side 20.
   const segPath = new Map<string, P[]>([['e|L1', [[-30, 0], [30, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   // node end now sits on the near (left) box wall x=-10.
   assert.deepEqual(firstM(d), [-10, 0]);
@@ -38,9 +38,9 @@ test('a lane stopping short of its terminus box is extended straight to the wall
   // extension cap, so a wall point is prepended at x=-10.
   const segPath = new Map<string, P[]>([['e|L1', [[-30, 0], [-40, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   assert.deepEqual(firstM(d), [-10, 0]);
 });
@@ -49,9 +49,9 @@ test('a lane far beyond the extension cap is left unchanged', () => {
   // The gap (170px) exceeds the cap (min(4*20, 48) = 48), so nothing is drawn.
   const segPath = new Map<string, P[]>([['e|L1', [[-180, 0], [-200, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   assert.deepEqual(firstM(d), [-180, 0]);
 });
@@ -69,9 +69,9 @@ test('an interior lane end (continued by the next lane) is never cropped', () =>
     ['e2|L1', [[0, 0], [30, 0]]],
   ]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'B', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+    { lineId: 'L1', flagNode: 'B', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, twoEdges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, twoEdges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   // Both lanes untouched: the d still starts at the original far end.
   assert.deepEqual(firstM(d), [-30, 0]);
@@ -81,9 +81,9 @@ test('an interior lane end (continued by the next lane) is never cropped', () =>
 test('shared-anchor target is skipped (lane left uncropped)', () => {
   const segPath = new Map<string, P[]>([['e|L1', [[-30, 0], [30, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: true },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: true },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   // untouched: node end stays at the original [-30,0].
   assert.deepEqual(firstM(d), [-30, 0]);
@@ -94,10 +94,10 @@ test('a through line is cropped at each incident node end independently', () => 
   // its box, cropping at B cuts the right end to its box.
   const segPath = new Map<string, P[]>([['e|L1', [[-30, 0], [30, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -30, y0: -5, x1: -20, y1: 5 }, shared: false },
-    { lineId: 'L1', flagNode: 'B', box: { x0: 20, y0: -5, x1: 30, y1: 5 }, shared: false },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -30, y0: -5, x1: -20, y1: 5 }, shared: false },
+    { lineId: 'L1', flagNode: 'B', shape: { kind: 'rect', x0: 20, y0: -5, x1: 30, y1: 5 }, shared: false },
   ];
-  const out = computeTokyuLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
   const d = out.get('L1')!.join(' ');
   // Left end cut to box A's right wall x=-20; right end cut to box B's left wall
   // x=20. The 'd' runs from the A end.
@@ -109,9 +109,9 @@ test('a through line is cropped at each incident node end independently', () => 
 test('determinism: identical targets yield identical output', () => {
   const segPath = () => new Map<string, P[]>([['e|L1', [[-30, 0], [30, 0]]]]);
   const targets: LaneCropTarget[] = [
-    { lineId: 'L1', flagNode: 'A', box: { x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
   ];
-  const a = computeTokyuLaneCrops(targets, segPath(), edges, joinCurves, FILLET);
-  const b = computeTokyuLaneCrops(targets, segPath(), edges, joinCurves, FILLET);
+  const a = computeLaneCrops(targets, segPath(), edges, joinCurves, FILLET);
+  const b = computeLaneCrops(targets, segPath(), edges, joinCurves, FILLET);
   assert.deepEqual([...a], [...b]);
 });
