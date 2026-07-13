@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cropLaneToShape, cropLaneToRect, type CropShape } from '../laneCrop';
+import { cropLaneToShape, cropLaneToRect, insetShape, type CropShape } from '../laneCrop';
 
 type P = [number, number];
 const onCircle = (p: P, cx: number, cy: number, r: number, tol = 1e-6) =>
@@ -53,6 +53,21 @@ test('cropLaneToShape disc: a lane that never reaches (no maxExt) is unchanged',
   const disc: CropShape = { kind: 'disc', cx: 0, cy: 0, r: 10 };
   const poly: P[] = [[20, 20], [40, 40]]; // stays outside, moving away
   assert.deepEqual(cropLaneToShape(poly, disc), poly);
+});
+
+test('insetShape shrinks a rect and a disc inward (clamped positive)', () => {
+  assert.deepEqual(insetShape({ kind: 'rect', x0: 0, y0: 0, x1: 20, y1: 20 }, 2), { kind: 'rect', x0: 2, y0: 2, x1: 18, y1: 18 });
+  assert.deepEqual(insetShape({ kind: 'disc', cx: 3, cy: -1, r: 10 }, 2), { kind: 'disc', cx: 3, cy: -1, r: 8 });
+  const tiny = insetShape({ kind: 'disc', cx: 0, cy: 0, r: 1 }, 5);
+  assert.ok(tiny.kind === 'disc' && tiny.r > 0, 'never collapses to a non-positive radius');
+});
+
+test('cropLaneToShape on an inset shape lands the lane inside the original boundary', () => {
+  // a lane through a disc of radius 10, cropped to the disc inset by 2, ends at
+  // radius 8 (2px inside the drawn boundary, so a stroke cap is covered)
+  const inset = insetShape({ kind: 'disc', cx: 0, cy: 0, r: 10 }, 2);
+  const out = cropLaneToShape([[-30, 0], [30, 0]], inset);
+  assert.deepEqual(out[0], [-8, 0]);
 });
 
 test('cropLaneToShape disc: deterministic on repeat', () => {

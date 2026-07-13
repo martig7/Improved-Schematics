@@ -28,7 +28,7 @@ import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from '
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
-import { cropLaneToShape, shapeMinExtent, type Box, type CropShape } from './laneCrop';
+import { cropLaneToShape, shapeMinExtent, insetShape, type Box, type CropShape } from './laneCrop';
 import { getStationDesign } from './stations';
 import { placesSvg, placesPrims, selectPlaces, DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
 import { renderStations } from './stations/render';
@@ -155,6 +155,7 @@ export function computeLaneCrops(
   edges: Array<{ id: string; from: string; to: string }>,
   joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }>,
   filletR: number,
+  inset = 0,
 ): Map<string, string[]> {
   // A shallow copy of the segPath map: entries start as the real polyline
   // references and are REPLACED (not mutated) with fresh cropped arrays, so the
@@ -227,7 +228,10 @@ export function computeLaneCrops(
     // arc, so allow a short straight extension to the capsule wall, scaled by
     // the capsule's thin side and hard-bounded so no long fabrication can slip
     // through even at a wide row capsule.
-    const maxExt = Math.min(4 * shapeMinExtent(t.shape), 48);
+    // Crop to the shape pulled in by the inset, so the stroke's round cap ends
+    // under the marker rather than poking past its edge.
+    const shape = inset > 0 ? insetShape(t.shape, inset) : t.shape;
+    const maxExt = Math.min(4 * shapeMinExtent(shape), 48);
     for (const e of inc) {
       const key = e.id + '|' + t.lineId;
       const poly = cropSeg.get(key);
@@ -236,7 +240,7 @@ export function computeLaneCrops(
       const atStart = e.from === t.flagNode;
       const nodeFirst = atStart ? poly : [...poly].reverse();
       if (!isFreeEnd(t.lineId, nodeFirst[0])) continue; // endings only
-      const cropped = cropLaneToShape(nodeFirst, t.shape, maxExt);
+      const cropped = cropLaneToShape(nodeFirst, shape, maxExt);
       const back = atStart ? cropped : [...cropped].reverse();
       cropSeg.set(key, back);
     }
@@ -3529,7 +3533,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // The real dByLine above is untouched, so a design whose regime is absent stays
   // byte-identical.
   for (const [regime, targets] of cropTargetsByRegime) {
-    cropDPartsByRegime.set(regime, computeLaneCrops(targets, segPath, layout.edges, joinCurves, FILLET_R));
+    cropDPartsByRegime.set(regime, computeLaneCrops(targets, segPath, layout.edges, joinCurves, FILLET_R, LINE_WIDTH / 2));
   }
 
   // Node connectors: where a line continues across a node between two edges

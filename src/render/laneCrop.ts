@@ -37,6 +37,20 @@ export function shapeMinExtent(s: CropShape): number {
   return s.kind === 'rect' ? Math.min(s.x1 - s.x0, s.y1 - s.y0) : 2 * s.r;
 }
 
+/** Shrink a shape inward by `d` on every side (clamped to a positive minimum).
+ *  Cropping to the inset shape lands a lane's centerline `d` inside the marker,
+ *  so the drawn stroke's round cap (radius = half the line width) is covered by
+ *  the marker instead of poking past its edge. */
+export function insetShape(s: CropShape, d: number): CropShape {
+  if (s.kind === 'rect') {
+    const cx = (s.x0 + s.x1) / 2, cy = (s.y0 + s.y1) / 2;
+    const hx = Math.max(1e-3, (s.x1 - s.x0) / 2 - d);
+    const hy = Math.max(1e-3, (s.y1 - s.y0) / 2 - d);
+    return { kind: 'rect', x0: cx - hx, x1: cx + hx, y0: cy - hy, y1: cy + hy };
+  }
+  return { kind: 'disc', cx: s.cx, cy: s.cy, r: Math.max(1e-3, s.r - d) };
+}
+
 const EPS = 1e-9;
 
 const isInside = (p: Vec2, b: Box): boolean =>
