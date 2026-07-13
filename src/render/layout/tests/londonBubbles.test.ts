@@ -70,6 +70,15 @@ test('computeLondonByNode: bubbles at a node are connected by one fewer neck tha
   assert.equal(cap.necks.length, cap.bubbles.length - 1, 'a spanning tree of connectors');
 });
 
+test('computeLondonByNode: same-axis-bundle connectors are snapped octilinear', () => {
+  const octi = (nk: { x0: number; y0: number; x1: number; y1: number }) => {
+    const dx = nk.x1 - nk.x0, dy = nk.y1 - nk.y0;
+    return Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6 || Math.abs(Math.abs(dx) - Math.abs(dy)) < 1e-6;
+  };
+  const cap = compute([mark([0, 0]), mark([0, 7]), mark([0, 14]), mark([0, 21])]);
+  assert.ok(cap.necks.length > 0 && cap.necks.every(octi), 'every connector runs octilinear');
+});
+
 // ---- degenerate --------------------------------------------------------------
 
 test('computeLondonByNode: single stops and mega nodes get no bubble', () => {

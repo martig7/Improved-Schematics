@@ -31,6 +31,7 @@ const NECK_GAP = 2;         // desired clear gap between bead edges
 const TOUCH_TOL = 1;        // extra clearance demanded, so a bare graze still counts as touching
 const CLUSTER_MAX = 3;      // most lines one bubble is allowed to cover
 const NODE_MAX = 7;         // above this, skip the full search (rare mega crossings)
+const SNAP_OCTI = true;     // snap connectors onto octilinear directions after placement
 const S = 0.7071067811865476; // sqrt(1/2), a literal for cross-V8 byte-identity
 
 /** Unit run-axis direction (0=-, 1=\, 2=|, 3=/); an absent axis is horizontal. */
@@ -119,12 +120,12 @@ function overlapPen(ax: number, ay: number, bx: number, by: number, minSep: numb
 /** Place one partition's bubbles: crossing (mixed-axis) clusters anchor at their
  *  center; a same-axis cluster slides along its run-axis to the position that
  *  best clears the already-placed bubbles for the least slide. */
-function placePartition(part: Cluster[], r: number, minSep: number): Array<{ x: number; y: number; slide: number }> {
+function placePartition(part: Cluster[], r: number, minSep: number): Array<{ x: number; y: number; slide: number; axis: number }> {
   const STEP = r * 0.35, K = 10;
   const order = part.map((cl, i) => ({ cl, i }))
     .sort((a, b) => (a.cl.axis === -1 ? 0 : 1) - (b.cl.axis === -1 ? 0 : 1)
       || popcount(b.cl.mask) - popcount(a.cl.mask) || a.cl.mask - b.cl.mask);
-  const placed: Array<{ x: number; y: number; slide: number; i: number }> = [];
+  const placed: Array<{ x: number; y: number; slide: number; i: number; axis: number }> = [];
   for (const { cl, i } of order) {
     const cands: Array<{ x: number; y: number; slide: number }> = [];
     if (cl.axis === -1) cands.push({ x: cl.cx, y: cl.cy, slide: 0 });
@@ -138,17 +139,18 @@ function placePartition(part: Cluster[], r: number, minSep: number): Array<{ x: 
       for (const p of placed) cost += overlapPen(cand.x, cand.y, p.x, p.y, minSep);
       if (cost < bestCost) { bestCost = cost; best = cand; }
     }
-    placed.push({ ...best, i });
+    placed.push({ ...best, i, axis: cl.axis });
   }
   placed.sort((a, b) => a.i - b.i);
-  return placed.map((p) => ({ x: p.x, y: p.y, slide: p.slide }));
+  return placed.map((p) => ({ x: p.x, y: p.y, slide: p.slide, axis: p.axis }));
 }
 
-/** Minimum spanning tree of the bubbles, as connector bars (Prim's, index-stable). */
-function mstNecks(bubbles: LondonBubble[], w: number): LondonNeck[] {
+/** Minimum spanning tree of the bubbles as parent->child edges, in Prim add
+ *  order (so every parent precedes its children). Index-stable. */
+function mstEdges(bubbles: LondonBubble[]): Array<[number, number]> {
   const n = bubbles.length;
-  const necks: LondonNeck[] = [];
-  if (n <= 1) return necks;
+  const edges: Array<[number, number]> = [];
+  if (n <= 1) return edges;
   const inTree = new Array<boolean>(n).fill(false);
   inTree[0] = true;
   for (let added = 1; added < n; added++) {
@@ -162,9 +164,40 @@ function mstNecks(bubbles: LondonBubble[], w: number): LondonNeck[] {
       }
     }
     inTree[bv] = true;
-    necks.push({ x0: bubbles[bu].x, y0: bubbles[bu].y, x1: bubbles[bv].x, y1: bubbles[bv].y, w });
+    edges.push([bu, bv]);
   }
-  return necks;
+  return edges;
+}
+
+const OCTI_DIRS: Array<[number, number]> = [[1, 0], [0, 1], [S, S], [-S, S]];
+
+/** Constraint pass: walk the MST parent-first and slide each child along its
+ *  run-axis so its connector to the (already-fixed) parent lands on the nearest
+ *  octilinear direction, choosing the least slide that keeps every bubble clear.
+ *  A fixed crossing cluster (axis < 0) has no freedom, so its connector is left
+ *  as drawn. */
+function snapOctilinear(bubbles: LondonBubble[], edges: Array<[number, number]>, axisOf: number[], twoR: number): void {
+  const maxSlide = twoR;
+  for (const [p, c] of edges) {
+    if (axisOf[c] < 0) continue;
+    const [ax, ay] = axisUnit(axisOf[c]);
+    const vx0 = bubbles[c].x - bubbles[p].x, vy0 = bubbles[c].y - bubbles[p].y;
+    let bestT: number | null = null, bestAbs = Infinity;
+    for (const [dx, dy] of OCTI_DIRS) {
+      const denom = ax * dy - ay * dx; // component of the run-axis across d
+      if (Math.abs(denom) < 1e-9) continue;
+      const t = -(vx0 * dy - vy0 * dx) / denom; // slide making (child - parent) parallel to d
+      if (Math.abs(t) >= bestAbs || Math.abs(t) > maxSlide + 1e-9) continue;
+      const nx = bubbles[c].x + t * ax, ny = bubbles[c].y + t * ay;
+      let ok = true;
+      for (let i = 0; i < bubbles.length; i++) {
+        if (i === c) continue;
+        if (Math.sqrt((nx - bubbles[i].x) ** 2 + (ny - bubbles[i].y) ** 2) < twoR - 1e-9) { ok = false; break; }
+      }
+      if (ok) { bestAbs = Math.abs(t); bestT = t; }
+    }
+    if (bestT !== null) { bubbles[c].x += bestT * ax; bubbles[c].y += bestT * ay; }
+  }
 }
 
 /** Solve one node: the bubbles and connectors for its stopping lines. */
@@ -178,7 +211,7 @@ function solveNode(lines: Line[], r: number, cover: number, reach: number, minSe
   if (N > NODE_MAX) {
     // Rare mega crossing: fall back to one bubble per line so it still renders.
     const bubbles = lines.map((L) => ({ x: L.px, y: L.py, r }));
-    return { bubbles, necks: mstNecks(bubbles, r) };
+    return connect(bubbles, lines.map((L) => L.axisKey), r);
   }
 
   // Coverable clusters (a bubble covers at most CLUSTER_MAX lines).
@@ -200,7 +233,7 @@ function solveNode(lines: Line[], r: number, cover: number, reach: number, minSe
 
   // Pick the partition (into clusters) of least cost: fewer bubbles, less slide,
   // no touching.
-  let best: { cost: number; placed: Array<{ x: number; y: number }> } | null = null;
+  let best: { cost: number; placed: ReturnType<typeof placePartition> } | null = null;
   for (const part of partitionsInto((1 << N) - 1, clusters)) {
     const placed = placePartition(part, r, minSep);
     let cost = part.length * BUBBLE_COST;
@@ -211,9 +244,18 @@ function solveNode(lines: Line[], r: number, cover: number, reach: number, minSe
     }
     if (!best || cost < best.cost) best = { cost, placed };
   }
-  const placed = best?.placed ?? lines.map((L) => ({ x: L.px, y: L.py }));
+  const placed = best?.placed ?? lines.map((L) => ({ x: L.px, y: L.py, slide: 0, axis: L.axisKey }));
   const bubbles = placed.map((p) => ({ x: p.x, y: p.y, r }));
-  return { bubbles, necks: mstNecks(bubbles, r) };
+  return connect(bubbles, placed.map((p) => p.axis), r);
+}
+
+/** Join the bubbles with an MST, snapping each connector octilinear where the
+ *  child bubble has the freedom to slide (leaving fixed crossing beads as drawn). */
+function connect(bubbles: LondonBubble[], axisOf: number[], r: number): LondonCapsule {
+  const edges = mstEdges(bubbles);
+  if (SNAP_OCTI) snapOctilinear(bubbles, edges, axisOf, 2 * r);
+  const necks = edges.map(([a, b]): LondonNeck => ({ x0: bubbles[a].x, y0: bubbles[a].y, x1: bubbles[b].x, y1: bubbles[b].y, w: r }));
+  return { bubbles, necks };
 }
 
 /**
