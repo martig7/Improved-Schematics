@@ -5,12 +5,13 @@
  * projects them through the warped projection at precompute time so the
  * names deform with the network. Painting is a cheap toggle-gated repaint.
  *
- * Sizing is normalized across modes. Geographic authors on a base-2700 canvas
- * while smoothed grows past it, so a world-space font that looks right in one
- * mode is wrong in the other. Every world measurement here (font, declutter
- * spacing, margin) is expressed in base-2700 units and rescaled by
- * `min(width, height) / 2700` at projection/paint, so one setting produces the
- * same on-screen result in both modes.
+ * We do NOT declutter the harvested points: the game's tile pipeline already
+ * thins place labels per zoom, so the harvested set is deconflicted by
+ * construction. We just project, drop the off-canvas ones, and render.
+ *
+ * The paint font is sized off the fit FRAME (the water/green extent the panel
+ * fits to), not the canvas, so one setting produces the same on-screen size in
+ * both modes; see placeFrameScale.
  */
 
 import type { GeographyData } from '../geography/types';
@@ -18,7 +19,7 @@ import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
 import { LABEL_FONT_SIZE } from './constants';
 
-/** One projected, declutter-surviving place label, ready to paint. */
+/** One projected place label, ready to paint. */
 export interface PlacePx {
   name: string;
   px: [number, number];
@@ -27,15 +28,10 @@ export interface PlacePx {
 
 // Area-label typography: larger and quieter than station labels, uppercase.
 // Base-2700 reference size; the paint font is this times the user multiplier
-// times the per-mode canvas scale.
+// times the per-mode frame scale.
 export const PLACE_FONT_SIZE = LABEL_FONT_SIZE * 1.5;
 const FILL_DARK = 'rgba(190,193,201,0.55)';
 const FILL_LIGHT = 'rgba(90,92,100,0.55)';
-
-/** Minimum center distance between two kept labels, base-2700 world px. */
-const MIN_DIST = 150;
-/** Hard cap per kind so a label-dense basemap cannot wallpaper the canvas. */
-const MAX_LABELS = 90;
 
 /** Human-facing name for each place kind (for the layer dropdown). */
 const KIND_LABEL: Record<string, string> = {
@@ -70,12 +66,11 @@ export function placeKinds(geo: GeographyData | undefined): string[] {
 export const placeFrameScale = (frameW: number, frameH: number): number => Math.max(frameW, frameH) / 2700;
 
 /**
- * Project every harvested place through `proj` and declutter WITHIN each kind:
- * only one kind is ever shown at a time, so a label competes only with kept
- * labels of its own kind. Kept name-first (deterministic for a given harvest);
- * each newcomer must clear every same-kind kept label by MIN_DIST; points
- * outside the canvas margin are dropped. Spacing and margin scale per mode so
- * the declutter density matches on screen.
+ * Project every harvested place through `proj`. No decluttering: the game's tile
+ * pipeline already thins labels per zoom, so the harvested set is deconflicted
+ * by construction. Points landing outside the canvas margin are dropped, and the
+ * result is name-sorted so the emitted SVG is deterministic regardless of
+ * harvest order. The `scale` only sizes the off-canvas margin.
  */
 export function projectPlaces(
   geo: GeographyData | undefined,
@@ -86,28 +81,17 @@ export function projectPlaces(
 ): PlacePx[] {
   const places = geo?.places;
   if (!places || places.length === 0) return [];
-  const minDist = MIN_DIST * scale;
   const margin = PLACE_FONT_SIZE * scale;
   const sorted = [...places].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const keptByKind = new Map<string, PlacePx[]>();
+  const out: PlacePx[] = [];
   for (const p of sorted) {
     if (!p.name) continue;
-    const kept = keptByKind.get(p.kind) ?? [];
-    if (kept.length >= MAX_LABELS) continue;
     const [x, y] = proj.toSVG(p.coord);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     if (x < -margin || y < -margin || x > width + margin || y > height + margin) continue;
-    let clear = true;
-    for (const k of kept) {
-      const dx = x - k.px[0];
-      const dy = y - k.px[1];
-      if (dx * dx + dy * dy < minDist * minDist) { clear = false; break; }
-    }
-    if (!clear) continue;
-    kept.push({ name: p.name, px: [+x.toFixed(1), +y.toFixed(1)], kind: p.kind });
-    keptByKind.set(p.kind, kept);
+    out.push({ name: p.name, px: [+x.toFixed(1), +y.toFixed(1)], kind: p.kind });
   }
-  return [...keptByKind.values()].flat();
+  return out;
 }
 
 /** Keep only the labels of the chosen kind; an unset kind shows every kind. */

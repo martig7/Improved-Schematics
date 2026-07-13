@@ -9,36 +9,30 @@ const geo = (places: GeographyData['places']): GeographyData => ({
   bbox: [0, 0, 3000, 3000], water: [], green: [], places,
 });
 
-test('projectPlaces declutters within a kind, not across kinds', () => {
+test('projectPlaces keeps every named place; no decluttering (game thins by construction)', () => {
   const g = geo([
-    // two neighbourhoods 60px apart: only one survives (same kind conflict)
+    // three points within a tight cluster: ALL kept (we do not declutter)
     { name: 'Little Corner', coord: [500, 500], kind: 'neighbourhood' },
-    { name: 'Other Corner', coord: [540, 540], kind: 'neighbourhood' },
-    // a suburb at the same spot as a neighbourhood: different kind, both kept
+    { name: 'Other Corner', coord: [510, 510], kind: 'neighbourhood' },
     { name: 'Big Suburb', coord: [520, 520], kind: 'suburb' },
-    // far away, kept
     { name: 'Elsewhere', coord: [100, 100], kind: 'quarter' },
     // off-canvas, dropped
     { name: 'Offscreen', coord: [9000, 9000], kind: 'suburb' },
+    // unnamed, dropped
+    { name: '', coord: [200, 200], kind: 'suburb' },
   ]);
   const kept = projectPlaces(g, identity, 2700, 2700);
-  // name-first keep order: 'Little Corner' < 'Other Corner' so it wins its kind
-  assert.deepEqual(kept.map((p) => p.name).sort(), ['Big Suburb', 'Elsewhere', 'Little Corner']);
+  assert.deepEqual(kept.map((p) => p.name), ['Big Suburb', 'Elsewhere', 'Little Corner', 'Other Corner'], 'all named on-canvas kept, name-sorted');
   assert.deepEqual(projectPlaces(g, identity, 2700, 2700), kept, 'deterministic on repeat');
 });
 
-test('projectPlaces declutter spacing scales with the given scale so density matches on screen', () => {
-  // Two same-kind points 200px apart in world coords.
+test('projectPlaces drops points beyond the off-canvas margin only', () => {
   const g = geo([
-    { name: 'Alpha', coord: [1000, 1000], kind: 'suburb' },
-    { name: 'Beta', coord: [1200, 1000], kind: 'suburb' },
+    { name: 'In', coord: [1350, 1350], kind: 'suburb' },
+    { name: 'JustOff', coord: [2705, 1350], kind: 'suburb' }, // within margin at scale 1 (margin ~16.5)
+    { name: 'FarOff', coord: [3200, 1350], kind: 'suburb' },
   ]);
-  // scale 1: minDist 150 (150 < 200), both survive.
-  assert.equal(projectPlaces(g, identity, 2700, 2700, 1).length, 2);
-  // scale 2: minDist 300 (> 200), the second is decluttered away.
-  assert.equal(projectPlaces(g, identity, 2700, 2700, 2).length, 1);
-  // Default scale derives from the frame (here the canvas): max(2700,2700)/2700 = 1.
-  assert.equal(projectPlaces(g, identity, 2700, 2700).length, 2);
+  assert.deepEqual(projectPlaces(g, identity, 2700, 2700, 1).map((p) => p.name), ['In', 'JustOff']);
 });
 
 test('placeFrameScale keys off the larger frame dimension over the 2700 base', () => {
