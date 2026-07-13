@@ -7,6 +7,7 @@ import { tokyu } from '../tokyu';
 import { tokyo } from '../tokyo';
 import { tokyoMetro } from '../tokyoMetro';
 import { london } from '../london';
+import { toronto } from '../toronto';
 import type { StopScene, Point } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
@@ -395,6 +396,64 @@ test('london: tick weight never exceeds the line, and shrinks with a capsule-shr
   const full = lineOf(london.paint(single, ctx))[0].strokeWidth;
   const small = lineOf(london.paint(shrunk, ctx))[0].strokeWidth;
   assert.ok(small < full, 'a smaller dot yields a thinner tick');
+});
+
+const tCircles = (gs: ReturnType<typeof toronto.paint>) => gs.filter((g) => g.kind === 'circle') as Array<{ cx: number; cy: number; r: number; fill: string }>;
+const tPaths = (gs: ReturnType<typeof toronto.paint>) => gs.filter((g) => g.kind === 'path') as Array<{ d: string; fill: string; stroke: string }>;
+
+test('toronto: a single stop is a blank black-ringed white circle, no bullet', () => {
+  const gs = toronto.paint(single(), ctx);
+  assert.ok(!gs.some((g) => g.kind === 'text'), 'blank: no bullet');
+  const cs = tCircles(gs);
+  assert.equal(cs.length, 2, 'expand-and-overdraw: ink disc then paper disc');
+  const [ink, paper] = cs;
+  assert.equal(ink.fill, '#111111');
+  assert.equal(paper.fill, '#ffffff');
+  assert.ok(ink.r > paper.r, 'the ink disc carries the ring');
+  // the white circle sits at the stop position
+  assert.ok(Math.abs(paper.cx - 10) < 1e-9 && Math.abs(paper.cy - 10) < 1e-9);
+});
+
+test('toronto interchange: white pill (black border), a black dot per station, spine tracing the capsule', () => {
+  const sc: StopScene = {
+    nodeId: 'n',
+    lines: [
+      { lineId: 'L1', color: '#dc2626', bullet: 'A', textColor: '', pos: [0, 0], chain: 0 },
+      { lineId: 'L2', color: '#0000ff', bullet: 'B', textColor: '', pos: [0, 60], chain: 1 },
+    ],
+    capsule: { kind: 'pill', points: [[0, 0], [0, 60]], smooth: false },
+    anchor: [0, 30], dotRadius: 6,
+  };
+  const gs = toronto.paint(sc, ctx);
+  const paths = tPaths(gs);
+  // capsule border + fill, then the connector spine
+  assert.equal(paths.length, 3);
+  assert.equal(paths[0].stroke, '#111111', 'border path');
+  assert.equal(paths[1].stroke, '#ffffff', 'white fill path');
+  const spine = paths[2];
+  assert.equal(spine.stroke, '#111111', 'spine is ink');
+  assert.equal(spine.d, 'M 0.0 0.0 L 0.0 60.0', 'spine traces the capsule points, not a guessed path');
+  // one black dot per station, at each stop position
+  const dots = tCircles(gs).filter((c) => c.fill === '#111111');
+  assert.equal(dots.length, 2);
+  assert.ok(dots.some((d) => Math.abs(d.cy) < 1e-9) && dots.some((d) => Math.abs(d.cy - 60) < 1e-9));
+});
+
+test('toronto crossing: a ring capsule is one white circle with a single black dot', () => {
+  const sc: StopScene = { nodeId: 'n', lines: [], capsule: { kind: 'ring', cx: 5, cy: 7, r: 6 }, anchor: [5, 7], dotRadius: 6 };
+  const gs = toronto.paint(sc, ctx);
+  const cs = tCircles(gs);
+  assert.equal(cs.length, 3, 'ink disc + paper disc + one black dot');
+  const ink = cs.filter((c) => c.fill === '#111111');
+  const paper = cs.filter((c) => c.fill === '#ffffff');
+  assert.equal(paper.length, 1, 'white circle');
+  assert.equal(ink.length, 2, 'black ring + black crossing dot');
+  for (const c of cs) assert.ok(Math.abs(c.cx - 5) < 1e-9 && Math.abs(c.cy - 7) < 1e-9, 'all concentric at the crossing');
+});
+
+test('toronto: requests the toronto capsule regime and an interchange preview', () => {
+  assert.equal(toronto.capsule, 'toronto');
+  assert.equal(toronto.previewKind, 'interchange');
 });
 
 test('tokyoMetro interchange rides the shared rectRows capsule painter', () => {

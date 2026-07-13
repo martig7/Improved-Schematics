@@ -28,6 +28,7 @@ import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from '
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
+import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { cropLaneToShape, shapeMinExtent, insetShape, type Box, type CropShape } from './laneCrop';
 import { getStationDesign } from './stations';
 import { placesSvg, placesPrims, selectPlaces, DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, PLACE_FONT_SIZE, type PlacePx } from './neighborhoods';
@@ -460,6 +461,11 @@ export interface RibbonGeometry {
    *  absent in geometry serialized before it existed; the London design then
    *  falls back to per-line ticks at those interchanges. */
   bubbleByNode?: Map<string, LondonCapsule>;
+  /** Per-node Toronto direct-intersection center (a perfect crossing collapsed
+   *  to one dot), built from the final mark positions. Design-agnostic and inert
+   *  for non-Toronto designs. OPTIONAL: absent in geometry serialized before it
+   *  existed; the Toronto design then paints those crossings as pills. */
+  torontoByNode?: Map<string, TorontoCross>;
 }
 
 // Repaint memo of label placements per geometry (see the paintRibbons label
@@ -694,6 +700,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // it is design-agnostic); consumed both by the London design and by its lane
   // crop below. Empty for non-station renders.
   let bubbleByNode = new Map<string, LondonCapsule>();
+  // Toronto direct-intersection centers, from the final marks (design-agnostic);
+  // consumed by the Toronto design to collapse a perfect crossing to one dot.
+  let torontoByNode = new Map<string, TorontoCross>();
   // Per-capsule-regime lane crops: for each design regime that paints an opaque
   // interchange footprint (rectRows boxes, londonBubbles discs), the per-line 'd'
   // command arrays from a lane bundle cropped to that footprint, filled at emit
@@ -3396,6 +3405,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // London bubbles, from the final marks; used just below for the London lane
     // crop footprint and returned for the London design to paint from.
     bubbleByNode = computeLondonByNode(stopsByNode, LINE_WIDTH);
+    torontoByNode = computeTorontoByNode(stopsByNode);
 
     // Lane-crop targets: for every mark that resolved to a seated rect box, the
     // exact DRAWN capsule rect its lane should end on. A multi-line mark crops to
@@ -3722,7 +3732,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // once here instead of on every repaint that lacks a geography frame.
   const frameRect = contentFrame(nodePx, layout.edges, edgePolyline, args.width, args.height);
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3758,6 +3768,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const rectByNode = isRect ? geom.rectByNode : undefined;
   const rectStopPos = isRect ? geom.tokyuStopPos : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? geom.bubbleByNode : undefined;
+  const torontoByNode = activeCapsule === 'toronto' ? geom.torontoByNode : undefined;
   for (const [lineId, line] of lineById) {
     const d = dByLine.get(lineId);
     if (!d || d.length < 2) continue;
@@ -3846,7 +3857,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode },
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;

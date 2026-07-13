@@ -21,8 +21,10 @@ export interface PlacementCtx {
   members?: Map<string, number>;
   deg?: Map<string, number>;
   /** Interchange capsule regime the active design wants. 'rectRows' triggers the
-   *  upright-box rectangle seating for multi-line, non-mega stations. */
-  capsuleMode?: 'pill' | 'rectRows';
+   *  upright-box rectangle seating for multi-line, non-mega stations;
+   *  'londonBubbles' the paired ticket-hall bubbles; 'toronto' the crossing
+   *  collapse (perfect intersections become one dot, else a pill). */
+  capsuleMode?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto';
   /** Precomputed rectangle-capsule geometry per node (seated + cross-station
    *  deconflicted at compute time). Read only in the 'rectRows' branch; when a
    *  node has an entry the scene is built from it with no draw-time seating. */
@@ -33,6 +35,9 @@ export interface PlacementCtx {
   /** Precomputed London bubble-chain geometry per node. Read only in the
    *  'londonBubbles' branch; when a node has an entry the scene is built from it. */
   bubbleByNode?: Map<string, LondonCapsule>;
+  /** Precomputed Toronto direct-intersection centers per node. Read only in the
+   *  'toronto' branch; a node with an entry collapses to one crossing dot. */
+  torontoByNode?: Map<string, { cx: number; cy: number }>;
 }
 
 const toLine = (mk: StopMark): StopLine => ({
@@ -109,6 +114,14 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
     for (const b of bubbles) { cx += b.x; cy += b.y; }
     const n = bubbles.length || 1;
     return { nodeId, lines, capsule: { kind: 'londonBubbles', bubbles, necks }, anchor: [cx / n, cy / n], dotRadius };
+  }
+
+  // Toronto direct intersection: a node whose lines truly cross at a point
+  // collapses to one crossing dot; every other multi-line node falls through to
+  // the pill below (a capsule with a dot per station).
+  const cross = ctx.capsuleMode === 'toronto' && isCapsule ? ctx.torontoByNode?.get(nodeId) : undefined;
+  if (cross) {
+    return { nodeId, lines: [], capsule: { kind: 'ring', cx: cross.cx, cy: cross.cy, r: R0 + 3 }, anchor: [cross.cx, cross.cy], dotRadius };
   }
 
   // farthest pair: axis start (a) + max separation (best); memoized on the

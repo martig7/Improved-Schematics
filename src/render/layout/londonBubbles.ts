@@ -19,7 +19,7 @@ export interface LondonCapsule { bubbles: LondonBubble[]; necks: LondonNeck[] }
 /** The mark fields the solve needs: bundle axis, position, mega flag. */
 interface BubbleMark { axis?: number; pos: [number, number]; mega?: boolean }
 /** A line to cover: unit run-axis direction, stop position, and axis key (-1 = none). */
-interface Line { ux: number; uy: number; px: number; py: number; axisKey: number }
+export interface Line { ux: number; uy: number; px: number; py: number; axisKey: number }
 
 const R_FACTOR = 1.5;
 const COVER_MARGIN = 0.5;   // half the stroke may poke past a covering bubble
@@ -35,7 +35,7 @@ const SNAP_OCTI = true;     // snap connectors onto octilinear directions after 
 const S = 0.7071067811865476; // sqrt(1/2), a literal for cross-V8 byte-identity
 
 /** Unit run-axis direction (0=-, 1=\, 2=|, 3=/); an absent axis is horizontal. */
-function axisUnit(axis: number): [number, number] {
+export function axisUnit(axis: number): [number, number] {
   switch (((axis % 4) + 4) % 4) {
     case 1: return [S, S];
     case 2: return [0, 1];
@@ -53,7 +53,7 @@ function axisUnit(axis: number): [number, number] {
  * groups for the point, and accept it only when it covers every line and stays
  * within the footprint. Uses only arithmetic, so it is byte-identical across V8.
  */
-function coverCenter(lines: Line[], cover: number, reach: number): { x: number; y: number } | null {
+export function coverCenter(lines: Line[], cover: number, reach: number): { x: number; y: number } | null {
   const groups = new Map<string, { nx: number; ny: number; min: number; max: number }>();
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const L of lines) {

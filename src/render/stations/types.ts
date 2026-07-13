@@ -78,7 +78,7 @@ export interface StationDesign {
   /** Interchange capsule regime the design wants placement to produce. Default
    *  'pill'. 'rectRows' triggers the upright-box rectangle seating;
    *  'londonBubbles' the paired ticket-hall bubbles. */
-  capsule?: 'pill' | 'rectRows' | 'londonBubbles';
+  capsule?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto';
   /** Paint one station into a draw list (capsule glyphs first, dots/bullets
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];

@@ -21,6 +21,9 @@ export interface RenderStationsCtx {
   /** Precomputed London bubble-chain interchange geometry per node. Read only by
    *  the London design. */
   bubbleByNode?: Map<string, LondonCapsule>;
+  /** Precomputed Toronto direct-intersection centers per node. Read only by the
+   *  Toronto design. */
+  torontoByNode?: Map<string, { cx: number; cy: number }>;
 }
 
 /** Draw every station's marker with the chosen design. Returns the per-marker
@@ -45,7 +48,7 @@ export function renderStations(
     const scene = buildScene(nodeId, marks, {
       megaFallback: ctx.megaFallback, members: ctx.members, deg: ctx.deg,
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
-      bubbleByNode: ctx.bubbleByNode,
+      bubbleByNode: ctx.bubbleByNode, torontoByNode: ctx.torontoByNode,
     });
     built.push({ nodeId, marks, scene });
   }
