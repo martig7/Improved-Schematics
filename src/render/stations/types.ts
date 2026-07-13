@@ -19,6 +19,8 @@ export interface StopLine {
   axis?: number;      // octilinear run-axis of the line at this stop (0=-, 1=/, 2=|, 3=\), mod 180 deg
   dir?: Point;        // exact unit tangent of the line at this stop (unquantized); tick markers strike strictly perpendicular to it
   terminus?: boolean; // the line ends at this stop (loops have no terminus); tick markers cap it with a full two-sided tick
+  outward?: Point;    // unit vector from the bundle's drawn centerline toward this lane; a one-sided tick strikes toward it (away from co-running lanes). Absent for a centered/isolated lane
+
 }
 
 /** Design-agnostic capsule (interchange) geometry, from placement. */

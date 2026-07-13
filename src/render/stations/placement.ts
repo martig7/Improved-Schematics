@@ -46,6 +46,7 @@ const toLine = (mk: StopMark): StopLine => ({
   axis: mk.axis,
   dir: mk.dir ? [mk.dir[0], mk.dir[1]] : undefined,
   terminus: mk.terminus,
+  outward: mk.outward ? [mk.outward[0], mk.outward[1]] : undefined,
 });
 
 const median = (vals: number[]): number => {

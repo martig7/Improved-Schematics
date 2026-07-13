@@ -7,7 +7,7 @@ import { tokyu } from '../tokyu';
 import { tokyo } from '../tokyo';
 import { tokyoMetro } from '../tokyoMetro';
 import { london } from '../london';
-import type { StopScene } from '../types';
+import type { StopScene, Point } from '../types';
 
 const single = (color = '#dc2626', textColor = ''): StopScene => ({
   nodeId: 'n', lines: [{ lineId: 'L', color, bullet: 'A', textColor, pos: [10, 10], chain: 0 }], capsule: { kind: 'none' }, anchor: [10, 10], dotRadius: 13,
@@ -307,6 +307,29 @@ test('london: with no exact tangent it falls back to the octilinear axis, still 
   const [hx] = vec(mk(0)); assert.ok(Math.abs(hx) < 1e-9, 'axis 0 (horizontal line) -> vertical tick');
   const [, vy] = vec(mk(2)); assert.ok(Math.abs(vy) < 1e-9, 'axis 2 (vertical line) -> horizontal tick');
   const [ax] = vec(mk(undefined)); assert.ok(Math.abs(ax) < 1e-9, 'no axis -> vertical tick');
+});
+
+test('london: a one-sided tick reaches toward the bundle outward side (flipping the canonical side)', () => {
+  const mk = (out: Point): StopScene => ({
+    nodeId: 'n', lines: [{ lineId: 'L', color: '#000', bullet: '', textColor: '', pos: [0, 0], chain: 0, dir: [1, 0], outward: out }], capsule: { kind: 'none' }, anchor: [0, 0], dotRadius: 3,
+  });
+  const up = lineOf(london.paint(mk([0, -1]), ctx))[0];   // outward points -y
+  const down = lineOf(london.paint(mk([0, 1]), ctx))[0];   // outward points +y
+  for (const l of [up, down]) {
+    assert.ok(Math.abs(l.x1) < 1e-9 && Math.abs(l.y1) < 1e-9, 'rooted at pos');
+    assert.ok(Math.abs(l.x2) < 1e-9, 'strictly perpendicular to the horizontal line');
+  }
+  assert.ok(up.y2 < 0, 'outward -y strikes the tick upward');
+  assert.ok(down.y2 > 0, 'outward +y strikes the tick downward (the opposite side)');
+});
+
+test('london: an outward direction not exactly perpendicular still picks the aligned side', () => {
+  // outward leans mostly +y but with a tangential component; the tick is still
+  // exactly vertical and lands on the +y side.
+  const sc: StopScene = { nodeId: 'n', lines: [{ lineId: 'L', color: '#000', bullet: '', textColor: '', pos: [0, 0], chain: 0, dir: [1, 0], outward: [0.4, 0.9] }], capsule: { kind: 'none' }, anchor: [0, 0], dotRadius: 3 };
+  const l = lineOf(london.paint(sc, ctx))[0];
+  assert.ok(Math.abs(l.x2) < 1e-9, 'strictly perpendicular');
+  assert.ok(l.y2 > 0, 'aligned with the outward +y side');
 });
 
 test('london: a terminus gets a full two-sided tick centered on the dot', () => {

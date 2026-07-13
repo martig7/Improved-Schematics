@@ -133,6 +133,11 @@ export interface StopMark {
   /** The line ends at this stop (a single drawn lane is incident). A loop has
    *  two lanes at every stop, so none are termini. Tick markers cap it fully. */
   terminus?: boolean;
+  /** Unit vector from the bundle's drawn centerline toward this line's lane, so
+   *  a one-sided tick marker strikes toward the bundle's outer edge (away from
+   *  the co-running lanes). Absent for a lane centered on its bundle (no side)
+   *  or one that runs alone. */
+  outward?: Pixel;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

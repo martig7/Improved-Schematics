@@ -20,14 +20,23 @@ function axisTangent(axis: number | undefined): Point {
   }
 }
 
-// Unit normal a tick is drawn along: perpendicular to the line, on a single
-// consistent side. The tangent sign is arbitrary (it follows the lane's drawn
-// direction), so canonicalize it to one half-plane first; then the +90 deg
-// rotation always lands on the same side of the line.
+// Unit normal a tick is drawn along: perpendicular to the line. When the lane's
+// outward direction (toward its bundle's outer edge) is known, strike toward it
+// so the tick reaches into open space instead of across the co-running lanes;
+// pick the perpendicular whose dot with outward is non-negative. Otherwise the
+// tangent sign is arbitrary (it follows the lane's drawn direction), so
+// canonicalize it to one half-plane first; then the +90 deg rotation always
+// lands on the same consistent side of the line.
 function tickNormal(ln: StopLine): Point {
-  let [tx, ty] = ln.dir ?? axisTangent(ln.axis);
-  if (tx < 0 || (tx === 0 && ty < 0)) { tx = -tx; ty = -ty; }
-  return [-ty, tx];
+  const [tx, ty] = ln.dir ?? axisTangent(ln.axis);
+  const out = ln.outward;
+  if (out) {
+    const n: Point = [-ty, tx];
+    return n[0] * out[0] + n[1] * out[1] >= 0 ? n : [-n[0], -n[1]];
+  }
+  let cx = tx, cy = ty;
+  if (cx < 0 || (cx === 0 && cy < 0)) { cx = -cx; cy = -cy; }
+  return [-cy, cx];
 }
 
 /** Single/terminus stop: a route-color tick struck perpendicular to the line.

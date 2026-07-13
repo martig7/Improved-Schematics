@@ -1465,13 +1465,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     axis?: number,
     dir?: Pixel,
     terminus?: boolean,
+    outward?: Pixel,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis, dir, terminus,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis, dir, terminus, outward,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -1798,6 +1799,35 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // group's platforms on corridors far apart — Fulton St) is split into one
     // placement unit per cluster and re-queued, instead of mega-boxing the
     // whole neighbourhood under a single giant rect.
+    // Outward side of a lone stop's tick: the unit direction from the bundle's
+    // drawn centerline to this line's lane, summed over the incident drawn
+    // edges. offsetPolyline shifts a +slot lane by +perp(from->to tangent), so a
+    // lane's outward direction is sign(slot) * that perp at the node end. A lane
+    // centered on every incident bundle (or one running alone) sums to ~0 and
+    // leaves the tick on its canonical side.
+    const bundleOutward = (lineId: string, nodeId: string): Pixel | undefined => {
+      let ox = 0, oy = 0;
+      for (const edge of layout.edges) {
+        const atFrom = edge.from === nodeId;
+        const atTo = edge.to === nodeId;
+        if (!atFrom && !atTo) continue;
+        const slot = slotOf.get(edge.id + '|' + lineId);
+        if (slot === undefined || slot === 0) continue; // centered/alone: no side
+        const base = edgePolyline(edge);
+        if (base.length < 2) continue;
+        const p0 = atFrom ? base[0] : base[base.length - 2];
+        const p1 = atFrom ? base[1] : base[base.length - 1];
+        let tx = p1[0] - p0[0], ty = p1[1] - p0[1]; // from->to tangent at this node
+        const len = Math.sqrt(tx * tx + ty * ty);
+        if (len < 1e-9) continue;
+        tx /= len; ty /= len;
+        const sgn = slot > 0 ? 1 : -1;
+        ox += sgn * -ty; // sign(slot) * perp(from->to tangent)
+        oy += sgn * tx;
+      }
+      const l = Math.sqrt(ox * ox + oy * oy);
+      return l > 1e-9 ? [ox / l, oy / l] : undefined;
+    };
     let platSeq = 0;
     const placeQueue: StMarks[] = placeSeq.map((i) => gathered[i]);
     for (let qi = 0; qi < placeQueue.length; qi++) {
@@ -1819,6 +1849,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // stop. A loop has two lanes at every stop, so none of its stops are
           // termini. Tick markers cap a terminus with a full (two-sided) tick.
           mk.terminus = polys.length === 1;
+          // Which side of its bundle the lane sits on, so the one-sided tick
+          // prefers the bundle's outer edge instead of striking across co-runners.
+          mk.outward = bundleOutward(mk.lineId, mk.flagNode);
         }
       } else if (s.marks.length > 1) {
         // pre-solve home (lane position where the line passes the node), a
@@ -3332,7 +3365,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     capsAudit('post-eviction');
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis, m.dir, m.terminus);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis, m.dir, m.terminus, m.outward);
     }
 
     for (const s of gathered) {
