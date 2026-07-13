@@ -16,7 +16,7 @@ import type { BoundingBox } from '../types/core';
 import type { KVStore } from '../render/mapCache';
 
 const KEY = 'improvedschematics:geocache';
-const VERSION = 3; // v3: re-harvest after the place-layer probe diagnostics (v2 entries may predate them)
+const VERSION = 4; // v4: re-harvest with the per-kind label source-layers in the probe
 const key = (city: string) => `${KEY}:${city}`;
 
 /** A persisted harvest + the demand extent it was harvested at, so a later session can tell

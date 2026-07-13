@@ -72,3 +72,19 @@ test('extractPlaces keeps named neighborhood-class points, dedupes tile repeats'
   assert.deepEqual(ballard.coord, [-122.38, 47.66], 'first occurrence wins');
   assert.equal(places.find((p) => p.name === 'Downtown')!.kind, 'district');
 });
+
+test('extractPlaces derives the kind from per-kind label layers without a kind property', () => {
+  const feats = [
+    { sourceLayer: 'neighborhood_labels', properties: { name: 'Five Points' }, geometry: { type: 'Point', coordinates: [-104.97, 39.75] } },
+    { sourceLayer: 'suburb_labels', properties: { name: 'Aurora' }, geometry: { type: 'Point', coordinates: [-104.83, 39.71] } },
+    // an explicit recognized kind on a per-kind layer still wins
+    { sourceLayer: 'neighborhood_labels', properties: { kind: 'quarter', name: 'LoDo' }, geometry: { type: 'Point', coordinates: [-105.0, 39.75] } },
+    // a generic layer without a recognized kind stays dropped
+    { sourceLayer: 'place', properties: { name: 'Anonymous' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+  ] as never[];
+  const places = extractPlaces(feats);
+  assert.deepEqual(
+    places.map((p) => [p.name, p.kind]).sort(),
+    [['Aurora', 'suburb'], ['Five Points', 'neighbourhood'], ['LoDo', 'quarter']],
+  );
+});

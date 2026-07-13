@@ -28,8 +28,17 @@ export function classifyFeature(
   return GREEN_VALUES.has(value) ? 'green' : null;
 }
 
-/** Label-point source-layers across schemas (see schemaProbe SIGNATURES). */
-const PLACE_LAYERS = new Set(['place', 'places', 'place_label']);
+/** Label-point source-layers across schemas (see schemaProbe SIGNATURES), each
+ *  mapped to the place kind the layer name itself implies. Generic layers map
+ *  to null: their features must carry a recognized kind property. The game's
+ *  per-kind layers carry the kind in the name, so their features need none. */
+const PLACE_LAYERS = new Map<string, string | null>([
+  ['place', null],
+  ['places', null],
+  ['place_label', null],
+  ['neighborhood_labels', 'neighbourhood'],
+  ['suburb_labels', 'suburb'],
+]);
 
 /** Neighborhood-scale place classes we label; city/town/village stay off the
  *  schematic (station labels already carry that scale of orientation). */
@@ -40,12 +49,14 @@ export function extractPlaces(features: TaggedFeature[]): GeoPlaceFeature[] {
   const out: GeoPlaceFeature[] = [];
   const seen = new Set<string>();
   for (const f of features) {
-    if (!PLACE_LAYERS.has(f.sourceLayer)) continue;
+    const layerKind = PLACE_LAYERS.get(f.sourceLayer);
+    if (layerKind === undefined) continue;
     const props = f.properties ?? {};
-    const kind = String(
+    const propKind = String(
       props['class'] ?? props['kind'] ?? props['pmap:kind'] ?? props['subclass'] ?? props['type'] ?? '',
     ).toLowerCase();
-    if (!PLACE_KINDS.has(kind)) continue;
+    const kind = PLACE_KINDS.has(propKind) ? propKind : layerKind;
+    if (!kind) continue;
     const name = String(props['name:en'] ?? props['name_en'] ?? props['name'] ?? '').trim();
     if (!name) continue;
     // Point / MultiPoint only; tiles repeat a label point per tile, so dedupe
