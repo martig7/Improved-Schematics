@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contrastInk, bulletFontSize, dotStrokeWidth, capsuleStrokeWidths, capsuleGlyphs, circle, bullet } from '../primitives';
+import { contrastInk, bulletFontSize, dotStrokeWidth, capsuleStrokeWidths, capsuleGlyphs, circle, bullet, text, fitFontSize } from '../primitives';
 
 test('contrastInk picks readable ink by luminance', () => {
   assert.equal(contrastInk('#000000'), '#ffffff');
@@ -44,4 +44,25 @@ test('capsuleGlyphs: box -> one rect, ring -> one circle, pill -> two paths', ()
 
 test('capsuleGlyphs none -> empty', () => {
   assert.deepEqual(capsuleGlyphs({ kind: 'none' }, { border: '#000', fill: '#fff' }, 3), []);
+});
+
+test('fitFontSize caps at the prescribed size and shrinks only when text overflows', () => {
+  // Short text well within the box: returns the prescribed size UNCHANGED
+  // (identical float), so non-overflowing markers stay byte-identical.
+  assert.equal(fitFontSize('05', 20, 100), 20);
+  assert.equal(fitFontSize('', 20, 5), 20);
+  assert.equal(fitFontSize('A', 20, 0), 20); // guard: no width -> unchanged
+  // Overflowing text shrinks below the prescribed size, monotonically longer.
+  const three = fitFontSize('137', 20, 12);
+  const four = fitFontSize('1234', 20, 12);
+  assert.ok(three < 20 && four < three);
+  // Fitted width does not exceed the budget (0.60 em/digit model).
+  assert.ok(three * 3 * 0.6 <= 12 + 1e-9);
+});
+
+test('text() bakes the width fit only when maxWidth is given', () => {
+  const plain = text(0, 0, '137', { fontSize: 20, fill: '#000' });
+  assert.equal((plain as { fontSize: number }).fontSize, 20, 'no maxWidth -> prescribed size');
+  const fitted = text(0, 0, '137', { fontSize: 20, fill: '#000', maxWidth: 12 });
+  assert.ok((fitted as { fontSize: number }).fontSize < 20, 'maxWidth -> shrunk to fit');
 });

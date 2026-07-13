@@ -25,12 +25,15 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
   const w = q(x1 - x0), h = q(y1 - y0);
   const inset = Math.max(0.1, q(s * 0.023));
   const qcx = q((x0 + x1) / 2), qcy = q((y0 + y1) / 2);
+  // Text must fit across the color plate (its width less a small side margin);
+  // longer bullets/numbers shrink from the prescribed size to clear it.
+  const maxW = (w - 2 * inset) * 0.9;
   const g: Glyph[] = [
     rect(x0, y0, w, h, s * 0.2, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
     rect(q(x0 + inset), q(y0 + inset), q(w - 2 * inset), q(h - 2 * inset), s * 0.176, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
   ];
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.125, ln.bullet, { fontSize: s * 0.35, fill: ink, fontFamily: SIGN_LETTER_FONT }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.375, pad2(ln.seq), { fontSize: s * 0.56, fill: ink, fontFamily: SIGN_DIGIT_FONT }));
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.125, ln.bullet, { fontSize: s * 0.35, fill: ink, fontFamily: SIGN_LETTER_FONT, maxWidth: maxW }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.375, pad2(ln.seq), { fontSize: s * 0.56, fill: ink, fontFamily: SIGN_DIGIT_FONT, maxWidth: maxW }));
   return g;
 }
 

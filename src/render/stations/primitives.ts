@@ -42,8 +42,29 @@ export function line(x1: number, y1: number, x2: number, y2: number, o: { stroke
   return { kind: 'line', x1, y1, x2, y2, stroke: o.stroke, strokeWidth: o.strokeWidth };
 }
 
-export function text(x: number, y: number, s: string, o: { fontSize: number; fill: string; fontWeight?: string; align?: 'start' | 'middle' | 'end'; fontFamily?: string }): Glyph {
-  return { kind: 'text', x, y, text: s, fontSize: o.fontSize, fontWeight: o.fontWeight ?? 'bold', align: o.align ?? 'middle', fill: o.fill, ...(o.fontFamily ? { fontFamily: o.fontFamily } : {}) };
+/** Per-character advance as a fraction of the font size (bold caps/digits). A
+ *  slight overestimate so fitted text clears the box rather than kissing it. */
+function charAdvance(ch: string): number {
+  if (ch >= '0' && ch <= '9') return 0.60;
+  if (ch >= 'A' && ch <= 'Z') return 0.72;
+  if (ch >= 'a' && ch <= 'z') return 0.56;
+  return 0.62;
+}
+
+/** Font size that fits `s` within `maxWidth`, capped at `fontSize` (the
+ *  prescribed size is the MAXIMUM; long text shrinks, short text is unchanged).
+ *  Deterministic width estimate so the SVG string and canvas prim agree. */
+export function fitFontSize(s: string, fontSize: number, maxWidth: number): number {
+  if (!s || maxWidth <= 0) return fontSize;
+  let em = 0;
+  for (const ch of s) em += charAdvance(ch);
+  if (em <= 0) return fontSize;
+  return Math.min(fontSize, maxWidth / em);
+}
+
+export function text(x: number, y: number, s: string, o: { fontSize: number; fill: string; fontWeight?: string; align?: 'start' | 'middle' | 'end'; fontFamily?: string; maxWidth?: number }): Glyph {
+  const fs = o.maxWidth != null ? fitFontSize(s, o.fontSize, o.maxWidth) : o.fontSize;
+  return { kind: 'text', x, y, text: s, fontSize: fs, fontWeight: o.fontWeight ?? 'bold', align: o.align ?? 'middle', fill: o.fill, ...(o.fontFamily ? { fontFamily: o.fontFamily } : {}) };
 }
 
 /** Route-bullet text centered in a dot, offset like the classic marker. */

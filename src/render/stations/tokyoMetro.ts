@@ -30,11 +30,15 @@ function disc(cx: number, cy: number, s: number, ln: StopLine, showBullets: bool
     circle(qcx, qcy, rOuter, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
     circle(qcx, qcy, rInner, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
+  // Text must fit inside the white disc; a chord (not the full diameter) is
+  // usable since the rows sit off-center, so keep a tighter fraction. Longer
+  // bullets/numbers shrink from the prescribed size.
+  const maxW = 2 * rInner * 0.82;
   // Reference-exact text metrics, measured from the source icons: letter cap
   // height 0.265 and digit height 0.288 of the diameter, optical centers
   // 0.196 above and 0.128 below the disc center (cap height ~0.716em).
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.06, ln.bullet, { fontSize: s * 0.37, fill: INK, fontFamily: SIGN_LETTER_FONT }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.27, pad2(ln.seq), { fontSize: s * 0.4, fill: INK, fontFamily: SIGN_DIGIT_FONT }));
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.06, ln.bullet, { fontSize: s * 0.37, fill: INK, fontFamily: SIGN_LETTER_FONT, maxWidth: maxW }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.27, pad2(ln.seq), { fontSize: s * 0.4, fill: INK, fontFamily: SIGN_DIGIT_FONT, maxWidth: maxW }));
   return g;
 }
 

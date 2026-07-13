@@ -31,14 +31,17 @@ function square(cx: number, cy: number, s: number, ln: StopLine, showBullets: bo
   const w = q(x1 - x0), h = q(y1 - y0);
   const bw = Math.max(0.1, q(s * FRAME_FRAC)); // one shared frame width, all four sides
   const qcx = q((x0 + x1) / 2), qcy = q((y0 + y1) / 2);
+  // Text must fit across the white interior (less a small side margin); longer
+  // bullets/numbers shrink from the prescribed size to clear the frame.
+  const maxW = (w - 2 * bw) * 0.9;
   const g: Glyph[] = [
     rect(x0, y0, w, h, s * 0.116, { fill: ln.color, stroke: 'none', strokeWidth: 0 }),
     rect(q(x0 + bw), q(y0 + bw), q(w - 2 * bw), q(h - 2 * bw), 0, { fill: '#ffffff', stroke: 'none', strokeWidth: 0 }),
   ];
   // Reference text metrics: letters 0.246 of the side tall centered 0.226
   // above middle, digits 0.337 tall centered 0.126 below (cap ~0.716em).
-  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.1, ln.bullet, { fontSize: s * 0.34, fill: INK, fontFamily: SIGN_LETTER_FONT }));
-  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.3, pad2(ln.seq), { fontSize: s * 0.47, fill: INK, fontFamily: SIGN_DIGIT_FONT }));
+  if (showBullets && ln.bullet) g.push(text(qcx, qcy - s * 0.1, ln.bullet, { fontSize: s * 0.34, fill: INK, fontFamily: SIGN_LETTER_FONT, maxWidth: maxW }));
+  if (ln.seq != null) g.push(text(qcx, qcy + s * 0.3, pad2(ln.seq), { fontSize: s * 0.47, fill: INK, fontFamily: SIGN_DIGIT_FONT, maxWidth: maxW }));
   return g;
 }
 
