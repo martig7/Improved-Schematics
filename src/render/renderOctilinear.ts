@@ -17,7 +17,7 @@ import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
-import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE, MARK_R0 } from './constants';
+import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0 } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
@@ -1698,40 +1698,22 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const v = envNum('OCTI_XMASK_W');
       return Number.isFinite(v) && v >= 0 ? v : 40;
     })();
-    const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number; mega: boolean } => {
+    const boxOf = (s: StMarks): { x0: number; y0: number; x1: number; y1: number } => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const m of s.marks) {
         x0 = Math.min(x0, m.pos[0]); y0 = Math.min(y0, m.pos[1]);
         x1 = Math.max(x1, m.pos[0]); y1 = Math.max(y1, m.pos[1]);
       }
-      const mega = MEGA_BOXES && s.members > 1 && s.marks.length > 0 && ldegOf(s.nodeId) >= 12;
-      const pad = mega ? r + 7 : r + 3;
-      if (mega) {
-        // Cap to the compact size the marks would occupy seated (mirrors stops.ts
-        // so the swallow/slide logic matches the drawn rect): a boxed station's
-        // marks can fling far apart and balloon the box over neighbours.
-        const cap = Math.max(2 * r, s.marks.length * spacing * 1.5);
-        const medOf = (vals: number[]) => { const ss = vals.slice().sort((a, b) => a - b); const m = ss.length >> 1; return ss.length % 2 ? ss[m] : (ss[m - 1] + ss[m]) / 2; };
-        const mx = medOf(s.marks.map((m) => m.pos[0]));
-        const my = medOf(s.marks.map((m) => m.pos[1]));
-        x0 = Math.max(x0, mx - cap / 2); x1 = Math.min(x1, mx + cap / 2);
-        y0 = Math.max(y0, my - cap / 2); y1 = Math.min(y1, my + cap / 2);
-      }
+      const pad = r + 3;
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
-      if (mega) {
-        const minSide = 2 * r + 3;
-        if (x1 - x0 < minSide) { const c = (x0 + x1) / 2; x0 = c - minSide / 2; x1 = c + minSide / 2; }
-        if (y1 - y0 < minSide) { const c = (y0 + y1) / 2; y0 = c - minSide / 2; y1 = c + minSide / 2; }
-      }
-      return { x0, y0, x1, y1, mega };
+      return { x0, y0, x1, y1 };
     };
-    // A station is "boxed" (renders as a rect, no rings) when either it is a
-    // STRUCTURAL mega box (boxOf().mega: members>1 and ldeg>=12) OR a per-mark
-    // mega flag was set (placement mega fallback, mega-escape slide, or the
-    // no-overlap floor's last resort). boxOf().mega does NOT read mk.mega, so
-    // both must be checked. THE box-membership predicate: every pass that
-    // treats box-vs-capsule as a fact consults this, never boxOf().mega alone.
-    const isBoxed = (s: StMarks): boolean => boxOf(s).mega || s.marks.some((m) => m.mega);
+    // A station is "boxed" (renders as a rect, no rings) when the rigid-row solver
+    // could not seat its marks and set the per-mark mega flag (placement mega
+    // fallback, mega-escape slide, or the no-overlap floor's last resort). THE
+    // box-membership predicate: every pass that treats box-vs-capsule as a fact
+    // consults this.
+    const isBoxed = (s: StMarks): boolean => s.marks.some((m) => m.mega);
     const lanePointAt = (
       lineId: string,
       nodeId: string,
@@ -3215,7 +3197,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // station that are NOT same-row-adjacent (a folded spine / piled junction).
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
-      reportEgregiousOverlaps({ layout, r, smalls, gathered, boxIsMega: (s) => boxOf(s).mega });
+      reportEgregiousOverlaps({ layout, r, smalls, gathered, boxIsMega: (s) => s.marks.some((m) => m.mega) });
     }
     reportSlideBoxedSummary(slideBoxed);
     reportSlidStations({ layout, slid });
@@ -3842,12 +3824,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // LINE degree: total drawn lines across the node's incident edges. This is
   // the mega-capsule trigger. A thin capsule only fails when the crossing
   // bundles are large enough.
-  const degByNode = new Map<string, number>();
-  for (const e of layout.edges) {
-    const n = (orderOf.get(e.id) ?? e.lines.map((l) => l.id)).length;
-    degByNode.set(e.from, (degByNode.get(e.from) ?? 0) + n);
-    degByNode.set(e.to, (degByNode.get(e.to) ?? 0) + n);
-  }
   const stopsPrims: Prim[] = [];
 
   // ---- taxicab connectors between split platform units -------------------
@@ -3912,7 +3888,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', members: membersByNode, deg: degByNode, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
+    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;

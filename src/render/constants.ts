@@ -71,10 +71,3 @@ export const OCT_UNIT: Vec2[] = OCT_DIRS.map(([x, y]) => {
   const len = Math.hypot(x, y) || 1;
   return [x / len, y / len] as Vec2;
 });
-
-/** Mega-station boxes (rounded-rect markers over huge interchanges).
- *  OFF because corner-prioritized crossings and the Y/dogbone opt-graph
- *  rewrites order junctions well enough that boxes are no longer needed to
- *  hide weaves. Flip back on to restore the boxes (threshold lives at the
- *  two use sites). */
-export const MEGA_BOXES = false;

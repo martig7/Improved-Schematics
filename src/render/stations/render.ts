@@ -10,8 +10,6 @@ export interface RenderStationsCtx {
   dark: boolean;
   showBullets: boolean;
   megaFallback: 'box' | 'curve';
-  members?: Map<string, number>;
-  deg?: Map<string, number>;
   /** Precomputed rectangle-capsule geometry per node (seated + cross-station
    *  deconflicted at compute time). Read only by the rectangle-capsule design. */
   rectByNode?: Map<string, RectCapsule>;
@@ -46,7 +44,7 @@ export function renderStations(
   for (const [nodeId, marks] of stopsByNode) {
     if (marks.length === 0) continue;
     const scene = buildScene(nodeId, marks, {
-      megaFallback: ctx.megaFallback, members: ctx.members, deg: ctx.deg,
+      megaFallback: ctx.megaFallback,
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
       bubbleByNode: ctx.bubbleByNode, torontoByNode: ctx.torontoByNode,
     });

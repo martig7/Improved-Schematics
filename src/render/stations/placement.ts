@@ -5,7 +5,7 @@
  */
 
 import type { Pixel, StopMark } from '../layout/types';
-import { LINE_WIDTH, LINE_GAP, MEGA_BOXES, MARKER_SCALE, MARK_R0 } from '../constants';
+import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0 } from '../constants';
 import { rdpSimplify } from '../layout/chainPlace';
 import { type RectCapsule } from '../layout/rectSeat';
 import { type LondonCapsule } from '../layout/londonBubbles';
@@ -18,8 +18,6 @@ const SPACING = LINE_WIDTH + LINE_GAP;
 
 export interface PlacementCtx {
   megaFallback: 'box' | 'curve';
-  members?: Map<string, number>;
-  deg?: Map<string, number>;
   /** Interchange capsule regime the active design wants. 'rectRows' triggers the
    *  upright-box rectangle seating for multi-line, non-mega stations;
    *  'londonBubbles' the paired ticket-hall bubbles; 'toronto' the crossing
@@ -153,9 +151,9 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
     return { nodeId, lines: slines, capsule: { kind: 'none' }, anchor: p, dotRadius };
   }
 
-  const members = ctx.members?.get(nodeId);
-  const megaEligible = members !== undefined ? members > 1 : marks.length > 1;
-  const isMega = marks.some((m) => m.mega) || (MEGA_BOXES && megaEligible && (ctx.deg?.get(nodeId) ?? 0) >= 12);
+  // A station renders as a box only when the rigid-row solver could not seat its
+  // marks and flagged them (mega fallback). There is no structural degree box.
+  const isMega = marks.some((m) => m.mega);
 
   if (isMega) {
     // Both mega variants are pure mark geometry; the megaFallback CHOICE between
