@@ -2017,6 +2017,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           minGap: intraGap,
           arcLimit: WIDE_ARC,
           extCap: extCapMult * spacing,
+          // Parallel end-to-end joins are for two rows that are genuinely the
+          // same line; on the fine grid a truly-collinear pair is sub-pixel
+          // aligned. Keep this well under a lane offset so a cross-axis bundle
+          // that merely grazes another row's line (e.g. a diagonal 0.7px off a
+          // vertical pair's row) is NOT fused flat but joined by an octilinear
+          // V-corner instead.
+          latTol: 0.5,
           // soft sub-floor band: gaps down to (minGap − boxRescueMax) seat
           // with a heavy per-px deficit penalty instead of re-solving at
           // walked-down floors. OCTI_BOX_RESCUE keeps its name/default (1.5;
