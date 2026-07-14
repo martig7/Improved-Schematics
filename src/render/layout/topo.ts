@@ -72,26 +72,6 @@ export function densify(pts: Pixel[], step: number): Pixel[] {
   return out;
 }
 
-/** Walk `pts` from index 0 and return the point at arclength `d` from the
- *  start (clamped to the polyline end). */
-export function pointAtDistance(pts: Pixel[], d: number): Pixel {
-  if (pts.length === 0) return [0, 0];
-  if (d <= 0) return pts[0].slice() as Pixel;
-  let acc = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const segLen = dist(pts[i - 1], pts[i]);
-    if (acc + segLen >= d) {
-      const t = segLen === 0 ? 0 : (d - acc) / segLen;
-      return [
-        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
-        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
-      ];
-    }
-    acc += segLen;
-  }
-  return pts.at(-1)!.slice() as Pixel;
-}
-
 /** Paper's line-creep mitigation. With p1/pl the first/last samples of the
  *  edge being densified, reject candidate node `v` when it sits too far from
  *  the current sample relative to that sample's distance to either endpoint.
@@ -431,50 +411,6 @@ export class HBuilder {
     }
   }
 
-  /** Crop each adjacent edge at distance `dHat` from every node, move the node
-   *  to the average of the cropped endpoints, then re-anchor the edge polylines
-   *  at the moved node. */
-  intersectionSmoothing(dHat: number): void {
-    const newPos = new Map<string, Pixel>();
-    for (const [nid, eids] of this.adj) {
-      if (eids.size === 0) continue;
-      // A degree-1 PROTECTED node (a terminus or spur-end station) is not an
-      // intersection: its "average" is one point dHat along its only edge, which
-      // teleports the station into the corridor. On a short edge that collapses
-      // the terminus onto its neighbour station (the grid then resolves the
-      // near-coincident pair in inverted order, swapping the first two stops of
-      // a line) and folds a sub-dHat spur flat. Synthetic dangles still tidy.
-      if (eids.size === 1 && this.protected_.has(nid)) continue;
-      // Degree-2+ protected nodes are NOT skipped: pinning stations while their
-      // unprotected corridor neighbors average against bent merged polylines
-      // displaces pass-through platform nodes off the corridor, and every line
-      // through them draws a visible detour. Their averaging stays bounded by
-      // the cropped edge endpoints.
-      let sx = 0;
-      let sy = 0;
-      let n = 0;
-      for (const eid of eids) {
-        const e = this.edges.get(eid)!;
-        // Orient the polyline so it starts at this node.
-        const pts = e.a === nid ? e.points : [...e.points].reverse();
-        const cropped = pointAtDistance(pts, dHat);
-        sx += cropped[0];
-        sy += cropped[1];
-        n++;
-      }
-      newPos.set(nid, [sx / n, sy / n]);
-    }
-    for (const [nid, p] of newPos) {
-      const old = this.nodes.get(nid)!;
-      this.index.move(nid, old, p);
-      this.nodes.set(nid, p);
-    }
-    // Re-anchor edge endpoints to the moved node positions.
-    for (const e of this.edges.values()) {
-      e.points[0] = this.nodes.get(e.a)!;
-      e.points[e.points.length - 1] = this.nodes.get(e.b)!;
-    }
-  }
 
   /** Snapshot the current nodes/edges/adjacency (used between rounds and for
    *  intersection smoothing). */
@@ -1746,11 +1682,8 @@ export function buildSupportGraph(
   // folds into the joined polylines. Sanitize again so octi's spring cost
   // never sees phantom length (it pays it back as candy-cane grid detours).
   builder.sanitizeEdgeGeometry(params.dHat);
-  builder.intersectionSmoothing(params.dHat);
-  // Smoothing MOVES nodes (each to the average of its cropped edge endpoints)
-  // and can pull a pair inside the spacing floor with no contraction pass left
-  // to repair it. The last writer of node positions must re-enforce the
-  // invariant, or octi receives sub-cell pairs it cannot route.
+  // Re-contract sub-cell node pairs the fold-cut and degree-2 joins can leave
+  // behind, so octi never receives a pair too close together to route.
   builder.contractShortEdges(params.dHat);
   const { nodes, edges, adj } = freezeBuilder(builder, g);
 
@@ -1857,8 +1790,9 @@ export function buildSupportGraph(
     );
   };
 
-  const lineTraversals = new Map<string, TraversalStep[]>();
-  for (const [lineId, origSteps] of g.lineTraversals) {
+  // Reconstruct one line's support traversal from its graph traversal. Factored
+  // so the un-stub pass below can re-derive a line after it edits the structure.
+  const reconstructLine = (lineId: string, origSteps: TraversalStep[]): TraversalStep[] => {
     // null = deliberate service break (a suppressed loop-closure leg left a
     // discontinuity in the graph traversal). Each run reconstructs on its
     // own. Pathing or heal-bridging ACROSS a break would resurrect the
@@ -1926,9 +1860,110 @@ export function buildSupportGraph(
       curNode = target;
     }
     traceTraversal(lineId, graphNodes.length, supportNodes, steps.length);
+    return steps;
+  };
+
+  const lineTraversals = new Map<string, TraversalStep[]>();
+  for (const [lineId, origSteps] of g.lineTraversals) {
+    const steps = reconstructLine(lineId, origSteps);
     if (steps.length > 0) lineTraversals.set(lineId, steps);
   }
   auditHealLadder(healStats);
+
+  // Un-stub pass. A line whose reconstructed traversal detours to a node on ONE
+  // edge and immediately retraces it (E in, E out) passes THROUGH that node in
+  // the source route: the merge stranded it on a spur off a junction J, so the
+  // line doubles back instead of bending through. When J hands this line two
+  // distinct arms and one of them carries ONLY this line, re-point that arm onto
+  // the node so the line bends through it. Detecting on the reconstructed
+  // traversal (not the raw structure) is what separates this from a genuine
+  // terminus - a terminus never retraces its last edge. Only the changed lines
+  // are re-derived; a single-line arm means no other line's geometry moves.
+  //
+  // Each re-point is provisional: it is kept only if re-deriving the line
+  // STRICTLY reduces its reversal (out-and-back) count. Freeing a stranded spur
+  // is not worth manufacturing a fold at the arm's far node, so a re-point that
+  // does not net out fewer reversals is reverted and the scan continues.
+  {
+    // Reversal census over a support traversal: node-position sequence with the
+    // chain-break windowing the audit uses, counting opposed turns (dot < -0.5).
+    const countReversals = (stps: TraversalStep[]): number => {
+      const seq: (Pixel | null)[] = [];
+      let prevEnd: string | null = null;
+      for (const st of stps) {
+        const e = edges.get(st.edgeId);
+        if (!e) { seq.push(null); prevEnd = null; continue; }
+        const a = st.reversed ? e.to : e.from;
+        const b = st.reversed ? e.from : e.to;
+        if (prevEnd !== null && prevEnd !== a) seq.push(null);
+        if (prevEnd === null || prevEnd !== a) seq.push(nodes.get(a)?.pos ?? null);
+        seq.push(nodes.get(b)?.pos ?? null);
+        prevEnd = b;
+      }
+      let count = 0;
+      for (let i = 1; i + 1 < seq.length; i++) {
+        const p = seq[i - 1], c = seq[i], q = seq[i + 1];
+        if (!p || !c || !q) continue;
+        const ux = c[0] - p[0], uy = c[1] - p[1];
+        const vx = q[0] - c[0], vy = q[1] - c[1];
+        const lu = Math.sqrt(ux * ux + uy * uy), lv = Math.sqrt(vx * vx + vy * vy);
+        if (lu < 1e-6 || lv < 1e-6) continue;
+        if ((ux * vx + uy * vy) / (lu * lv) < -0.5) count++;
+      }
+      return count;
+    };
+
+    for (const [lineId, steps] of lineTraversals) {
+      const orig = g.lineTraversals.get(lineId);
+      if (!orig) continue;
+      for (let i = 0; i + 1 < steps.length; i++) {
+        if (steps[i].edgeId !== steps[i + 1].edgeId || steps[i].reversed === steps[i + 1].reversed) continue;
+        const E = edges.get(steps[i].edgeId);
+        if (!E) continue;
+        const s = steps[i].reversed ? E.from : E.to; // the retraced spur node
+        const j = steps[i].reversed ? E.to : E.from;  // the junction the arms meet at
+        let armId: string | null = null;
+        for (const aid of adj.get(j) ?? []) {
+          if (aid === E.id) continue;
+          const a = edges.get(aid)!;
+          if (a.lineIds.size === 1 && a.lineIds.has(lineId)) { armId = aid; break; }
+        }
+        if (!armId) continue;
+        const arm = edges.get(armId)!;
+        const n = arm.from === j ? arm.to : arm.from; // arm's far node
+        const ps = nodes.get(s)!.pos, pj = nodes.get(j)!.pos, pn = nodes.get(n)!.pos;
+        const ix = ps[0] - pn[0], iy = ps[1] - pn[1]; // n -> s (arm into the node)
+        const ox = pj[0] - ps[0], oy = pj[1] - ps[1]; // s -> j (E out of the node)
+        const li = Math.sqrt(ix * ix + iy * iy), lo = Math.sqrt(ox * ox + oy * oy);
+        if (li < 1e-6 || lo < 1e-6) continue;
+        if ((ix * ox + iy * oy) / (li * lo) < -0.5) continue; // arm would fold back at s, not bend
+
+        // Provisionally re-point: snapshot what changes, apply, re-derive.
+        const before = countReversals(steps);
+        const jaBefore = adj.get(j)!.slice();
+        const saBefore = adj.get(s)!.slice();
+        const armFrom0 = arm.from, armTo0 = arm.to;
+        const p0 = arm.points[0], pLast = arm.points[arm.points.length - 1];
+        if (arm.from === j) { arm.from = s; arm.points[0] = ps.slice() as Pixel; }
+        else { arm.to = s; arm.points[arm.points.length - 1] = ps.slice() as Pixel; }
+        const ja = adj.get(j)!;
+        const k = ja.indexOf(armId);
+        if (k >= 0) ja.splice(k, 1);
+        adj.get(s)!.push(armId);
+
+        const redo = reconstructLine(lineId, orig);
+        if (redo.length > 0 && countReversals(redo) < before) {
+          lineTraversals.set(lineId, redo);
+          break; // re-derived; stop scanning the now-stale step list
+        }
+        // Net no improvement: revert the structural edit and keep scanning.
+        arm.from = armFrom0; arm.to = armTo0;
+        arm.points[0] = p0; arm.points[arm.points.length - 1] = pLast;
+        adj.set(j, jaBefore);
+        adj.set(s, saBefore);
+      }
+    }
+  }
 
   const stopAt = new Set<string>();
 
@@ -2095,6 +2130,80 @@ export function buildSupportGraph(
   for (const [gid, lines] of stopLinesByGroup) {
     const st = stations.get(gid);
     if (st) st.stopLines = lines;
+  }
+
+  // Merge co-located same-station platform nodes. In per-station-node mode a
+  // station's platforms enter as separate support nodes; when they sit within
+  // one grid cell of each other they are one interchange, but octi is free to
+  // fling them apart (an elongated terminus overshoots its bundle-mates and
+  // mega-boxes the station). Absorb each station's within-a-cell platform
+  // cluster onto its busiest node so octi places one compact interchange.
+  // Distinct parallel trunks (platforms more than a cell apart) are left split.
+  {
+    const lens: number[] = [];
+    for (const e of edges.values()) { const a = nodes.get(e.from)?.pos, b = nodes.get(e.to)?.pos; if (a && b) lens.push(dist(a, b)); }
+    lens.sort((a, b) => a - b);
+    const cell = Math.max(4, (lens.length ? lens[lens.length >> 1] : 0) / 1.5);
+    const affected = new Set<string>();
+    const dropAdj = (nid: string, eid: string) => { const arr = adj.get(nid); if (arr) { const k = arr.indexOf(eid); if (k >= 0) arr.splice(k, 1); } };
+    const absorb = (other: string, rep: string) => {
+      const repPos = nodes.get(rep)!.pos;
+      for (const eid of [...(adj.get(other) ?? [])]) {
+        const e = edges.get(eid);
+        if (!e) { dropAdj(other, eid); continue; }
+        const far = e.from === other ? e.to : e.from;
+        if (far === rep || far === other) {
+          // intra-cluster or self edge collapses to nothing
+          for (const l of e.lineIds) affected.add(l);
+          edges.delete(eid); dropAdj(other, eid); dropAdj(rep, eid);
+          continue;
+        }
+        // fold into an existing rep<->far edge if one exists (avoid a parallel)
+        let dup: SupportEdge | null = null;
+        for (const reid of adj.get(rep) ?? []) {
+          const re = edges.get(reid);
+          if (re && ((re.from === rep && re.to === far) || (re.to === rep && re.from === far))) { dup = re; break; }
+        }
+        if (dup) {
+          for (const l of e.lineIds) { dup.lineIds.add(l); affected.add(l); }
+          edges.delete(eid); dropAdj(other, eid);
+          continue;
+        }
+        // otherwise re-point the `other` endpoint onto rep
+        if (e.from === other) { e.from = rep; e.points[0] = repPos.slice() as Pixel; }
+        else { e.to = rep; e.points[e.points.length - 1] = repPos.slice() as Pixel; }
+        dropAdj(other, eid);
+        adj.get(rep)!.push(eid);
+        for (const l of e.lineIds) affected.add(l);
+      }
+      nodes.delete(other);
+      adj.delete(other);
+      for (const [, s] of stations) {
+        if (s.nodeId === other) s.nodeId = rep;
+        for (const [lid, n] of s.stopNodes) if (n === other) { s.stopNodes.set(lid, rep); stopAt.delete(lid + '|' + other); stopAt.add(lid + '|' + rep); }
+      }
+      for (const [gid, n] of groupSupportNode) if (n === other) groupSupportNode.set(gid, rep);
+    };
+    for (const [, st] of stations) {
+      const plats = [...new Set(st.stopNodes.values())].filter((n) => nodes.has(n));
+      if (plats.length < 2) continue;
+      const cnt = new Map<string, number>();
+      for (const n of st.stopNodes.values()) cnt.set(n, (cnt.get(n) ?? 0) + 1);
+      const rep = plats.slice().sort((a, b) => (cnt.get(b) ?? 0) - (cnt.get(a) ?? 0) || (a < b ? -1 : 1))[0];
+      const repPos = nodes.get(rep)!.pos;
+      for (const n of plats) {
+        if (n === rep) continue;
+        const p = nodes.get(n)?.pos;
+        if (!p || dist(p, repPos) > cell) continue;
+        absorb(n, rep);
+      }
+    }
+    for (const lineId of affected) {
+      const orig = g.lineTraversals.get(lineId);
+      if (!orig) continue;
+      const steps = reconstructLine(lineId, orig);
+      if (steps.length > 0) lineTraversals.set(lineId, steps);
+    }
   }
 
   debugSupportSummary(nodes.keys(), nodes.size, edges.size);

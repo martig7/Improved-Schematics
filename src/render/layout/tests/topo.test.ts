@@ -531,21 +531,6 @@ test('a ~90° crossing does not merge (creep blocker prevents interlace)', () =>
   assert.equal(shared.length, 0, 'crossing edges must not interlace into a shared run');
 });
 
-test('intersectionSmoothing recentres a node toward its cropped neighbours', () => {
-  const h = new HBuilder(50);
-  const c = h.addNode([0, 0]);
-  const e = h.addNode([100, 0]);
-  const w = h.addNode([-100, 2]);
-  h.addOrUnionEdge(c, e, new Set(['L1']));
-  h.addOrUnionEdge(c, w, new Set(['L1']));
-  h.intersectionSmoothing(40);
-  // The node should move toward the average of the two cropped endpoints,
-  // which sit symmetric in x but slightly off in y → small y shift, ~0 x.
-  const p = h.nodePos(c);
-  assert.ok(Math.abs(p[0]) < 1, 'x stays centred');
-  assert.ok(p[1] > 0 && p[1] < 2, 'y nudged toward the offset neighbour');
-});
-
 test('buildSupportGraph reconstructs a continuous line traversal over merged edges', () => {
   const g = graphFrom(
     { a: [0, 0], b: [100, 0], c: [200, 0] },
@@ -615,10 +600,12 @@ test('insertStations places one station when all incident edges share a node', (
   assert.equal(h.stations.size, 1);
 });
 
-test('insertStations joins per-station platform nodes into ONE SupportStation with per-line stopNodes', () => {
+test('insertStations merges CO-LOCATED per-station platform nodes onto one support node', () => {
   // Per-station-node mode: the 'hub' group has NO node of its own; platforms
-  // p1/p2 (40px apart, > dHat) each carry one line. Expect a single station
-  // keyed by the group id whose stopNodes land on DIFFERENT support nodes.
+  // p1/p2 sit 40px apart — within one grid cell (median edge 100 / 1.5 ~= 67px)
+  // — so they are one compact interchange. Expect a single station whose two
+  // lines share ONE support node (octi would otherwise fling the split
+  // platforms apart into an overshoot / mega box).
   const g = graphFrom(
     { p1: [0, 0], p2: [0, 40], w1: [-100, 0], e1: [100, 0], w2: [-100, 40], e2: [100, 40] },
     [
@@ -647,8 +634,40 @@ test('insertStations joins per-station platform nodes into ONE SupportStation wi
   const n1 = hub.stopNodes!.get('L1')!;
   const n2 = hub.stopNodes!.get('L2')!;
   assert.ok(n1 && n2, 'both lines flagged a stop at the hub');
-  assert.notEqual(n1, n2, 'each line stops on its own platform support node');
+  assert.equal(n1, n2, 'co-located platforms within a grid cell merge onto one support node');
   assert.ok(h.stopAt.has('L1|' + n1) && h.stopAt.has('L2|' + n2));
+});
+
+test('insertStations keeps FAR-APART platforms split (distinct parallel trunks)', () => {
+  // Same shape, but the platforms sit 120px apart — beyond one grid cell — so
+  // they are genuinely distinct parallel corridors and must stay on their own
+  // support nodes (merging them would collapse the two trunks together).
+  const g = graphFrom(
+    { p1: [0, 0], p2: [0, 120], w1: [-100, 0], e1: [100, 0], w2: [-100, 120], e2: [100, 120] },
+    [
+      { id: 'wp1', from: 'w1', to: 'p1', lines: ['L1'] },
+      { id: 'pe1', from: 'p1', to: 'e1', lines: ['L1'] },
+      { id: 'wp2', from: 'w2', to: 'p2', lines: ['L2'] },
+      { id: 'pe2', from: 'p2', to: 'e2', lines: ['L2'] },
+    ],
+  );
+  for (const e of g.edges) {
+    const line = e.lines[0].id;
+    e.stops.set(line, { atFrom: true, atTo: true });
+  }
+  const groups: StationGroup[] = [
+    { id: 'hub', name: 'Hub', center: [0, 60 / 1e5], stationIds: ['p1', 'p2'] },
+    { id: 'w1', name: 'W1', center: [-100 / 1e5, 0], stationIds: [] },
+    { id: 'e1', name: 'E1', center: [100 / 1e5, 0], stationIds: [] },
+    { id: 'w2', name: 'W2', center: [-100 / 1e5, 120 / 1e5], stationIds: [] },
+    { id: 'e2', name: 'E2', center: [100 / 1e5, 120 / 1e5], stationIds: [] },
+  ];
+  const h = buildSupportGraph(g, groups, PARAMS);
+  const hub = h.stations.get('hub')!;
+  const n1 = hub.stopNodes!.get('L1')!;
+  const n2 = hub.stopNodes!.get('L2')!;
+  assert.ok(n1 && n2, 'both lines flagged a stop at the hub');
+  assert.notEqual(n1, n2, 'platforms more than a grid cell apart stay on their own support nodes');
 });
 
 test('merge rounds keep bowed parallel corridors separate (no chord-refeed weld)', () => {
