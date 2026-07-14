@@ -3405,7 +3405,36 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // London bubbles, from the final marks; used just below for the London lane
     // crop footprint and returned for the London design to paint from.
     bubbleByNode = computeLondonByNode(stopsByNode, LINE_WIDTH);
-    torontoByNode = computeTorontoByNode(stopsByNode);
+    // Drawn lane segments of a line within `win` of a point, for the Toronto
+    // crossing solve (places its dot on the true ribbon meeting, not a tangent
+    // estimate). segPath is final here (past all merge/trim/eviction passes), but
+    // it is TRIMMED back at the node, so the meeting actually happens in the join
+    // curves that bridge the gap; sample those in too.
+    const laneSegsNear = (lineId: string, pos: Pixel, win: number): Array<[Pixel, Pixel]> => {
+      const out: Array<[Pixel, Pixel]> = [];
+      const w2 = win * win;
+      const near = (p: Pixel) => (p[0] - pos[0]) ** 2 + (p[1] - pos[1]) ** 2 <= w2;
+      for (const [key, poly] of segPath) {
+        if (key.slice(key.indexOf('|') + 1) !== lineId) continue;
+        for (let i = 1; i < poly.length; i++) {
+          const a = poly[i - 1], b = poly[i];
+          if (near(a) || near(b)) out.push([a, b]);
+        }
+      }
+      const SAMP = 6;
+      for (const jc of joinCurves) {
+        if (jc.lineId !== lineId || !(near(jc.a) || near(jc.b) || near(jc.apex))) continue;
+        let prev = jc.a;
+        for (let s = 1; s <= SAMP; s++) {
+          const t = s / SAMP, mt = 1 - t;
+          const q: Pixel = [mt * mt * jc.a[0] + 2 * mt * t * jc.apex[0] + t * t * jc.b[0], mt * mt * jc.a[1] + 2 * mt * t * jc.apex[1] + t * t * jc.b[1]];
+          out.push([prev, q]);
+          prev = q;
+        }
+      }
+      return out;
+    };
+    torontoByNode = computeTorontoByNode(stopsByNode, laneSegsNear);
 
     // Lane-crop targets: for every mark that resolved to a seated rect box, the
     // exact DRAWN capsule rect its lane should end on. A multi-line mark crops to
