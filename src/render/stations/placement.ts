@@ -54,6 +54,15 @@ const toLine = (mk: StopMark): StopLine => ({
   outward: mk.outward ? [mk.outward[0], mk.outward[1]] : undefined,
 });
 
+/** Perpendicular distance from p to the infinite line through a,b. */
+const perpDist = (p: Pixel, a: Pixel, b: Pixel): number => {
+  const vx = b[0] - a[0], vy = b[1] - a[1];
+  const len = Math.sqrt(vx * vx + vy * vy);
+  return len < 1e-9
+    ? Math.sqrt((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2)
+    : Math.abs((p[0] - a[0]) * vy - (p[1] - a[1]) * vx) / len;
+};
+
 const median = (vals: number[]): number => {
   const s = vals.slice().sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -218,12 +227,20 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
 
   if (!gm.pill) {
     const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
-    const vertices: Pixel[] = [];
-    for (const mk of ordered) {
-      vertices.push(mk.pos);
-      if (mk.cornerAfter) vertices.push(mk.cornerAfter);
+    // The spine must pass through EVERY dot, so each sits on the capsule
+    // centerline (and on the connector). Keep all dot vertices; drop an elbow
+    // only when it is a near-straight bend between its two dots. (A plain RDP
+    // would simplify a slightly-off dot away and float it off-centre in the
+    // capsule.)
+    const spine: Point[] = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const p = ordered[i].pos;
+      spine.push([p[0], p[1]]);
+      const corner = ordered[i].cornerAfter;
+      if (corner && i + 1 < ordered.length && perpDist(corner, p, ordered[i + 1].pos) > 0.75) {
+        spine.push([corner[0], corner[1]]);
+      }
     }
-    const spine = rdpSimplify(vertices, 0.75) as Point[];
     const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
     const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
     gm.pill = { points: spine, anchor: [cx, cy] };
