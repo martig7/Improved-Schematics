@@ -5,7 +5,7 @@
 import {
   joinTraceTarget, makeJoinLog, reportPaintedLoops, reportVanishedStations,
   reportFarAttach, reportSplitFit, reportCapsOverlap, reportPlatformSplit,
-  reportBoxRegime, reportMegaFallbacks, reportCapsOvlStats, reportCapsAudit,
+  reportCapsOvlStats, reportCapsAudit,
   reportSlideBoxed, reportRigidSlideDeclined, reportSlideStackDeclined,
   reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
@@ -1792,7 +1792,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const capOvlOn = capNoOvlOn || capPlaceDebug;
     const placedHulls: Array<{ nodeId: string; hull: Hull }> = [];
     const capOvlStats = { capsules: 0, self: 0, cross: 0, rejected: 0 };
-    let megaFallbacks = 0; // spec v2 §3: stations boxed for infeasibility
     // Placement order (spec §6): an earlier station's dots mask a later one's
     // row states, so a station boxed ONLY because a flexible neighbor claimed
     // its space first (the MASKED class) is freed by visiting the more-
@@ -2202,25 +2201,49 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             reportPlatformSplit({ layout, nodeId: s.nodeId, clusters });
             continue; // marks re-place per cluster; no dots committed yet
           }
-          // spec v2 §3: total fallback — the mega box covers all bundles.
-          // Structural residual: a bundle whose member lanes are coincident
-          // (interlined on one drawn line) or pinch below minGap inside the
-          // slide window admits zero feasible row states — the row-line ×
-          // lane-curve intersection degenerates there — so the station boxes
-          // (the mega branch in stops.ts renders it).
-          megaFallbacks++;
-          for (const mk of s.marks) mk.mega = true;
-          // Regime probe (OCTI_PLACE_DEBUG): deg = incident DRAWN edges (octi
-          // ports/directions used), ldeg = total lines through the node. deg<=8
-          // with ldeg>deg means lines are welded onto few corridors → fan-fold /
-          // over-weld (fix = de-weld). deg>8 means genuine 8-direction saturation
-          // (fix = split the hub; we cannot add directions without breaking octi).
-          reportBoxRegime({ layout, edges: layout.edges, nodeId: s.nodeId, marks: s.marks, ldeg: ldegOf(s.nodeId), groups });
+          // Relaxed final seat (never null): the octilinear ladder exhausted, so
+          // take a guaranteed non-octilinear, overlap-allowed seat instead of a
+          // mega box. Hull penetration and true-stacking become heavy proximity
+          // (never a veto), so the solve seats with least overlap and the
+          // ultimate fallback is only a backstop.
+          const relaxedSol = solveRows(solveCurves, groups, {
+            ...ropts,
+            relaxed: true,
+            blocked: undefined,
+            proximity: (p: Pixel) => {
+              let pen = ropts.proximity(p);
+              const hd = hullClearance(p);
+              if (hd < 0) pen += 1000 * -hd;
+              for (const q of placedDots) {
+                const dd = hyp(p[0] - q[0], p[1] - q[1]);
+                if (dd < xMaskStack) pen += 1000 * (xMaskStack - dd);
+              }
+              return pen;
+            },
+          })!; // relaxed mode is guaranteed non-null
+          for (let k = 0; k < relaxedSol.order.length; k++) {
+            const i = relaxedSol.order[k];
+            s.marks[i].pos = relaxedSol.pos[i];
+            s.marks[i].chain = k;
+            const corner = relaxedSol.cornerAfter.get(k);
+            if (corner) s.marks[i].cornerAfter = corner;
+          }
+          // Hull bookkeeping so later stations mask against this seat (mirrors the
+          // verify block's push; capsHullOf is declared after this loop).
+          const rvVerts: Pixel[] = [];
+          for (let k = 0; k < relaxedSol.order.length; k++) {
+            rvVerts.push(relaxedSol.pos[relaxedSol.order[k]]);
+            const c = relaxedSol.cornerAfter.get(k);
+            if (c) rvVerts.push(c);
+          }
+          const rvHull: Hull = [];
+          for (let k = 1; k < rvVerts.length; k++) rvHull.push({ a: rvVerts[k - 1], b: rvVerts[k], half: r + 3 });
+          if (rvHull.length === 0) rvHull.push({ a: rvVerts[0], b: rvVerts[0], half: r + 3 });
+          placedHulls.push({ nodeId: s.nodeId, hull: rvHull });
         }
       }
       for (const mk of s.marks) placedDots.push(mk.pos);
     }
-    reportMegaFallbacks(megaFallbacks);
     reportCapsOvlStats({ capPlaceDebug, stats: capOvlStats, guardOn: capGuardOn, noOvlOn: capNoOvlOn });
     // LIVE box obstacle list: seeded with everything boxed by placement (the
     // structural deg test AND the placement mega fallback's mark flags), and
