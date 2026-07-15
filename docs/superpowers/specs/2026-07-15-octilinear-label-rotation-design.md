@@ -277,6 +277,13 @@ keeps its signature.
   on the dense dumps it roughly halves label pairs closer than 6px (NYC 29->11, SEA 85->57,
   LON 30->13). `OCTI_LABEL_NO_ADJ=1` disables it.
 
+- **Graduated label-overlap cost.** The hard label-overlap penalty was a flat `+100` regardless
+  of overlap depth, so among unavoidable overlaps the packer had no gradient and could cascade
+  into complete stacks where boxes are really close. It now keeps the strong base (any overlap
+  still worse than a clean spot) and ADDS `OVL_FRAC_W` times the overlap fraction (of the
+  smaller box), so the packer prefers the least-overlapping of forced placements. New pure
+  `overlapFraction`; legacy path stays flat and byte-identical.
+
 **Legacy guarantee, preserved.** All of the above are gated by the single legacy switch
 `OCTI_LABEL_NO_ROTATE=1` (which now means "all new label behaviour off"), so that flag still
 reproduces master byte-for-byte. The intrinsic label-to-station lead is preserved throughout:
