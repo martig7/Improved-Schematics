@@ -116,8 +116,6 @@ const DEFAULT_BOX_FRAC = 0.4;
 // Per-station complex split is the default layout (each platform of a
 // multi-station complex placed at its real position). Part of the fingerprint.
 const DEFAULT_STATION_SPLIT = false;
-// Dense-hub ("megabox") fallback shape default: 'curve' (squircle) vs 'box'.
-const DEFAULT_MEGA_FALLBACK: 'box' | 'curve' = 'curve';
 const BOX_FRAC_MIN = 0.1;
 const BOX_FRAC_MAX = 0.8;
 
@@ -233,7 +231,6 @@ type RestoredSettings = {
   neighborhoodFont?: number;
   neighborhoodZoom?: number;
   neighborhoodPad?: number;
-  megaFallback?: 'box' | 'curve';
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
@@ -302,9 +299,6 @@ export function SchematicPanel() {
   // and a collision padding (basemap textPadding units). Both draw-time.
   const [neighborhoodZoom, setNeighborhoodZoom] = useState(rvis.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
   const [neighborhoodPad, setNeighborhoodPad] = useState(rvis.neighborhoodPad ?? DEFAULT_LABEL_PAD);
-  // Dense-hub ("megabox") fallback shape — 'box' (rounded rect) or 'curve' (squircle).
-  // Draw-time only (not in the layout fingerprint); persisted per mode like the toggles.
-  const [megaFallback, setMegaFallback] = useState<'box' | 'curve'>(rvis.megaFallback ?? DEFAULT_MEGA_FALLBACK);
   const [stationDesign, setStationDesign] = useState(rvis.stationDesign ?? DEFAULT_STATION_DESIGN);
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
@@ -508,7 +502,6 @@ export function SchematicPanel() {
     setNeighborhoodFont(v.neighborhoodFont ?? DEFAULT_NBHD_FONT);
     setNeighborhoodZoom(v.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
     setNeighborhoodPad(v.neighborhoodPad ?? DEFAULT_LABEL_PAD);
-    setMegaFallback(v.megaFallback ?? DEFAULT_MEGA_FALLBACK);
     setStationDesign(v.stationDesign ?? DEFAULT_STATION_DESIGN);
     setLandmass(v.landmass ?? 'faithful');
     setLandmassDetail(v.landmassDetail ?? 0.5);
@@ -539,7 +532,7 @@ export function SchematicPanel() {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     if (!shared) return;
-    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodZoom: shared.neighborhoodZoom, neighborhoodPad: shared.neighborhoodPad, megaFallback: shared.megaFallback, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodZoom: shared.neighborhoodZoom, neighborhoodPad: shared.neighborhoodPad, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
     for (const m of ['geographic', 'smoothed'] as const) {
       if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
     }
@@ -803,7 +796,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, stationDesign }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -816,7 +809,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -877,10 +870,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, labelScale, stationDesign });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, labelScale, stationDesign });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
+  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -1049,7 +1042,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
+    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
     // the displayed pre across load/generate sequences (a remembered ref can
@@ -1074,7 +1067,7 @@ export function SchematicPanel() {
     } catch {
       setMapMsg('Save failed');
     }
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, selections, triggerDownload, modState, buildInputDump]);
 
   // Install a loaded/restored map: settings + precompute + detail areas, drawing
   // from cache without recomputing. The fresh `applied` object forces the svg memo
@@ -1094,7 +1087,6 @@ export function SchematicPanel() {
       neighborhoodFont?: number;
       neighborhoodZoom?: number;
       neighborhoodPad?: number;
-      megaFallback?: 'box' | 'curve';
       stationDesign?: string;
       landmass?: 'faithful' | 'rounded' | 'diagram';
       landmassDetail?: number;
@@ -1128,7 +1120,6 @@ export function SchematicPanel() {
     if (s.neighborhoodFont != null) setNeighborhoodFont(clamp(s.neighborhoodFont, NBHD_FONT_MIN, NBHD_FONT_MAX));
     if (s.neighborhoodZoom != null) setNeighborhoodZoom(clamp(s.neighborhoodZoom, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX));
     if (s.neighborhoodPad != null) setNeighborhoodPad(clamp(s.neighborhoodPad, LABEL_PAD_MIN, LABEL_PAD_MAX));
-    if (s.megaFallback === 'box' || s.megaFallback === 'curve') setMegaFallback(s.megaFallback);
     if (typeof s.stationDesign === 'string') setStationDesign(STATION_DESIGNS.some((d) => d.id === s.stationDesign) ? s.stationDesign : DEFAULT_STATION_DESIGN);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
     if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
@@ -1679,7 +1670,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, megaFallback, stationDesign, landmass, landmassDetail]);
+  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -1784,15 +1775,6 @@ export function SchematicPanel() {
         >
           {showNeighborhoods ? '✓ Neighborhoods' : 'Neighborhoods'}
         </button>
-        {mode === 'smoothed' && smoothedReady && (
-          <button
-            onClick={() => requestToggle(() => setMegaFallback((v) => (v === 'box' ? 'curve' : 'box')))}
-            style={toggleStyle(megaFallback === 'curve')}
-            title="Dense-hub fallback shape when a bundle can't seat octilinearly: Box (rectangle) or Curve (squircle)"
-          >
-            {megaFallback === 'curve' ? 'Hubs: Curve' : 'Hubs: Box'}
-          </button>
-        )}
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setShowWarpBoxes((v) => !v)}
@@ -2458,7 +2440,6 @@ export function SchematicPanel() {
             baseSvg={svg}
             showStations={showStations}
             showLabels={showLabels}
-            megaFallback={megaFallback}
             stationDesign={stationDesign}
             landmass={landmass}
             landmassDetail={landmassDetail}
