@@ -4,7 +4,7 @@
 
 import { envStr } from '../env';
 import type { GraphNode, StopMark, Pixel } from './layout/types';
-import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, MARK_R0 } from './constants';
+import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, LABEL_WRAP_W, MARK_R0 } from './constants';
 import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
 import { obbFromLocalBox, obbAabb, obbOverlap, segmentIntersectsObb, tilt, type Obb } from './labelGeom';
@@ -21,6 +21,8 @@ export interface Placement {
   anchor: 'start' | 'middle' | 'end';
   /** Screen rotation in degrees about the text origin; absent/0 = flat (today). */
   angle?: number;
+  /** Two wrapped lines for a long name; absent/single = the one-line render. */
+  lines?: string[];
 }
 export interface Segment {
   p1: Pixel;
@@ -28,6 +30,30 @@ export interface Segment {
 }
 
 export const estimateTextWidth = (s: string): number => s.length * LABEL_CHAR_WIDTH;
+
+/**
+ * Wrap a station name to at most two lines when it is estimated wider than
+ * `maxWidth`, splitting only at a space (never mid-word) at the point that
+ * minimizes the wider line. A name with no space, or one within the width, is
+ * returned as a single line. Pure and deterministic.
+ */
+export function wrapLabel(label: string, maxWidth: number): string[] {
+  if (estimateTextWidth(label) <= maxWidth) return [label];
+  const words = label.split(' ');
+  if (words.length < 2) return [label]; // no space to break on
+  let bestSplit = 1;
+  let bestMax = Infinity;
+  for (let i = 1; i < words.length; i++) {
+    const w1 = estimateTextWidth(words.slice(0, i).join(' '));
+    const w2 = estimateTextWidth(words.slice(i).join(' '));
+    const m = Math.max(w1, w2);
+    if (m < bestMax) {
+      bestMax = m;
+      bestSplit = i;
+    }
+  }
+  return [words.slice(0, bestSplit).join(' '), words.slice(bestSplit).join(' ')];
+}
 
 export function boxesOverlap(a: Box, b: Box): boolean {
   return !(a.x + a.w <= b.x || a.x >= b.x + b.w || a.y + a.h <= b.y || a.y >= b.y + b.h);
@@ -262,9 +288,15 @@ export function placeLabels(
   for (const node of placeOrder) {
     const p = nodePx.get(node.id);
     if (!p) continue;
-    const tw = estimateTextWidth(node.label);
     const fh = LABEL_FONT_SIZE + 2;
     const off = LABEL_OFFSET;
+    // Two-line wrap for long names (space split only, never mid-word). The legacy
+    // path and short names stay one line, so tw === the single-line width and
+    // extraH === 0, leaving their candidate boxes byte-identical. A wrapped label
+    // is narrower (max line width) and taller (the box grows down by one line).
+    const lines = noRotate ? [node.label] : wrapLabel(node.label, LABEL_WRAP_W);
+    const tw = lines.length > 1 ? Math.max(...lines.map((l) => estimateTextWidth(l))) : estimateTextWidth(node.label);
+    const extraH = (lines.length - 1) * fh;
     // Hang the label off the capsule dot nearest the node centre (not the bare
     // centre), so it tracks the markers when collision passes slide them.
     const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
@@ -285,14 +317,14 @@ export function placeLabels(
     // Flat candidates (angle 0): identical geometry and priorities to before, so a
     // map that never needs to rotate lays out exactly as it used to.
     const flat: Candidate[] = [
-      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh } }, priority: 1 },
-      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh } }, priority: 1 },
-      { placement: { x: cx, y: cy - off, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh } }, priority: 2 },
-      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh } }, priority: 2 },
-      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh } }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh } }, priority: 3 },
-      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh } }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh } }, priority: 3 },
+      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: cx, y: cy - off, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
     ];
     // Rotated candidates: octilinear text that slots into space the flat boxes
     // cannot. The tilt penalty keeps these below flat unless flat collides; 90 is
@@ -302,7 +334,7 @@ export function placeLabels(
       const x0 = anchor === 'end' ? -tw : anchor === 'middle' ? -tw / 2 : 0;
       return {
         placement: { x: ox, y: oy, anchor, angle },
-        fp: { angle, obb: obbFromLocalBox([ox, oy], x0, -fh / 2, x0 + tw, fh / 2, angle) },
+        fp: { angle, obb: obbFromLocalBox([ox, oy], x0, -fh / 2, x0 + tw, fh / 2 + extraH, angle) },
         priority: 1,
       };
     };
@@ -339,7 +371,7 @@ export function placeLabels(
     }
     chosenOffset.set(node.id, [best.placement.x - cx, best.placement.y - cy]);
     placed.push(best.fp);
-    result.set(node.id, best.placement);
+    result.set(node.id, lines.length > 1 ? { ...best.placement, lines } : best.placement);
   }
 
   return result;
@@ -368,6 +400,13 @@ export function renderLabel(
   const xf =
     'translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')' +
     (angle !== 0 ? ' rotate(' + angle + ')' : '');
+  // Two wrapped lines stack as tspans one line-height apart; a single line renders
+  // exactly as before (no tspan), so unwrapped labels stay byte-identical.
+  const lines = placement.lines && placement.lines.length > 1 ? placement.lines : null;
+  const LINE_DY = LABEL_FONT_SIZE + 2;
+  const inner = lines
+    ? '<tspan x="0">' + escapeXml(lines[0]) + '</tspan><tspan x="0" dy="' + LINE_DY + '">' + escapeXml(lines[1]) + '</tspan>'
+    : escapeXml(node.label);
   // Translate the group to the TEXT position (placement) with the text at the
   // origin, so size scaling (panel/export/canvas) pivots around the text's own
   // anchor. The gap from the dot stays CONSTANT as label size changes; only the
@@ -392,8 +431,9 @@ export function renderLabel(
       fill,
       layer: 'stations',
       worldScale: false,
-      // Carry the angle only when rotated, so flat prims are byte-identical.
+      // Carry the angle/lines only when set, so flat single-line prims are byte-identical.
       ...(angle !== 0 ? { angle } : {}),
+      ...(lines ? { lines } : {}),
     });
   }
   return (
@@ -403,6 +443,6 @@ export function renderLabel(
     '<text x="0" y="0" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +
     LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="500">' +
-    escapeXml(node.label) + '</text></g></g>'
+    inner + '</text></g></g>'
   );
 }

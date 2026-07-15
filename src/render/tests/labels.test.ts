@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, bundleOrder, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox, type Segment } from '../labels';
+import { boxesOverlap, bundleOrder, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -21,8 +21,35 @@ test('renderLabel pushes a text prim carrying the angle only when rotated', () =
   assert.equal((rot[0] as { angle?: number }).angle, 90);
 });
 
+test('renderLabel emits two tspans for a two-line placement, one <text> otherwise', () => {
+  const two = renderLabel({ id: 'n', label: '34 St-Penn Station' }, { x: 5, y: 6, anchor: 'start', lines: ['34 St-Penn', 'Station'] }, [5, 6], true, false);
+  assert.equal((two.match(/<tspan/g) ?? []).length, 2);
+  assert.ok(two.includes('>34 St-Penn</tspan>') && two.includes('>Station</tspan>'));
+  const one = renderLabel({ id: 'n', label: 'Foo' }, { x: 5, y: 6, anchor: 'start' }, [5, 6], true, false);
+  assert.ok(!one.includes('<tspan'), 'single line unchanged, no tspans');
+});
+
+test('renderLabel prim carries lines only when multi-line', () => {
+  const p: Prim[] = [];
+  renderLabel({ id: 'n', label: 'X' }, { x: 1, y: 2, anchor: 'start', lines: ['A', 'B'] }, [1, 2], true, false, p);
+  assert.deepEqual((p[0] as { lines?: string[] }).lines, ['A', 'B']);
+});
+
 test('estimateTextWidth scales with length', () => {
   assert.equal(estimateTextWidth('abcd'), 4 * 6);
+});
+
+test('wrapLabel keeps short names on one line', () => {
+  assert.deepEqual(wrapLabel('96 St', 84), ['96 St']);
+});
+
+test('wrapLabel splits a long name on a space, balancing the two lines', () => {
+  // "34 St-Penn Station" (108px > 84): the min-max split is after "St-Penn".
+  assert.deepEqual(wrapLabel('34 St-Penn Station', 84), ['34 St-Penn', 'Station']);
+});
+
+test('wrapLabel never breaks mid-word: a long single word stays one line', () => {
+  assert.deepEqual(wrapLabel('Elephant&CastleStation', 84), ['Elephant&CastleStation']);
 });
 
 test('boxesOverlap detects overlap and separation', () => {

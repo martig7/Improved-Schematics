@@ -58,6 +58,8 @@ export const PAD = 24;
 export const LABEL_FONT_SIZE = 11;
 export const LABEL_CHAR_WIDTH = 6;
 export const LABEL_OFFSET = 12;
+/** Names estimated wider than this wrap to two lines (split on a space). */
+export const LABEL_WRAP_W = 84;
 
 export type Vec2 = [number, number];
 

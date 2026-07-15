@@ -94,6 +94,8 @@ export interface TextPrim extends PrimBase {
   fill: string;
   /** Screen rotation in degrees about the text origin; absent = flat. */
   angle?: number;
+  /** Two wrapped lines for a long name; absent/single = the one-line `text`. */
+  lines?: string[];
 }
 
 export type Prim = PathPrim | RectPrim | CirclePrim | LinePrim | TextPrim;

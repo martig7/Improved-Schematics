@@ -241,15 +241,20 @@ export function drawScene(
     ctx.fillStyle = label.fill;
     const ox = label.ax + label.x * ls;
     const oy = label.ay + label.y * ls;
+    const lines = label.lines && label.lines.length > 1 ? label.lines : null;
+    const dyStep = (label.fontSize + 2) * ls; // per-line height, matches the SVG tspan dy
     // Canvas is display-only (the SVG string is the deterministic artifact), so
-    // runtime trig for the rotated case is fine. Flat labels draw at the same
-    // coordinates as before.
+    // runtime trig for the rotated case is fine. Flat single-line labels draw at
+    // the same coordinates as before.
     if (label.angle) {
       ctx.save();
       ctx.translate(ox, oy);
       ctx.rotate((label.angle * Math.PI) / 180);
-      ctx.fillText(label.text, 0, 0);
+      if (lines) lines.forEach((ln, i) => ctx.fillText(ln, 0, i * dyStep));
+      else ctx.fillText(label.text, 0, 0);
       ctx.restore();
+    } else if (lines) {
+      lines.forEach((ln, i) => ctx.fillText(ln, ox, oy + i * dyStep));
     } else {
       ctx.fillText(label.text, ox, oy);
     }
