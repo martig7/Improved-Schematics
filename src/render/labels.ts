@@ -309,7 +309,12 @@ export function placeLabels(
   const ADJ_MARGIN = LABEL_FONT_SIZE; // merge zone: two labels closer than this risk reading as one
   const W_ADJ = 2.5;
   const noAdj = envStr('OCTI_LABEL_NO_ADJ') === '1';
-  const OVL_FRAC_W = 80; // extra label-overlap cost at full overlap, on top of the base 100
+  // Label overlap is a SOFT infinity: so large the packer will cross lines, sit on
+  // markers, or turn sideways before letting two labels overlap, yet finite so that
+  // when EVERY candidate overlaps (truly boxed in) the graduated area term still
+  // picks the least-overlapping one instead of an all-ties stack.
+  const SOFT_INF = 10000;
+  const OVL_FRAC_W = 80; // area gradient among forced overlaps (breaks ties toward less overlap)
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -440,12 +445,12 @@ export function placeLabels(
     for (const cand of candidates) {
       let cost = 0;
       const aabb = fpAabb(cand.fp);
-      // Label overlap: keep the strong base penalty (any overlap stays worse than a
-      // clean spot), but ADD cost with the overlap AREA so among unavoidable overlaps
-      // the packer prefers the least-overlapping one instead of pricing them all the
-      // same and cascading into full stacks. Legacy stays flat (byte-identical).
+      // Label overlap: a soft infinity so text-text overlap is the last resort of
+      // last resorts, plus the overlap AREA so forced overlaps still minimize instead
+      // of pricing every overlap the same and cascading into full stacks. Legacy stays
+      // flat 100 (byte-identical).
       for (let i = 0; i < placed.length; i++) {
-        if (fpOverlap(cand.fp, placed[i])) cost += noRotate ? 100 : 100 + OVL_FRAC_W * overlapFraction(aabb, placedAABB[i]);
+        if (fpOverlap(cand.fp, placed[i])) cost += noRotate ? 100 : SOFT_INF + OVL_FRAC_W * overlapFraction(aabb, placedAABB[i]);
       }
       for (const b of stationBoxes) if (fpHitsBox(cand.fp, b)) cost += 30;
       for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
