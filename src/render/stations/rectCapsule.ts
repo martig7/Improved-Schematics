@@ -75,12 +75,6 @@ export function paintRectCapsule(
     return g;
   }
 
-  if (cap.kind === 'box') {
-    // Mega-fallback interchange: the opaque rounded box, still rendered.
-    const rx = style.roundEnds ? Math.min(cap.w, cap.h) / 2 : cap.rx;
-    return [rect(cap.x, cap.y, cap.w, cap.h, rx, { fill: style.capFill, stroke: style.capBorder, strokeWidth: 3 })];
-  }
-
   // Single stop, degenerate interchange, or preview: one box per line at its pos.
   const single = cap.kind === 'none' || scene.lines.length <= 1;
   const baseR = single ? scene.dotRadius : scene.dotRadius / MARKER_SCALE;

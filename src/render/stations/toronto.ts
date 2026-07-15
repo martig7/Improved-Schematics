@@ -1,5 +1,5 @@
 import type { StationDesign, StopScene, PaintCtx, Glyph } from './types';
-import { circle, rect, capsuleGlyphs, capsuleStrokeWidths, pillPath } from './primitives';
+import { circle, capsuleGlyphs, capsuleStrokeWidths, pillPath } from './primitives';
 import { LINE_WIDTH, MARK_R0, MARKER_SCALE } from '../constants';
 
 // Fixed paper-map palette: black ink on white paper in both themes.
@@ -62,11 +62,6 @@ function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
     // A perfect crossing: one white circle sized like a one-station capsule,
     // with a single black dot.
     return [...disc(cap.cx, cap.cy, MARK_OUTER, MARK_RING), dot(cap.cx, cap.cy)];
-  }
-
-  if (cap.kind === 'box') {
-    // Mega-fallback interchange: a white ticket-hall block.
-    return [rect(cap.x, cap.y, cap.w, cap.h, cap.rx, { fill: PAPER, stroke: INK, strokeWidth: 3 })];
   }
 
   // Single stop: a blank line-fit circle embedded in the line.

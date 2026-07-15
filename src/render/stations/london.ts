@@ -1,5 +1,5 @@
 import type { StationDesign, StopScene, StopLine, Glyph, Point } from './types';
-import { line, circle, rect } from './primitives';
+import { line, circle } from './primitives';
 import { MARK_R0, LINE_WIDTH } from '../constants';
 
 const R0 = MARK_R0;
@@ -78,11 +78,6 @@ function paint(scene: StopScene): Glyph[] {
     for (const n of cap.necks) g.push(line(n.x0, n.y0, n.x1, n.y1, { stroke: PAPER, strokeWidth: n.w }));
     for (const b of cap.bubbles) g.push(circle(b.x, b.y, b.r, { fill: PAPER, stroke: 'none', strokeWidth: 0 }));
     return g;
-  }
-
-  if (cap.kind === 'box') {
-    // Mega-fallback interchange: a white ticket-hall block, still rendered.
-    return [rect(cap.x, cap.y, cap.w, cap.h, cap.rx, { fill: PAPER, stroke: INK, strokeWidth: 3 })];
   }
 
   return ticks(scene);

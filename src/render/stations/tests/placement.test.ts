@@ -25,14 +25,6 @@ test('coincident marks -> ring', () => {
   assert.equal(s.capsule.kind, 'ring');
 });
 
-test('mega marks -> smooth pill, dots kept (residual curve)', () => {
-  const marks = [mk('A', 0, 0, { mega: true }), mk('B', 12, 4, { mega: true }), mk('C', 4, 12, { mega: true })];
-  const s = buildScene('n1', marks, {});
-  assert.equal(s.capsule.kind, 'pill');
-  assert.equal((s.capsule as { smooth: boolean }).smooth, true);
-  assert.equal(s.lines.length, 3);
-});
-
 test('StopLine carries color/bullet/textColor from the mark', () => {
   const s = buildScene('n1', [mk('A', 5, 5, { textColor: '#00ff00' })], ctx);
   assert.equal(s.lines[0].color, '#dc2626');

@@ -26,10 +26,7 @@ test('bullet places text below the dot center', () => {
   assert.ok((g as { y: number }).y > 20); // fs*0.36 offset
 });
 
-test('capsuleGlyphs: box -> one rect, ring -> one circle, pill -> two paths', () => {
-  const box = capsuleGlyphs({ kind: 'box', x: 0, y: 0, w: 10, h: 10, rx: 2 }, { border: '#111111', fill: '#ffffff' }, 3);
-  assert.equal(box.length, 1);
-  assert.equal(box[0].kind, 'rect');
+test('capsuleGlyphs: ring -> one circle, pill -> two paths', () => {
   const ring = capsuleGlyphs({ kind: 'ring', cx: 5, cy: 5, r: 6 }, { border: '#111111', fill: '#ffffff' }, 3);
   assert.equal(ring.length, 1);
   assert.equal(ring[0].kind, 'circle');

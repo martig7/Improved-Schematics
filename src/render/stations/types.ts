@@ -27,7 +27,6 @@ export interface StopLine {
 export type Capsule =
   | { kind: 'none' }
   | { kind: 'pill'; points: Point[]; smooth: boolean }
-  | { kind: 'box'; x: number; y: number; w: number; h: number; rx: number }
   | { kind: 'ring'; cx: number; cy: number; r: number }
   | { kind: 'rectRows';
       box: number;                                   // box side length (world px)
@@ -43,7 +42,7 @@ export type Capsule =
     };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots
- *  to draw (empty for an opaque mega box). */
+ *  to draw. */
 export interface StopScene {
   nodeId: string;
   lines: StopLine[];

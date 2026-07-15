@@ -6,7 +6,6 @@
 
 import type { Pixel, StopMark } from '../layout/types';
 import { MARKER_SCALE, MARK_R0 } from '../constants';
-import { rdpSimplify } from '../layout/chainPlace';
 import { type RectCapsule } from '../layout/rectSeat';
 import { type LondonCapsule } from '../layout/londonBubbles';
 import type { StopScene, StopLine, Capsule, Point } from './types';
@@ -52,15 +51,13 @@ const toLine = (mk: StopMark): StopLine => ({
 // Repaint memo of the pure mark-geometry pieces of a scene. Marks are final
 // when paint starts and the cached geometry reuses the SAME array objects
 // across repaints, so the array identity keys everything that depends only on
-// mark positions: the farthest-pair axis, the pill spine, and the residual
-// squircle spine. The scene assembly itself stays live because it reads the
-// draw-time capsuleMode. A deserialized cache has fresh array identities and
-// simply refills the memo on its first paint.
+// mark positions: the farthest-pair axis and the pill spine. The scene assembly
+// itself stays live because it reads the draw-time capsuleMode. A deserialized
+// cache has fresh array identities and simply refills the memo on its first paint.
 interface SceneGeom {
   ai: number;    // farthest-pair axis start index
   best: number;  // farthest-pair separation
   pill?: { points: Point[]; anchor: Point };
-  megaSpine?: { points: Point[]; anchor: Point };
 }
 const sceneGeomMemo = new WeakMap<StopMark[], SceneGeom>();
 
@@ -139,37 +136,6 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
     const p: Point = rescued ? [rescued[0], rescued[1]] : [a[0], a[1]];
     const slines = rescued ? lines.map((ln) => ({ ...ln, pos: [p[0], p[1]] as Point })) : lines;
     return { nodeId, lines: slines, capsule: { kind: 'none' }, anchor: p, dotRadius };
-  }
-
-  // Over-dense residual: the relaxed solver seats normal stations, but the
-  // no-overlap-floor last resort can still flag a colliding small station.
-  // Render it as the squircle pill (per-line dots kept), the prior default.
-  const isMega = marks.some((m) => m.mega);
-  if (isMega) {
-    if (!gm.megaSpine) {
-      let pi = 0, pj = 0, pbest = -1;
-      for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) {
-        const dx = marks[i].pos[0] - marks[j].pos[0], dy = marks[i].pos[1] - marks[j].pos[1];
-        const dd = dx * dx + dy * dy;
-        if (dd > pbest) { pbest = dd; pi = i; pj = j; }
-      }
-      const A = marks[pi].pos, B = marks[pj].pos;
-      let axx = B[0] - A[0], axy = B[1] - A[1];
-      const alen = Math.sqrt(axx * axx + axy * axy) || 1;
-      axx /= alen; axy /= alen;
-      const orderedPos = marks
-        .map((m, i) => ({ p: m.pos as Point, t: (m.pos[0] - A[0]) * axx + (m.pos[1] - A[1]) * axy, i }))
-        .sort((u, v) => (u.t - v.t) || (u.i - v.i))
-        .map((u) => u.p);
-      const spine = rdpSimplify(orderedPos, 0.75) as Point[];
-      const cx = spine.reduce((acc, p) => acc + p[0], 0) / spine.length;
-      const cy = spine.reduce((acc, p) => acc + p[1], 0) / spine.length;
-      gm.megaSpine = { points: spine, anchor: [cx, cy] };
-    }
-    const ms = gm.megaSpine;
-    // Defensive copies, mirroring the cachedRect branch: a consumer that
-    // mutated a shared memoized array would corrupt every later repaint.
-    return { nodeId, lines, capsule: { kind: 'pill', points: ms.points.map((p): Point => [p[0], p[1]]), smooth: true }, anchor: [ms.anchor[0], ms.anchor[1]], dotRadius };
   }
 
   if (best < 1e-3) {

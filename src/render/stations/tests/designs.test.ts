@@ -185,22 +185,6 @@ test('tokyu interchange: a connector renders as a seamless border-then-fill silh
   assert.ok(lastRectIdx > fillNeckIdx, 'route boxes drawn on top of the fill layer');
 });
 
-test('tokyu: a box (mega-fallback) capsule renders the opaque dark-gray rounded rect', () => {
-  const sc: StopScene = {
-    nodeId: 'n',
-    lines: [],
-    capsule: { kind: 'box', x: 0, y: 0, w: 40, h: 40, rx: 6 },
-    anchor: [20, 20],
-    dotRadius: 6,
-  };
-  const gs = tokyu.paint(sc, ctx);
-  const rects = gs.filter((g) => g.kind === 'rect') as Array<{ x: number; w: number; fill: string; stroke: string }>;
-  assert.equal(rects.length, 1);
-  assert.equal(rects[0].w, 40);
-  assert.equal(rects[0].fill, '#6f6f73');
-  assert.equal(rects[0].stroke, '#111111');
-});
-
 test('tokyo: route-color frame around a sharp-cornered white interior, dark ink, symmetric at ANY center', () => {
   // The SVG emit rounds each rect coordinate to 0.1px independently; a frame
   // built from raw floats could round thicker on one side ("sometimes the
@@ -377,14 +361,6 @@ test('london: paints a bubble capsule as ink-then-paper discs and connector bars
   assert.ok(firstPaper > lastInk, 'paper layer drawn over the ink layer');
   // monochrome bubble: no route color anywhere
   assert.ok(!gs.some((g) => (g as { fill?: string }).fill?.startsWith('#12')));
-});
-
-test('london: a mega (box) interchange paints a white ticket-hall block', () => {
-  const sc: StopScene = { nodeId: 'n', lines: [], capsule: { kind: 'box', x: 0, y: 0, w: 40, h: 40, rx: 6 }, anchor: [20, 20], dotRadius: 6 };
-  const rects = london.paint(sc, ctx).filter((g) => g.kind === 'rect') as Array<{ fill: string; stroke: string }>;
-  assert.equal(rects.length, 1);
-  assert.equal(rects[0].fill, '#ffffff');
-  assert.equal(rects[0].stroke, '#111111');
 });
 
 test('london: requests the londonBubbles capsule regime', () => {

@@ -93,11 +93,10 @@ export function pillPath(points: Point[], smooth: boolean): string {
 }
 
 /** Paint a computed capsule geometry with the design's chosen border/fill:
- *  box -> filled+stroked rect; ring -> filled+stroked circle; pill -> two
- *  stroked open paths (wide border, then narrow fill). */
+ *  ring -> filled+stroked circle; pill -> two stroked open paths (wide border,
+ *  then narrow fill). */
 export function capsuleGlyphs(capsule: Capsule, colors: { border: string; fill: string }, dotRadius: number): Glyph[] {
   if (capsule.kind === 'none') return [];
-  if (capsule.kind === 'box') return [rect(capsule.x, capsule.y, capsule.w, capsule.h, capsule.rx, { fill: colors.fill, stroke: colors.border, strokeWidth: 3 })];
   if (capsule.kind === 'ring') return [circle(capsule.cx, capsule.cy, capsule.r, { fill: colors.fill, stroke: colors.border, strokeWidth: 1.5 })];
   if (capsule.kind === 'rectRows') return []; // painted by the rect design, not here
   const w = capsuleStrokeWidths(dotRadius);
