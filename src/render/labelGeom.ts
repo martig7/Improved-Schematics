@@ -100,5 +100,5 @@ function segCross(a: Pixel, b: Pixel, c: Pixel, d: Pixel): boolean {
  *  marker overlap rather than turning sideways. */
 export function tilt(angleDeg: number): number {
   const a = Math.abs(angleDeg);
-  return a === 0 ? 0 : a === 90 ? 35 : 4;
+  return a === 0 ? 0 : a === 90 ? 35 : 2;
 }

@@ -42,8 +42,8 @@ test('segmentIntersectsObb hits a rotated box a flat test would miss', () => {
 
 test('tilt: flat free, 45 cheap, 90 a strong last resort', () => {
   assert.equal(tilt(0), 0);
-  assert.equal(tilt(45), 4);
-  assert.equal(tilt(-45), 4);
+  assert.equal(tilt(45), 2);
+  assert.equal(tilt(-45), 2);
   assert.equal(tilt(90), 35);
   assert.equal(tilt(-90), 35);
 });
