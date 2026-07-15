@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildScene } from '../placement';
 import type { StopMark, Pixel } from '../../layout/types';
 
-const ctx = { megaFallback: 'curve' as const };
+const ctx = {};
 const mk = (lineId: string, x: number, y: number, extra: Partial<StopMark> = {}): StopMark => ({ lineId, color: '#dc2626', pos: [x, y] as Pixel, name: lineId, ...extra });
 
 test('single mark -> capsule none, lines has one dot', () => {
@@ -25,16 +25,9 @@ test('coincident marks -> ring', () => {
   assert.equal(s.capsule.kind, 'ring');
 });
 
-test('mega marks with megaFallback box -> box, no dots', () => {
+test('mega marks -> smooth pill, dots kept (residual curve)', () => {
   const marks = [mk('A', 0, 0, { mega: true }), mk('B', 12, 4, { mega: true }), mk('C', 4, 12, { mega: true })];
-  const s = buildScene('n1', marks, { megaFallback: 'box' });
-  assert.equal(s.capsule.kind, 'box');
-  assert.equal(s.lines.length, 0);
-});
-
-test('mega marks with megaFallback curve -> smooth pill, dots kept', () => {
-  const marks = [mk('A', 0, 0, { mega: true }), mk('B', 12, 4, { mega: true }), mk('C', 4, 12, { mega: true })];
-  const s = buildScene('n1', marks, { megaFallback: 'curve' });
+  const s = buildScene('n1', marks, {});
   assert.equal(s.capsule.kind, 'pill');
   assert.equal((s.capsule as { smooth: boolean }).smooth, true);
   assert.equal(s.lines.length, 3);

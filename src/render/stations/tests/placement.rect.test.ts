@@ -22,7 +22,7 @@ test('rectRows mode with a cached capsule -> rectRows capsule, dots kept, one gr
     connectors: [],
   };
   const s = buildScene('n1', rectMarks(), {
-    megaFallback: 'curve', capsuleMode: 'rectRows', rectByNode: new Map([['n1', cached]]),
+    capsuleMode: 'rectRows', rectByNode: new Map([['n1', cached]]),
   });
   assert.equal(s.capsule.kind, 'rectRows');
   assert.ok(s.lines.length > 0);
@@ -31,7 +31,7 @@ test('rectRows mode with a cached capsule -> rectRows capsule, dots kept, one gr
 });
 
 test('same marks without capsuleMode -> pill', () => {
-  const s = buildScene('n1', rectMarks(), { megaFallback: 'curve' });
+  const s = buildScene('n1', rectMarks(), {});
   assert.equal(s.capsule.kind, 'pill');
 });
 
@@ -45,7 +45,7 @@ test('rectRows mode reads the cached capsule when present (no draw-time seat)', 
     connectors: [{ points: [[100, 200], [130, 200]] }],
   };
   const s = buildScene('n1', rectMarks(), {
-    megaFallback: 'curve', capsuleMode: 'rectRows',
+    capsuleMode: 'rectRows',
     rectByNode: new Map([['n1', cached]]),
   });
   assert.equal(s.capsule.kind, 'rectRows');
@@ -65,7 +65,7 @@ test('rectRows mode with a cache miss degrades to a non-rectRows scene', () => {
   // No rectByNode entry for this node: there is no draw-time seating, so the
   // multi-line station falls through to the normal pill path (per-line boxes).
   const s = buildScene('n1', rectMarks(), {
-    megaFallback: 'curve', capsuleMode: 'rectRows', rectByNode: new Map(),
+    capsuleMode: 'rectRows', rectByNode: new Map(),
   });
   assert.notEqual(s.capsule.kind, 'rectRows');
 });
@@ -73,7 +73,7 @@ test('rectRows mode with a cache miss degrades to a non-rectRows scene', () => {
 test('single rectRows stop uses its cached rescued position', () => {
   const marks: StopMark[] = [mk('A', 5, 5, { home: [5, 5] as Pixel, axis: 0 })];
   const s = buildScene('n1', marks, {
-    megaFallback: 'curve', capsuleMode: 'rectRows',
+    capsuleMode: 'rectRows',
     tokyuStopPos: new Map([['n1', [80, 90]]]),
   });
   assert.equal(s.capsule.kind, 'none');
@@ -83,7 +83,7 @@ test('single rectRows stop uses its cached rescued position', () => {
 
 test('single stop without tokyuStopPos keeps its mark position', () => {
   const marks: StopMark[] = [mk('A', 5, 5)];
-  const s = buildScene('n1', marks, { megaFallback: 'curve', capsuleMode: 'rectRows' });
+  const s = buildScene('n1', marks, { capsuleMode: 'rectRows' });
   assert.equal(s.capsule.kind, 'none');
   assert.deepEqual(s.anchor, [5, 5]);
   assert.deepEqual(s.lines[0].pos, [5, 5]);
