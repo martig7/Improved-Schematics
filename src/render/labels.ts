@@ -345,22 +345,42 @@ export function placeLabels(
     };
     const prevOff = prevId ? chosenOffset.get(prevId) : undefined;
     const prevSide = prevOff ? crossSign(prevOff[0], prevOff[1]) : 0;
-    // Flat candidates (angle 0): identical geometry and priorities to before, so a
-    // map that never needs to rotate lays out exactly as it used to.
+    // Side-aware anchor for a multi-dot capsule: a candidate offset toward a side
+    // hangs off the OUTERMOST dot on that side (the near end of the pill), so as the
+    // clearance term shifts a label to the clearer side it stays tied to a real
+    // marker rather than the empty cluster centre. Single dots and the legacy path
+    // use the one anchor (cx, cy) for every direction, so they are unchanged.
+    const marks = stopsByNode.get(node.id);
+    const multi = !noRotate && !!marks && marks.length >= 2;
+    const anchorFor = (dux: number, duy: number): readonly [number, number] => {
+      if (!multi) return [cx, cy] as const;
+      let bx = marks![0].pos[0];
+      let by = marks![0].pos[1];
+      let bestProj = -Infinity;
+      for (const m of marks!) {
+        const proj = m.pos[0] * dux + m.pos[1] * duy;
+        if (proj > bestProj) { bestProj = proj; bx = m.pos[0]; by = m.pos[1]; }
+      }
+      return [bx, by] as const;
+    };
+    const aE = anchorFor(1, 0), aW = anchorFor(-1, 0), aN = anchorFor(0, -1), aS = anchorFor(0, 1);
+    const aNE = anchorFor(1, -1), aNW = anchorFor(-1, -1), aSE = anchorFor(1, 1), aSW = anchorFor(-1, 1);
+    // Flat candidates (angle 0): geometry and priorities as before, each hung off
+    // its side's anchor. A single dot / legacy makes every anchor (cx, cy), so the
+    // boxes are byte-identical there.
     const flat: Candidate[] = [
-      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
-      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
-      { placement: { x: cx, y: cy - off, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh + extraH } }, priority: 2 },
-      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh + extraH } }, priority: 2 },
-      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
-      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aE[0] + off, y: aE[1] + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: aE[0] + off, y: aE[1] - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: aW[0] - off, y: aW[1] + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: aW[0] - off - tw, y: aW[1] - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: aN[0], y: aN[1] - off, anchor: 'middle' }, fp: { angle: 0, box: { x: aN[0] - tw / 2, y: aN[1] - off - fh, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: aS[0], y: aS[1] + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: aS[0] - tw / 2, y: aS[1] + off, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: aNE[0] + off * 0.7, y: aNE[1] - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: aNE[0] + off * 0.7, y: aNE[1] - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aNW[0] - off * 0.7, y: aNW[1] - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: aNW[0] - off * 0.7 - tw, y: aNW[1] - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aSE[0] + off * 0.7, y: aSE[1] + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: aSE[0] + off * 0.7, y: aSE[1] + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aSW[0] - off * 0.7, y: aSW[1] + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: aSW[0] - off * 0.7 - tw, y: aSW[1] + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
     ];
     // Rotated candidates: octilinear text that slots into space the flat boxes
-    // cannot. The tilt penalty keeps these below flat unless flat collides; 90 is
-    // the sideways last resort. The box is centred on the text origin (baseline
-    // handling for rotated glyphs is approximate, tuned at the render checkpoint).
+    // cannot, each hung off its side's anchor. The tilt penalty keeps these below
+    // flat unless flat collides; 90 is the sideways last resort.
     const rot = (ox: number, oy: number, angle: number, anchor: Placement['anchor']): Candidate => {
       const x0 = anchor === 'end' ? -tw : anchor === 'middle' ? -tw / 2 : 0;
       return {
@@ -370,12 +390,12 @@ export function placeLabels(
       };
     };
     const rotated: Candidate[] = noRotate ? [] : [
-      rot(cx + off, cy, -90, 'start'),
-      rot(cx - off, cy, -90, 'start'),
-      rot(cx + off * 0.7, cy - off * 0.7, -45, 'start'),
-      rot(cx + off * 0.7, cy + off * 0.7, 45, 'start'),
-      rot(cx - off * 0.7, cy - off * 0.7, 45, 'end'),
-      rot(cx - off * 0.7, cy + off * 0.7, -45, 'end'),
+      rot(aE[0] + off, aE[1], -90, 'start'),
+      rot(aW[0] - off, aW[1], -90, 'start'),
+      rot(aNE[0] + off * 0.7, aNE[1] - off * 0.7, -45, 'start'),
+      rot(aSE[0] + off * 0.7, aSE[1] + off * 0.7, 45, 'start'),
+      rot(aNW[0] - off * 0.7, aNW[1] - off * 0.7, 45, 'end'),
+      rot(aSW[0] - off * 0.7, aSW[1] + off * 0.7, -45, 'end'),
     ];
     const candidates = [...flat, ...rotated];
     // Segments near this node's candidates, so the clearance term stays cheap in

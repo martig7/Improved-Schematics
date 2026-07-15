@@ -169,6 +169,21 @@ test('OCTI_LABEL_NO_ROTATE=1 keeps every label flat even when boxed in', () => {
   }
 });
 
+test('a multi-dot capsule anchors its label to the outermost dot on the chosen side', () => {
+  const graph = { nodes: new Map([['n', { id: 'n', label: 'AB' }]]) };
+  const nodePx = new Map<string, Pixel>([['n', [0, 0]]]);
+  const stops = new Map<string, StopMark[]>([['n', [
+    { lineId: 'X', color: '#000', pos: [-5, 0] as Pixel },
+    { lineId: 'Y', color: '#000', pos: [5, 0] as Pixel },
+  ]]]);
+  // block the left flank so the label lands on the right
+  const segs: Segment[] = [{ p1: [-20, -50], p2: [-20, 50] }];
+  const pl = placeLabels(graph, nodePx, stops, segs).get('n')!;
+  // the right-side, start-anchored label hangs off the RIGHT dot (x=5) + LABEL_OFFSET(12)
+  assert.equal(pl.anchor, 'start');
+  assert.equal(pl.x, 17);
+});
+
 test('a run of stations on one line labels to a consistent side', () => {
   // A at the origin is walled in on its right, so it labels left (W). B one stop
   // down the line has both sides open; the neighbor bonus should pull it left too,
