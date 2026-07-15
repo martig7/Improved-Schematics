@@ -50,6 +50,11 @@ export interface RowOpts {
    *  small in-band deficit, which is the intended trade there. */
   softBand?: number;
   softW?: number;
+  /** Relaxed non-octilinear overlap mode (over-dense fallback). Drops the
+   *  no-overlap floor to 0 (overlap priced by softW, never vetoed), enumerates
+   *  free-angle rows, and guarantees a non-null result via an ultimate
+   *  single-row fallback. Off for every normal seat (byte-identical path). */
+  relaxed?: boolean;
 }
 
 export interface RowSolution {
@@ -152,7 +157,8 @@ export function solveRows(
   const latTol = opts.latTol ?? 0.75;
   const softBand = opts.softBand ?? 0;
   const softW = opts.softW ?? 5000;
-  const hardFloor = minGap - softBand;
+  const relaxed = opts.relaxed ?? false;
+  const hardFloor = relaxed ? 0 : minGap - softBand;
   const n = curves.length;
   const g = groups.length;
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));

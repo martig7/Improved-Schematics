@@ -306,3 +306,15 @@ test('softBand: a true pinch below the hard floor still boxes', () => {
   const curves = [lane(0, 0), lane(2, 0)];
   assert.equal(solveRows(curves, [[0, 1]], { ...OPTS, softBand: 1.5 }), null);
 });
+
+test('relaxed: an in-band-and-below pinch that boxes today seats non-null', () => {
+  // two horizontal lanes 2px apart — below the hard floor (minGap 4.85), so the
+  // octilinear solve boxes (null). Relaxed drops the floor to 0: the single
+  // 2-member bundle keeps its overlapping row (deficit priced, not vetoed).
+  const curves = [lane(0, 0), lane(2, 0)];
+  assert.equal(solveRows(curves, [[0, 1]], OPTS), null, 'octilinear boxes the 2px pinch');
+  const sol = solveRows(curves, [[0, 1]], { ...OPTS, relaxed: true });
+  assert.ok(sol, 'relaxed must seat the pinch');
+  const d = Math.hypot(sol.pos[0][0] - sol.pos[1][0], sol.pos[0][1] - sol.pos[1][1]);
+  assert.ok(d < MINGAP, `relaxed seat should be sub-floor overlap: ${d}`);
+});
