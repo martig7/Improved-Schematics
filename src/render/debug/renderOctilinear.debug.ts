@@ -340,7 +340,7 @@ export function reportSlidStations(d: {
   const { layout, slid } = d;
   for (const s of slid) {
     const label = layout.nodes.get(s.nodeId)?.label ?? s.nodeId;
-    console.error(`[stops] slid "${label}" clear of mega box at (${s.at[0].toFixed(0)},${s.at[1].toFixed(0)})`);
+    console.error(`[stops] slid "${label}" clear of a neighbour at (${s.at[0].toFixed(0)},${s.at[1].toFixed(0)})`);
   }
 }
 

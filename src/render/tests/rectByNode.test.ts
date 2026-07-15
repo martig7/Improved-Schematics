@@ -48,11 +48,11 @@ test('computeRectByNode: geometric predicate skips singles and marks missing hom
       { lineId: 'A', home: [0, 0], axis: 0 },
       { lineId: 'B', home: [40, 0] },
     ] },
-    // a mega multi-line station whose marks carry home/axis -> INCLUDED, so the
+    // a multi-line station whose marks carry home/axis -> INCLUDED, so the
     // Tokyu design seats it as a numbered rectRows grid (every line gets a box).
-    { nodeId: 'mega', marks: [
-      { lineId: 'A', home: [0, 0], axis: 0, mega: true },
-      { lineId: 'B', home: [40, 0], axis: 0, mega: true },
+    { nodeId: 'multi', marks: [
+      { lineId: 'A', home: [0, 0], axis: 0 },
+      { lineId: 'B', home: [40, 0], axis: 0 },
     ] },
     // qualifies
     { nodeId: 'ok', marks: [
@@ -61,19 +61,19 @@ test('computeRectByNode: geometric predicate skips singles and marks missing hom
     ] },
   ];
   const { rectByNode: byNode } = computeRectByNode(stations);
-  assert.deepEqual([...byNode.keys()], ['mega', 'ok']);
+  assert.deepEqual([...byNode.keys()], ['multi', 'ok']);
 });
 
-test('computeRectByNode: a mega multi-line station is seated into rectByNode', () => {
+test('computeRectByNode: a multi-line station is seated into rectByNode', () => {
   const stations: RectSeatStation[] = [
-    { nodeId: 'mega', marks: [
-      { lineId: 'A', home: [0, 0], axis: 0, mega: true },
-      { lineId: 'B', home: [40, 0], axis: 0, mega: true },
+    { nodeId: 'multi', marks: [
+      { lineId: 'A', home: [0, 0], axis: 0 },
+      { lineId: 'B', home: [40, 0], axis: 0 },
     ] },
   ];
   const { rectByNode: byNode } = computeRectByNode(stations);
-  assert.ok(byNode.has('mega'));
-  const cap = byNode.get('mega')!;
+  assert.ok(byNode.has('multi'));
+  const cap = byNode.get('multi')!;
   assert.equal(cap.centers.length, 2);
   assert.ok(cap.groups.length >= 1);
 });

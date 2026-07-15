@@ -4,7 +4,7 @@ import { computeTorontoByNode, type LaneByStop } from '../torontoCross';
 import { LINE_WIDTH, LINE_GAP } from '../../constants';
 import type { Pixel } from '../types';
 
-type M = { lineId: string; axis?: number; dir?: Pixel; pos: Pixel; mega?: boolean };
+type M = { lineId: string; axis?: number; dir?: Pixel; pos: Pixel };
 const spacing = LINE_WIDTH + LINE_GAP;
 const lanes = (entries: Record<string, Pixel[][]>): LaneByStop => new Map(Object.entries(entries));
 
@@ -56,10 +56,10 @@ test('a three-line star (all different axes through one point) collapses via the
   assert.equal(computeTorontoByNode(stops).size, 1);
 });
 
-test('single stops and mega nodes are skipped', () => {
+test('single stops and coincident nodes without a real crossing are skipped', () => {
   const stops = new Map<string, M[]>([
     ['single', [{ lineId: 'A', axis: 0, pos: [0, 0] }]],
-    ['mega', [{ lineId: 'A', axis: 0, pos: [0, 0], mega: true }, { lineId: 'B', axis: 2, pos: [0, 0], mega: true }]],
+    ['coincident', [{ lineId: 'A', axis: 0, pos: [0, 0] }, { lineId: 'B', axis: 2, pos: [0, 0] }]],
   ]);
   assert.equal(computeTorontoByNode(stops, lanes({})).size, 0);
 });
