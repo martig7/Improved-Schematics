@@ -77,6 +77,17 @@ const AXES: ReadonlyArray<Pixel> = [
   [-Math.SQRT1_2, Math.SQRT1_2],
 ];
 
+// Relaxed free-angle fan: symmetric offsets (in REL_STEP units) around the
+// bundle perpendicular. offset 0 = the natural angle (rot 0). Quantize the
+// resulting unit vector to 1e-6 so cos/sin (not correctly-rounded cross-V8)
+// stay bit-identical, mirroring the atan2 quantization in buildStates.
+const REL_FAN: ReadonlyArray<number> = [-2, -1, 0, 1, 2];
+const REL_STEP = QUARTER / 2; // 22.5° between fan angles; fan spans ±45°
+const quantU = (ang: number): Pixel => [
+  Math.round(Math.cos(ang) * 1e6) / 1e6,
+  Math.round(Math.sin(ang) * 1e6) / 1e6,
+];
+
 interface RowState {
   s: number;       // slide along the carrier curve
   axis: number;    // index into AXES
@@ -203,9 +214,22 @@ export function solveRows(
     for (let j = jLo; j <= jHi; j++) {
       const s = j * step;
       const A = curvePoint(carrier, carrier.anchorT + s);
-      for (let axis = 0; axis < 4; axis++) {
+      const enumList = relaxed ? REL_FAN : [0, 1, 2, 3];
+      for (const fi of enumList) {
         if (stats) stats.tried++;
-        const u = AXES[axis];
+        let u: Pixel;
+        let rot: number;
+        let axis: number;
+        if (relaxed) {
+          u = quantU(perpAng + fi * REL_STEP);
+          rot = Math.abs(fi) * REL_STEP / QUARTER; // angular deviation in 45° units
+          axis = -1; // free-angle sentinel (parallelism uses |cross|, not this)
+        } else {
+          u = AXES[fi];
+          const dIdx = (((fi - restIdx) % 4) + 4) % 4;
+          rot = Math.min(dIdx, 4 - dIdx);
+          axis = fi;
+        }
         let dots: Pixel[];
         if (group.length === 1) {
           // one-member row: the dot IS the slide point on its own curve; θ
@@ -253,8 +277,6 @@ export function solveRows(
         let proxPen = 0;
         if (proximity) for (const p of dots) proxPen += proximity(p);
         const asc = dots.map((_, gi) => gi).sort((x, y) => (pr[x] - pr[y]) || (x - y)); // total tie-break: index unique (cross-V8 stable)
-        const dIdx = (((axis - restIdx) % 4) + 4) % 4;
-        const rot = Math.min(dIdx, 4 - dIdx); // 45° steps from rest: 0..2
         states.push({
           s,
           axis,

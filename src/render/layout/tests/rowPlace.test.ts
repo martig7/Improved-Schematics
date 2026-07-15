@@ -347,3 +347,28 @@ test('relaxed: unpairable bundles (extCap) fall back to a seat, not null', () =>
   assert.ok(sol, 'relaxed must seat even when no pairing is feasible');
   assert.equal(sol.pos.filter(Boolean).length, 2);
 });
+
+test('relaxed free-angle: a 22.5° bundle seats off the octilinear axes', () => {
+  // three lanes whose perpendicular is ~22.5° (between two octilinear axes):
+  // the octilinear rest would pay a 45°-step rotation, free-angle seats along
+  // the natural angle, so the dots are NOT axis-aligned.
+  const t = Math.tan(Math.PI / 8); // 22.5°
+  const mkLane = (k: number): ReturnType<typeof through> =>
+    through([[-60, -60 * t + k * 6], [60, 60 * t + k * 6]], [0, k * 6]);
+  const curves = [mkLane(0), mkLane(1), mkLane(2)];
+  const sol = solveRows(curves, [[0, 1, 2]], { ...OPTS, relaxed: true });
+  assert.ok(sol, 'free-angle must seat');
+  // adjacent dot deltas are neither axis-aligned nor 45°: assert a non-octilinear
+  // direction (dx and dy both clearly non-zero and |dx| != |dy|)
+  const dx = sol.pos[1][0] - sol.pos[0][0], dy = sol.pos[1][1] - sol.pos[0][1];
+  assert.ok(Math.abs(dx) > 0.5 && Math.abs(dy) > 0.5 && Math.abs(Math.abs(dx) - Math.abs(dy)) > 0.5,
+    `expected a non-octilinear row direction, got d=(${dx},${dy})`);
+});
+
+test('relaxed free-angle: deterministic (same input twice → identical seat)', () => {
+  const curves = [lane(0, 0), lane(2, 0), lane(4, 0)];
+  const a = solveRows(curves, [[0], [1], [2]], { ...OPTS, relaxed: true })!;
+  const b = solveRows(curves, [[0], [1], [2]], { ...OPTS, relaxed: true })!;
+  assert.deepEqual(a.pos, b.pos);
+  assert.deepEqual([...a.cornerAfter], [...b.cornerAfter]);
+});
