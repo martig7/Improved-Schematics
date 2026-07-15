@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, boxGap, boxSegGap, bundleOrder, encroachment, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
+import { boxesOverlap, boxGap, boxSegGap, bundleOrder, encroachment, estimateTextWidth, labelAnchor, overlapFraction, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -72,6 +72,14 @@ test('wrapLabel never breaks mid-word: a long single word stays one line', () =>
 test('boxesOverlap detects overlap and separation', () => {
   assert.ok(boxesOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }));
   assert.ok(!boxesOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 20, w: 5, h: 5 }));
+});
+
+test('overlapFraction: 0 disjoint, fraction of the smaller box when overlapping', () => {
+  assert.equal(overlapFraction({ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 0, w: 10, h: 10 }), 0); // disjoint
+  assert.equal(overlapFraction({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 0, w: 10, h: 10 }), 0.5); // half
+  assert.equal(overlapFraction({ x: 0, y: 0, w: 10, h: 10 }, { x: 0, y: 0, w: 10, h: 10 }), 1); // full
+  // fraction is of the SMALLER box: a 4x4 fully inside a 10x10 -> 1
+  assert.equal(overlapFraction({ x: 0, y: 0, w: 10, h: 10 }, { x: 3, y: 3, w: 4, h: 4 }), 1);
 });
 
 test('boxSegGap: 0 when the segment meets the box, else the Euclidean gap', () => {

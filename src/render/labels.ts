@@ -67,6 +67,18 @@ export function boxGap(a: Box, b: Box): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/** Overlap of two axis-aligned boxes as a fraction of the SMALLER box's area
+ *  (0 when disjoint, 1 when one fully covers the other). Grades how deep an overlap
+ *  is, so the packer can prefer the least-overlapping of unavoidable placements
+ *  rather than treating every overlap as equally bad. */
+export function overlapFraction(a: Box, b: Box): number {
+  const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (ix <= 0 || iy <= 0) return 0;
+  const minArea = Math.min(a.w * a.h, b.w * b.h);
+  return minArea > 0 ? (ix * iy) / minArea : 0;
+}
+
 /** Summed encroachment of `box` into a set of boxes: for each within `margin`,
  *  how far inside the margin it reaches (margin - gap). 0 for boxes beyond the
  *  margin. The shared shape of the soft clearance and label-adjacency penalties. */
@@ -297,6 +309,7 @@ export function placeLabels(
   const ADJ_MARGIN = LABEL_FONT_SIZE; // merge zone: two labels closer than this risk reading as one
   const W_ADJ = 2.5;
   const noAdj = envStr('OCTI_LABEL_NO_ADJ') === '1';
+  const OVL_FRAC_W = 80; // extra label-overlap cost at full overlap, on top of the base 100
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -426,7 +439,14 @@ export function placeLabels(
     let bestCost = Infinity;
     for (const cand of candidates) {
       let cost = 0;
-      for (const f of placed) if (fpOverlap(cand.fp, f)) cost += 100;
+      const aabb = fpAabb(cand.fp);
+      // Label overlap: keep the strong base penalty (any overlap stays worse than a
+      // clean spot), but ADD cost with the overlap AREA so among unavoidable overlaps
+      // the packer prefers the least-overlapping one instead of pricing them all the
+      // same and cascading into full stacks. Legacy stays flat (byte-identical).
+      for (let i = 0; i < placed.length; i++) {
+        if (fpOverlap(cand.fp, placed[i])) cost += noRotate ? 100 : 100 + OVL_FRAC_W * overlapFraction(aabb, placedAABB[i]);
+      }
       for (const b of stationBoxes) if (fpHitsBox(cand.fp, b)) cost += 30;
       for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
       cost += cand.priority;
@@ -436,7 +456,6 @@ export function placeLabels(
         if (side !== 0 && side !== prevSide) cost += WSIDE;
       }
       if (!noRotate) {
-        const aabb = fpAabb(cand.fp);
         // gentle, broad clearance: labels + markers + lines
         let clr = encroachment(aabb, placedAABB, CLEAR_MARGIN) + encroachment(aabb, stationBoxes, CLEAR_MARGIN);
         for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; }
