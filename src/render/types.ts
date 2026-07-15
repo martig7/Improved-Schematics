@@ -77,16 +77,10 @@ export interface SchematicOptions {
   /** Area-label collision padding in the basemap's textPadding units; larger
    *  spaces labels further apart (stronger declutter). Draw-time only. */
   neighborhoodPad?: number;
-  /** How to render the fallback marker for an over-dense bundle that can't seat
-   *  octilinearly (a "megabox"). 'box' = the opaque rounded rectangle (default),
-   *  'curve' = a soft squircle blob of the same footprint. Draw-time only. It
-   *  does not change the layout, so it's excluded from the cache fingerprint and
-   *  toggling it just repaints. Default 'box'. */
-  megaFallback?: 'box' | 'curve';
   /** Which station design (marker style) to draw. Resolved via
    *  render/stationDesigns.ts getStationDesign; unknown/undefined → Classic.
-   *  Draw-time only — like megaFallback it never changes the layout and is
-   *  excluded from the cache fingerprint. Smoothed/topo modes only for now. */
+   *  Draw-time only — never changes the layout and is excluded from the cache
+   *  fingerprint. Smoothed/topo modes only for now. */
   stationDesign?: string;
   /** Diagnostic: overlay the Hanan routing grid underneath the routes.
    *  Smoothed mode only, since that's the only renderer that uses one. */
@@ -135,8 +129,8 @@ export interface SchematicOptions {
    *  regenerates. Default false. */
   stationSplit?: boolean;
   /** Landmass style for the geography backdrop (smoothed mode). Draw-time only.
-   *  Like megaFallback it never changes the layout, is excluded from the cache
-   *  fingerprint, and toggling it just repaints. 'faithful' (default) draws the
+   *  Never changes the layout, is excluded from the cache fingerprint, and
+   *  toggling it just repaints. 'faithful' (default) draws the
    *  raw projected polygons; 'rounded' culls small features, simplifies each
    *  coastline to few segments and rounds every corner into soft blobs;
    *  'diagram' additionally snaps edges to the octilinear grid for a
@@ -188,7 +182,6 @@ export const DEFAULT_OPTIONS: SchematicOptions = {
   padding: 0.06,
   showStations: true,
   showLabels: false,
-  megaFallback: 'box',
   mode: 'geographic',
   dark: false,
   theme: DEFAULT_THEME,

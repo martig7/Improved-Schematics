@@ -44,7 +44,7 @@ test('london preview: a horizontal route line with a perpendicular tick over it'
 test('renderStations emits svg fragments + matching stops prims', () => {
   const marks: StopMark[] = [{ lineId: 'L', color: '#dc2626', pos: [5, 5] as Pixel, name: 'A' }];
   const stops = new Map([['n1', marks]]);
-  const { svg, prims } = renderStations(stops, { dark: false, showBullets: true, megaFallback: 'curve' }, getStationDesign('classic'));
+  const { svg, prims } = renderStations(stops, { dark: false, showBullets: true }, getStationDesign('classic'));
   assert.equal(svg.length, 1);
   assert.ok(svg[0].includes('class="imp-stop"'));
   assert.ok(svg[0].includes('data-station-id="n1"'));

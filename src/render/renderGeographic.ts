@@ -1458,7 +1458,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; megaFallback?: 'box' | 'curve'; landmass?: LandmassParams; stationDesign?: string },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1498,7 +1498,6 @@ export function drawSmoothed(
     dark: pre.dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
-    megaFallback: opts.megaFallback ?? 'curve',
     stationDesign: opts.stationDesign,
     // Neighborhood labels: pre-projected at precompute (every kind baked); the
     // chosen kind and the canvas-scaled paint font are draw-time. The grown
@@ -1523,7 +1522,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodZoom: opts.neighborhoodZoom, neighborhoodPad: opts.neighborhoodPad, megaFallback: opts.megaFallback, stationDesign: opts.stationDesign });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodZoom: opts.neighborhoodZoom, neighborhoodPad: opts.neighborhoodPad, stationDesign: opts.stationDesign });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

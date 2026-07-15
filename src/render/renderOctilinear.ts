@@ -358,10 +358,6 @@ export interface RenderRibbonsArgs {
   /** Stations toggle: when false, the line-name bullets inside stop dots are
    *  hidden (markers themselves always render in ribbon modes). */
   showStations?: boolean;
-  /** Fallback marker style for over-dense (un-seatable) bundles: 'box' (default,
-   *  the opaque rounded rect) or 'curve' (a soft squircle of the same footprint).
-   *  Draw-time only — consumed in paintRibbons, never in computeRibbonGeometry. */
-  megaFallback?: 'box' | 'curve';
   /** Station design id (marker style); resolved via getStationDesign, unknown →
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
@@ -3911,7 +3907,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, megaFallback: args.megaFallback ?? 'curve', rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
+    { dark, showBullets: args.showStations !== false, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;
