@@ -18,6 +18,8 @@ export interface Placement {
   x: number;
   y: number;
   anchor: 'start' | 'middle' | 'end';
+  /** Screen rotation in degrees about the text origin; absent/0 = flat (today). */
+  angle?: number;
 }
 export interface Segment {
   p1: Pixel;
@@ -243,6 +245,13 @@ export function renderLabel(
   prims?: Prim[],
 ): string {
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
+  const angle = placement.angle ?? 0;
+  // Group transform: translate to the text origin, then rotate about it when the
+  // placement is octilinear. Flat (angle 0) emits translate-only, byte-identical
+  // to the pre-rotation renderer.
+  const xf =
+    'translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')' +
+    (angle !== 0 ? ' rotate(' + angle + ')' : '');
   // Translate the group to the TEXT position (placement) with the text at the
   // origin, so size scaling (panel/export/canvas) pivots around the text's own
   // anchor. The gap from the dot stays CONSTANT as label size changes; only the
@@ -271,7 +280,7 @@ export function renderLabel(
   }
   return (
     '<g class="imp-lbl" data-station-id="' + escapeXml(node.id) +
-    '" transform="translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')">' +
+    '" transform="' + xf + '">' +
     '<g class="imp-lbl-s">' +
     '<text x="0" y="0" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +

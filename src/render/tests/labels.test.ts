@@ -1,8 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, estimateTextWidth, placeLabels, segmentIntersectsBox } from '../labels';
+import { boxesOverlap, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
+
+test('renderLabel emits rotate() only when angle is nonzero', () => {
+  const flat = renderLabel({ id: 'n', label: 'Foo' }, { x: 10, y: 20, anchor: 'start' }, [10, 20], true, false);
+  assert.ok(!flat.includes('rotate('), 'flat label has no rotate, byte-identical to today');
+  const rot = renderLabel({ id: 'n', label: 'Foo' }, { x: 10, y: 20, anchor: 'start', angle: -45 }, [10, 20], true, false);
+  assert.ok(rot.includes('rotate(-45)'), 'rotated label carries the transform');
+});
 
 test('estimateTextWidth scales with length', () => {
   assert.equal(estimateTextWidth('abcd'), 4 * 6);
