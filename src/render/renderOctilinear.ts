@@ -657,9 +657,9 @@ export function computeRectByNode(
       if (m.pos) singles.push({ nodeId: s.nodeId, pos: [m.pos[0], m.pos[1]], box: singleBox });
       continue;
     }
-    // Fallback: abstract row seat from pre-solve homes (mega included; the
-    // cached capsule IS the drawn shape for the rect design, and non-rectRows
-    // designs never read it).
+    // Fallback: abstract row seat from pre-solve homes (the cached capsule IS
+    // the drawn shape for the rect design, and non-rectRows designs never read
+    // it).
     if (!s.marks.every((m) => m.home && m.axis !== undefined)) continue;
     const members: RectMember[] = s.marks.map((m) => ({
       lineId: m.lineId, home: m.home as Pixel, axis: m.axis as number,
@@ -755,10 +755,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const spacing = LINE_WIDTH + LINE_GAP;
   const CHAIN_ARC_LIMIT = 24; // ±arc window per lane curve (~one grid cell)
   // Capsule-placement search-area expansion. When the base solve (±CHAIN_ARC_LIMIT)
-  // boxes a station, the escalation retries at ±CHAIN_ARC_LIMIT·WIDE_MULT (a wider
-  // slide window AND a longer lane curve to find a row-line crossing). Default 2 =
-  // shipped behaviour. OCTI_WIDE_MULT lets us probe whether a still-wider search
-  // recovers boxes (diagnostic for coincident- vs divergent-lane megaboxes).
+  // fails to seat a station, the escalation retries at ±CHAIN_ARC_LIMIT·WIDE_MULT
+  // (a wider slide window AND a longer lane curve to find a row-line crossing).
+  // Default 2 = shipped behaviour. OCTI_WIDE_MULT lets us probe whether a
+  // still-wider search recovers a seat (coincident- vs divergent-lane cases).
   const WIDE_MULT = (() => {
     const v = envNum('OCTI_WIDE_MULT');
     return Number.isFinite(v) && v >= 1 ? v : 2;
@@ -1001,8 +1001,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // bending the capsule into its neighbour's seat space (LON Coombe
     // Gardens/Arterberry Rd: the 2-line's 11px piece on me466 jogged 11.19 >
     // 6.93 while the interlined 1-line's piece survived → cut line → bent
-    // 19px capsule → capsule cross → unseatable retry → megabox). The
-    // surviving sibling proves the corridor is genuinely drawn there.
+    // 19px capsule → capsule cross → unseatable retry). The surviving sibling
+    // proves the corridor is genuinely drawn there.
     for (const { key, edgeId } of candidates) {
       const e = edgeById.get(edgeId);
       let siblingSurvives = false;
@@ -1235,7 +1235,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // (Filleting these bends instead — a curveLaneJoin with/without the
         // multi-segment cut-back — was tried twice and reverted: the bend sits
         // AT a fused-station node, so the fillet's lane trim + relocated stop
-        // mega-box the rigid-row marker. Only this minimal end-move is safe.)
+        // break the rigid-row marker. Only this minimal end-move is safe.)
         // Browser-safe env guard: `process` is undefined in the game renderer.
         const noUncross =
           envStr('OCTI_NO_UNCROSS') === '1';
@@ -1451,7 +1451,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   });
 
   // NOTE: path emission (fillet builder + join curves) happens AFTER the station
-  // marker pass below — sliding a terminus marker clear of a mega box must
+  // marker pass below — sliding a terminus marker clear of a neighbour must
   // also trim the terminating lanes back to the slid marker. The per-line 'd'
   // arrays and the straight-segment collision set both come from buildDByLine
   // over the real segPath, so the drawn lanes are byte-identical to before.
@@ -1629,17 +1629,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     reportVanishedStations({ stations: args.stations, gathered, layout, lineById, drawnEndAt });
 
     // ---- marker collision backup ------------------------------------------
-    // A mega box swallows nearby small markers (Court's pill under the
-    // Tacoma Av box). Detect overlaps and SLIDE the smaller station's marks
-    // along their own lanes, away from the box, until its marker sits clear.
-    const ldegOf = (nid: string): number => {
-      let n = 0;
-      for (const e of layout.edges) {
-        if (e.from !== nid && e.to !== nid) continue;
-        n += (orderOf.get(e.id) ?? e.lines.map((l) => l.id)).length;
-      }
-      return n;
-    };
+    // Neighbouring station markers must not overlap. Detect overlaps and SLIDE
+    // the smaller station's marks along their own lanes, away from the
+    // neighbour, until its marker sits clear.
     const r = MARK_R0;
     // Intra-capsule dot floor. Markers shrink to MARKER_SCALE inside a capsule
     // (stops.ts), so two adjacent dots' rings clear once their centers are one
@@ -1732,7 +1724,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       return best;
     };
     /** Trim arc `d` off a lane's end at `nodeId` (terminating lines follow
-     *  their slid marker instead of poking into the mega box). */
+     *  their slid marker instead of poking past it). */
     const trimLaneAt = (edgeId: string, lineId: string, nodeId: string, d: number) => {
       const key = edgeId + '|' + lineId;
       const poly = segPath.get(key);
@@ -1760,15 +1752,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // ---- rigid-row marker placement (spec v2 2026-06-12) -------------
     // Each bundle places a straight octilinear ROW; dots are intersections
     // of the row line with their own lane curves (rowPlace.ts). Shape holds
-    // by construction (R1/R2) — the only fallback is the per-station mega
-    // box (R4), never a partially-degraded chain.
+    // by construction (R1/R2) — the only fallback is the relaxed seat, never a
+    // partially-degraded chain.
     const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
     // Capsule overlap enforcement (spec 2026-07-02) — ON BY DEFAULT.
     // Seat-time: a solution whose spine hull crosses a placed capsule gets ONE
     // hull-masked re-solve (blocked = dot-ring-inside-hull veto, proximity =
     // comfort ramp); a still-crossing retry — and any SELF-crossing chain
     // (per-dot masks can't express "don't cross yourself") — falls to the
-    // mega box. The upstream capsule-demand oracle (densityBoxWarp) buys the
+    // relaxed seat. The upstream capsule-demand oracle (densityBoxWarp) buys the
     // room that makes violations rare; this pass makes them impossible.
     // OCTI_CAPSULE_NOOVL=0 disables the seat-time check+retry (legacy);
     // OCTI_CAPSULE_GUARD=0 disables the move-commit hull guard (diagnostic).
@@ -1801,9 +1793,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
     // Placement runs off a QUEUE: a station whose row solve fails and whose
     // bundles form DISTANT spatial clusters (per-station graph nodes put one
-    // group's platforms on corridors far apart — Fulton St) is split into one
-    // placement unit per cluster and re-queued, instead of mega-boxing the
-    // whole neighbourhood under a single giant rect.
+    // group's platforms on corridors far apart) is split into one placement
+    // unit per cluster and re-queued, so each platform seats on its own row.
     // Outward side of a lone stop's tick: the unit direction from the bundle's
     // drawn centerline to this line's lane, summed over the incident drawn
     // edges. offsetPolyline shifts a +slot lane by +perp(from->to tangent), so a
@@ -1949,7 +1940,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         //     rows align, then joins them into ONE capsule (long parallel
         //     bridges are paid for in cost, not vetoed).
         //  3. VERIFY — seat-time hull-overlap check (masked retry deleted;
-        //     the masks are in the solve now).  Then: platform split → mega.
+        //     the masks are in the solve now).  Then: platform split → relaxed seat.
         let cx0 = 0, cy0 = 0;
         for (const mk of s.marks) { cx0 += mk.pos[0]; cy0 += mk.pos[1]; }
         cx0 /= s.marks.length; cy0 /= s.marks.length;
@@ -2073,7 +2064,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // penalty (least penetration wins), the true-stacking veto stays
         // hard, and the verify stage below records instead of rejecting.
         // Structural failures (coincident interlined lanes → pinch, or
-        // no-crossing) still return null here and fall to the mega box.
+        // no-crossing) still return null here and fall to the relaxed seat.
         let bestEffort = false;
         if (!sol && s.splitBase) {
           bestEffort = true;
@@ -2098,7 +2089,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // capNoOvlOn above). Runs AFTER both solve stages so it judges the
         // solution that would actually be committed. The placed-hull masks are
         // already baked into the solve above, so a violation here falls
-        // straight to the platform-split / mega branch (no masked retry).
+        // straight to the platform-split / relaxed-seat branch (no masked retry).
         if (sol && capOvlOn && s.marks.length >= 2) {
           const near = (p: Pixel, q: Pixel): boolean => hyp(p[0] - q[0], p[1] - q[1]) < 0.01;
           const evalSol = (so: NonNullable<typeof sol>): { hull: Hull; verts: Pixel[]; selfOvl: boolean; crossOvl: string | null } => {
@@ -2157,9 +2148,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // four platforms, Times Sq's de-welded trunks). A multi-bundle
           // NO-PAIRING failure means no single capsule chain can connect those
           // corridors — so give each corridor BUNDLE its own placement unit
-          // (one small row-capsule per platform) instead of mega-boxing the
-          // whole neighbourhood. Only reached AFTER every solve attempt
-          // failed, so any station that seats today is untouched.
+          // (one small row-capsule per platform). Only reached AFTER every solve
+          // attempt failed, so any station that seats today is untouched.
           const clusters = groups;
           if (clusters.length >= 2) {
             const anchor = nodePx.get(s.nodeId) ?? s.marks[0].pos;
@@ -2190,10 +2180,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             continue; // marks re-place per cluster; no dots committed yet
           }
           // Relaxed final seat (never null): the octilinear ladder exhausted, so
-          // take a guaranteed non-octilinear, overlap-allowed seat instead of a
-          // mega box. Hull penetration and true-stacking become heavy proximity
-          // (never a veto), so the solve seats with least overlap and the
-          // ultimate fallback is only a backstop.
+          // take a guaranteed non-octilinear, overlap-allowed seat. Hull
+          // penetration and true-stacking become heavy proximity (never a veto),
+          // so the solve seats with least overlap and the ultimate fallback is
+          // only a backstop.
           const relaxedSol = solveRows(solveCurves, groups, {
             ...ropts,
             relaxed: true,
@@ -2352,12 +2342,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
     };
     // Is a slid marker's spine still octilinear? A slide moves each dot along
-    // its OWN lane, so a straight row whose dots ride non-parallel lanes bends
-    // (SEA mn177: a horizontal pair slid into a 62° chord). Corner recompute
-    // only salvages markers that already had a real bend; a broken straight
-    // row has no corner to recover. Such stations fall back to the mega box
-    // (spec v2 §3 — the honest fallback for anything that can't read as a
-    // clean octilinear marker). Matches the octi gate's length-aware bar.
+    // its OWN lane, so a straight row whose dots ride non-parallel lanes bends.
+    // Corner recompute only salvages markers that already had a real bend; a
+    // broken straight row has no corner to recover. The corridor-spread dry-runs
+    // reject any candidate that fails this gate (matches the octi gate's
+    // length-aware bar), so a slide never bends a spine off octilinear.
     const spineOctilinear = (marks: StMarks['marks']): boolean => {
       const ordered = [...marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
       const vs: Pixel[] = [];
@@ -2375,7 +2364,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return true;
     };
-    capsAudit('post-mega-slide');
+    capsAudit('post-slide');
     // Small-vs-small collisions: neighbouring stations' markers must not
     // overlap (user rule). Penetration is measured between the markers' actual
     // SPINE HULLS (chain-pair stadium segments — bbox tests miss/false-flag
@@ -2626,8 +2615,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       };
       // reachable lane offsets for a capsule sliding away from `away`: index 0 =
       // rest (current dots), 1.. = slid by 4,8,… up to `cap`, stopping at the
-      // first offset that runs off a lane or fails to clear a mega box. A pinned
-      // capsule (already slid this resolution) contributes only its rest offset.
+      // first offset that runs off a lane. A pinned capsule (already slid this
+      // resolution) contributes only its rest offset.
       type Cand = { moved: Array<{ p: Pixel; edgeId: string; arc?: number }>; d: number; hull: Hull };
       const buildCands = (st: StMarks, away: Pixel, cap: number, pinned: boolean): Cand[] => {
         const rest: Cand = {
@@ -2699,13 +2688,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // the drawn casing rings: a capsule whose spine clears can still have an
       // end-dot ring overlapping a neighbour's ring in a dense residual cluster.
       // This final pass measures the actual nearest MARKER
-      // (dot-to-dot) distance between every pair of distinct non-mega stations
+      // (dot-to-dot) distance between every pair of distinct stations
       // and, where it is below casing-touch (2r+1.5), slides them apart ALONG
       // their own lanes (reusing rigidSlide → applySlide, so the spine stays
       // octilinear by construction). It iterates to convergence; any pair STILL
-      // overlapping after the cap boxes the more-flexible (fewer-marks) station
-      // as a TRUE last resort, GUARANTEEING no residual distinct-station marker
-      // overlap. OCTI_NOOVL_FLOOR=0 disables it (diagnostic).
+      // overlapping after the cap is left seated on its lanes and logged (a rare
+      // residual the corridor-spread could not separate; accepted, not boxed).
+      // OCTI_NOOVL_FLOOR=0 disables it (diagnostic).
       const noOvlEnabled = !(
         envStr('OCTI_NOOVL_FLOOR') === '0'
       );
@@ -3459,7 +3448,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // that the gentle join left raw, kept raw to keep the marker
   // solver's lane input pristine, get filleted HERE, after every marker /
   // slide / eviction read of segPath is done. So this rounds only the DRAWN
-  // ribbon and cannot mega-box (the dots are already seated). Reuses the
+  // ribbon and cannot move a marker (the dots are already seated). Reuses the
   // regressive curveLaneJoin; marks the pair mitered so the connector pass
   // skips it. Only touches consecutive pairs no earlier join already handled.
   const noDrawFillet =
@@ -3732,9 +3721,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   }
   const edgeParts: string[] = [...casingParts, ...strokeParts];
 
-  // LINE degree: total drawn lines across the node's incident edges. This is
-  // the mega-capsule trigger. A thin capsule only fails when the crossing
-  // bundles are large enough.
   const stopsPrims: Prim[] = [];
 
   // ---- taxicab connectors between split platform units -------------------
@@ -3879,7 +3865,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     }
     for (const p of casingPrims) prims.push(p);
     for (const p of strokePrims) prims.push(p);
-    // stops: station markers (dots/capsules/rings/mega rects + bullet text),
+    // stops: station markers (dots/capsules/rings + bullet text),
     // built alongside the markup by renderStops in source/concatenation order.
     for (const p of stopsPrims) prims.push(p);
     // labels (.stations layer): one TextPrim per label, world-anchored to the dot
