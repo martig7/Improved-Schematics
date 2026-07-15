@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STATION_DESIGNS, getStationDesign, DEFAULT_STATION_DESIGN, EXAMPLE_STATION_DEFAULT, pickExampleRoute, renderStationPreview } from '../index';
+import { STATION_DESIGNS, getStationDesign, DEFAULT_STATION_DESIGN, EXAMPLE_STATION_DEFAULT, pickExampleRoute, routeToExample, renderStationPreview } from '../index';
 import { renderStations } from '../render';
 import type { StopMark, Pixel } from '../../layout/types';
 
@@ -17,6 +17,13 @@ test('pickExampleRoute: first bulleted non-temp route, else A/red default', () =
   assert.deepEqual(pickExampleRoute([]), EXAMPLE_STATION_DEFAULT);
   assert.equal(pickExampleRoute([{ bullet: 'A', color: 'bad' }]).color, '#888888');
   assert.equal(pickExampleRoute([{ bullet: 'A', color: 'bad' }]).textColor, '');
+});
+
+test('routeToExample: trims bullet, validates color, defaults textColor, keeps empty bullet', () => {
+  assert.deepEqual(routeToExample({ bullet: ' A ', color: '#dc2626', textColor: '#ffffff' }), { bullet: 'A', color: '#dc2626', textColor: '#ffffff' });
+  assert.equal(routeToExample({ bullet: 'B', color: 'bad' }).color, '#888888');
+  assert.equal(routeToExample({ bullet: 'C' }).textColor, '');
+  assert.equal(routeToExample({ color: '#123456' }).bullet, '');
 });
 
 test('renderStationPreview returns an <svg> with the bullet and expected color', () => {

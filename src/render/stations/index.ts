@@ -24,11 +24,16 @@ const okColor = (c: string | undefined): string => (c && HEX.test(c) ? c : '#888
 
 /** Representative example route for the picker: first non-temporary bulleted
  *  route, else the A/red default. Framework-free (accepts the game's Route[]). */
+/** Map one route to an ExampleStation: bullet trimmed, color validated, textColor
+ *  defaulted to ''. Used by the route-menu tiles and by pickExampleRoute. */
+export function routeToExample(r: { bullet?: string; color?: string; textColor?: string }): ExampleStation {
+  return { bullet: (r.bullet ?? '').trim(), color: okColor(r.color), textColor: r.textColor || '' };
+}
+
 export function pickExampleRoute(routes: ReadonlyArray<{ bullet?: string; color?: string; textColor?: string; tempParentId?: string | null }>): ExampleStation {
   for (const r of routes) {
     if (r.tempParentId != null) continue;
-    const bullet = (r.bullet ?? '').trim();
-    if (bullet) return { bullet, color: okColor(r.color), textColor: r.textColor || '' };
+    if ((r.bullet ?? '').trim()) return routeToExample(r);
   }
   return EXAMPLE_STATION_DEFAULT;
 }
