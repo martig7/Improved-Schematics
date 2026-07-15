@@ -250,11 +250,16 @@ export function placeLabels(
     }
   }
 
-  const nodes = [...graph.nodes.values()]
-    .filter((n) => stopsByNode.has(n.id))
-    .sort((a, b) => b.label.length - a.label.length);
+  const nodesWithStops = [...graph.nodes.values()].filter((n) => stopsByNode.has(n.id));
+  // Bundle-walk order so a station's on-bundle neighbour is placed first (the side
+  // bonus below reads its offset). The legacy path keeps longest-label-first.
+  const { order: placeOrder, prevOnBundle } = noRotate
+    ? { order: nodesWithStops.sort((a, b) => b.label.length - a.label.length), prevOnBundle: new Map<string, string>() }
+    : bundleOrder(nodesWithStops, stopsByNode);
+  const chosenOffset = new Map<string, [number, number]>();
+  const WSIDE = 5; // same-bundle side-mismatch penalty (tunable at the render checkpoint)
 
-  for (const node of nodes) {
+  for (const node of placeOrder) {
     const p = nodePx.get(node.id);
     if (!p) continue;
     const tw = estimateTextWidth(node.label);
@@ -263,6 +268,20 @@ export function placeLabels(
     // Hang the label off the capsule dot nearest the node centre (not the bare
     // centre), so it tracks the markers when collision passes slide them.
     const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
+    // Same-bundle side coherence: sign of cross(lineDir, offset) is which side of
+    // the line a label sits on; prefer the side the on-bundle predecessor took. The
+    // predecessor is compared under THIS pair's line direction, so the first station
+    // (no predecessor) simply seeds a side for the rest to follow.
+    const prevId = prevOnBundle.get(node.id);
+    const prevP = prevId ? nodePx.get(prevId) : undefined;
+    const dirx = prevP ? p[0] - prevP[0] : 0;
+    const diry = prevP ? p[1] - prevP[1] : 0;
+    const crossSign = (ox: number, oy: number): number => {
+      const cr = dirx * oy - diry * ox;
+      return cr > 0 ? 1 : cr < 0 ? -1 : 0;
+    };
+    const prevOff = prevId ? chosenOffset.get(prevId) : undefined;
+    const prevSide = prevOff ? crossSign(prevOff[0], prevOff[1]) : 0;
     // Flat candidates (angle 0): identical geometry and priorities to before, so a
     // map that never needs to rotate lays out exactly as it used to.
     const flat: Candidate[] = [
@@ -307,6 +326,10 @@ export function placeLabels(
       for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
       cost += cand.priority;
       cost += tilt(cand.fp.angle);
+      if (prevSide !== 0) {
+        const side = crossSign(cand.placement.x - cx, cand.placement.y - cy);
+        if (side !== 0 && side !== prevSide) cost += WSIDE;
+      }
       const crowd = LABEL_TIEBREAK ? crowding(fpAabb(cand.fp)) : 0;
       if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
         bestCost = cost;
@@ -314,6 +337,7 @@ export function placeLabels(
         best = cand;
       }
     }
+    chosenOffset.set(node.id, [best.placement.x - cx, best.placement.y - cy]);
     placed.push(best.fp);
     result.set(node.id, best.placement);
   }

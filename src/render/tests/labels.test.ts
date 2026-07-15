@@ -118,6 +118,27 @@ test('OCTI_LABEL_NO_ROTATE=1 keeps every label flat even when boxed in', () => {
   }
 });
 
+test('a run of stations on one line labels to a consistent side', () => {
+  // A at the origin is walled in on its right, so it labels left (W). B one stop
+  // down the line has both sides open; the neighbor bonus should pull it left too,
+  // rather than taking the enumeration-default right side.
+  const graph = { nodes: new Map([
+    ['A', { id: 'A', label: 'Station A' }],
+    ['B', { id: 'B', label: 'Station B' }],
+  ]) };
+  const nodePx = new Map<string, Pixel>([['A', [0, 0]], ['B', [0, 40]]]);
+  const stops = new Map<string, StopMark[]>([
+    ['A', [{ lineId: 'L', color: '#000', pos: [0, 0], seq: 0 }]],
+    ['B', [{ lineId: 'L', color: '#000', pos: [0, 40], seq: 1 }]],
+  ]);
+  const segs: Segment[] = []; // picket wall on A's right only (near y=0)
+  for (const x of [20, 28, 36, 44]) segs.push({ p1: [x, -20], p2: [x, 20] });
+  const pl = placeLabels(graph, nodePx, stops, segs);
+  const sideOf = (id: string) => Math.sign(pl.get(id)!.x - nodePx.get(id)![0]);
+  assert.equal(sideOf('A'), -1, 'A is forced to the left by the wall');
+  assert.equal(sideOf('B'), sideOf('A'), 'B follows A to the same side');
+});
+
 test('bundleOrder walks each line in seq order and chains predecessors', () => {
   const nodes = [
     { id: 'a', label: 'AAelong' },
