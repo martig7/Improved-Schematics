@@ -372,3 +372,27 @@ test('relaxed free-angle: deterministic (same input twice → identical seat)', 
   assert.deepEqual(a.pos, b.pos);
   assert.deepEqual([...a.cornerAfter], [...b.cornerAfter]);
 });
+
+test('relaxed free-angle: non-parallel bundles V-join at the true row intersection', () => {
+  // bundle 0 = two horizontal lanes (its row runs vertical-ish); bundle 1 = two
+  // vertical lanes (row runs horizontal-ish). The rows are NOT parallel, so the
+  // pair must V-join with the corner at the true intersection of the two row
+  // lines — not the gap-midpoint the -1-axis parallel branch would produce.
+  const laneV = (x: number): ReturnType<typeof through> =>
+    buildLaneCurve([[[x, -60], [x, 60]] as Pixel[], [[x, 60], [x, -60]] as Pixel[]], [x, 0] as Pixel, 24);
+  const curves = [lane(0, 0), lane(6, 0), laneV(14), laneV(20)];
+  const sol = solveRows(curves, [[0, 1], [2, 3]], { ...OPTS, relaxed: true });
+  assert.ok(sol, 'two non-parallel free-angle bundles must seat');
+  assert.equal(sol.cornerAfter.size, 1, 'one V-corner between the two bundles');
+  const corner = [...sol.cornerAfter.values()][0];
+  // intersection of the line through bundle-0 dots with the line through bundle-1 dots
+  const [p0, p1, p2, p3] = sol.pos;
+  const d1x = p1[0] - p0[0], d1y = p1[1] - p0[1];
+  const d2x = p3[0] - p2[0], d2y = p3[1] - p2[1];
+  const denom = d1x * d2y - d1y * d2x;
+  assert.ok(Math.abs(denom) > 1e-3, 'the two rows must be non-parallel');
+  const t = ((p2[0] - p0[0]) * d2y - (p2[1] - p0[1]) * d2x) / denom;
+  const isx: [number, number] = [p0[0] + t * d1x, p0[1] + t * d1y];
+  assert.ok(Math.hypot(corner[0] - isx[0], corner[1] - isx[1]) < 0.6,
+    `corner (${corner}) should sit at the row intersection (${isx})`);
+});

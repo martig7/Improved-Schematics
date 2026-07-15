@@ -350,9 +350,16 @@ export function solveRows(
     let corner: Pixel;
     let ext1: number;
     let ext2: number;
-    if (P.axis === Q.axis) {
-      // parallel rows (same snapped axis): feasible only if collinear within
-      // sub-pixel lateral offset, joining end-to-end (spec §2.2)
+    // Parallel iff the rows share a direction. Octilinear rows compare their
+    // integer axis; free-angle (relaxed) rows have no axis index, so test the
+    // cross product against a near-parallel epsilon (the -1 axis sentinel would
+    // otherwise flag EVERY relaxed pair parallel and route it through the
+    // end-to-end join with a gap-midpoint corner).
+    const cross = P.u[0] * Q.u[1] - P.u[1] * Q.u[0];
+    const parallel = relaxed ? Math.abs(cross) < 1e-3 : P.axis === Q.axis;
+    if (parallel) {
+      // parallel rows: feasible only if collinear within sub-pixel lateral
+      // offset, joining end-to-end (spec §2.2)
       const lat = Math.abs((e2[0] - e1[0]) * -P.u[1] + (e2[1] - e1[1]) * P.u[0]);
       if (lat >= latTol) return null;
       // end-to-end means the facing ends point at each other; same-direction
@@ -367,7 +374,6 @@ export function solveRows(
       // V-not-T: the corner = intersection of the two row LINES must lie
       // at-or-beyond the facing end of EACH row along its outward direction
       // (extension only, never poking into a row's side; −0.5px tolerance)
-      const cross = P.u[0] * Q.u[1] - P.u[1] * Q.u[0]; // ≥ sin45°; axes differ
       const t = ((e2[0] - e1[0]) * Q.u[1] - (e2[1] - e1[1]) * Q.u[0]) / cross;
       corner = [e1[0] + t * P.u[0], e1[1] + t * P.u[1]];
       const d1 = (corner[0] - e1[0]) * o1x + (corner[1] - e1[1]) * o1y;
