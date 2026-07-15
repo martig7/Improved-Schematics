@@ -29,6 +29,7 @@ import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
 import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
 import { cropSubgraph } from '../render/cropSubgraph';
+import { filterRoutesByEnabled } from '../render/filterRoutes';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -649,11 +650,19 @@ export function SchematicPanel() {
   // inset can build the SAME input to crop + re-simulate a sub-network.
   const buildInput = useCallback(() => {
     const dark = api.ui.getResolvedTheme() === 'dark';
+    // Drop hidden routes (and their now-orphaned stNodes/stations/tracks) before layout,
+    // so the fingerprint and the render both reflect the reduced network.
+    const net = filterRoutesByEnabled(
+      {
+        routes: api.gameState.getRoutes(),
+        tracks: api.gameState.getTracks(),
+        stations: api.gameState.getStations(),
+        stationGroups: resolveStationGroupsFromGameState(api.gameState),
+      },
+      applied.disabledRoutes ?? [],
+    );
     return rotateSchematicInput({
-      routes: api.gameState.getRoutes(),
-      tracks: api.gameState.getTracks(),
-      stations: api.gameState.getStations(),
-      stationGroups: resolveStationGroupsFromGameState(api.gameState),
+      ...net,
       geography,
       options: {
         mode,
@@ -1468,6 +1477,42 @@ export function SchematicPanel() {
     setGenerating(true);
   }, []);
 
+  // Commit the staged appearance (including the hidden-route set) to `applied`, which
+  // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
+  // the Routes overlay so both surfaces fire the identical action.
+  const saveAppearance = () => {
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, stationSplit, disabledRoutes });
+    if (mode === 'smoothed' && smoothedReady) regenerate();
+  };
+  const resetAppearance = () => {
+    setLineWidth(DEFAULT_LINE_WIDTH);
+    setStationRadius(DEFAULT_STATION_RADIUS);
+    setMapMargin(DEFAULT_MAP_MARGIN);
+    setWarpPos(DEFAULT_REALISM_POS);
+    setLinePos(DEFAULT_REALISM_POS);
+    setBoxWarpPos(DEFAULT_REALISM_POS);
+    setBoxFrac(DEFAULT_BOX_FRAC);
+    setStationSplit(DEFAULT_STATION_SPLIT);
+    setLandmass('faithful');
+    setLandmassDetail(0.5);
+    setDisabledRoutes([]);
+    setApplied({
+      lineWidth: DEFAULT_LINE_WIDTH,
+      stationRadius: DEFAULT_STATION_RADIUS,
+      mapMargin: DEFAULT_MAP_MARGIN,
+      warpPos: DEFAULT_REALISM_POS,
+      linePos: DEFAULT_REALISM_POS,
+      boxWarpPos: DEFAULT_REALISM_POS,
+      boxFrac: DEFAULT_BOX_FRAC,
+      stationSplit: DEFAULT_STATION_SPLIT,
+      disabledRoutes: [],
+    });
+    if (mode === 'smoothed' && smoothedReady) regenerate();
+  };
+  // Toggle one route in/out of the hidden set (staged; applied on Save).
+  const toggleRoute = (id: string) =>
+    setDisabledRoutes((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+
   // Install the render: parse the SVG string into a Scene IR and paint it to the canvas
   // (no live DOM). The shared tail below fits/preserves the view and runs the area
   // lifecycle, so all the callers (toggles, mode switch, restore) are unchanged.
@@ -2209,30 +2254,7 @@ export function SchematicPanel() {
                   Reset restores (and applies) the defaults. */}
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
-                  onClick={() => {
-                    setLineWidth(DEFAULT_LINE_WIDTH);
-                    setStationRadius(DEFAULT_STATION_RADIUS);
-                    setMapMargin(DEFAULT_MAP_MARGIN);
-                    setWarpPos(DEFAULT_REALISM_POS);
-                    setLinePos(DEFAULT_REALISM_POS);
-                    setBoxWarpPos(DEFAULT_REALISM_POS);
-                    setBoxFrac(DEFAULT_BOX_FRAC);
-                    setStationSplit(DEFAULT_STATION_SPLIT);
-                    setLandmass('faithful');
-                    setLandmassDetail(0.5);
-                    setApplied({
-                      lineWidth: DEFAULT_LINE_WIDTH,
-                      stationRadius: DEFAULT_STATION_RADIUS,
-                      mapMargin: DEFAULT_MAP_MARGIN,
-                      warpPos: DEFAULT_REALISM_POS,
-                      linePos: DEFAULT_REALISM_POS,
-                      boxWarpPos: DEFAULT_REALISM_POS,
-                      boxFrac: DEFAULT_BOX_FRAC,
-                      stationSplit: DEFAULT_STATION_SPLIT,
-                    });
-                    // Smoothed bakes these into the precompute → rebuild.
-                    if (mode === 'smoothed' && smoothedReady) regenerate();
-                  }}
+                  onClick={resetAppearance}
                   disabled={appearanceAtDefaults}
                   title="Reset appearance to defaults"
                   style={{
@@ -2250,11 +2272,7 @@ export function SchematicPanel() {
                   Reset
                 </button>
                 <button
-                  onClick={() => {
-                    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, stationSplit });
-                    // Smoothed bakes these into the precompute → rebuild if shown.
-                    if (mode === 'smoothed' && smoothedReady) regenerate();
-                  }}
+                  onClick={saveAppearance}
                   disabled={!appearanceDirty}
                   title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
                   style={{
