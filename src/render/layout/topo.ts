@@ -2206,6 +2206,43 @@ export function buildSupportGraph(
     }
   }
 
+  // Re-home orphaned stop flags. A merge (or any re-point) can leave a line's
+  // stop-flag node on a platform its DRAWN course no longer touches - the
+  // marker then can't sit on the line's ribbon and falls back far away (a
+  // terminus platform absorbed onto its interchange re-homes the flag to the
+  // busiest node, but the line's own ribbon still ends at its terminus). Snap
+  // each such flag to the nearest node that IS on the line's course, so every
+  // dot lands on the ink it belongs to.
+  {
+    const travNodes = new Map<string, Set<string>>();
+    for (const [lid, steps] of lineTraversals) {
+      const s = new Set<string>();
+      for (const step of steps) { const e = edges.get(step.edgeId); if (e) { s.add(e.from); s.add(e.to); } }
+      travNodes.set(lid, s);
+    }
+    for (const [, st] of stations) {
+      for (const [lid, node] of st.stopNodes) {
+        const tn = travNodes.get(lid);
+        if (!tn || tn.size === 0 || tn.has(node)) continue;
+        const p = nodes.get(node)?.pos;
+        if (!p) continue;
+        let best: string | null = null;
+        let bestD = Infinity;
+        for (const cand of tn) {
+          const cp = nodes.get(cand)?.pos;
+          if (!cp) continue;
+          const dd = dist(p, cp);
+          if (dd < bestD) { bestD = dd; best = cand; }
+        }
+        if (best && best !== node) {
+          st.stopNodes.set(lid, best);
+          stopAt.delete(lid + '|' + node);
+          stopAt.add(lid + '|' + best);
+        }
+      }
+    }
+  }
+
   debugSupportSummary(nodes.keys(), nodes.size, edges.size);
   debugSupportBox(nodes, edges, adj, (lid) => lineRefs.get(lid)?.label || lid.slice(0, 6), stations, lineTraversals);
   return { nodes, edges, adj, lineRefs, lineTraversals, stations, stopAt };
