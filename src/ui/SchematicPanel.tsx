@@ -1836,9 +1836,6 @@ export function SchematicPanel() {
         >
           {showNeighborhoods ? '✓ Neighborhoods' : 'Neighborhoods'}
         </button>
-        <button onClick={() => setRouteMenuOpen(true)} style={toggleStyle(routeMenuOpen)}>
-          Routes
-        </button>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setShowWarpBoxes((v) => !v)}
@@ -2076,6 +2073,21 @@ export function SchematicPanel() {
                 <button
                   onClick={() => { setDesignPanelOpen(true); setSettingsOpen(false); }}
                   title="Change station design"
+                  style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                >
+                  Change
+                </button>
+              </div>
+              {/* Routes: which routes are on the map. Layout-baking (rides the
+                  applied/Save flow); opens the route grid overlay. */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>Routes</span>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{disabledRoutes.length === 0 ? 'All shown' : `${disabledRoutes.length} hidden`}</span>
+                </span>
+                <button
+                  onClick={() => { setRouteMenuOpen(true); setSettingsOpen(false); }}
+                  title="Choose which routes are on the map"
                   style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
                 >
                   Change
@@ -2578,6 +2590,7 @@ export function SchematicPanel() {
           onToggle={toggleRoute}
           onSave={saveAppearance}
           onReset={resetAppearance}
+          onBack={() => { setRouteMenuOpen(false); setSettingsOpen(true); }}
           onClose={() => setRouteMenuOpen(false)}
         />
       )}

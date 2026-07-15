@@ -23,9 +23,11 @@ export function RouteMenu(props: {
   onToggle: (routeId: string) => void;
   onSave: () => void;
   onReset: () => void;
+  /** Back: close the overlay and reopen the settings popover it came from. */
+  onBack: () => void;
   onClose: () => void;
 }) {
-  const { routes, design, dark, disabled, dirty, atDefaults, onToggle, onSave, onReset, onClose } = props;
+  const { routes, design, dark, disabled, dirty, atDefaults, onToggle, onSave, onReset, onBack, onClose } = props;
   const [selected, setSelected] = useState<string | null>(null);
   const bg = dark ? '#18181b' : '#ffffff';
   const text = dark ? '#e4e4e7' : '#1a1a1a';
@@ -105,7 +107,9 @@ export function RouteMenu(props: {
 
   return shell(
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-      <span style={{ fontSize: 15, fontWeight: 600 }}>Routes</span>
+      <button onClick={onBack} aria-label="Back" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', color: text, cursor: 'pointer', fontSize: 15, fontWeight: 600, padding: 0 }}>
+        <Icon name="chevronLeft" size={18} /> Routes
+      </button>
       {closeBtn}
     </div>,
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))', gap: 12 }}>
