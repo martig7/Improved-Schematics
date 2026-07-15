@@ -1704,12 +1704,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
       return { x0, y0, x1, y1 };
     };
-    // A station is "boxed" (renders as a rect, no rings) when the rigid-row solver
-    // could not seat its marks and set the per-mark mega flag (placement mega
-    // fallback, mega-escape slide, or the no-overlap floor's last resort). THE
-    // box-membership predicate: every pass that treats box-vs-capsule as a fact
-    // consults this.
-    const isBoxed = (s: StMarks): boolean => s.marks.some((m) => m.mega);
     const lanePointAt = (
       lineId: string,
       nodeId: string,
@@ -2277,7 +2271,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // guards.
     const capsHullClash = (self: StMarks, hull: Hull): string | null => {
       for (const T of gathered) {
-        if (T === self || T.marks.length < 2 || isBoxed(T)) continue;
+        if (T === self || T.marks.length < 2) continue;
         if (penBetween(hull, capsHullOf(T.marks)) > 0.5) return T.nodeId;
       }
       return null;
@@ -2307,7 +2301,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (!capPlaceDebug) return;
       const items: Array<{ nodeId: string; hull: Hull }> = [];
       for (const s of gathered) {
-        if (s.marks.length < 2 || isBoxed(s)) continue;
+        if (s.marks.length < 2) continue;
         const hull = capsHullOf(s.marks);
         if (hull.length) items.push({ nodeId: s.nodeId, hull });
       }
@@ -2655,7 +2649,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const mutualEnabled = !(
         envStr('OCTI_MUTUAL_SLIDE') === '0'
       );
-      const smalls = gathered.filter((s) => s.marks.length > 0 && !isBoxed(s));
+      const smalls = gathered.filter((s) => s.marks.length > 0);
       const slidNodes = new Set<string>(); // pinned after one slide (mutual mode)
       const MAX_SWEEPS = mutualEnabled ? 3 : 1;
       for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
@@ -2761,7 +2755,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const minToOthers = (S: StMarks, pts: Pixel[]): number => {
           let md = Infinity;
           for (const T of smalls) {
-            if (T === S || isBoxed(T)) continue;
+            if (T === S) continue;
             for (let i = 0; i < pts.length; i++) for (const q of T.marks) {
               const dd = hyp(pts[i][0] - q.pos[0], pts[i][1] - q.pos[1]);
               if (dd < md) md = dd;
@@ -2805,10 +2799,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           let movedAny = false;
           for (let ai = 0; ai < smalls.length; ai++) {
             const A = smalls[ai];
-            if (isBoxed(A)) continue;
             for (let bi = ai + 1; bi < smalls.length; bi++) {
               const B = smalls[bi];
-              if (isBoxed(B)) continue;
               const nm = nearestMarks(A, B);
               if (nm.dist >= touch) continue;
               // slide the more-flexible (fewer-marks) station away from the
@@ -2932,7 +2924,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const allowMulti = envStr('OCTI_CORRIDOR_MULTI') === '1';
         const eligible = (st: StMarks) => allowMulti || singleBullet(st);
         const singles: number[] = [];
-        if (spreadEnabled) for (let i = 0; i < smalls.length; i++) if (!isBoxed(smalls[i]) && eligible(smalls[i])) singles.push(i);
+        if (spreadEnabled) for (let i = 0; i < smalls.length; i++) if (eligible(smalls[i])) singles.push(i);
         for (const ai of singles) {
           for (const bi of singles) {
             if (bi <= ai) continue;
@@ -2960,7 +2952,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const minToOutside = (pts: Pixel[], chainSet: Set<number>): number => {
           let md = Infinity;
           for (let t = 0; t < smalls.length; t++) {
-            if (chainSet.has(t) || isBoxed(smalls[t])) continue;
+            if (chainSet.has(t)) continue;
             for (const p of pts) for (const q of smalls[t].marks) {
               const dd = hyp(p[0] - q.pos[0], p[1] - q.pos[1]);
               if (dd < md) md = dd;
@@ -3222,8 +3214,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       const OCT: Pixel[] = [
         [1, 0], [S2, S2], [0, 1], [-S2, S2], [-1, 0], [-S2, -S2], [0, -1], [S2, -S2],
       ];
-      const capsules = gathered.filter((o) => o.marks.length >= 2 && !isBoxed(o));
-      const singleDots = gathered.filter((o) => o.marks.length === 1 && !isBoxed(o));
+      const capsules = gathered.filter((o) => o.marks.length >= 2);
+      const singleDots = gathered.filter((o) => o.marks.length === 1);
       // candidate dot clear of every FOREIGN capsule (spine segments + member
       // bullets), of every box rect, and of every lone foreign dot? An escape
       // that lands the dot inside a box or on top of a single bullet trades one
@@ -3264,7 +3256,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       };
       const evicted: Array<{ node: string; to: Pixel }> = [];
       for (const s of gathered) {
-        if (isBoxed(s)) continue;
         for (const mk of s.marks) {
           if (dotClear(mk.pos, s.nodeId)) continue; // not trapped
           // terminus = exactly one drawn incident lane
