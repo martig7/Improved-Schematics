@@ -192,11 +192,6 @@ export function reportCapsAudit(d: {
   );
 }
 
-/** Unconditional (TEMP): a mega-escape slide bent the spine off-octilinear. */
-export function reportSlideBoxed(nodeId: string): void {
-  console.error(`[stops TEMP] SLIDE-BOXED ${nodeId}: mega-escape slide bent the spine off-octilinear -> boxed`);
-}
-
 /** Unconditional: a rigid slide was declined because the candidate bent
  *  off-octilinear. Dumps leg structure + the worst off-axis segment (the probe
  *  lives here). `legs` is the caller's `rowsOf(...)` leg-length string; `clone`
@@ -268,19 +263,16 @@ export function reportCorridorSpreadSummary(spreadChains: number, spreadMembers:
   if (spreadChains > 0) console.error(`[stops] corridor-spread: ${spreadChains} chains, ${spreadMembers} members`);
 }
 
-/** Unconditional: a residual overlap was boxed by the no-overlap floor. */
-export function reportNoOverlapFloorBoxed(d: {
+/** Unconditional: two small stations the corridor-spread could not separate are
+ *  left seated on their lanes (a rare residual fill overlap, accepted rather than
+ *  boxed). Surfaces a concrete case if one ever appears. */
+export function reportNoOverlapFloorResidual(d: {
   layout: Layout;
-  boxedNodeId: string;
-  otherNodeId: string;
+  aNodeId: string;
+  bNodeId: string;
 }): void {
-  const { layout, boxedNodeId, otherNodeId } = d;
-  console.error(`[stops] NO-OVERLAP-FLOOR boxed ${boxedNodeId} "${layout.nodes.get(boxedNodeId)?.label ?? ''}" (residual marker overlap with ${otherNodeId} "${layout.nodes.get(otherNodeId)?.label ?? ''}")`);
-}
-
-/** Unconditional summary (floorBoxed > 0). */
-export function reportNoOverlapFloorSummary(floorBoxed: number): void {
-  if (floorBoxed > 0) console.error('[stops] no-overlap-floor boxed: ' + floorBoxed);
+  const { layout, aNodeId, bNodeId } = d;
+  console.error(`[stops] NO-OVERLAP-FLOOR residual: ${aNodeId} "${layout.nodes.get(aNodeId)?.label ?? ''}" ~ ${bNodeId} "${layout.nodes.get(bNodeId)?.label ?? ''}" (corridor-spread could not separate; left seated, not boxed)`);
 }
 
 /** A station's placed marks, as the overlap census reads them. */
@@ -343,12 +335,7 @@ export function reportEgregiousOverlaps<S extends MarkStation>(d: {
   console.error(`[stops] egregious overlaps: ${ovls.length} (ringDia=${ringDia.toFixed(1)}) XSTN=${xstnAll.length} XSTN_SEVERE=${xstnSevere} INSTN=${ovls.length - xstnAll.length}`);
 }
 
-/** Unconditional summary (slideBoxed > 0). */
-export function reportSlideBoxedSummary(slideBoxed: number): void {
-  if (slideBoxed > 0) console.error('[stops] slide-boxed (octilinearity broken): ' + slideBoxed);
-}
-
-/** OCTI_DEBUG: stations slid clear of a mega box. */
+/** OCTI_DEBUG: stations slid clear of a neighbour. */
 export function reportSlidStations(d: {
   layout: Layout;
   slid: Array<{ nodeId: string; at: Pixel }>;

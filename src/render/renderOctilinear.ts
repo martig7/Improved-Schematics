@@ -6,11 +6,11 @@ import {
   joinTraceTarget, makeJoinLog, reportPaintedLoops, reportVanishedStations,
   reportFarAttach, reportSplitFit, reportCapsOverlap, reportPlatformSplit,
   reportCapsOvlStats, reportCapsAudit,
-  reportSlideBoxed, reportRigidSlideDeclined, reportSlideStackDeclined,
+  reportRigidSlideDeclined, reportSlideStackDeclined,
   reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
-  reportNoOverlapFloorBoxed, reportNoOverlapFloorSummary, reportEgregiousOverlaps,
-  reportSlideBoxedSummary, reportSlidStations, reportEvictedStations,
+  reportNoOverlapFloorResidual, reportEgregiousOverlaps,
+  reportSlidStations, reportEvictedStations,
   reportConnTrace, reportRibbonSummary,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
@@ -2241,15 +2241,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       for (const mk of s.marks) placedDots.push(mk.pos);
     }
     reportCapsOvlStats({ capPlaceDebug, stats: capOvlStats, guardOn: capGuardOn, noOvlOn: capNoOvlOn });
-    // LIVE box obstacle list: seeded with everything boxed by placement (the
-    // structural deg test AND the placement mega fallback's mark flags), and
-    // appended to by boxStation whenever a later pass boxes a station, so no
-    // pass ever clearance-checks against a stale box set.
-    const megas = gathered.filter((s) => isBoxed(s));
-    const boxStation = (s: StMarks): void => {
-      for (const mk of s.marks) mk.mega = true;
-      if (!megas.includes(s)) megas.push(s);
-    };
     // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
     // image-merge stations (ms3/ms4) carries stop flags for BOTH — e.g. the
     // W-only me365_a4 (~13px) and the V-only me251_b3 anchor at the same node.
@@ -2330,7 +2321,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     };
     capsAudit('post-place');
     const slid: Array<{ nodeId: string; at: Pixel }> = [];
-    let slideBoxed = 0; // stations a collision-slide bent past octilinearity
     // When a collision-slide moves a station, its derived corners (spec R1)
     // move WITH it: a corner is the meeting of two row legs, so the new
     // corner is the intersection of lines through the SLID boundary dots
@@ -2393,55 +2383,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return true;
     };
-    for (const s of gathered) {
-      if (isBoxed(s) || s.marks.length === 0) continue;
-      const sb = boxOf(s);
-      for (const m of megas) {
-        const mb = boxOf(m);
-        const overlaps = sb.x0 < mb.x1 + 2 && sb.x1 > mb.x0 - 2 && sb.y0 < mb.y1 + 2 && sb.y1 > mb.y0 - 2;
-        if (!overlaps) continue;
-        const center: Pixel = [(mb.x0 + mb.x1) / 2, (mb.y0 + mb.y1) / 2];
-        for (let d = 4; d <= 48; d += 4) {
-          const moved = s.marks.map((mk) => lanePointAt(mk.lineId, mk.flagNode, center, d));
-          if (moved.some((p) => !p)) break;
-          const trial = s.marks.map((mk, i) => ({ ...mk, pos: moved[i]!.p }));
-          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-          for (const t of trial) {
-            x0 = Math.min(x0, t.pos[0]); y0 = Math.min(y0, t.pos[1]);
-            x1 = Math.max(x1, t.pos[0]); y1 = Math.max(y1, t.pos[1]);
-          }
-          const pad = r + 3;
-          if (x0 - pad >= mb.x1 + 2 || x1 + pad <= mb.x0 - 2 || y0 - pad >= mb.y1 + 2 || y1 + pad <= mb.y0 - 2) {
-            const cap = captureCorners(s.marks); // old leg dirs before the slide
-            for (let i = 0; i < s.marks.length; i++) {
-              const mk = s.marks[i];
-              mk.pos = moved[i]!.p;
-              // Lines TERMINATING at the slid station (one drawn incident
-              // lane) must have their ink end at the slid marker, not poke
-              // on into the mega box (Court's grays under the Tacoma box).
-              let incident = 0;
-              for (const e of layout.edges) {
-                if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
-                if (!segPath.has(e.id + '|' + mk.lineId)) continue;
-                if (!drawsOn(mk.lineId, e.id)) continue;
-                incident++;
-              }
-              // Shared-anchor guard (Burke Court): another split station's mark
-              // may anchor this same lane end — trimming would strand its marker.
-              const anchoredBy = anchorStations.get(mk.lineId + '|' + mk.flagNode);
-              const sharedWithOther = !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(s.nodeId));
-              if (incident <= 1 && !sharedWithOther) trimLaneAt(moved[i]!.edgeId, mk.lineId, mk.flagNode, d);
-            }
-            applyCorners(cap); // recompute corners on the slid dots (spec R1)
-            if (!spineOctilinear(s.marks)) { boxStation(s); slideBoxed++; reportSlideBoxed(s.nodeId); }
-            slid.push({ nodeId: s.nodeId, at: [(x0 + x1) / 2, (y0 + y1) / 2] });
-            break;
-          }
-        }
-        break; // resolved (or gave up) against the first overlapping mega
-      }
-    }
-
     capsAudit('post-mega-slide');
     // Small-vs-small collisions: neighbouring stations' markers must not
     // overlap (user rule). Penetration is measured between the markers' actual
@@ -2707,15 +2648,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         for (let d = 4; d <= cap; d += 4) {
           const mv = rigidSlide(st, away, d); // rigid: collinear/octilinear by construction
           if (!mv) break;
-          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-          for (const m of mv) {
-            x0 = Math.min(x0, m.p[0]); y0 = Math.min(y0, m.p[1]);
-            x1 = Math.max(x1, m.p[0]); y1 = Math.max(y1, m.p[1]);
-          }
-          const pad = r + 3;
-          const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
-            x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
-          if (!megas.every((m) => clearOf(boxOf(m)))) break;
           out.push({ moved: mv, d, hull: hullsOf(st.marks, (i) => mv[i].p) });
         }
         return out;
@@ -2745,16 +2677,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             for (let d = 4; d <= 32; d += 4) {
               const moved = rigidSlide(S, center, d);
               if (!moved) break;
-              let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-              for (const t of moved) {
-                x0 = Math.min(x0, t.p[0]); y0 = Math.min(y0, t.p[1]);
-                x1 = Math.max(x1, t.p[0]); y1 = Math.max(y1, t.p[1]);
-              }
-              const pad = r + 3;
-              const clearOf = (box: { x0: number; y0: number; x1: number; y1: number }): boolean =>
-                x0 - pad >= box.x1 + 1 || x1 + pad <= box.x0 - 1 || y0 - pad >= box.y1 + 1 || y1 + pad <= box.y0 - 1;
               const trialHull = hullsOf(S.marks, (i) => moved[i].p);
-              if (penBetween(trialHull, oHull) > -1 || !megas.every((m) => clearOf(boxOf(m)))) continue;
+              if (penBetween(trialHull, oHull) > -1) continue;
               if (applySlide(S, moved, d)) {
                 if (mutualEnabled) slidNodes.add(S.nodeId);
                 movedAny = true;
@@ -2831,15 +2755,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           return { dist: md, mid: [mx, my] };
         };
-        const pad = r + 3;
-        const clearMegas = (mv: Array<{ p: Pixel }>): boolean => {
-          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-          for (const t of mv) { x0 = Math.min(x0, t.p[0]); y0 = Math.min(y0, t.p[1]); x1 = Math.max(x1, t.p[0]); y1 = Math.max(y1, t.p[1]); }
-          return megas.every((m) => {
-            const b = boxOf(m);
-            return x0 - pad >= b.x1 + 1 || x1 + pad <= b.x0 - 1 || y0 - pad >= b.y1 + 1 || y1 + pad <= b.y0 - 1;
-          });
-        };
         // min dist from a proposed S placement to every OTHER non-boxed station
         // (so we can tell a globally-clearing slide from one that merely shifts
         // the overlap onto a third station; used for the FULL-clear preference).
@@ -2873,14 +2788,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const moved = rigidSlide(S, pivot, d);
             if (!moved) break;
             const pts = moved.map((m) => m.p);
-            if (minToOthers(S, pts) < touch || !clearMegas(moved)) continue;
+            if (minToOthers(S, pts) < touch) continue;
             if (applySlide(S, moved, d)) return true;
           }
           for (let d = 4; d <= 64; d += 4) {
             const moved = rigidSlide(S, pivot, d);
             if (!moved) break;
             const pts = moved.map((m) => m.p);
-            if (minToO(pts, O) < touch || !clearMegas(moved)) continue;
+            if (minToO(pts, O) < touch) continue;
             if (applySlide(S, moved, d)) return true;
           }
           return false;
@@ -3191,23 +3106,19 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // are left as drawn-but-clear-fill adjacent bullets and reported below.
         // Corridor-adjacent pairs (spread above) are SKIPPED. A consecutive
         // single-bullet stop is spread along its lane, never boxed.
-        let floorBoxed = 0;
         for (let ai = 0; ai < smalls.length; ai++) {
           const A = smalls[ai];
-          if (isBoxed(A)) continue;
           for (let bi = ai + 1; bi < smalls.length; bi++) {
             const B = smalls[bi];
-            if (isBoxed(B)) continue;
             if (corridorPairs.has(pairKey(ai, bi))) continue; // spread, not boxed
             if (nearestMarks(A, B).dist >= boxFloor) continue;
-            const S = A.marks.length <= B.marks.length ? A : B;
-            boxStation(S);
-            floorBoxed++;
-            const O = S === A ? B : A;
-            reportNoOverlapFloorBoxed({ layout, boxedNodeId: S.nodeId, otherNodeId: O.nodeId });
+            // Accept + log: the corridor-spread could not separate this pair
+            // (moving either would collide with a third station). Leave both
+            // seated on their lanes rather than boxing; the diagnostic surfaces a
+            // real case if one ever appears (none on the current corpus).
+            reportNoOverlapFloorResidual({ layout, aNodeId: A.nodeId, bNodeId: B.nodeId });
           }
         }
-        reportNoOverlapFloorSummary(floorBoxed);
       }
       capsAudit('final');
       // OCTI_DEBUG overlap diagnostic: EGREGIOUS ring overlaps. Bullet rings
@@ -3218,7 +3129,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // and node ids so the spot can be located.
       reportEgregiousOverlaps({ layout, r, smalls, gathered, boxIsMega: (s) => s.marks.some((m) => m.mega) });
     }
-    reportSlideBoxedSummary(slideBoxed);
     reportSlidStations({ layout, slid });
 
     // Terminus trim: a line that ENDS at this station has exactly one drawn
@@ -3323,11 +3233,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (o.nodeId === selfNode) continue;
           for (const [a, b] of spineSegsOf(o)) if (ptSegD(p[0], p[1], a, b) < need) return false;
           for (const om of o.marks) if (hyp(p[0] - om.pos[0], p[1] - om.pos[1]) < 2 * r) return false;
-        }
-        for (const o of megas) {
-          if (o.nodeId === selfNode) continue;
-          const b = boxOf(o);
-          if (p[0] > b.x0 - r && p[0] < b.x1 + r && p[1] > b.y0 - r && p[1] < b.y1 + r) return false;
         }
         for (const o of singleDots) {
           if (o.nodeId === selfNode) continue;
