@@ -1490,6 +1490,12 @@ export function SchematicPanel() {
   const saveAppearance = () => {
     setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, stationSplit, disabledRoutes });
     if (mode === 'smoothed' && smoothedReady) regenerate();
+    // Commit dismisses whichever surface hosts the Save button (settings popover,
+    // Algorithm page, or Routes overlay).
+    setSettingsOpen(false);
+    setAlgorithmPageOpen(false);
+    setLabelsPageOpen(false);
+    setRouteMenuOpen(false);
   };
   const resetAppearance = () => {
     setLineWidth(DEFAULT_LINE_WIDTH);
