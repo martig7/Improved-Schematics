@@ -21,6 +21,7 @@ import { DetailInset, SEL_COLORS, type Selection, type Box, type ExportDescripto
 import { decideAreaAction } from './areaLifecycle';
 import { Icon } from './icons';
 import { StationDesignPicker } from './StationDesignPicker';
+import { RouteMenu } from './RouteMenu';
 import { ensureSignFonts } from './fonts';
 import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stations';
 import { serializeMap, deserializeMap } from '../render/persist';
@@ -307,6 +308,8 @@ export function SchematicPanel() {
   const [stationDesign, setStationDesign] = useState(rvis.stationDesign ?? DEFAULT_STATION_DESIGN);
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
+  // The Routes overlay (top-bar Routes button): a grid of routes + per-route toggle.
+  const [routeMenuOpen, setRouteMenuOpen] = useState(false);
   // The example station shown in the picker tiles: a representative player route
   // (bullet + colors), recomputed each time the overlay opens.
   const designExample = useMemo(() => pickExampleRoute(api.gameState.getRoutes()), [designPanelOpen]);
@@ -1833,6 +1836,9 @@ export function SchematicPanel() {
         >
           {showNeighborhoods ? '✓ Neighborhoods' : 'Neighborhoods'}
         </button>
+        <button onClick={() => setRouteMenuOpen(true)} style={toggleStyle(routeMenuOpen)}>
+          Routes
+        </button>
         {mode === 'smoothed' && smoothedReady && (
           <button
             onClick={() => setShowWarpBoxes((v) => !v)}
@@ -2559,6 +2565,20 @@ export function SchematicPanel() {
           onSelect={setStationDesign}
           onBack={() => { setDesignPanelOpen(false); setSettingsOpen(true); }}
           onClose={() => setDesignPanelOpen(false)}
+        />
+      )}
+      {routeMenuOpen && (
+        <RouteMenu
+          routes={api.gameState.getRoutes().filter((r) => r.tempParentId == null)}
+          design={getStationDesign(stationDesign)}
+          dark={api.ui.getResolvedTheme() === 'dark'}
+          disabled={disabledRoutes}
+          dirty={appearanceDirty}
+          atDefaults={appearanceAtDefaults}
+          onToggle={toggleRoute}
+          onSave={saveAppearance}
+          onReset={resetAppearance}
+          onClose={() => setRouteMenuOpen(false)}
         />
       )}
     </div>
