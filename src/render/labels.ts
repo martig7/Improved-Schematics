@@ -67,6 +67,18 @@ export function boxGap(a: Box, b: Box): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/** Summed encroachment of `box` into a set of boxes: for each within `margin`,
+ *  how far inside the margin it reaches (margin - gap). 0 for boxes beyond the
+ *  margin. The shared shape of the soft clearance and label-adjacency penalties. */
+export function encroachment(box: Box, boxes: readonly Box[], margin: number): number {
+  let c = 0;
+  for (const b of boxes) {
+    const g = boxGap(box, b);
+    if (g < margin) c += margin - g;
+  }
+  return c;
+}
+
 /** Euclidean gap between an axis-aligned box and a segment (0 when they meet).
  *  The min distance of two disjoint convex shapes is realized vertex-to-edge, so
  *  it is the least of the box corners to the segment and the segment ends to the
@@ -262,6 +274,7 @@ export function placeLabels(
 ): Map<string, Placement> {
   const result = new Map<string, Placement>();
   const placed: Footprint[] = [];
+  const placedAABB: Box[] = []; // axis-aligned bounds of placed labels, for the clearance/adjacency terms
   const stationBoxes: Box[] = [];
   const markerR = MARK_R0;
   // OCTI_LABEL_NO_ROTATE=1 restores the legacy path: no rotated candidates and the
@@ -276,12 +289,14 @@ export function placeLabels(
   // sqrt-based and the argmin is a total order, so deterministic.
   const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale
   const W_CLEAR = 0.15; // per-unit-of-encroachment weight (tunable at the render checkpoint)
-  const clearanceLM = (box: Box): number => {
-    let c = 0;
-    for (const f of placed) { const g = boxGap(box, fpAabb(f)); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
-    for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
-    return c;
-  };
+  // Adjacency (label-only) term: a sharper, closer-range penalty for a candidate
+  // sitting within ADJ_MARGIN of an already-placed LABEL (not markers or lines), so
+  // two labels never crowd close enough to read as one. Heavier per-unit than the
+  // clearance term (W_ADJ), so it overrides the side bonus rather than let labels
+  // merge for consistency. OCTI_LABEL_NO_ADJ=1 disables it (diagnostic).
+  const ADJ_MARGIN = LABEL_FONT_SIZE; // merge zone: two labels closer than this risk reading as one
+  const W_ADJ = 2.5;
+  const noAdj = envStr('OCTI_LABEL_NO_ADJ') === '1';
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -422,9 +437,12 @@ export function placeLabels(
       }
       if (!noRotate) {
         const aabb = fpAabb(cand.fp);
-        let clr = clearanceLM(aabb); // adjacent labels + markers
-        for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; } // + lines
-        cost += W_CLEAR * clr;
+        // gentle, broad clearance: labels + markers + lines
+        let clr = encroachment(aabb, placedAABB, CLEAR_MARGIN) + encroachment(aabb, stationBoxes, CLEAR_MARGIN);
+        for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; }
+        // sharp, label-only adjacency: two labels must never crowd close enough to read as one
+        const adj = noAdj ? 0 : encroachment(aabb, placedAABB, ADJ_MARGIN);
+        cost += W_CLEAR * clr + W_ADJ * adj;
       }
       if (cost < bestCost) {
         bestCost = cost;
@@ -433,6 +451,7 @@ export function placeLabels(
     }
     chosenOffset.set(node.id, [best.placement.x - cx, best.placement.y - cy]);
     placed.push(best.fp);
+    placedAABB.push(fpAabb(best.fp));
     result.set(node.id, lines.length > 1 ? { ...best.placement, lines } : best.placement);
   }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, boxSegGap, bundleOrder, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
+import { boxesOverlap, boxGap, boxSegGap, bundleOrder, encroachment, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -167,6 +167,21 @@ test('OCTI_LABEL_NO_ROTATE=1 keeps every label flat even when boxed in', () => {
   } finally {
     delete process.env.OCTI_LABEL_NO_ROTATE;
   }
+});
+
+// The label-adjacency term (and the clearance term) are built on encroachment:
+// how far other boxes intrude within a margin. The term's real-world effect is
+// validated by rendering (it roughly halves label pairs closer than 6px on the
+// dense NYC/SEA/LON dumps); here we pin the pure computation it is built from.
+test('encroachment sums how far boxes intrude within the margin, zero beyond it', () => {
+  const box = { x: 0, y: 0, w: 10, h: 10 };
+  assert.equal(encroachment(box, [{ x: 14, y: 0, w: 5, h: 10 }], 11), 11 - 4); // 4px gap
+  assert.equal(encroachment(box, [{ x: 30, y: 0, w: 5, h: 10 }], 11), 0); // beyond the margin
+  assert.equal(encroachment(box, [], 11), 0);
+  // additive over multiple intruders (one 4px right, one 4px below)
+  assert.equal(encroachment(box, [{ x: 14, y: 0, w: 5, h: 10 }, { x: 0, y: 14, w: 10, h: 5 }], 11), (11 - 4) + (11 - 4));
+  // a bigger margin ⇒ a bigger penalty for the same gap
+  assert.ok(encroachment(box, [{ x: 14, y: 0, w: 5, h: 10 }], 20) > encroachment(box, [{ x: 14, y: 0, w: 5, h: 10 }], 11));
 });
 
 test('a multi-dot capsule anchors its label to the outermost dot on the chosen side', () => {
