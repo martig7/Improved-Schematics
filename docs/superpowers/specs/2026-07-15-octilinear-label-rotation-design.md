@@ -270,6 +270,13 @@ keeps its signature.
   clearance term shifts it to the clearer side it stays tied to a real marker. Each candidate
   direction anchors to the dot with the largest projection along it.
 
+- **Label-only adjacency term.** A sharper, closer-range penalty (`W_ADJ` over `ADJ_MARGIN`)
+  for a candidate near an already-placed LABEL only, so two labels never crowd close enough to
+  read as one. Heavier per-unit than the clearance term, so it overrides the side bonus rather
+  than let labels stack for consistency. Built on the shared `encroachment` helper. Measured
+  on the dense dumps it roughly halves label pairs closer than 6px (NYC 29->11, SEA 85->57,
+  LON 30->13). `OCTI_LABEL_NO_ADJ=1` disables it.
+
 **Legacy guarantee, preserved.** All of the above are gated by the single legacy switch
 `OCTI_LABEL_NO_ROTATE=1` (which now means "all new label behaviour off"), so that flag still
 reproduces master byte-for-byte. The intrinsic label-to-station lead is preserved throughout:
