@@ -163,6 +163,17 @@ export function solveRows(
   const g = groups.length;
   const anchorPos = curves.map((c) => curvePoint(c, c.anchorT));
 
+  // Ultimate non-null seat for relaxed mode: every mark at its own lane anchor
+  // (its natural crossing point), bundles concatenated in lane order, no corners.
+  // A large sentinel cost keeps any real chain preferred; this only ever returns
+  // when no feasible chain exists at all.
+  const ultimateFallback = (): RowSolution => {
+    const pos: Pixel[] = new Array(n);
+    const order: number[] = [];
+    for (const grp of groups) for (const gi of grp) { pos[gi] = anchorPos[gi]; order.push(gi); }
+    return { pos, order, cornerAfter: new Map(), cost: Number.MAX_SAFE_INTEGER };
+  };
+
   // ---- step 1: row states per bundle --------------------------------------
   const buildStates = (group: number[], bi: number, stats?: BundleStat): RowState[] => {
     const carrier = curves[group[0]];
@@ -271,6 +282,7 @@ export function solveRows(
   // a bundle with no feasible row anywhere dooms every pairing → mega box
   if (bundleStates.some((st) => st.length === 0)) {
     debugNoFeasibleRow(groups, bundleStates, statsArr, anchorPos, g, minGap, opts.dbgLabel, hyp);
+    if (relaxed) return ultimateFallback();
     return null;
   }
 
@@ -674,6 +686,7 @@ export function solveRows(
   }
   if (!best) {
     debugNoPairing(dbgMinNonAdj, g, minGap, opts.dbgLabel);
+    if (relaxed) return ultimateFallback();
     return null;
   }
   const win: DPResult = best;

@@ -318,3 +318,32 @@ test('relaxed: an in-band-and-below pinch that boxes today seats non-null', () =
   const d = Math.hypot(sol.pos[0][0] - sol.pos[1][0], sol.pos[0][1] - sol.pos[1][1]);
   assert.ok(d < MINGAP, `relaxed seat should be sub-floor overlap: ${d}`);
 });
+
+test('relaxed: coincident lanes never return null', () => {
+  // two identical lanes: hardFloor=0 lets the opposite-orientation join seat them
+  const a = through([[-2, 0], [2, 0]], [0, 0]);
+  const b = through([[-2, 0], [2, 0]], [0, 0]);
+  const sol = solveRows([a, b], [[0], [1]], { ...OPTS, relaxed: true });
+  assert.ok(sol, 'relaxed must never return null');
+  assert.equal(sol.pos.length, 2);
+});
+
+test('relaxed: empty states (all masked) fall back to a seat, not null', () => {
+  // blocked() vetoes every candidate dot -> zero feasible rows -> octilinear
+  // boxes (null). Relaxed must still seat via the ultimate fallback (anchors).
+  const curves = [lane(0, 0), lane(PITCH, 0)];
+  assert.equal(solveRows(curves, [[0, 1]], { ...OPTS, blocked: () => true }), null);
+  const sol = solveRows(curves, [[0, 1]], { ...OPTS, relaxed: true, blocked: () => true });
+  assert.ok(sol, 'relaxed must seat even when every row is masked');
+  assert.equal(sol.pos.filter(Boolean).length, 2);
+});
+
+test('relaxed: unpairable bundles (extCap) fall back to a seat, not null', () => {
+  // two far-apart single-member bundles with a tiny elbow cap: every pairing is
+  // extCap-rejected -> no chain -> octilinear boxes (null). Relaxed falls back.
+  const curves = [laneVFar(0), laneVFar(100)];
+  assert.equal(solveRows(curves, [[0], [1]], { ...OPTS, extCap: 5 }), null);
+  const sol = solveRows(curves, [[0], [1]], { ...OPTS, relaxed: true, extCap: 5 });
+  assert.ok(sol, 'relaxed must seat even when no pairing is feasible');
+  assert.equal(sol.pos.filter(Boolean).length, 2);
+});
