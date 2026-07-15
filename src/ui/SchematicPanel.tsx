@@ -127,6 +127,10 @@ const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] 
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+// Order-independent id-set equality, for comparing the draft hidden-route set
+// against the applied one.
+const sameIdSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
+
 // Labeled range slider for the settings popover. `display` is the formatted
 // current value shown to the right of the label.
 function Slider(props: {
@@ -234,7 +238,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; stationSplit?: boolean };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; stationSplit?: boolean; disabledRoutes?: string[] };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -363,10 +367,14 @@ export function SchematicPanel() {
   const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
   // Per-station complex split (layout-baking toggle, same draft→Save flow).
   const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? DEFAULT_STATION_SPLIT);
+  // The hidden-route set (route ids removed from the layout). A staged/draft value like
+  // the layout-baking sliders: it rides the same applied/dirty/Save flow, so a toggle
+  // takes effect on Save (smoothed regenerates; geographic re-renders).
+  const [disabledRoutes, setDisabledRoutes] = useState<string[]>(rapp?.disabledRoutes ?? []);
   const [applied, setApplied] = useState(
     rapp
-      ? // older files lack boxFrac/stationSplit → default them
-        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT }
+      ? // older files lack boxFrac/stationSplit/disabledRoutes → default them
+        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -376,6 +384,7 @@ export function SchematicPanel() {
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
           stationSplit: DEFAULT_STATION_SPLIT,
+          disabledRoutes: [],
         },
   );
   const appearanceDirty =
@@ -386,7 +395,8 @@ export function SchematicPanel() {
     applied.linePos !== linePos ||
     applied.boxWarpPos !== boxWarpPos ||
     applied.boxFrac !== boxFrac ||
-    applied.stationSplit !== stationSplit;
+    applied.stationSplit !== stationSplit ||
+    !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -398,6 +408,7 @@ export function SchematicPanel() {
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
     stationSplit === DEFAULT_STATION_SPLIT &&
+    disabledRoutes.length === 0 &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
@@ -405,7 +416,8 @@ export function SchematicPanel() {
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
     applied.boxFrac === DEFAULT_BOX_FRAC &&
-    applied.stationSplit === DEFAULT_STATION_SPLIT;
+    applied.stationSplit === DEFAULT_STATION_SPLIT &&
+    (applied.disabledRoutes?.length ?? 0) === 0;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -495,7 +507,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/stationSplit
-    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT };
+    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -515,6 +527,7 @@ export function SchematicPanel() {
     setBoxWarpPos(ap.boxWarpPos);
     setBoxFrac(ap.boxFrac);
     setStationSplit(ap.stationSplit);
+    setDisabledRoutes(ap.disabledRoutes);
     setMode(target);
   }, [mountCity]);
   // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
