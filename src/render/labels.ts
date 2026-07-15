@@ -67,6 +67,35 @@ export function boxGap(a: Box, b: Box): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/** Euclidean gap between an axis-aligned box and a segment (0 when they meet).
+ *  The min distance of two disjoint convex shapes is realized vertex-to-edge, so
+ *  it is the least of the box corners to the segment and the segment ends to the
+ *  box. sqrt-based for cross-V8 stability. */
+export function boxSegGap(box: Box, p1: Pixel, p2: Pixel): number {
+  if (segmentIntersectsBox(p1, p2, box)) return 0;
+  const x2 = box.x + box.w;
+  const y2 = box.y + box.h;
+  const ptSeg = (px: number, py: number): number => {
+    const vx = p2[0] - p1[0];
+    const vy = p2[1] - p1[1];
+    const c1 = vx * (px - p1[0]) + vy * (py - p1[1]);
+    if (c1 <= 0) return Math.sqrt((px - p1[0]) ** 2 + (py - p1[1]) ** 2);
+    const c2 = vx * vx + vy * vy;
+    if (c2 <= c1) return Math.sqrt((px - p2[0]) ** 2 + (py - p2[1]) ** 2);
+    const t = c1 / c2;
+    return Math.sqrt((px - (p1[0] + t * vx)) ** 2 + (py - (p1[1] + t * vy)) ** 2);
+  };
+  const ptBox = (px: number, py: number): number => {
+    const dx = Math.max(box.x - px, 0, px - x2);
+    const dy = Math.max(box.y - py, 0, py - y2);
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+  return Math.min(
+    ptSeg(box.x, box.y), ptSeg(x2, box.y), ptSeg(x2, y2), ptSeg(box.x, y2),
+    ptBox(p1[0], p1[1]), ptBox(p2[0], p2[1]),
+  );
+}
+
 export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
   const x1 = box.x;
   const x2 = box.x + box.w;
@@ -164,7 +193,10 @@ export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
     return center;
   }
   if (!marks || marks.length === 0) return center;
-  if (marks.length === 1) return marks[0].pos; // the single dot IS the anchor
+  // Single dot IS the anchor. Reverted to the bare centre in the full-legacy mode
+  // (OCTI_LABEL_NO_ROTATE, which turns off all new label behaviour) so that switch
+  // still reproduces master byte-for-byte.
+  if (marks.length === 1) return envStr('OCTI_LABEL_NO_ROTATE') === '1' ? center : marks[0].pos;
   let best = marks[0].pos;
   let bestD = Infinity;
   for (const m of marks) {
@@ -235,19 +267,16 @@ export function placeLabels(
   // OCTI_LABEL_NO_ROTATE=1 restores the legacy path: no rotated candidates and the
   // old longest-label-first order, so the dumps render byte-identical to before.
   const noRotate = envStr('OCTI_LABEL_NO_ROTATE') === '1';
-  // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
-  // counts only HARD overlaps (integers), so many labels tie; without the tie-break
-  // those ties resolve by enumeration order. Among cost-tied placements, prefer the
-  // one with the most open space around it (largest summed clearance to nearby
-  // markers and already-placed labels), nudging labels off crowded flanks into
-  // white space. Clearance is an unscored dimension (cost ignores near-misses);
-  // boxGap is sqrt-based and the argmin is a total order (cost, then -clearance,
-  // then enumeration), so deterministic.
-  const LABEL_TIEBREAK =
-    envStr('OCTI_LABEL_TIEBREAK') === '1';
-  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale for "crowding"
-  // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
-  const crowding = (box: Box): number => {
+  // Soft clearance (position term). The hard costs fire only on ACTUAL overlap, so
+  // labels pack shoulder-to-shoulder in crowded areas. This term adds a small
+  // penalty for merely being CLOSE (within CLEAR_MARGIN) to already-placed labels,
+  // station markers, and line segments, so a label drifts into the clearer of two
+  // otherwise-equal spots. Weighted on the tilt scale (W_CLEAR), so it trades off
+  // against rotation: a label near adjacent text may rotate to gain room. Gaps are
+  // sqrt-based and the argmin is a total order, so deterministic.
+  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale
+  const W_CLEAR = 0.15; // per-unit-of-encroachment weight (tunable at the render checkpoint)
+  const clearanceLM = (box: Box): number => {
     let c = 0;
     for (const f of placed) { const g = boxGap(box, fpAabb(f)); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
     for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
@@ -349,10 +378,17 @@ export function placeLabels(
       rot(cx - off * 0.7, cy + off * 0.7, -45, 'end'),
     ];
     const candidates = [...flat, ...rotated];
+    // Segments near this node's candidates, so the clearance term stays cheap in
+    // the map's total segment count (candidates all live within ~R of the anchor).
+    const R = CLEAR_MARGIN + tw + off + extraH;
+    const nearSegs = noRotate ? [] : segments.filter((s) => {
+      const lo = (a: number, b: number) => Math.min(a, b) - R;
+      const hi = (a: number, b: number) => Math.max(a, b) + R;
+      return cx >= lo(s.p1[0], s.p2[0]) && cx <= hi(s.p1[0], s.p2[0]) && cy >= lo(s.p1[1], s.p2[1]) && cy <= hi(s.p1[1], s.p2[1]);
+    });
 
     let best = candidates[0];
     let bestCost = Infinity;
-    let bestCrowd = Infinity;
     for (const cand of candidates) {
       let cost = 0;
       for (const f of placed) if (fpOverlap(cand.fp, f)) cost += 100;
@@ -364,10 +400,14 @@ export function placeLabels(
         const side = crossSign(cand.placement.x - cx, cand.placement.y - cy);
         if (side !== 0 && side !== prevSide) cost += WSIDE;
       }
-      const crowd = LABEL_TIEBREAK ? crowding(fpAabb(cand.fp)) : 0;
-      if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
+      if (!noRotate) {
+        const aabb = fpAabb(cand.fp);
+        let clr = clearanceLM(aabb); // adjacent labels + markers
+        for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; } // + lines
+        cost += W_CLEAR * clr;
+      }
+      if (cost < bestCost) {
         bestCost = cost;
-        bestCrowd = crowd;
         best = cand;
       }
     }

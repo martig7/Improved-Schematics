@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, bundleOrder, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
+import { boxesOverlap, boxSegGap, bundleOrder, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -72,6 +72,13 @@ test('wrapLabel never breaks mid-word: a long single word stays one line', () =>
 test('boxesOverlap detects overlap and separation', () => {
   assert.ok(boxesOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }));
   assert.ok(!boxesOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 20, w: 5, h: 5 }));
+});
+
+test('boxSegGap: 0 when the segment meets the box, else the Euclidean gap', () => {
+  const box = { x: 0, y: 0, w: 10, h: 10 };
+  assert.equal(boxSegGap(box, [-5, 5], [15, 5]), 0); // crosses
+  assert.equal(boxSegGap(box, [0, 20], [10, 20]), 10); // 10px above
+  assert.ok(Math.abs(boxSegGap(box, [20, 5], [20, 15]) - 10) < 1e-9); // 10px right
 });
 
 test('segmentIntersectsBox detects a crossing segment', () => {
