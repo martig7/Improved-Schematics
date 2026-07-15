@@ -19,9 +19,9 @@ import type { Pixel } from './types';
 export type LaneByStop = Map<string, Pixel[][]>;
 
 /** The mark fields the crossing test needs: run-axis (parallel-bundle gate),
- *  exact tangent (three-plus-line intersection), position, mega flag, lineId
+ *  exact tangent (three-plus-line intersection), position, lineId
  *  (fetches the drawn lanes). */
-interface CrossMark { lineId: string; axis?: number; dir?: [number, number]; pos: Pixel; mega?: boolean }
+interface CrossMark { lineId: string; axis?: number; dir?: [number, number]; pos: Pixel }
 
 export interface TorontoCross { cx: number; cy: number }
 
@@ -35,7 +35,7 @@ export function computeTorontoByNode(stops: Map<string, CrossMark[]>, laneByStop
   const minAngle = 30 * DEG;           // and cross at a wide angle, not run parallel
   const out = new Map<string, TorontoCross>();
   for (const [nodeId, marks] of stops) {
-    const ms = marks.filter((m) => !m.mega);
+    const ms = marks;
     if (ms.length <= 1) continue;
     const axes = new Set(ms.map((m) => (m.axis === undefined ? -1 : (((m.axis % 4) + 4) % 4))));
     if (axes.size < 2) continue; // one run-axis = a parallel bundle, not a crossing

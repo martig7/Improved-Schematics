@@ -16,8 +16,8 @@ export interface LondonBubble { x: number; y: number; r: number }
 export interface LondonNeck { x0: number; y0: number; x1: number; y1: number; w: number }
 export interface LondonCapsule { bubbles: LondonBubble[]; necks: LondonNeck[] }
 
-/** The mark fields the solve needs: bundle axis, position, mega flag. */
-interface BubbleMark { axis?: number; pos: [number, number]; mega?: boolean }
+/** The mark fields the solve needs: bundle axis, position. */
+interface BubbleMark { axis?: number; pos: [number, number] }
 /** A line to cover: unit run-axis direction, stop position, and axis key (-1 = none). */
 export interface Line { ux: number; uy: number; px: number; py: number; axisKey: number }
 
@@ -325,7 +325,7 @@ export function computeLondonByNode(
   const reach = r * 4;
   const minSep = 2 * r + NECK_GAP + TOUCH_TOL;
   for (const [nodeId, marks] of stops) {
-    const ms = marks.filter((m) => !m.mega);
+    const ms = marks;
     if (ms.length <= 1) continue;
     const lines: Line[] = ms.map((m) => {
       const key = m.axis === undefined ? -1 : (((m.axis % 4) + 4) % 4);

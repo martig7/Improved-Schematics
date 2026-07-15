@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { computeLondonByNode, type LondonBubble } from '../londonBubbles';
 
 type P = [number, number];
-const mark = (pos: P, axis = 0, mega = false) => ({ axis, pos, mega });
+const mark = (pos: P, axis = 0) => ({ axis, pos });
 const R = (lw: number) => lw * 1.5; // must match londonBubbles R_FACTOR
 const compute = (marks: ReturnType<typeof mark>[], lw = 4) => computeLondonByNode(new Map([['n', marks]]), lw).get('n')!;
 
@@ -90,14 +90,12 @@ test('computeLondonByNode: a large node clusters each run-axis bundle into pairs
   assert.equal(cap.bubbles.length, 4, 'two bubbles per four-line bundle');
 });
 
-test('computeLondonByNode: single stops and mega nodes get no bubble', () => {
+test('computeLondonByNode: single stops get no bubble', () => {
   const out = computeLondonByNode(new Map([
     ['single', [mark([0, 0])]],
-    ['mega', [mark([0, 0], 0, true), mark([0, 6], 0, true)]],
     ['pair', [mark([0, 0]), mark([0, 5])]],
   ]), 4);
   assert.equal(out.has('single'), false);
-  assert.equal(out.has('mega'), false);
   assert.equal(out.has('pair'), true);
 });
 

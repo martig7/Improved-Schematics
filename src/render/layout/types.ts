@@ -117,9 +117,6 @@ export interface StopMark {
   /** Rigid-row model (spec v2): synthetic corner vertex between this mark
    *  and the next in chain order. A pair boundary's derived elbow point. */
   cornerAfter?: Pixel;
-  /** Rigid-row total fallback (spec v2 §3): when no feasible row configuration
-   *  exists, the station renders as the mega box instead of a spine capsule. */
-  mega?: boolean;
   /** Rect seating inputs (design-agnostic, recorded in computeRibbonGeometry for
    *  interchange marks): the pre-solve lane position ("home", where the line passes
    *  the node) and its octilinear run-axis index (0=–, 1=/, 2=|, 3=\). Consumed by

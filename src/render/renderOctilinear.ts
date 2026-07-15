@@ -518,7 +518,7 @@ const LANECROP_SPREAD_MIN = 6;
 // position (single stops seat at pos, not home). Matches the StMarks shape.
 export interface RectSeatStation {
   nodeId: string;
-  marks: Array<{ lineId: string; home?: Pixel; axis?: number; mega?: boolean; pos?: Pixel; flagNode?: string }>;
+  marks: Array<{ lineId: string; home?: Pixel; axis?: number; pos?: Pixel; flagNode?: string }>;
 }
 
 /** Build the drawn lane curve + on-lane anchor for one mark, so large hubs seat by
@@ -1492,7 +1492,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     pos: Pixel,
     chain?: number,
     cornerAfter?: Pixel,
-    mega?: boolean,
     home?: Pixel,
     axis?: number,
     dir?: Pixel,
@@ -1504,7 +1503,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, mega, home, axis, dir, terminus, outward,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, home, axis, dir, terminus, outward,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -1571,7 +1570,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         pos: Pixel;
         chain?: number;
         cornerAfter?: Pixel;
-        mega?: boolean;
         home?: Pixel;
         axis?: number;
         dir?: Pixel;
@@ -3119,7 +3117,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // station that are NOT same-row-adjacent (a folded spine / piled junction).
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
-      reportEgregiousOverlaps({ layout, r, smalls, gathered, boxIsMega: (s) => s.marks.some((m) => m.mega) });
+      reportEgregiousOverlaps({ layout, r, smalls, gathered });
     }
     reportSlidStations({ layout, slid });
 
@@ -3149,7 +3147,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     };
     for (const s of gathered) {
       for (const mk of s.marks) {
-        if (mk.mega) continue; // box covers everything
         let incEdge: string | null = null;
         let nInc = 0;
         for (const e of layout.edges) {
@@ -3305,7 +3302,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     capsAudit('post-eviction');
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.mega, m.home, m.axis, m.dir, m.terminus, m.outward);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.home, m.axis, m.dir, m.terminus, m.outward);
     }
 
     for (const s of gathered) {
@@ -3657,7 +3654,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const laneByStop = new Map<string, Pixel[][]>();
     for (const [nodeId, marks] of stopsByNode) {
       for (const m of marks) {
-        if (m.mega) continue;
         const segs = segsByLine.get(m.lineId);
         if (!segs) continue;
         const near = segs.filter(([a, b]) => (a[0] - m.pos[0]) ** 2 + (a[1] - m.pos[1]) ** 2 <= win2 || (b[0] - m.pos[0]) ** 2 + (b[1] - m.pos[1]) ** 2 <= win2);
@@ -3771,14 +3767,12 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (seated) { for (const p of seated) foreign.push(p); continue; }
         for (const m of marks) foreign.push(m.pos);
       }
-      // mega-boxed units draw no dots (stops.ts mega branch). A connector into
-      // a bare box reads as a stray line, and the box already says "everything
-      // here"; anchor endpoints only on drawn (non-mega) dots, and drop the
-      // group if <2 attachable units remain
+      // Anchor connector endpoints on the units' drawn dots; drop the group if
+      // fewer than 2 attachable units remain.
       const units = unitIds
         .map((id) => ({
           id,
-          dots: rectDots(id) ?? (stopsByNode.get(id) ?? []).filter((m) => !m.mega).map((m) => m.pos),
+          dots: rectDots(id) ?? (stopsByNode.get(id) ?? []).map((m) => m.pos),
         }))
         .filter((u) => u.dots.length > 0);
       if (units.length < 2) continue;

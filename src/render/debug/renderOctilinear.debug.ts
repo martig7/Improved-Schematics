@@ -278,7 +278,7 @@ export function reportNoOverlapFloorResidual(d: {
 /** A station's placed marks, as the overlap census reads them. */
 type MarkStation = {
   nodeId: string;
-  marks: Array<{ pos: Pixel; chain?: number; cornerAfter?: Pixel; mega?: boolean }>;
+  marks: Array<{ pos: Pixel; chain?: number; cornerAfter?: Pixel }>;
 };
 
 /** OCTI_DEBUG: EGREGIOUS ring-overlap census (XSTN cross-station, INSTN
@@ -288,16 +288,12 @@ export function reportEgregiousOverlaps<S extends MarkStation>(d: {
   r: number;
   smalls: S[];
   gathered: S[];
-  boxIsMega: (s: S) => boolean;
 }): void {
   if (!envStr('OCTI_DEBUG')) return;
-  const { layout, r, smalls, gathered, boxIsMega } = d;
+  const { layout, r, smalls, gathered } = d;
   const ringDia = 2 * r + 1.5;
   const ovls: Array<{ kind: string; a: string; b: string; dist: number; x: number; y: number }> = [];
-  // Re-filter to stations still drawn as bullets: a station boxed by the
-  // post-slide no-overlap floor renders as a <rect>, so its marks no longer
-  // draw rings and cannot constitute a ring overlap (matches the drawn SVG).
-  const ringSmalls = smalls.filter((s) => !boxIsMega(s) && !s.marks.some((m) => m.mega));
+  const ringSmalls = smalls;
   for (let ai = 0; ai < ringSmalls.length; ai++) {
     for (let bi = ai + 1; bi < ringSmalls.length; bi++) {
       const A = ringSmalls[ai], B = ringSmalls[bi];
@@ -311,7 +307,7 @@ export function reportEgregiousOverlaps<S extends MarkStation>(d: {
     }
   }
   for (const s of gathered) {
-    if (s.marks.length < 2 || s.marks.some((m) => m.mega)) continue;
+    if (s.marks.length < 2) continue;
     const ord = [...s.marks].sort((a, b) => (a.chain ?? 0) - (b.chain ?? 0));
     for (let i = 0; i < ord.length; i++) {
       for (let j = i + 1; j < ord.length; j++) {
