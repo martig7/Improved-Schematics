@@ -22,6 +22,7 @@ import { decideAreaAction } from './areaLifecycle';
 import { Icon } from './icons';
 import { StationDesignPicker } from './StationDesignPicker';
 import { RouteMenu } from './RouteMenu';
+import { SettingsPage } from './SettingsPage';
 import { ensureSignFonts } from './fonts';
 import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stations';
 import { serializeMap, deserializeMap } from '../render/persist';
@@ -308,8 +309,11 @@ export function SchematicPanel() {
   const [stationDesign, setStationDesign] = useState(rvis.stationDesign ?? DEFAULT_STATION_DESIGN);
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
-  // The Routes overlay (top-bar Routes button): a grid of routes + per-route toggle.
+  // The Routes overlay (opened from Settings): a grid of routes + per-route toggle.
   const [routeMenuOpen, setRouteMenuOpen] = useState(false);
+  // The Algorithm and Labels setting pages (opened from Settings).
+  const [algorithmPageOpen, setAlgorithmPageOpen] = useState(false);
+  const [labelsPageOpen, setLabelsPageOpen] = useState(false);
   // The example station shown in the picker tiles: a representative player route
   // (bullet + colors), recomputed each time the overlay opens.
   const designExample = useMemo(() => pickExampleRoute(api.gameState.getRoutes()), [designPanelOpen]);
@@ -1516,6 +1520,29 @@ export function SchematicPanel() {
   const toggleRoute = (id: string) =>
     setDisabledRoutes((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
 
+  // Shared Save/Reset for the staged appearance, used by the Settings popover and the
+  // Algorithm page (both commit the same `applied`).
+  const saveResetFooter = (
+    <div style={{ display: 'flex', gap: 6 }}>
+      <button
+        onClick={resetAppearance}
+        disabled={appearanceAtDefaults}
+        title="Reset appearance to defaults"
+        style={{ fontSize: 13, fontWeight: 600, padding: '6px 10px', borderRadius: 6, cursor: appearanceAtDefaults ? 'default' : 'pointer', opacity: appearanceAtDefaults ? 0.5 : 1, background: 'transparent', color: 'inherit', border: '1px solid rgba(136,136,136,0.5)' }}
+      >
+        Reset
+      </button>
+      <button
+        onClick={saveAppearance}
+        disabled={!appearanceDirty}
+        title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
+        style={{ flex: 1, fontSize: 13, fontWeight: 600, padding: '6px 10px', borderRadius: 6, border: 'none', cursor: appearanceDirty ? 'pointer' : 'default', opacity: appearanceDirty ? 1 : 0.5, background: '#2563eb', color: '#ffffff' }}
+      >
+        {appearanceDirty ? 'Save changes' : 'Saved'}
+      </button>
+    </div>
+  );
+
   // Install the render: parse the SVG string into a Scene IR and paint it to the canvas
   // (no live DOM). The shared tail below fits/preserves the view and runs the area
   // lifecycle, so all the callers (toggles, mode switch, restore) are unchanged.
@@ -2093,15 +2120,39 @@ export function SchematicPanel() {
                   Change
                 </button>
               </div>
-              <Slider
-                label="Line thickness"
-                value={lineWidth}
-                min={1}
-                max={8}
-                step={0.5}
-                display={`${lineWidth.toFixed(1)} px`}
-                onChange={setLineWidth}
-              />
+              {/* Algorithm: the layout-baking sliders (staged; Save regenerates). */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>Algorithm</span>
+                <button
+                  onClick={() => { setAlgorithmPageOpen(true); setSettingsOpen(false); }}
+                  title="Layout and warp settings"
+                  style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                >
+                  Change
+                </button>
+              </div>
+              {/* Labels: text size and neighborhood-label sliders (live). */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>Labels</span>
+                <button
+                  onClick={() => { setLabelsPageOpen(true); setSettingsOpen(false); }}
+                  title="Label size and spacing"
+                  style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                >
+                  Change
+                </button>
+              </div>
+              {mode === 'geographic' && (
+                <Slider
+                  label="Line thickness"
+                  value={lineWidth}
+                  min={1}
+                  max={8}
+                  step={0.5}
+                  display={`${lineWidth.toFixed(1)} px`}
+                  onChange={setLineWidth}
+                />
+              )}
               {mode === 'geographic' && (
                 <Slider
                   label="Station size"
@@ -2113,121 +2164,10 @@ export function SchematicPanel() {
                   onChange={setStationRadius}
                 />
               )}
-              <Slider
-                label="Map margin"
-                value={mapMargin}
-                min={0}
-                max={0.15}
-                step={0.01}
-                display={`${Math.round(mapMargin * 100)}%`}
-                onChange={setMapMargin}
-              />
-              {/* Label size is display-time (world size × this; labels scale with
-                  the map), so it applies LIVE with no Save/redraw, unlike the above. */}
-              <Slider
-                label="Label size"
-                value={labelScale}
-                min={LABEL_SCALE_MIN}
-                max={LABEL_SCALE_MAX}
-                step={0.1}
-                display={`${labelScale.toFixed(1)}×`}
-                onChange={setLabelScale}
-              />
-              {/* Area labels: size, zoom (which tiers show), and spacing
-                  (collision padding). Draw-time, normalized across modes. */}
-              {showNeighborhoods && (
-                <>
-                  <Slider
-                    label="Neighborhood size"
-                    value={neighborhoodFont}
-                    min={NBHD_FONT_MIN}
-                    max={NBHD_FONT_MAX}
-                    step={0.1}
-                    display={`${neighborhoodFont.toFixed(1)}×`}
-                    onChange={setNeighborhoodFont}
-                  />
-                  <Slider
-                    label="Label zoom"
-                    value={neighborhoodZoom}
-                    min={LABEL_ZOOM_MIN}
-                    max={LABEL_ZOOM_MAX}
-                    step={1}
-                    display={`z${neighborhoodZoom}`}
-                    onChange={setNeighborhoodZoom}
-                  />
-                  <Slider
-                    label="Label padding"
-                    value={neighborhoodPad}
-                    min={LABEL_PAD_MIN}
-                    max={LABEL_PAD_MAX}
-                    step={2}
-                    display={`${neighborhoodPad} px`}
-                    onChange={setNeighborhoodPad}
-                  />
-                </>
-              )}
-
-              {/* Smoothed-mode realism. Centered sliders: left = more
-                  geographically realistic, right = more stylized. They bake into
-                  the layout, so Saving regenerates the smoothed map. */}
+              {/* Map shape: the landmass backdrop style. Draw-time; the dropdown and
+                  slider apply instantly with a repaint, no Save/regenerate. */}
               {mode === 'smoothed' && (
                 <>
-                  <Slider
-                    label="Geography warp"
-                    value={warpPos}
-                    min={-1}
-                    max={1}
-                    step={0.1}
-                    display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'}
-                    onChange={setWarpPos}
-                  />
-                  <Slider
-                    label="Line accuracy"
-                    value={linePos}
-                    min={-1}
-                    max={1}
-                    step={0.1}
-                    display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'}
-                    onChange={setLinePos}
-                  />
-                  <Slider
-                    label="Box warp"
-                    value={boxWarpPos}
-                    min={-1}
-                    max={1}
-                    step={0.1}
-                    display={boxWarpPos === 0 ? 'Default' : boxWarpPos < 0 ? 'Realistic' : 'Stylized'}
-                    onChange={setBoxWarpPos}
-                  />
-                  {/* Density cutoff for which clusters become warp boxes: lower = looser
-                      cutoff → more/larger boxes; higher = only the densest cores → fewer.
-                      Toggle "Warp boxes" in the top bar to see the effect. */}
-                  <Slider
-                    label="Box density cutoff"
-                    value={boxFrac}
-                    min={BOX_FRAC_MIN}
-                    max={BOX_FRAC_MAX}
-                    step={0.05}
-                    display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`}
-                    onChange={setBoxFrac}
-                  />
-
-                  {/* Split each station group into its member stations. Bakes
-                      into the layout (fingerprinted), so it rides the same
-                      draft to Save flow as the realism sliders. Save regenerates. */}
-                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-                    <span>Split station groups</span>
-                    <input
-                      type="checkbox"
-                      checked={stationSplit}
-                      onChange={(e) => setStationSplit(e.target.checked)}
-                      style={{ cursor: 'pointer' }}
-                    />
-                  </label>
-
-                  {/* Map shape: the landmass backdrop style. Draw-time, like
-                      Label size. The dropdown and slider apply instantly with a
-                      repaint, no Save/regenerate. */}
                   <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55, marginTop: 2 }}>
                     Map shape
                   </span>
@@ -2270,45 +2210,7 @@ export function SchematicPanel() {
 
               {/* Sliders only stage values; Save commits them to the renderer,
                   Reset restores (and applies) the defaults. */}
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={resetAppearance}
-                  disabled={appearanceAtDefaults}
-                  title="Reset appearance to defaults"
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    cursor: appearanceAtDefaults ? 'default' : 'pointer',
-                    opacity: appearanceAtDefaults ? 0.5 : 1,
-                    background: 'transparent',
-                    color: 'inherit',
-                    border: '1px solid rgba(136,136,136,0.5)',
-                  }}
-                >
-                  Reset
-                </button>
-                <button
-                  onClick={saveAppearance}
-                  disabled={!appearanceDirty}
-                  title={appearanceDirty ? 'Apply appearance changes' : 'No unsaved appearance changes'}
-                  style={{
-                    flex: 1,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    border: 'none',
-                    cursor: appearanceDirty ? 'pointer' : 'default',
-                    opacity: appearanceDirty ? 1 : 0.5,
-                    background: '#2563eb',
-                    color: '#ffffff',
-                  }}
-                >
-                  {appearanceDirty ? 'Save changes' : 'Saved'}
-                </button>
-              </div>
+              {saveResetFooter}
 
               <div style={{ height: 1, background: 'rgba(136,136,136,0.3)', margin: '2px 0' }} />
 
@@ -2593,6 +2495,46 @@ export function SchematicPanel() {
           onBack={() => { setRouteMenuOpen(false); setSettingsOpen(true); }}
           onClose={() => setRouteMenuOpen(false)}
         />
+      )}
+      {algorithmPageOpen && (
+        <SettingsPage
+          title="Algorithm"
+          dark={api.ui.getResolvedTheme() === 'dark'}
+          footer={saveResetFooter}
+          onBack={() => { setAlgorithmPageOpen(false); setSettingsOpen(true); }}
+          onClose={() => setAlgorithmPageOpen(false)}
+        >
+          <Slider label="Map margin" value={mapMargin} min={0} max={0.15} step={0.01} display={`${Math.round(mapMargin * 100)}%`} onChange={setMapMargin} />
+          {mode === 'smoothed' && (
+            <>
+              <Slider label="Geography warp" value={warpPos} min={-1} max={1} step={0.1} display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'} onChange={setWarpPos} />
+              <Slider label="Line accuracy" value={linePos} min={-1} max={1} step={0.1} display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'} onChange={setLinePos} />
+              <Slider label="Box warp" value={boxWarpPos} min={-1} max={1} step={0.1} display={boxWarpPos === 0 ? 'Default' : boxWarpPos < 0 ? 'Realistic' : 'Stylized'} onChange={setBoxWarpPos} />
+              <Slider label="Box density cutoff" value={boxFrac} min={BOX_FRAC_MIN} max={BOX_FRAC_MAX} step={0.05} display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`} onChange={setBoxFrac} />
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+                <span>Split station groups</span>
+                <input type="checkbox" checked={stationSplit} onChange={(e) => setStationSplit(e.target.checked)} style={{ cursor: 'pointer' }} />
+              </label>
+            </>
+          )}
+        </SettingsPage>
+      )}
+      {labelsPageOpen && (
+        <SettingsPage
+          title="Labels"
+          dark={api.ui.getResolvedTheme() === 'dark'}
+          onBack={() => { setLabelsPageOpen(false); setSettingsOpen(true); }}
+          onClose={() => setLabelsPageOpen(false)}
+        >
+          <Slider label="Label size" value={labelScale} min={LABEL_SCALE_MIN} max={LABEL_SCALE_MAX} step={0.1} display={`${labelScale.toFixed(1)}×`} onChange={setLabelScale} />
+          {showNeighborhoods && (
+            <>
+              <Slider label="Neighborhood size" value={neighborhoodFont} min={NBHD_FONT_MIN} max={NBHD_FONT_MAX} step={0.1} display={`${neighborhoodFont.toFixed(1)}×`} onChange={setNeighborhoodFont} />
+              <Slider label="Label zoom" value={neighborhoodZoom} min={LABEL_ZOOM_MIN} max={LABEL_ZOOM_MAX} step={1} display={`z${neighborhoodZoom}`} onChange={setNeighborhoodZoom} />
+              <Slider label="Label padding" value={neighborhoodPad} min={LABEL_PAD_MIN} max={LABEL_PAD_MAX} step={2} display={`${neighborhoodPad} px`} onChange={setNeighborhoodPad} />
+            </>
+          )}
+        </SettingsPage>
       )}
     </div>
   );
