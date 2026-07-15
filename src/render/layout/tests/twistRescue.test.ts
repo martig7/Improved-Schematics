@@ -114,6 +114,44 @@ test('the crossing bubbles across several straight edges to a far branch', () =>
   assert.ok(!twistedAt(e3, e4, 'C', 'u', 'v'), 'C clean');
 });
 
+test('bundle migration: a solo line crossing a bundle moves around it, not through it', () => {
+  // P1,P2 co-travel four corridors (they share ab, bc, the cNd trunk, and pd),
+  // so they form a co-travel bundle; X shares only the trunk. At the straight
+  // node N, X is twisted across the pair. The rescue must move X past the WHOLE
+  // {P1,P2} block (X ends on the outside), not thread it between them - the
+  // wedge the per-line pass would produce.
+  const eab = edge('eab', 'a', 'b', ['P1', 'P2'], [[0, 0], [10, 0]]);
+  const sb = edge('sb', 'b', 'sbe', ['SB'], [[10, 0], [10, 10]]);
+  const ebc = edge('ebc', 'b', 'c', ['P1', 'P2'], [[10, 0], [20, 0]]);
+  const xin = edge('xin', 'xi', 'c', ['X'], [[20, -10], [20, 0]]);
+  const ecn = edge('ecn', 'c', 'N', ['P1', 'P2', 'X'], [[20, 0], [30, 0]]);
+  const eNd = edge('eNd', 'N', 'd', ['X', 'P1', 'P2'], [[30, 0], [40, 0]]);
+  const pd = edge('pd', 'd', 'pde', ['P1', 'P2'], [[40, 0], [50, 0]]);
+  const xd = edge('xd', 'd', 'xde', ['X'], [[40, 0], [50, -10]]);
+  const T = (ids: string[]): any[] => ids.map((id) => ({ edgeId: id, reversed: false }));
+  const layout: any = {
+    cellSize: 1,
+    nodes: new Map(),
+    edges: [eab, sb, ebc, xin, ecn, eNd, pd, xd],
+    lineTraversals: new Map([
+      ['P1', T(['eab', 'ebc', 'ecn', 'eNd', 'pd'])],
+      ['P2', T(['eab', 'ebc', 'ecn', 'eNd', 'pd'])],
+      ['X', T(['xin', 'ecn', 'eNd', 'xd'])],
+      ['SB', T(['sb'])],
+    ]),
+  };
+  assert.ok(twistedAt(ecn, eNd, 'N', 'X', 'P1'), 'fixture starts twisted at N');
+  rescueTwists(layout);
+  for (const e of layout.edges as any[]) {
+    const iP1 = e.lineOrder.indexOf('P1');
+    const iP2 = e.lineOrder.indexOf('P2');
+    if (iP1 >= 0 && iP2 >= 0) {
+      assert.equal(Math.abs(iP1 - iP2), 1, `P1,P2 stay adjacent on ${e.id} (${e.lineOrder})`);
+    }
+  }
+  assert.ok(!twistedAt(ecn, eNd, 'N', 'X', 'P1'), `N clean after rescue (ecn=${ecn.lineOrder} eNd=${eNd.lineOrder})`);
+});
+
 test('deterministic: identical input yields identical orders', () => {
   const mk = () => {
     const e1 = edge('e1', 'A', 'N', ['u', 'v'], [[0, 0], [100, 0]]);
