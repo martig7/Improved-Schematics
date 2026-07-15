@@ -380,3 +380,31 @@ test('blocks: round-trip traversals never duplicate lines in a block (CPW regres
   assert.equal(Math.abs(pos.get('B')! - pos.get('D')!), 1, `bronx pair adjacent (${main.lineOrder})`);
   assert.equal(Math.abs(pos.get('A')! - pos.get('C')!), 1, `north pair adjacent (${main.lineOrder})`);
 });
+
+test('blocks: bidirectional corridor seeds by arrival, not a turnaround key', () => {
+  // Corridor t {P,Q,R} runs a<->b. P and Q travel a->b and exit b (P via cx,
+  // Q via cy). R travels the OTHER way: it enters t at b FROM cx and exits at
+  // a via cz. R's first "exit" from b is t itself (a turnaround), so a naive
+  // seed keys it by the angle back into t and sorts it to an end, splitting it
+  // from P (which also rides cx). Keyed by its ARRIVAL corridor (cx), R groups
+  // with P instead.
+  const layout = makeLayout(
+    [['a', 0, 0], ['b', 10, 0], ['xe', 20, -5], ['ye', 20, 5], ['ze', -10, 0]],
+    [
+      { id: 't', from: 'a', to: 'b', lines: ['P', 'Q', 'R'] },
+      { id: 'cx', from: 'b', to: 'xe', lines: ['P', 'R'] },
+      { id: 'cy', from: 'b', to: 'ye', lines: ['Q'] },
+      { id: 'cz', from: 'a', to: 'ze', lines: ['R'] },
+    ],
+    {
+      P: [{ edgeId: 't', reversed: false }, { edgeId: 'cx', reversed: false }],
+      Q: [{ edgeId: 't', reversed: false }, { edgeId: 'cy', reversed: false }],
+      R: [{ edgeId: 'cx', reversed: true }, { edgeId: 't', reversed: true }, { edgeId: 'cz', reversed: false }],
+    },
+  );
+  orderByBlocks(layout);
+  const t = layout.edges.find((e) => e.id === 't')!;
+  const pos = new Map(t.lineOrder.map((l, i) => [l, i]));
+  assert.equal(Math.abs(pos.get('P')! - pos.get('R')!), 1,
+    `P and R (both ride cx) adjacent, R not stranded (got ${t.lineOrder})`);
+});

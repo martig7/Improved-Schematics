@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-14
 **Area:** bundle-blocks line ordering seed (`src/render/layout/bundleOrder.ts`)
-**Status:** diagnosis complete, design open (needs a metric before implementation)
+**Status:** SHIPPED (branch fix/bidirectional-corridor-seed) — see "Outcome" below
 
 ## Problem
 
@@ -88,7 +88,39 @@ fall back to option 2 if root selection cannot cleanly force derivation.
 - Determinism must hold (no `Date.now`/`Math.random`; quantized angles;
   `Math.sqrt` not `hypot`; total tie-breaks).
 
+## Outcome (shipped)
+
+Two small changes, both validated against the new exit-group-contiguity ruler
+(`dev/_bundle_contig.ts`) plus the wedge/twist/crossing censuses:
+
+1. **Seed keys turnaround lines by their arrival corridor.** In `exitKeyOf`, a
+   line whose first exit from the seed end is the seed corridor itself (it
+   entered here, exits the other end) is keyed by the corridor it ARRIVED on
+   instead of the meaningless back-into-self angle. That corridor is the one its
+   co-exit partners leave by, so through-lines group with them instead of
+   sorting to an arbitrary end. This alone was a large corpus-wide win: NYC/SF
+   ordering crossings fell ~27% / ~20%, wedges dropped on every city, exit-group
+   splits roughly halved, and c194 became `[A C E][D F M B]`.
+
+2. **Rescue falls back to a per-line move when bundles are not clean blocks.**
+   The seed win left a few residual two-ended conflicts (a pair that co-exits at
+   one end, whose order is set by the other) where the crossing landed on a
+   straight node and the block-migration rescue could not touch it (the bundle
+   interleaves there). `rescueTwists` now, when the bundle units are not
+   contiguous blocks, moves just the two lines - but only when a wedge check
+   shows it strands no line inside a bundle. This relocated the last straight
+   twist (LON) without the SF-style threading.
+
+Result on the sampled corpus: **straight twists = 0 on every map**, wedges down
+everywhere (LON 5→1, NYC 9→6, SEA 13→10, SF 21→14), crossings down 20–27% on
+NYC/SF (LON +2, absorbed at junctions), exit-splits roughly halved, 580 tests
+pass. `mapCache VERSION` bumped. A seed unit test covers the turnaround case;
+a rescue test covers the block-vs-thread choice.
+
 ## Out of scope
 
-- The twist-rescue bundle wedge (already fixed, `2026-07-14-prevent-bundle-wedging-design.md`).
+- The twist-rescue bundle wedge (W1, `2026-07-14-prevent-bundle-wedging-design.md`).
 - Any capsule/marker-solver change; the V-split is a downstream symptom.
+- The remaining exit-group splits (NYC 15, SF 17, SEA 11) are largely genuine
+  forced crossings at junctions (not straight-run twists); reducing them further
+  would be block-algebra residual-placement work, not the seed.

@@ -216,7 +216,15 @@ const facingAfter = (arrived: Corridor, nd: string): number =>
  *  successive exit corridor, bounded depth, with the facing carried hop to
  *  hop (structural destination grouping, spec §2.4). Walk-relative keys
  *  make the seed frame-invariant: absolute angles would encode the
- *  corridor's arbitrary endA/endB labeling into the order. */
+ *  corridor's arbitrary endA/endB labeling into the order.
+ *
+ *  Bidirectional corridors carry through-traffic that leaves the OTHER end:
+ *  such a line's first "exit" from this end is the seed corridor itself (a
+ *  turnaround). It has no downstream in this frame, so its lateral side is set
+ *  by the corridor it ARRIVED on (`from`) - which is exactly the corridor its
+ *  co-travelers that exit THIS end leave by, so the two group together instead
+ *  of the turnaround sorting to an arbitrary end. `seedId` is the corridor
+ *  being seeded, so its own id is recognizable as the turnaround target. */
 const exitKeyOf = (
   line: string,
   nd: string,
@@ -224,6 +232,7 @@ const exitKeyOf = (
   cs: CorridorSet,
   flows: Map<string, Map<string, LineFlow>>,
   depth: number,
+  seedId: number,
 ): number[] => {
   const key: number[] = [];
   let node = nd;
@@ -233,6 +242,14 @@ const exitKeyOf = (
     const toId = f ? f.to : null;
     if (toId === null || toId === undefined) {
       key.push(Number.MAX_SAFE_INTEGER);
+      break;
+    }
+    if (toId === seedId) {
+      // turnaround at the corridor being seeded: place by the arrival corridor
+      const fromId = f ? f.from : null;
+      key.push(fromId !== null && fromId !== undefined && fromId !== seedId
+        ? relAngleAt(cs.corridors[fromId], node, facing)
+        : Number.MAX_SAFE_INTEGER);
       break;
     }
     const to = cs.corridors[toId];
@@ -289,7 +306,7 @@ export function orderByBlocks(layout: Layout): void {
     const travelAB = enterA >= enterB; // walk endA→endB
     const exitEnd = travelAB ? c.endB : c.endA;
     const facing0 = facingAfter(c, exitEnd); // travel direction through the exit
-    const keys = new Map(ls.map((l) => [l, exitKeyOf(l, exitEnd, facing0, cs, flows, 4)]));
+    const keys = new Map(ls.map((l) => [l, exitKeyOf(l, exitEnd, facing0, cs, flows, 4, c.id)]));
     ls.sort((a, b) => cmpKeys(keys.get(a)!, keys.get(b)!) || (a < b ? -1 : 1));
     return travelAB ? ls : ls.reverse(); // canonical storage frame
   };

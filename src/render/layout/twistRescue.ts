@@ -70,6 +70,16 @@ export function rescueTwists(layout: Layout): void {
     bundleOf(u) === bundleOf(v)
       ? [new Set([u]), new Set([v])]
       : [bundleLines.get(bundleOf(u))!, bundleLines.get(bundleOf(v))!];
+  // lines sitting between two members of ONE bundle they are not in (a wedge)
+  const wedgesIn = (order: string[]): number => {
+    let n = 0;
+    for (let i = 1; i + 1 < order.length; i++) {
+      const a = bundleOf(order[i - 1]);
+      const b = bundleOf(order[i + 1]);
+      if (a === b && bundleOf(order[i]) !== a) n++;
+    }
+    return n;
+  };
 
   const edges = layout.edges.filter((e) => e.from !== e.to && e.lines.length > 0);
   const incident = new Map<string, LayoutEdge[]>();
@@ -190,15 +200,32 @@ export function rescueTwists(layout: Layout): void {
             for (let y = x + 1; y < shared.length; y++) {
               const u = shared[x];
               const v = shared[y];
-              const [Uu, Uv] = unitFor(u, v);
-              // both units must be clean blocks on both sides to migrate
-              if (!carriesBoth(e1, Uu, Uv) || !carriesBoth(e2, Uu, Uv)) continue;
+              let [Uu, Uv] = unitFor(u, v);
+              // when the bundles are not clean blocks on both sides (they
+              // interleave here), the block swap cannot apply; fall back to
+              // moving just the two lines, but only if that does not strand a
+              // line inside a bundle (a wedge) - so a genuine bundle interleave
+              // relocates without the SF-style threading.
+              const fallback = !carriesBoth(e1, Uu, Uv) || !carriesBoth(e2, Uu, Uv);
+              if (fallback) { Uu = new Set([u]); Uv = new Set([v]); }
               if (sAt(e1, N, Uu, Uv) !== sAt(e2, N, Uu, Uv)) continue; // orders agree: no twist
               // the pair must braid N via exactly this edge pair, straight
               if (contsAt(N, e1, Uu, Uv).length !== 1) continue;
               if (bentAtLeast45(e1, e2, N)) continue;
               const win = better(tryWalk(N, e1, Uu, Uv), tryWalk(N, e2, Uu, Uv));
               if (!win) { if (pass === 0) trace(N, u, v, null); continue; }
+              if (fallback) {
+                let delta = 0;
+                for (const e of win.swaps) {
+                  delta -= wedgesIn(e.lineOrder);
+                  const iu = e.lineOrder.indexOf(u);
+                  const iv = e.lineOrder.indexOf(v);
+                  const test = [...e.lineOrder];
+                  test[iu] = v; test[iv] = u;
+                  delta += wedgesIn(test);
+                }
+                if (delta > 0) { if (pass === 0) trace(N, u, v, null); continue; }
+              }
               for (const e of win.swaps) swap(e, Uu, Uv);
               trace(N, u, v, win);
               applied = true;
