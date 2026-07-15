@@ -92,6 +92,8 @@ export interface TextPrim extends PrimBase {
   fontFamily?: string;
   align: CanvasTextAlign;
   fill: string;
+  /** Screen rotation in degrees about the text origin; absent = flat. */
+  angle?: number;
 }
 
 export type Prim = PathPrim | RectPrim | CirclePrim | LinePrim | TextPrim;

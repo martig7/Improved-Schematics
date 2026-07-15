@@ -276,6 +276,8 @@ export function renderLabel(
       fill,
       layer: 'stations',
       worldScale: false,
+      // Carry the angle only when rotated, so flat prims are byte-identical.
+      ...(angle !== 0 ? { angle } : {}),
     });
   }
   return (

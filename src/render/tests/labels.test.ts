@@ -3,12 +3,22 @@ import assert from 'node:assert/strict';
 import { boxesOverlap, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
+import type { Prim } from '../sceneIR';
 
 test('renderLabel emits rotate() only when angle is nonzero', () => {
   const flat = renderLabel({ id: 'n', label: 'Foo' }, { x: 10, y: 20, anchor: 'start' }, [10, 20], true, false);
   assert.ok(!flat.includes('rotate('), 'flat label has no rotate, byte-identical to today');
   const rot = renderLabel({ id: 'n', label: 'Foo' }, { x: 10, y: 20, anchor: 'start', angle: -45 }, [10, 20], true, false);
   assert.ok(rot.includes('rotate(-45)'), 'rotated label carries the transform');
+});
+
+test('renderLabel pushes a text prim carrying the angle only when rotated', () => {
+  const flat: Prim[] = [];
+  renderLabel({ id: 'n', label: 'Foo' }, { x: 1, y: 2, anchor: 'start' }, [1, 2], true, false, flat);
+  assert.equal((flat[0] as { angle?: number }).angle, undefined);
+  const rot: Prim[] = [];
+  renderLabel({ id: 'n', label: 'Foo' }, { x: 1, y: 2, anchor: 'start', angle: 90 }, [1, 2], true, false, rot);
+  assert.equal((rot[0] as { angle?: number }).angle, 90);
 });
 
 test('estimateTextWidth scales with length', () => {
