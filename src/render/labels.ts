@@ -129,6 +129,49 @@ export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
   return bestD > ANCHOR_SLID_DIST * ANCHOR_SLID_DIST ? best : center;
 }
 
+/**
+ * Placement order plus each node's on-bundle predecessor, derived from the stop
+ * marks alone. Stations are walked line by line (lines in id order) in stop-seq
+ * order, so a node's on-bundle neighbor is placed just before it; nodes without a
+ * seq (e.g. the geographic caller's synthetic stops) tail the list longest-label
+ * first, reproducing the previous global order for that caller. Deterministic:
+ * lines sorted by id, seq ties broken by node id. Pure.
+ */
+export function bundleOrder(
+  nodes: LabelNode[],
+  stopsByNode: Map<string, StopMark[]>,
+): { order: LabelNode[]; prevOnBundle: Map<string, string> } {
+  const byId = new Map(nodes.map((n) => [n.id, n] as const));
+  const perLine = new Map<string, Array<{ nodeId: string; seq: number }>>();
+  for (const n of nodes) {
+    for (const m of stopsByNode.get(n.id) ?? []) {
+      if (m.seq == null || !m.lineId) continue;
+      let arr = perLine.get(m.lineId);
+      if (!arr) perLine.set(m.lineId, (arr = []));
+      arr.push({ nodeId: n.id, seq: m.seq });
+    }
+  }
+  const order: LabelNode[] = [];
+  const seen = new Set<string>();
+  const prevOnBundle = new Map<string, string>();
+  for (const lineId of [...perLine.keys()].sort()) {
+    const seq = perLine.get(lineId)!.sort((a, b) => a.seq - b.seq || (a.nodeId < b.nodeId ? -1 : 1));
+    let prev: string | null = null;
+    for (const { nodeId } of seq) {
+      if (prev != null && !prevOnBundle.has(nodeId)) prevOnBundle.set(nodeId, prev);
+      if (!seen.has(nodeId)) {
+        seen.add(nodeId);
+        order.push(byId.get(nodeId)!);
+      }
+      prev = nodeId;
+    }
+  }
+  for (const n of nodes.filter((n) => !seen.has(n.id)).sort((a, b) => b.label.length - a.label.length)) {
+    order.push(n);
+  }
+  return { order, prevOnBundle };
+}
+
 export function placeLabels(
   graph: { nodes: Map<string, LabelNode> },
   nodePx: Map<string, Pixel>,

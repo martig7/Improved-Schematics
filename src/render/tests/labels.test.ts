@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox } from '../labels';
+import { boxesOverlap, bundleOrder, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -52,4 +52,33 @@ test('placeLabels assigns a placement per station and avoids label overlap', () 
   const placements = placeLabels(graph, nodePx, stops, []);
   assert.equal(placements.size, 2);
   assert.ok(placements.has('n0') && placements.has('n1'));
+});
+
+test('bundleOrder walks each line in seq order and chains predecessors', () => {
+  const nodes = [
+    { id: 'a', label: 'AAelong' },
+    { id: 'b', label: 'B' },
+    { id: 'c', label: 'CC' },
+  ];
+  const stops = new Map<string, StopMark[]>([
+    ['a', [{ lineId: 'L', color: '#000', pos: [0, 0], seq: 0 }]],
+    ['b', [{ lineId: 'L', color: '#000', pos: [0, 0], seq: 1 }]],
+    ['c', [{ lineId: 'L', color: '#000', pos: [0, 0], seq: 2 }]],
+  ]);
+  const { order, prevOnBundle } = bundleOrder(nodes, stops);
+  assert.deepEqual(order.map((n) => n.id), ['a', 'b', 'c']);
+  assert.equal(prevOnBundle.get('b'), 'a');
+  assert.equal(prevOnBundle.get('c'), 'b');
+  assert.equal(prevOnBundle.get('a'), undefined);
+});
+
+test('bundleOrder tails unsequenced nodes longest-label-first (today order)', () => {
+  const nodes = [
+    { id: 'x', label: 'X' },
+    { id: 'y', label: 'YYYY' },
+  ];
+  const stops = new Map<string, StopMark[]>(); // no seq/lineId anywhere
+  const { order, prevOnBundle } = bundleOrder(nodes, stops);
+  assert.deepEqual(order.map((n) => n.id), ['y', 'x']);
+  assert.equal(prevOnBundle.size, 0);
 });
