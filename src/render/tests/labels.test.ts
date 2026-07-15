@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boxesOverlap, bundleOrder, estimateTextWidth, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
+import { boxesOverlap, bundleOrder, estimateTextWidth, labelAnchor, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -37,6 +37,23 @@ test('renderLabel prim carries lines only when multi-line', () => {
 
 test('estimateTextWidth scales with length', () => {
   assert.equal(estimateTextWidth('abcd'), 4 * 6);
+});
+
+test('labelAnchor: a single dot anchors to the dot, not the node centre', () => {
+  assert.deepEqual(labelAnchor([0, 0], [{ lineId: 'L', color: '#000', pos: [7, 3] }]), [7, 3]);
+});
+
+test('labelAnchor: no marks falls back to the centre', () => {
+  assert.deepEqual(labelAnchor([1, 2], []), [1, 2]);
+  assert.deepEqual(labelAnchor([1, 2], undefined), [1, 2]);
+});
+
+test('labelAnchor: a tight multi-dot capsule keeps the centre', () => {
+  const marks: StopMark[] = [
+    { lineId: 'A', color: '#000', pos: [2, 0] },
+    { lineId: 'B', color: '#000', pos: [-2, 0] },
+  ];
+  assert.deepEqual(labelAnchor([0, 0], marks), [0, 0]);
 });
 
 test('wrapLabel keeps short names on one line', () => {

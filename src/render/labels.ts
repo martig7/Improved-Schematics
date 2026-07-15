@@ -147,22 +147,24 @@ export interface LabelNode {
 const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
 
 /**
- * The pixel point a station's label should hang off. Defaults to the node
- * centre. Only a MULTI-dot capsule whose dots have been slid well off the centre
- * (by the collision passes such as capsuleSlide) re-anchors, to the dot CLOSEST
- * to the centre, so a label that would otherwise float in empty space stays
- * attached to a real marker. Single stops and tightly-packed capsules keep the
- * centre, so re-anchoring is confined to the capsules that actually drift and
- * doesn't churn the rest of the label layout.
+ * The pixel point a station's label should hang off. A SINGLE-dot stop hangs off
+ * its one drawn dot: the node centre is only the abstract graph vertex, while the
+ * dot sits on its line's lane (offset by the bundle slot) and may have slid, so
+ * anchoring to the centre floats the label off the marker by up to a bundle
+ * half-width. A MULTI-dot capsule keeps the cluster CENTRE (the label points at
+ * the whole pill), re-anchoring to the dot CLOSEST to the centre only when the
+ * dots have slid well off it, so an ordinary interchange doesn't churn the label
+ * layout and only genuinely displaced capsules re-seat.
  * Closest by squared distance; first mark wins exact ties (deterministic).
  */
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
   // Diagnostic switch: OCTI_NO_LABEL_REANCHOR=1 disables re-anchoring, so the
-  // label always hangs off the bare node centre.
+  // label always hangs off the bare node centre (the pre-fix behaviour).
   if (envStr('OCTI_NO_LABEL_REANCHOR') === '1') {
     return center;
   }
-  if (!marks || marks.length < 2) return center;
+  if (!marks || marks.length === 0) return center;
+  if (marks.length === 1) return marks[0].pos; // the single dot IS the anchor
   let best = marks[0].pos;
   let bestD = Infinity;
   for (const m of marks) {
