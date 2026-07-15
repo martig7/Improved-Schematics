@@ -252,5 +252,26 @@ keeps its signature.
   as a more compact footprint, cutting collisions and giving more room. It composes with
   rotation (a two-line block can be rotated). `renderLabel` emits the two lines as tspans and
   the canvas paints them with matching line spacing; single-line labels are byte-identical.
-  The legacy flag keeps every label one line, so the byte-identity guarantee is unchanged:
-  `OCTI_LABEL_NO_ROTATE=1` matches master across the whole corpus (verified, 52/52 hashes).
+
+- **Single-dot anchor fix.** A single-dot stop's label hung off the graph-node centre
+  (`nodePx`), but the drawn dot sits on its line's lane (bundle-slot offset, plus any slide),
+  so the label floated off the marker by up to a bundle half-width (audited: NYC 130/306
+  labels >2px off up to 16px, SEA 221/417 up to 20px). `labelAnchor` now returns the single
+  dot's final position, collapsing the gap to 0 on both. Multi-dot capsules are unchanged.
+
+- **Position (clearance) term.** A soft penalty for a candidate being merely CLOSE (within
+  `CLEAR_MARGIN`, not overlapping) to already-placed labels, station markers, and line
+  segments, weighted on the tilt scale (`W_CLEAR`) so it trades off against rotation. Labels
+  drift into the clearer of two otherwise-equal spots. `boxSegGap` gives the box-to-line gap;
+  segments are prefiltered per node. Replaces the old default-off crowding tie-break.
+
+- **Side-aware multi-dot anchor.** A multi-dot capsule's label hangs off the OUTERMOST dot on
+  the side it lands (the near end of the pill), not the empty cluster centre, so as the
+  clearance term shifts it to the clearer side it stays tied to a real marker. Each candidate
+  direction anchors to the dot with the largest projection along it.
+
+**Legacy guarantee, preserved.** All of the above are gated by the single legacy switch
+`OCTI_LABEL_NO_ROTATE=1` (which now means "all new label behaviour off"), so that flag still
+reproduces master byte-for-byte. The intrinsic label-to-station lead is preserved throughout:
+every candidate sits at a fixed offset from its anchor (now a real dot), so no scoring term
+can stretch a label away from its marker.
