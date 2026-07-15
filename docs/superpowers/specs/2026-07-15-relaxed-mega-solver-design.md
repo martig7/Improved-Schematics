@@ -152,8 +152,8 @@ rendering are kept for source 2(b), because `curve` is today's effective default
 - UI: delete the "Hubs: Curve/Box" toggle and `megaFallback` state/persistence
   in `SchematicPanel.tsx` and `DetailInset.tsx` (5 object literals, 5 dep arrays,
   2 type fields, restore/seed lines — enumerated in the plan).
-- `debug/renderOctilinear.debug.ts`: drop `reportMegaFallbacks`; keep
-  `reportBoxRegime` (still fired by source 2 / diagnostic).
+- `debug/renderOctilinear.debug.ts`: drop `reportMegaFallbacks` AND
+  `reportBoxRegime` (both fired only from the removed placement mega tail).
 - Tests: the mega→curve capsule test stays valid; the mega→box test is removed
   (placement no longer produces `box`, since the option that selected it is
   gone). Add relaxed-mode `rowPlace` tests (never null, overlap-only-forced,
