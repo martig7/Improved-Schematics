@@ -58,8 +58,9 @@ export const PAD = 24;
 export const LABEL_FONT_SIZE = 11;
 export const LABEL_CHAR_WIDTH = 6;
 export const LABEL_OFFSET = 12;
-/** Names estimated wider than this wrap to two lines (split on a space). */
-export const LABEL_WRAP_W = 84;
+/** Names estimated wider than this wrap to two lines (split on a space). Set so
+ *  genuinely long names wrap while borderline ~15-char names stay one line. */
+export const LABEL_WRAP_W = 96;
 
 export type Vec2 = [number, number];
 
