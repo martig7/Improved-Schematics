@@ -239,3 +239,18 @@ keeps its signature.
   still gets a label.
 - No new render modes; geographic and smoothed only.
 - No curved or along-path text; octilinear straight text only.
+
+## 16. Follow-ups shipped on this branch
+
+- **Aggression tuned.** `tilt(45)` lowered from 4 to 2 so a diagonal is reached for a touch
+  more readily (still far below the collision weights); `tilt(90)=35` unchanged, so sideways
+  stays a last resort (1 of ~500 labels on the densest dump).
+- **Two-line wrapping for long names.** A name estimated wider than `LABEL_WRAP_W` (96px)
+  wraps to two lines, split only at a space (never mid-word) at the point that balances the
+  two lines; a name with no space or within the width stays one line. A wrapped label is
+  narrower (max line width) and one line taller (the box grows down), so the packer treats it
+  as a more compact footprint, cutting collisions and giving more room. It composes with
+  rotation (a two-line block can be rotated). `renderLabel` emits the two lines as tspans and
+  the canvas paints them with matching line spacing; single-line labels are byte-identical.
+  The legacy flag keeps every label one line, so the byte-identity guarantee is unchanged:
+  `OCTI_LABEL_NO_ROTATE=1` matches master across the whole corpus (verified, 52/52 hashes).
