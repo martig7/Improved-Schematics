@@ -7,6 +7,7 @@ import type { GraphNode, StopMark, Pixel } from './layout/types';
 import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, MARK_R0 } from './constants';
 import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
+import { obbFromLocalBox, obbAabb, obbOverlap, segmentIntersectsObb, tilt, type Obb } from './labelGeom';
 
 export interface Box {
   x: number;
@@ -73,9 +74,30 @@ export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
   return false;
 }
 
+/** A label footprint: an axis-aligned box (angle 0, the legacy path) or an OBB.
+ *  Flat footprints keep the exact existing overlap code so the legacy path is
+ *  byte-identical by construction; only a rotated candidate touches the OBB tests. */
+interface Footprint {
+  angle: number;
+  box?: Box;
+  obb?: Obb;
+}
+
+const boxToObb = (b: Box): Obb => obbFromLocalBox([b.x, b.y], 0, 0, b.w, b.h, 0);
+const asObb = (f: Footprint): Obb => f.obb ?? boxToObb(f.box!);
+/** Overlap of two label footprints; both flat uses boxesOverlap, else the OBB SAT. */
+const fpOverlap = (a: Footprint, b: Footprint): boolean =>
+  a.angle === 0 && b.angle === 0 ? boxesOverlap(a.box!, b.box!) : obbOverlap(asObb(a), asObb(b));
+/** Overlap of a footprint with an axis-aligned box (station/marker boxes). */
+const fpHitsBox = (f: Footprint, b: Box): boolean =>
+  f.angle === 0 ? boxesOverlap(f.box!, b) : obbOverlap(asObb(f), boxToObb(b));
+const fpSeg = (f: Footprint, s: Segment): boolean =>
+  f.angle === 0 ? segmentIntersectsBox(s.p1, s.p2, f.box!) : segmentIntersectsObb(s.p1, s.p2, f.obb!);
+const fpAabb = (f: Footprint): Box => f.box ?? obbAabb(f.obb!);
+
 interface Candidate {
   placement: Placement;
-  box: Box;
+  fp: Footprint;
   priority: number;
 }
 
@@ -179,9 +201,12 @@ export function placeLabels(
   segments: Segment[],
 ): Map<string, Placement> {
   const result = new Map<string, Placement>();
-  const placedBoxes: Box[] = [];
+  const placed: Footprint[] = [];
   const stationBoxes: Box[] = [];
   const markerR = MARK_R0;
+  // OCTI_LABEL_NO_ROTATE=1 restores the legacy path: no rotated candidates and the
+  // old longest-label-first order, so the dumps render byte-identical to before.
+  const noRotate = envStr('OCTI_LABEL_NO_ROTATE') === '1';
   // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
   // counts only HARD overlaps (integers), so many labels tie; without the tie-break
   // those ties resolve by enumeration order. Among cost-tied placements, prefer the
@@ -196,7 +221,7 @@ export function placeLabels(
   // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
   const crowding = (box: Box): number => {
     let c = 0;
-    for (const b of placedBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
+    for (const f of placed) { const g = boxGap(box, fpAabb(f)); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
     for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
     return c;
   };
@@ -238,34 +263,58 @@ export function placeLabels(
     // Hang the label off the capsule dot nearest the node centre (not the bare
     // centre), so it tracks the markers when collision passes slide them.
     const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
-    const candidates: Candidate[] = [
-      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
-      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
-      { placement: { x: cx, y: cy - off, anchor: 'middle' }, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh }, priority: 2 },
-      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh }, priority: 2 },
-      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh }, priority: 3 },
+    // Flat candidates (angle 0): identical geometry and priorities to before, so a
+    // map that never needs to rotate lays out exactly as it used to.
+    const flat: Candidate[] = [
+      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh } }, priority: 1 },
+      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh } }, priority: 1 },
+      { placement: { x: cx, y: cy - off, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh } }, priority: 2 },
+      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh } }, priority: 2 },
+      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh } }, priority: 3 },
+      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh } }, priority: 3 },
+      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh } }, priority: 3 },
+      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh } }, priority: 3 },
     ];
+    // Rotated candidates: octilinear text that slots into space the flat boxes
+    // cannot. The tilt penalty keeps these below flat unless flat collides; 90 is
+    // the sideways last resort. The box is centred on the text origin (baseline
+    // handling for rotated glyphs is approximate, tuned at the render checkpoint).
+    const rot = (ox: number, oy: number, angle: number, anchor: Placement['anchor']): Candidate => {
+      const x0 = anchor === 'end' ? -tw : anchor === 'middle' ? -tw / 2 : 0;
+      return {
+        placement: { x: ox, y: oy, anchor, angle },
+        fp: { angle, obb: obbFromLocalBox([ox, oy], x0, -fh / 2, x0 + tw, fh / 2, angle) },
+        priority: 1,
+      };
+    };
+    const rotated: Candidate[] = noRotate ? [] : [
+      rot(cx + off, cy, -90, 'start'),
+      rot(cx - off, cy, -90, 'start'),
+      rot(cx + off * 0.7, cy - off * 0.7, -45, 'start'),
+      rot(cx + off * 0.7, cy + off * 0.7, 45, 'start'),
+      rot(cx - off * 0.7, cy - off * 0.7, 45, 'end'),
+      rot(cx - off * 0.7, cy + off * 0.7, -45, 'end'),
+    ];
+    const candidates = [...flat, ...rotated];
 
     let best = candidates[0];
     let bestCost = Infinity;
     let bestCrowd = Infinity;
     for (const cand of candidates) {
       let cost = 0;
-      for (const b of placedBoxes) if (boxesOverlap(cand.box, b)) cost += 100;
-      for (const b of stationBoxes) if (boxesOverlap(cand.box, b)) cost += 30;
-      for (const s of segments) if (segmentIntersectsBox(s.p1, s.p2, cand.box)) cost += 12;
+      for (const f of placed) if (fpOverlap(cand.fp, f)) cost += 100;
+      for (const b of stationBoxes) if (fpHitsBox(cand.fp, b)) cost += 30;
+      for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
       cost += cand.priority;
-      const crowd = LABEL_TIEBREAK ? crowding(cand.box) : 0;
+      cost += tilt(cand.fp.angle);
+      const crowd = LABEL_TIEBREAK ? crowding(fpAabb(cand.fp)) : 0;
       if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
         bestCost = cost;
         bestCrowd = crowd;
         best = cand;
       }
     }
-    placedBoxes.push(best.box);
+    placed.push(best.fp);
     result.set(node.id, best.placement);
   }
 
