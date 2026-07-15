@@ -161,35 +161,6 @@ export function reportPlatformSplit(d: {
   );
 }
 
-/** OCTI_PLACE_DEBUG: mega-box regime probe (port-saturation vs over-weld). */
-export function reportBoxRegime(d: {
-  layout: Layout;
-  edges: Layout['edges'];
-  nodeId: string;
-  marks: Array<{ pos: Pixel }>;
-  ldeg: number;
-  groups: number[][];
-}): void {
-  if (envStr('OCTI_PLACE_DEBUG') !== '1') return;
-  const { layout, edges, nodeId, marks, ldeg, groups } = d;
-  let deg = 0;
-  for (const e of edges) if (e.from === nodeId || e.to === nodeId) deg++;
-  let cx = 0, cy = 0;
-  for (const mk of marks) { cx += mk.pos[0]; cy += mk.pos[1]; }
-  const nm = marks.length || 1;
-  console.error(
-    `[box-regime] ${nodeId} name="${layout.nodes.get(nodeId)?.label ?? ''}" at=(${(cx / nm).toFixed(0)},${(cy / nm).toFixed(0)}) deg=${deg} ldeg=${ldeg} ` +
-      `bundles=${groups.length} members=[${groups.map((gr) => gr.length).join(',')}] → ` +
-      (deg > 8 ? 'PORT-SATURATION (deg>8)' : 'OVER-WELD/FAN-FOLD (deg<=8, lines bundled)'),
-  );
-}
-
-/** Unconditional summary (megaFallbacks > 0). Not env-gated — matches the
- *  original `if (megaFallbacks > 0) console.error(...)`. */
-export function reportMegaFallbacks(megaFallbacks: number): void {
-  if (megaFallbacks > 0) console.error('[stops] mega-box fallbacks: ' + megaFallbacks);
-}
-
 /** Capsule-overlap enforcement counters (printed when place-debug is on OR any
  *  capsule was rejected). `capPlaceDebug` is passed so the OR-condition stays
  *  byte-identical to the inline site. */
