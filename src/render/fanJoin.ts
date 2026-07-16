@@ -68,6 +68,11 @@ interface Member {
   edgeOut: string;
   inAtStart: boolean;
   outAtStart: boolean;
+  /** The line's edges beyond the pair in its traversal, when contiguous:
+   *  a corner whose near lane is a micro-edge is really a corner with the
+   *  corridor beyond it, so the sharp pin can reference the through lane. */
+  prevEdge?: string;
+  nextEdge?: string;
 }
 
 interface Group {
@@ -161,12 +166,17 @@ export function collectFanGroups(
       const key = endA + '|' + eA + '|' + eB;
       let g = byKey.get(key);
       if (!g) byKey.set(key, (g = { node: endA, edgeA: eA, edgeB: eB, members: [] }));
+      const wrapped = i >= traversal.length;
+      const prevStep = wrapped ? traversal[traversal.length - 2] : traversal[i - 2];
+      const nextStep = wrapped ? traversal[1] : traversal[i + 1];
       g.members.push({
         lineId,
         edgeIn: a.edgeId,
         edgeOut: b.edgeId,
         inAtStart: ea.from === endA,
         outAtStart: eb.from === endA,
+        prevEdge: prevStep && prevStep.edgeId !== a.edgeId ? prevStep.edgeId : undefined,
+        nextEdge: nextStep && nextStep.edgeId !== b.edgeId ? nextStep.edgeId : undefined,
       });
     }
   }
@@ -274,6 +284,34 @@ export function buildFanJoins(args: FanArgs): FanResult {
     mitered.add(m.lineId + '|' + g.node + '|' + g.edgeA + '|' + g.edgeB);
   };
 
+  /** The far node of a member's lane relative to the group node. */
+  const farNodeOf = (edgeId: string, atStart: boolean): string | undefined => {
+    const ed = edgeById.get(edgeId);
+    return ed ? (atStart ? ed.to : ed.from) : undefined;
+  };
+  /** Corridor reference line through a line's lane at `node`: its end point
+   *  there, its end-segment direction (pointing INTO the node when `into`,
+   *  OUT of it otherwise), and the end segment length. */
+  const throughRef = (
+    lineId: string, edgeId: string, node: string | undefined, into: boolean,
+  ): { q: Pixel; dir: Pixel; len: number } | null => {
+    if (!node) return null;
+    const poly = segPath.get(edgeId + '|' + lineId);
+    const ed = edgeById.get(edgeId);
+    if (!poly || !ed || poly.length < 2) return null;
+    const atStart = ed.from === node;
+    if (!atStart && ed.to !== node) return null;
+    const q = atStart ? poly[0] : poly[poly.length - 1];
+    const q1 = atStart ? poly[1] : poly[poly.length - 2];
+    const len = hyp(q[0] - q1[0], q[1] - q1[1]);
+    if (len < 1e-6) return null;
+    return {
+      q,
+      dir: into ? [(q[0] - q1[0]) / len, (q[1] - q1[1]) / len] : [(q1[0] - q[0]) / len, (q1[1] - q[1]) / len],
+      len,
+    };
+  };
+
   /** Sharp pin: both lane ends meet at the infinite-line intersection of
    *  their end directions (subsumes the crossing-segments case, whose meet
    *  IS the crossing point). Bounded by the fan's reach. In a genuinely
@@ -282,16 +320,47 @@ export function buildFanJoins(args: FanArgs): FanResult {
    *  lane ends), so `allowExtend` lifts the retraction-only gates there.
    *  Members falling back from a failed curve keep the conservative gates:
    *  the meet must lie behind the inbound end and ahead of the outbound
-   *  end. Returns true when applied. */
+   *  end. A MICRO near-lane (shorter than two pitches) is part of the
+   *  corner, not its corridor: its lateral seat can sit off the through
+   *  corridor's line, and a pin computed against the stub drags the corner
+   *  point off-corridor, painting a self-crossing hook where the course
+   *  returns. When the line continues beyond such a stub, the meet is
+   *  computed against the THROUGH lane's line instead (the first slice of
+   *  multi-edge corner absorption). Returns true when applied. */
+  /** Does `C` overrun the lane: for the pin to live on this lane's line,
+   *  its projection along the lane's chord (node end toward far end) must
+   *  not pass the far end. When it does, the whole lane is inside the
+   *  corner and the true reference is the corridor beyond it. */
+  const overruns = (poly: Pixel[], atStart: boolean, C: Pixel): boolean => {
+    const q = atStart ? poly[0] : poly[poly.length - 1];
+    const far = atStart ? poly[poly.length - 1] : poly[0];
+    const ux = far[0] - q[0], uy = far[1] - q[1];
+    const len2 = ux * ux + uy * uy;
+    if (len2 < 1e-12) return true;
+    return ((C[0] - q[0]) * ux + (C[1] - q[1]) * uy) / len2 > 1;
+  };
+
   const sharpPin = (g: Group, m: Member, e: Ends, fanReach: number, allowExtend: boolean, flog: (s: string) => void): boolean => {
-    const C = lineMeet(e.qa, e.dirIn, e.qb, e.dirOut);
+    let refA = { q: e.qa, dir: e.dirIn, len: e.lenA };
+    let refB = { q: e.qb, dir: e.dirOut, len: e.lenB };
+    const C0 = lineMeet(refA.q, refA.dir, refB.q, refB.dir);
+    if (!C0) return false;
+    if (m.prevEdge && overruns(e.pIn, m.inAtStart, C0)) {
+      const sub = throughRef(m.lineId, m.prevEdge, farNodeOf(m.edgeIn, m.inAtStart), true);
+      if (sub) refA = sub;
+    }
+    if (m.nextEdge && overruns(e.pOut, m.outAtStart, C0)) {
+      const sub = throughRef(m.lineId, m.nextEdge, farNodeOf(m.edgeOut, m.outAtStart), false);
+      if (sub) refB = sub;
+    }
+    const C = refA.q === e.qa && refB.q === e.qb ? C0 : lineMeet(refA.q, refA.dir, refB.q, refB.dir);
     if (!C) return false;
     const dispA = hyp(C[0] - e.qa[0], C[1] - e.qa[1]);
     const dispB = hyp(C[0] - e.qb[0], C[1] - e.qb[1]);
     const capA = Math.max(spacing * 6, e.lenA, fanReach);
     const capB = Math.max(spacing * 6, e.lenB, fanReach);
-    const behindA = allowExtend || (C[0] - e.qa[0]) * e.dirIn[0] + (C[1] - e.qa[1]) * e.dirIn[1] <= 0.01 * e.lenA;
-    const aheadB = allowExtend || (C[0] - e.qb[0]) * e.dirOut[0] + (C[1] - e.qb[1]) * e.dirOut[1] >= -0.01 * e.lenB;
+    const behindA = allowExtend || (C[0] - refA.q[0]) * refA.dir[0] + (C[1] - refA.q[1]) * refA.dir[1] <= 0.01 * refA.len;
+    const aheadB = allowExtend || (C[0] - refB.q[0]) * refB.dir[0] + (C[1] - refB.q[1]) * refB.dir[1] >= -0.01 * refB.len;
     if (!(dispA <= capA && dispB <= capB && behindA && aheadB)) return false;
     setEnd(e.pIn, m.inAtStart, e.dirIn, C);
     setEnd(e.pOut, m.outAtStart, [-e.dirOut[0], -e.dirOut[1]], C);
@@ -383,38 +452,43 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const fanReach = (halfWidthOf(g.edgeA) + halfWidthOf(g.edgeB) + 2 * spacing) / Math.max(den, 0.5);
     flog(`group ${g.node} ${g.edgeA}x${g.edgeB} n=${live.length} dot=${dot.toFixed(2)} fanReach=${fanReach.toFixed(1)}`);
 
-    if (dot >= 0.85) {
-      // Jog group: near-parallel continuation with a lateral slot change.
-      // Each member's ends drift to their shared midpoint over an arc that
-      // scales with its own gap, so small swaps localize at the node and
-      // band exchanges spread into a long shallow crossing.
-      for (const { m, e } of live) {
-        const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
-        if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); continue; }
-        const drift = Math.max(spacing * 1.5, gap * 1.2);
-        const taperA = Math.min(drift, spacing * 8, polyLenOf(e.pIn) * 0.45);
-        const taperB = Math.min(drift, spacing * 8, polyLenOf(e.pOut) * 0.45);
-        if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
-          flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
-          continue;
-        }
-        const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
-        taperLaneEnd(e.pIn, m.inAtStart, mid, taperA);
-        taperLaneEnd(e.pOut, m.outAtStart, mid, taperB);
-        markDone(g, m);
-        flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+    // The lateral-jog taper: a member's ends drift to their shared midpoint
+    // over an arc that scales with its own gap, so small swaps localize at
+    // the node and band exchanges spread into a long shallow crossing. The
+    // FALLBACK for near-parallel members whose curve planning found no
+    // corner within reach (matching the old ladder's rung order: a slightly
+    // bent near-zero-gap pair takes the curve, which also erases the hair
+    // crossing its raw ends would paint).
+    const jogTaper = (m: Member, e: Ends): void => {
+      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) return;
+      const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
+      if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
+      const drift = Math.max(spacing * 1.5, gap * 1.2);
+      const taperA = Math.min(drift, spacing * 8, polyLenOf(e.pIn) * 0.45);
+      const taperB = Math.min(drift, spacing * 8, polyLenOf(e.pOut) * 0.45);
+      if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
+        flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+        return;
       }
-      continue;
-    }
+      const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
+      taperLaneEnd(e.pIn, m.inAtStart, mid, taperA);
+      taperLaneEnd(e.pOut, m.outAtStart, mid, taperB);
+      markDone(g, m);
+      flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+    };
 
-    // Corner group. Curve band first: plan every member's apex without
-    // mutating, agree on ONE shared trim, then apply — parallel lanes
-    // trimmed by one shared arc give nested sweeps by construction.
+    // Corner construction first for every non-regressive group: plan every
+    // member's apex without mutating, resolve the nested per-member trims,
+    // then apply. Members with no apex within reach fall back by band:
+    // near-parallel ones jog-taper, corner ones pin sharp.
     interface Plan { m: Member; e: Ends; apex: Pixel; cutIn: number | null; cutOut: number | null; la: number; lb: number }
     const planned: Plan[] = [];
     const fallback: Array<{ m: Member; e: Ends }> = [];
     if (dot > -0.3) {
-      const limit = Math.max(spacing * 4, fanReach);
+      // The fan-reach enlargement exists so a WIDE bundle's outer corner can
+      // still curve; a near-parallel group keeps the plain limit so genuine
+      // lateral jogs (far apexes) fall to the taper, as before.
+      const limit = dot >= 0.85 ? spacing * 4 : Math.max(spacing * 4, fanReach);
       for (const { m, e } of live) {
         // Apex: infinite-line meet of the two end segments (the lane lines).
         const d1: Pixel = [e.qa[0] - e.qa1[0], e.qa[1] - e.qa1[1]];
@@ -455,22 +529,47 @@ export function buildFanJoins(args: FanArgs): FanResult {
       for (const le of live) fallback.push(le);
     }
 
-    // Shared trim across the fan; a degenerate shared sweep (sub-pixel)
-    // means some member has no room, so the whole group pins sharp instead
-    // of disagreeing about the corner.
-    let f = smoothR;
-    for (const p of planned) f = Math.min(f, p.la * 0.6, p.lb * 0.6);
-    if (planned.length > 0 && f < 0.75) {
-      flog(`curve fan DEGENERATE f=${f.toFixed(2)} -> sharp pins`);
-      for (const p of planned) fallback.push({ m: p.m, e: p.e });
-      planned.length = 0;
+    // Trim per member (each sweep as large as its own legs allow), then
+    // clamp to NEST: ordered from the turn's inside out (apex distance from
+    // the node), an inner member may never sweep wider than its outer
+    // neighbour, or its wide sweep would cross the outer's tighter corner.
+    // A single short-legged member therefore tightens only the members
+    // inside it, not the whole fan.
+    // Signed fan depth: apexes of a corner fan line up along the turn's
+    // bisector, with (dirIn - dirOut) pointing from the inside toward the
+    // outside; absolute distance from the node cannot tell the two sides
+    // apart (they are symmetric about it).
+    const nodeP = nodePx.get(g.node);
+    const outw: Pixel = [f0.dirIn[0] - f0.dirOut[0], f0.dirIn[1] - f0.dirOut[1]];
+    const depthOf = (apex: Pixel): number =>
+      nodeP ? (apex[0] - nodeP[0]) * outw[0] + (apex[1] - nodeP[1]) * outw[1] : 0;
+    const fOf = new Map<Member, number>();
+    if (planned.length > 0) {
+      const byDepth = [...planned].sort((x, y) => depthOf(x.apex) - depthOf(y.apex));
+      let cap = Infinity;
+      for (let i = byDepth.length - 1; i >= 0; i--) {
+        const p = byDepth[i];
+        cap = Math.min(cap, smoothR, p.la * 0.6, p.lb * 0.6);
+        fOf.set(p.m, cap);
+      }
     }
     for (const p of planned) {
       const { m, e, apex } = p;
+      const f = fOf.get(m) ?? 0;
+      // A sub-pixel sweep is no corner at all: this member has no room for
+      // a curve, so it falls to the sharp pin instead of emitting a
+      // degenerate quadratic.
+      if (f < 0.75) { fallback.push({ m, e }); continue; }
+      // Re-check at apply time: a twice-visited corner's second member
+      // shares both polylines with the first and must not re-apply onto
+      // the mutated geometry (its cached refs are stale).
+      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
       if (p.cutIn !== null) applyCutBack(e.pIn, m.inAtStart, p.cutIn, apex[0], apex[1]);
       if (p.cutOut !== null) applyCutBack(e.pOut, m.outAtStart, p.cutOut, apex[0], apex[1]);
       // Re-resolve ends after cut backs, then trim both legs back from the
-      // apex by the shared f and bridge with a quadratic through the apex.
+      // apex by this member's nested trim and bridge with a quadratic
+      // through the apex.
+      if (e.pIn.length < 2 || e.pOut.length < 2) continue;
       const ra = m.inAtStart ? e.pIn[0] : e.pIn[e.pIn.length - 1];
       const ra1 = m.inAtStart ? e.pIn[1] : e.pIn[e.pIn.length - 2];
       const rb = m.outAtStart ? e.pOut[0] : e.pOut[e.pOut.length - 1];
@@ -496,10 +595,13 @@ export function buildFanJoins(args: FanArgs): FanResult {
       flog(`${m.lineId} CURVE apex=(${apex[0].toFixed(1)},${apex[1].toFixed(1)}) f=${f.toFixed(1)}`);
     }
 
-    // Sharp pins for the regressive band and for members whose curve failed;
-    // forward turns whose pin gates fail keep the dogleg fallback. Residual
-    // members are left for the connector bridge.
+    // Fallbacks by band. Near-parallel members whose curve found no corner
+    // are lateral jogs: taper. Corner members pin sharp (nested-V extension
+    // allowed only for genuinely regressive groups); forward turns whose pin
+    // gates fail keep the dogleg. Residual members are left for the
+    // connector bridge.
     for (const { m, e } of fallback) {
+      if (dot >= 0.85) { jogTaper(m, e); continue; }
       if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
       if (sharpPin(g, m, e, fanReach, dot <= -0.3, flog)) continue;
       if (dot > 0 && doglegPin(g, m, e, flog)) continue;

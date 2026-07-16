@@ -30,6 +30,8 @@ export interface PaintedLoop {
   at: Pixel; // the self-crossing point
   loopArc: number; // arc length of the enclosed sub-path (segment i → segment j)
   diameter: number; // max extent of the enclosed loop geometry
+  segI: [Pixel, Pixel]; // the two crossing segments, for pinpointing the ink
+  segJ: [Pixel, Pixel];
 }
 
 const dist = (a: Pixel, b: Pixel): number =>
@@ -53,7 +55,7 @@ const properCross = (p1: Pixel, p2: Pixel, p3: Pixel, p4: Pixel): boolean => {
 /** Self-crossings of one painted polyline. Each crossing of non-adjacent
  *  segments (i, j>i+1) is a loop enclosing the sub-path i..j. Nearby crossings
  *  merge (the smallest enclosed loop kept). */
-function crossingsOf(pts: Pixel[]): Array<{ at: Pixel; loopArc: number; diameter: number }> {
+function crossingsOf(pts: Pixel[]): Array<{ at: Pixel; loopArc: number; diameter: number; segI: [Pixel, Pixel]; segJ: [Pixel, Pixel] }> {
   const n = pts.length;
   if (n < 4) return [];
   // cumulative arclength for loop-size measurement
@@ -81,7 +83,7 @@ function crossingsOf(pts: Pixel[]): Array<{ at: Pixel; loopArc: number; diameter
   // merge crossings whose points are within MERGE px (one visual loop can clip
   // several segment pairs); keep the tightest enclosed loop of the cluster.
   raws.sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1]);
-  const out: Array<{ at: Pixel; loopArc: number; diameter: number }> = [];
+  const out: Array<{ at: Pixel; loopArc: number; diameter: number; segI: [Pixel, Pixel]; segJ: [Pixel, Pixel] }> = [];
   const used = new Array(raws.length).fill(false);
   for (let r = 0; r < raws.length; r++) {
     if (used[r]) continue;
@@ -108,7 +110,10 @@ function crossingsOf(pts: Pixel[]): Array<{ at: Pixel; loopArc: number; diameter
         if (d > diameter) diameter = d;
       }
     }
-    out.push({ at: best.at, loopArc: bestArc, diameter });
+    out.push({
+      at: best.at, loopArc: bestArc, diameter,
+      segI: [pts[best.i], pts[best.i + 1]], segJ: [pts[best.j], pts[best.j + 1]],
+    });
   }
   return out;
 }
@@ -125,6 +130,8 @@ export function detectPaintedLoops(routes: ReadonlyArray<{ lineId: string; pts: 
         at: c.at,
         loopArc: c.loopArc,
         diameter: c.diameter,
+        segI: c.segI,
+        segJ: c.segJ,
       });
     }
   }

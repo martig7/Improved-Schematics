@@ -75,6 +75,14 @@ export function reportPaintedLoops(d: {
       `at=(${l.at[0].toFixed(0)},${l.at[1].toFixed(0)}) group=${nearestGroup(l.at)} ` +
       `loopArc=${l.loopArc.toFixed(0)} diam=${l.diameter.toFixed(0)}`,
     );
+    // OCTI_LOOP_SEGS=1 additionally prints the two crossing segments (and the
+    // route's line id), pinpointing the exact ink for an RCA.
+    if (envStr('OCTI_LOOP_SEGS') === '1') {
+      const fp = (p: Pixel) => `(${p[0].toFixed(1)},${p[1].toFixed(1)})`;
+      console.error(
+        `[loops]   id=${l.lineId} segI=${fp(l.segI[0])}-${fp(l.segI[1])} segJ=${fp(l.segJ[0])}-${fp(l.segJ[1])}`,
+      );
+    }
   }
   const arts = loops.filter((l) => l.kind === 'artifact').length;
   console.error(`[loops] ${arts} artifact loops, ${loops.length - arts} bigloops (likely genuine routes)`);
