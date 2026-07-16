@@ -3810,8 +3810,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const center = nodePx.get(n.id);
     if (!placement || !center) continue;
     // Anchor to the same closest-dot point placeLabels positioned around, so the
-    // label hangs off a real capsule marker (and zoom pivots there) rather than
-    // the node centre the dots may have slid away from.
+    // label hangs off a real marker (and zoom pivots there) rather than the node
+    // centre the single dot's lane, or a capsule's slid dots, may sit off.
     const anchor = labelAnchor(center, stopsByNode.get(n.id));
     labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined));
   }

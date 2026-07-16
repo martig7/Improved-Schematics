@@ -239,7 +239,25 @@ export function drawScene(
     ctx.font = `${label.fontWeight} ${label.fontSize * ls}px ${LABEL_FONT}`;
     ctx.textAlign = label.align;
     ctx.fillStyle = label.fill;
-    ctx.fillText(label.text, label.ax + label.x * ls, label.ay + label.y * ls);
+    const ox = label.ax + label.x * ls;
+    const oy = label.ay + label.y * ls;
+    const lines = label.lines && label.lines.length > 1 ? label.lines : null;
+    const dyStep = (label.fontSize + 2) * ls; // per-line height, matches the SVG tspan dy
+    // Canvas is display-only (the SVG string is the deterministic artifact), so
+    // runtime trig for the rotated case is fine. Flat single-line labels draw at
+    // the same coordinates as before.
+    if (label.angle) {
+      ctx.save();
+      ctx.translate(ox, oy);
+      ctx.rotate((label.angle * Math.PI) / 180);
+      if (lines) lines.forEach((ln, i) => ctx.fillText(ln, 0, i * dyStep));
+      else ctx.fillText(label.text, 0, 0);
+      ctx.restore();
+    } else if (lines) {
+      lines.forEach((ln, i) => ctx.fillText(ln, ox, oy + i * dyStep));
+    } else {
+      ctx.fillText(label.text, ox, oy);
+    }
   }
 
   // Warp-box debug overlay (LAST, on top of everything): the dense-core regions the

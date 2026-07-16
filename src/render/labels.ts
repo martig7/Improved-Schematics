@@ -4,9 +4,10 @@
 
 import { envStr } from '../env';
 import type { GraphNode, StopMark, Pixel } from './layout/types';
-import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, MARK_R0 } from './constants';
+import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, LABEL_WRAP_W, MARK_R0 } from './constants';
 import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
+import { obbFromLocalBox, obbAabb, obbOverlap, segmentIntersectsObb, tilt, type Obb } from './labelGeom';
 
 export interface Box {
   x: number;
@@ -18,6 +19,10 @@ export interface Placement {
   x: number;
   y: number;
   anchor: 'start' | 'middle' | 'end';
+  /** Screen rotation in degrees about the text origin; absent/0 = flat (today). */
+  angle?: number;
+  /** Two wrapped lines for a long name; absent/single = the one-line render. */
+  lines?: string[];
 }
 export interface Segment {
   p1: Pixel;
@@ -25,6 +30,30 @@ export interface Segment {
 }
 
 export const estimateTextWidth = (s: string): number => s.length * LABEL_CHAR_WIDTH;
+
+/**
+ * Wrap a station name to at most two lines when it is estimated wider than
+ * `maxWidth`, splitting only at a space (never mid-word) at the point that
+ * minimizes the wider line. A name with no space, or one within the width, is
+ * returned as a single line. Pure and deterministic.
+ */
+export function wrapLabel(label: string, maxWidth: number): string[] {
+  if (estimateTextWidth(label) <= maxWidth) return [label];
+  const words = label.split(' ');
+  if (words.length < 2) return [label]; // no space to break on
+  let bestSplit = 1;
+  let bestMax = Infinity;
+  for (let i = 1; i < words.length; i++) {
+    const w1 = estimateTextWidth(words.slice(0, i).join(' '));
+    const w2 = estimateTextWidth(words.slice(i).join(' '));
+    const m = Math.max(w1, w2);
+    if (m < bestMax) {
+      bestMax = m;
+      bestSplit = i;
+    }
+  }
+  return [words.slice(0, bestSplit).join(' '), words.slice(bestSplit).join(' ')];
+}
 
 export function boxesOverlap(a: Box, b: Box): boolean {
   return !(a.x + a.w <= b.x || a.x >= b.x + b.w || a.y + a.h <= b.y || a.y >= b.y + b.h);
@@ -36,6 +65,59 @@ export function boxGap(a: Box, b: Box): number {
   const dx = Math.max(0, b.x - (a.x + a.w), a.x - (b.x + b.w));
   const dy = Math.max(0, b.y - (a.y + a.h), a.y - (b.y + b.h));
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** Overlap of two axis-aligned boxes as a fraction of the SMALLER box's area
+ *  (0 when disjoint, 1 when one fully covers the other). Grades how deep an overlap
+ *  is, so the packer can prefer the least-overlapping of unavoidable placements
+ *  rather than treating every overlap as equally bad. */
+export function overlapFraction(a: Box, b: Box): number {
+  const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (ix <= 0 || iy <= 0) return 0;
+  const minArea = Math.min(a.w * a.h, b.w * b.h);
+  return minArea > 0 ? (ix * iy) / minArea : 0;
+}
+
+/** Summed encroachment of `box` into a set of boxes: for each within `margin`,
+ *  how far inside the margin it reaches (margin - gap). 0 for boxes beyond the
+ *  margin. The shared shape of the soft clearance and label-adjacency penalties. */
+export function encroachment(box: Box, boxes: readonly Box[], margin: number): number {
+  let c = 0;
+  for (const b of boxes) {
+    const g = boxGap(box, b);
+    if (g < margin) c += margin - g;
+  }
+  return c;
+}
+
+/** Euclidean gap between an axis-aligned box and a segment (0 when they meet).
+ *  The min distance of two disjoint convex shapes is realized vertex-to-edge, so
+ *  it is the least of the box corners to the segment and the segment ends to the
+ *  box. sqrt-based for cross-V8 stability. */
+export function boxSegGap(box: Box, p1: Pixel, p2: Pixel): number {
+  if (segmentIntersectsBox(p1, p2, box)) return 0;
+  const x2 = box.x + box.w;
+  const y2 = box.y + box.h;
+  const ptSeg = (px: number, py: number): number => {
+    const vx = p2[0] - p1[0];
+    const vy = p2[1] - p1[1];
+    const c1 = vx * (px - p1[0]) + vy * (py - p1[1]);
+    if (c1 <= 0) return Math.sqrt((px - p1[0]) ** 2 + (py - p1[1]) ** 2);
+    const c2 = vx * vx + vy * vy;
+    if (c2 <= c1) return Math.sqrt((px - p2[0]) ** 2 + (py - p2[1]) ** 2);
+    const t = c1 / c2;
+    return Math.sqrt((px - (p1[0] + t * vx)) ** 2 + (py - (p1[1] + t * vy)) ** 2);
+  };
+  const ptBox = (px: number, py: number): number => {
+    const dx = Math.max(box.x - px, 0, px - x2);
+    const dy = Math.max(box.y - py, 0, py - y2);
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+  return Math.min(
+    ptSeg(box.x, box.y), ptSeg(x2, box.y), ptSeg(x2, y2), ptSeg(box.x, y2),
+    ptBox(p1[0], p1[1]), ptBox(p2[0], p2[1]),
+  );
 }
 
 export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
@@ -71,9 +153,30 @@ export function segmentIntersectsBox(p1: Pixel, p2: Pixel, box: Box): boolean {
   return false;
 }
 
+/** A label footprint: an axis-aligned box (angle 0, the legacy path) or an OBB.
+ *  Flat footprints keep the exact existing overlap code so the legacy path is
+ *  byte-identical by construction; only a rotated candidate touches the OBB tests. */
+interface Footprint {
+  angle: number;
+  box?: Box;
+  obb?: Obb;
+}
+
+const boxToObb = (b: Box): Obb => obbFromLocalBox([b.x, b.y], 0, 0, b.w, b.h, 0);
+const asObb = (f: Footprint): Obb => f.obb ?? boxToObb(f.box!);
+/** Overlap of two label footprints; both flat uses boxesOverlap, else the OBB SAT. */
+const fpOverlap = (a: Footprint, b: Footprint): boolean =>
+  a.angle === 0 && b.angle === 0 ? boxesOverlap(a.box!, b.box!) : obbOverlap(asObb(a), asObb(b));
+/** Overlap of a footprint with an axis-aligned box (station/marker boxes). */
+const fpHitsBox = (f: Footprint, b: Box): boolean =>
+  f.angle === 0 ? boxesOverlap(f.box!, b) : obbOverlap(asObb(f), boxToObb(b));
+const fpSeg = (f: Footprint, s: Segment): boolean =>
+  f.angle === 0 ? segmentIntersectsBox(s.p1, s.p2, f.box!) : segmentIntersectsObb(s.p1, s.p2, f.obb!);
+const fpAabb = (f: Footprint): Box => f.box ?? obbAabb(f.obb!);
+
 interface Candidate {
   placement: Placement;
-  box: Box;
+  fp: Footprint;
   priority: number;
 }
 
@@ -97,22 +200,27 @@ export interface LabelNode {
 const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
 
 /**
- * The pixel point a station's label should hang off. Defaults to the node
- * centre. Only a MULTI-dot capsule whose dots have been slid well off the centre
- * (by the collision passes such as capsuleSlide) re-anchors, to the dot CLOSEST
- * to the centre, so a label that would otherwise float in empty space stays
- * attached to a real marker. Single stops and tightly-packed capsules keep the
- * centre, so re-anchoring is confined to the capsules that actually drift and
- * doesn't churn the rest of the label layout.
+ * The pixel point a station's label should hang off. A SINGLE-dot stop hangs off
+ * its one drawn dot: the node centre is only the abstract graph vertex, while the
+ * dot sits on its line's lane (offset by the bundle slot) and may have slid, so
+ * anchoring to the centre floats the label off the marker by up to a bundle
+ * half-width. A MULTI-dot capsule keeps the cluster CENTRE (the label points at
+ * the whole pill), re-anchoring to the dot CLOSEST to the centre only when the
+ * dots have slid well off it, so an ordinary interchange doesn't churn the label
+ * layout and only genuinely displaced capsules re-seat.
  * Closest by squared distance; first mark wins exact ties (deterministic).
  */
 export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
   // Diagnostic switch: OCTI_NO_LABEL_REANCHOR=1 disables re-anchoring, so the
-  // label always hangs off the bare node centre.
+  // label always hangs off the bare node centre (the pre-fix behaviour).
   if (envStr('OCTI_NO_LABEL_REANCHOR') === '1') {
     return center;
   }
-  if (!marks || marks.length < 2) return center;
+  if (!marks || marks.length === 0) return center;
+  // Single dot IS the anchor. Reverted to the bare centre in the full-legacy mode
+  // (OCTI_LABEL_NO_ROTATE, which turns off all new label behaviour) so that switch
+  // still reproduces master byte-for-byte.
+  if (marks.length === 1) return envStr('OCTI_LABEL_NO_ROTATE') === '1' ? center : marks[0].pos;
   let best = marks[0].pos;
   let bestD = Infinity;
   for (const m of marks) {
@@ -127,6 +235,49 @@ export function labelAnchor(center: Pixel, marks?: StopMark[]): Pixel {
   return bestD > ANCHOR_SLID_DIST * ANCHOR_SLID_DIST ? best : center;
 }
 
+/**
+ * Placement order plus each node's on-bundle predecessor, derived from the stop
+ * marks alone. Stations are walked line by line (lines in id order) in stop-seq
+ * order, so a node's on-bundle neighbor is placed just before it; nodes without a
+ * seq (e.g. the geographic caller's synthetic stops) tail the list longest-label
+ * first, reproducing the previous global order for that caller. Deterministic:
+ * lines sorted by id, seq ties broken by node id. Pure.
+ */
+export function bundleOrder(
+  nodes: LabelNode[],
+  stopsByNode: Map<string, StopMark[]>,
+): { order: LabelNode[]; prevOnBundle: Map<string, string> } {
+  const byId = new Map(nodes.map((n) => [n.id, n] as const));
+  const perLine = new Map<string, Array<{ nodeId: string; seq: number }>>();
+  for (const n of nodes) {
+    for (const m of stopsByNode.get(n.id) ?? []) {
+      if (m.seq == null || !m.lineId) continue;
+      let arr = perLine.get(m.lineId);
+      if (!arr) perLine.set(m.lineId, (arr = []));
+      arr.push({ nodeId: n.id, seq: m.seq });
+    }
+  }
+  const order: LabelNode[] = [];
+  const seen = new Set<string>();
+  const prevOnBundle = new Map<string, string>();
+  for (const lineId of [...perLine.keys()].sort()) {
+    const seq = perLine.get(lineId)!.sort((a, b) => a.seq - b.seq || (a.nodeId < b.nodeId ? -1 : 1));
+    let prev: string | null = null;
+    for (const { nodeId } of seq) {
+      if (prev != null && !prevOnBundle.has(nodeId)) prevOnBundle.set(nodeId, prev);
+      if (!seen.has(nodeId)) {
+        seen.add(nodeId);
+        order.push(byId.get(nodeId)!);
+      }
+      prev = nodeId;
+    }
+  }
+  for (const n of nodes.filter((n) => !seen.has(n.id)).sort((a, b) => b.label.length - a.label.length)) {
+    order.push(n);
+  }
+  return { order, prevOnBundle };
+}
+
 export function placeLabels(
   graph: { nodes: Map<string, LabelNode> },
   nodePx: Map<string, Pixel>,
@@ -134,27 +285,36 @@ export function placeLabels(
   segments: Segment[],
 ): Map<string, Placement> {
   const result = new Map<string, Placement>();
-  const placedBoxes: Box[] = [];
+  const placed: Footprint[] = [];
+  const placedAABB: Box[] = []; // axis-aligned bounds of placed labels, for the clearance/adjacency terms
   const stationBoxes: Box[] = [];
   const markerR = MARK_R0;
-  // Clearance tie-break (OCTI_LABEL_TIEBREAK=1, default off). The placement cost
-  // counts only HARD overlaps (integers), so many labels tie; without the tie-break
-  // those ties resolve by enumeration order. Among cost-tied placements, prefer the
-  // one with the most open space around it (largest summed clearance to nearby
-  // markers and already-placed labels), nudging labels off crowded flanks into
-  // white space. Clearance is an unscored dimension (cost ignores near-misses);
-  // boxGap is sqrt-based and the argmin is a total order (cost, then -clearance,
-  // then enumeration), so deterministic.
-  const LABEL_TIEBREAK =
-    envStr('OCTI_LABEL_TIEBREAK') === '1';
-  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale for "crowding"
-  // Lower is better: soft penalty summed over content within CLEAR_MARGIN.
-  const crowding = (box: Box): number => {
-    let c = 0;
-    for (const b of placedBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
-    for (const b of stationBoxes) { const g = boxGap(box, b); if (g < CLEAR_MARGIN) c += CLEAR_MARGIN - g; }
-    return c;
-  };
+  // OCTI_LABEL_NO_ROTATE=1 restores the legacy path: no rotated candidates and the
+  // old longest-label-first order, so the dumps render byte-identical to before.
+  const noRotate = envStr('OCTI_LABEL_NO_ROTATE') === '1';
+  // Soft clearance (position term). The hard costs fire only on ACTUAL overlap, so
+  // labels pack shoulder-to-shoulder in crowded areas. This term adds a small
+  // penalty for merely being CLOSE (within CLEAR_MARGIN) to already-placed labels,
+  // station markers, and line segments, so a label drifts into the clearer of two
+  // otherwise-equal spots. Weighted on the tilt scale (W_CLEAR), so it trades off
+  // against rotation: a label near adjacent text may rotate to gain room. Gaps are
+  // sqrt-based and the argmin is a total order, so deterministic.
+  const CLEAR_MARGIN = LABEL_FONT_SIZE * 1.5; // proximity scale
+  const W_CLEAR = 0.15; // per-unit-of-encroachment weight (tunable at the render checkpoint)
+  // Adjacency (label-only) term: a sharper, closer-range penalty for a candidate
+  // sitting within ADJ_MARGIN of an already-placed LABEL (not markers or lines), so
+  // two labels never crowd close enough to read as one. Heavier per-unit than the
+  // clearance term (W_ADJ), so it overrides the side bonus rather than let labels
+  // merge for consistency. OCTI_LABEL_NO_ADJ=1 disables it (diagnostic).
+  const ADJ_MARGIN = LABEL_FONT_SIZE; // merge zone: two labels closer than this risk reading as one
+  const W_ADJ = 2.5;
+  const noAdj = envStr('OCTI_LABEL_NO_ADJ') === '1';
+  // Label overlap is a SOFT infinity: so large the packer will cross lines, sit on
+  // markers, or turn sideways before letting two labels overlap, yet finite so that
+  // when EVERY candidate overlaps (truly boxed in) the graduated area term still
+  // picks the least-overlapping one instead of an all-ties stack.
+  const SOFT_INF = 10000;
+  const OVL_FRAC_W = 80; // area gradient among forced overlaps (breaks ties toward less overlap)
 
   for (const [, marks] of stopsByNode) {
     if (marks.length === 1) {
@@ -180,48 +340,310 @@ export function placeLabels(
     }
   }
 
-  const nodes = [...graph.nodes.values()]
-    .filter((n) => stopsByNode.has(n.id))
-    .sort((a, b) => b.label.length - a.label.length);
+  const nodesWithStops = [...graph.nodes.values()].filter((n) => stopsByNode.has(n.id));
+  // Bundle-walk order so a station's on-bundle neighbour is placed first (the side
+  // bonus below reads its offset). The legacy path keeps longest-label-first.
+  const { order: placeOrder, prevOnBundle } = noRotate
+    ? { order: nodesWithStops.sort((a, b) => b.label.length - a.label.length), prevOnBundle: new Map<string, string>() }
+    : bundleOrder(nodesWithStops, stopsByNode);
+  const chosenOffset = new Map<string, [number, number]>();
+  const fpByNode = new Map<string, Footprint>(); // final footprint per node, for the rescue pass
+  const aabbByNode = new Map<string, Box>();
+  const WSIDE = 5; // same-bundle side-mismatch penalty (tunable at the render checkpoint)
 
-  for (const node of nodes) {
+  // Build a node's label candidates plus a scorer, so greedy and both rescue passes
+  // (per-label and the joint entangled-group search) share one candidate model.
+  interface NodeCtx {
+    cx: number;
+    cy: number;
+    lines: string[];
+    candidates: Candidate[];
+    aabbs: Box[];
+    score: (idx: number, others: Footprint[], othersAABB: Box[]) => number;
+    placementOf: (idx: number) => Placement;
+    offsetOf: (idx: number) => [number, number];
+  }
+  const buildNode = (node: LabelNode): NodeCtx | null => {
     const p = nodePx.get(node.id);
-    if (!p) continue;
-    const tw = estimateTextWidth(node.label);
+    if (!p) return null;
     const fh = LABEL_FONT_SIZE + 2;
     const off = LABEL_OFFSET;
+    // Two-line wrap for long names (space split only, never mid-word). The legacy
+    // path and short names stay one line, so tw === the single-line width and
+    // extraH === 0, leaving their candidate boxes byte-identical. A wrapped label
+    // is narrower (max line width) and taller (the box grows down by one line).
+    const lines = noRotate ? [node.label] : wrapLabel(node.label, LABEL_WRAP_W);
+    const tw = lines.length > 1 ? Math.max(...lines.map((l) => estimateTextWidth(l))) : estimateTextWidth(node.label);
+    const extraH = (lines.length - 1) * fh;
     // Hang the label off the capsule dot nearest the node centre (not the bare
     // centre), so it tracks the markers when collision passes slide them.
     const [cx, cy] = labelAnchor(p, stopsByNode.get(node.id));
-    const candidates: Candidate[] = [
-      { placement: { x: cx + off, y: cy + fh / 3, anchor: 'start' }, box: { x: cx + off, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
-      { placement: { x: cx - off, y: cy + fh / 3, anchor: 'end' }, box: { x: cx - off - tw, y: cy - fh / 2, w: tw, h: fh }, priority: 1 },
-      { placement: { x: cx, y: cy - off, anchor: 'middle' }, box: { x: cx - tw / 2, y: cy - off - fh, w: tw, h: fh }, priority: 2 },
-      { placement: { x: cx, y: cy + off + fh - 2, anchor: 'middle' }, box: { x: cx - tw / 2, y: cy + off, w: tw, h: fh }, priority: 2 },
-      { placement: { x: cx + off * 0.7, y: cy - off * 0.7, anchor: 'start' }, box: { x: cx + off * 0.7, y: cy - off * 0.7 - fh, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy - off * 0.7, anchor: 'end' }, box: { x: cx - off * 0.7 - tw, y: cy - off * 0.7 - fh, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx + off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'start' }, box: { x: cx + off * 0.7, y: cy + off * 0.7, w: tw, h: fh }, priority: 3 },
-      { placement: { x: cx - off * 0.7, y: cy + off * 0.7 + fh - 2, anchor: 'end' }, box: { x: cx - off * 0.7 - tw, y: cy + off * 0.7, w: tw, h: fh }, priority: 3 },
-    ];
-
-    let best = candidates[0];
-    let bestCost = Infinity;
-    let bestCrowd = Infinity;
-    for (const cand of candidates) {
-      let cost = 0;
-      for (const b of placedBoxes) if (boxesOverlap(cand.box, b)) cost += 100;
-      for (const b of stationBoxes) if (boxesOverlap(cand.box, b)) cost += 30;
-      for (const s of segments) if (segmentIntersectsBox(s.p1, s.p2, cand.box)) cost += 12;
-      cost += cand.priority;
-      const crowd = LABEL_TIEBREAK ? crowding(cand.box) : 0;
-      if (cost < bestCost || (LABEL_TIEBREAK && cost === bestCost && crowd < bestCrowd)) {
-        bestCost = cost;
-        bestCrowd = crowd;
-        best = cand;
+    // Same-bundle side coherence: sign of cross(lineDir, offset) is which side of
+    // the line a label sits on; prefer the side the on-bundle predecessor took. The
+    // predecessor is compared under THIS pair's line direction, so the first station
+    // (no predecessor) simply seeds a side for the rest to follow.
+    const prevId = prevOnBundle.get(node.id);
+    const prevP = prevId ? nodePx.get(prevId) : undefined;
+    const dirx = prevP ? p[0] - prevP[0] : 0;
+    const diry = prevP ? p[1] - prevP[1] : 0;
+    const crossSign = (ox: number, oy: number): number => {
+      const cr = dirx * oy - diry * ox;
+      return cr > 0 ? 1 : cr < 0 ? -1 : 0;
+    };
+    const prevOff = prevId ? chosenOffset.get(prevId) : undefined;
+    const prevSide = prevOff ? crossSign(prevOff[0], prevOff[1]) : 0;
+    // Side-aware anchor for a multi-dot capsule: a candidate offset toward a side
+    // hangs off the OUTERMOST dot on that side (the near end of the pill), so as the
+    // clearance term shifts a label to the clearer side it stays tied to a real
+    // marker rather than the empty cluster centre. Single dots and the legacy path
+    // use the one anchor (cx, cy) for every direction, so they are unchanged.
+    const marks = stopsByNode.get(node.id);
+    const multi = !noRotate && !!marks && marks.length >= 2;
+    const anchorFor = (dux: number, duy: number): readonly [number, number] => {
+      if (!multi) return [cx, cy] as const;
+      let bx = marks![0].pos[0];
+      let by = marks![0].pos[1];
+      let bestProj = -Infinity;
+      for (const m of marks!) {
+        const proj = m.pos[0] * dux + m.pos[1] * duy;
+        if (proj > bestProj) { bestProj = proj; bx = m.pos[0]; by = m.pos[1]; }
       }
+      return [bx, by] as const;
+    };
+    const aE = anchorFor(1, 0), aW = anchorFor(-1, 0), aN = anchorFor(0, -1), aS = anchorFor(0, 1);
+    const aNE = anchorFor(1, -1), aNW = anchorFor(-1, -1), aSE = anchorFor(1, 1), aSW = anchorFor(-1, 1);
+    // Flat candidates (angle 0): geometry and priorities as before, each hung off
+    // its side's anchor. A single dot / legacy makes every anchor (cx, cy), so the
+    // boxes are byte-identical there.
+    const flat: Candidate[] = [
+      { placement: { x: aE[0] + off, y: aE[1] + fh / 3, anchor: 'start' }, fp: { angle: 0, box: { x: aE[0] + off, y: aE[1] - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: aW[0] - off, y: aW[1] + fh / 3, anchor: 'end' }, fp: { angle: 0, box: { x: aW[0] - off - tw, y: aW[1] - fh / 2, w: tw, h: fh + extraH } }, priority: 1 },
+      { placement: { x: aN[0], y: aN[1] - off, anchor: 'middle' }, fp: { angle: 0, box: { x: aN[0] - tw / 2, y: aN[1] - off - fh, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: aS[0], y: aS[1] + off + fh - 2, anchor: 'middle' }, fp: { angle: 0, box: { x: aS[0] - tw / 2, y: aS[1] + off, w: tw, h: fh + extraH } }, priority: 2 },
+      { placement: { x: aNE[0] + off * 0.7, y: aNE[1] - off * 0.7, anchor: 'start' }, fp: { angle: 0, box: { x: aNE[0] + off * 0.7, y: aNE[1] - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aNW[0] - off * 0.7, y: aNW[1] - off * 0.7, anchor: 'end' }, fp: { angle: 0, box: { x: aNW[0] - off * 0.7 - tw, y: aNW[1] - off * 0.7 - fh, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aSE[0] + off * 0.7, y: aSE[1] + off * 0.7 + fh - 2, anchor: 'start' }, fp: { angle: 0, box: { x: aSE[0] + off * 0.7, y: aSE[1] + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
+      { placement: { x: aSW[0] - off * 0.7, y: aSW[1] + off * 0.7 + fh - 2, anchor: 'end' }, fp: { angle: 0, box: { x: aSW[0] - off * 0.7 - tw, y: aSW[1] + off * 0.7, w: tw, h: fh + extraH } }, priority: 3 },
+    ];
+    // Rotated candidates: octilinear text that slots into space the flat boxes
+    // cannot, each hung off its side's anchor. The tilt penalty keeps these below
+    // flat unless flat collides; 90 is the sideways last resort.
+    const rot = (ox: number, oy: number, angle: number, anchor: Placement['anchor']): Candidate => {
+      const x0 = anchor === 'end' ? -tw : anchor === 'middle' ? -tw / 2 : 0;
+      return {
+        placement: { x: ox, y: oy, anchor, angle },
+        fp: { angle, obb: obbFromLocalBox([ox, oy], x0, -fh / 2, x0 + tw, fh / 2 + extraH, angle) },
+        priority: 1,
+      };
+    };
+    const rotated: Candidate[] = noRotate ? [] : [
+      rot(aE[0] + off, aE[1], -90, 'start'),
+      rot(aW[0] - off, aW[1], -90, 'start'),
+      rot(aNE[0] + off * 0.7, aNE[1] - off * 0.7, -45, 'start'),
+      rot(aSE[0] + off * 0.7, aSE[1] + off * 0.7, 45, 'start'),
+      rot(aNW[0] - off * 0.7, aNW[1] - off * 0.7, 45, 'end'),
+      rot(aSW[0] - off * 0.7, aSW[1] + off * 0.7, -45, 'end'),
+    ];
+    const candidates = [...flat, ...rotated];
+    // Segments near this node's candidates, so the clearance term stays cheap in
+    // the map's total segment count (candidates all live within ~R of the anchor).
+    const R = CLEAR_MARGIN + tw + off + extraH;
+    const nearSegs = noRotate ? [] : segments.filter((s) => {
+      const lo = (a: number, b: number) => Math.min(a, b) - R;
+      const hi = (a: number, b: number) => Math.max(a, b) + R;
+      return cx >= lo(s.p1[0], s.p2[0]) && cx <= hi(s.p1[0], s.p2[0]) && cy >= lo(s.p1[1], s.p2[1]) && cy <= hi(s.p1[1], s.p2[1]);
+    });
+
+    const aabbs = candidates.map((c) => fpAabb(c.fp));
+    // Cost of candidate `idx` against a set of OTHER label footprints, plus this
+    // label's own terms (priority, tilt, side, markers, segments, and clearance /
+    // adjacency vs those others). Overlap is SOFT_INF + area; legacy stays flat 100.
+    const score = (idx: number, others: Footprint[], othersAABB: Box[]): number => {
+      const cand = candidates[idx];
+      const aabb = aabbs[idx];
+      let cost = 0;
+      for (let i = 0; i < others.length; i++) {
+        if (fpOverlap(cand.fp, others[i])) cost += noRotate ? 100 : SOFT_INF + OVL_FRAC_W * overlapFraction(aabb, othersAABB[i]);
+      }
+      for (const b of stationBoxes) if (fpHitsBox(cand.fp, b)) cost += 30;
+      for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
+      cost += cand.priority;
+      cost += tilt(cand.fp.angle);
+      if (prevSide !== 0) {
+        const side = crossSign(cand.placement.x - cx, cand.placement.y - cy);
+        if (side !== 0 && side !== prevSide) cost += WSIDE;
+      }
+      if (!noRotate) {
+        let clr = encroachment(aabb, othersAABB, CLEAR_MARGIN) + encroachment(aabb, stationBoxes, CLEAR_MARGIN);
+        for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; }
+        const adj = noAdj ? 0 : encroachment(aabb, othersAABB, ADJ_MARGIN);
+        cost += W_CLEAR * clr + W_ADJ * adj;
+      }
+      return cost;
+    };
+    const placementOf = (idx: number): Placement => {
+      const b = candidates[idx];
+      return lines.length > 1 ? { ...b.placement, lines } : b.placement;
+    };
+    const offsetOf = (idx: number): [number, number] => [candidates[idx].placement.x - cx, candidates[idx].placement.y - cy];
+    return { cx, cy, lines, candidates, aabbs, score, placementOf, offsetOf };
+  };
+
+  // Lowest-cost placement for one node vs a set of OTHER label footprints. `current`
+  // (when given) also yields that placement's cost, so a rescue moves only on a strict
+  // win. Greedy passes the labels placed so far; the per-label rescue passes the rest.
+  const placeNode = (
+    node: LabelNode,
+    others: Footprint[],
+    othersAABB: Box[],
+    current?: Placement,
+  ): { placement: Placement; fp: Footprint; offset: [number, number]; bestCost: number; currentCost: number } | null => {
+    const ctx = buildNode(node);
+    if (!ctx) return null;
+    let best = 0;
+    let bestCost = Infinity;
+    let currentCost = Infinity;
+    for (let i = 0; i < ctx.candidates.length; i++) {
+      const cost = ctx.score(i, others, othersAABB);
+      if (cost < bestCost) { bestCost = cost; best = i; }
+      const c = ctx.candidates[i];
+      if (current && c.placement.x === current.x && c.placement.y === current.y && c.fp.angle === (current.angle ?? 0)) currentCost = cost;
     }
-    placedBoxes.push(best.box);
-    result.set(node.id, best.placement);
+    return { placement: ctx.placementOf(best), fp: ctx.candidates[best].fp, offset: ctx.offsetOf(best), bestCost, currentCost };
+  };
+
+  // ---- greedy pass: place each label against those already placed ------------
+  for (const node of placeOrder) {
+    const r = placeNode(node, placed, placedAABB);
+    if (!r) continue;
+    chosenOffset.set(node.id, r.offset);
+    placed.push(r.fp);
+    placedAABB.push(fpAabb(r.fp));
+    fpByNode.set(node.id, r.fp);
+    aabbByNode.set(node.id, fpAabb(r.fp));
+    result.set(node.id, r.placement);
+  }
+
+  // ---- overlap rescue: re-seat still-overlapping labels against the FULL layout
+  // Greedy scores each label only against those placed BEFORE it, so an early choice
+  // can force a later overlap a different arrangement would avoid. Each round groups
+  // the overlapping labels into connected components of the overlap graph (the
+  // ENTANGLED groups); for a small group it solves the joint MIN-COST assignment over
+  // all members' candidate combinations at once -- so two labels each blocking the
+  // other's only good spot move together, which no one-at-a-time step can do. Larger
+  // groups fall back to per-label coordinate descent. Every accepted move strictly
+  // lowers the group's total cost, so the potential decreases and it converges; a
+  // round cap bounds it. Off in the legacy path (byte-identical) / OCTI_LABEL_NO_RESCUE.
+  if (!noRotate && envStr('OCTI_LABEL_NO_RESCUE') !== '1') {
+    const nodeById = new Map(placeOrder.map((n) => [n.id, n] as const));
+    const MAX_COMBOS = 6000; // ceiling on a group's candidate-combination search (~pairs and triples)
+
+    // Label-label interaction between two footprints: the overlap + clearance +
+    // adjacency terms the greedy score adds for that pair, so a joint assignment's
+    // cost is exact (external terms via score(), internal pairs via this).
+    const interaction = (fa: Footprint, aa: Box, fb: Footprint, ab: Box): number => {
+      let c = 0;
+      if (fpOverlap(fa, fb)) c += noRotate ? 100 : SOFT_INF + OVL_FRAC_W * overlapFraction(aa, ab);
+      const g = boxGap(aa, ab);
+      if (g < CLEAR_MARGIN) c += W_CLEAR * (CLEAR_MARGIN - g);
+      if (!noAdj && g < ADJ_MARGIN) c += W_ADJ * (ADJ_MARGIN - g);
+      return c;
+    };
+
+    // Move every member of an entangled group to its joint min-cost slot at once.
+    const jointMove = (comp: string[]): 'moved' | 'kept' | 'toobig' => {
+      const ctxs = comp.map((id) => buildNode(nodeById.get(id)!));
+      if (ctxs.some((c) => !c)) return 'kept';
+      const K = comp.length;
+      let combos = 1;
+      for (const ctx of ctxs) combos *= ctx!.candidates.length;
+      if (combos > MAX_COMBOS) return 'toobig';
+      const inComp = new Set(comp);
+      const extFp: Footprint[] = [];
+      const extAABB: Box[] = [];
+      for (const [oid, ofp] of fpByNode) if (!inComp.has(oid)) { extFp.push(ofp); extAABB.push(aabbByNode.get(oid)!); }
+      // each candidate's cost against the external (fixed) labels only
+      const extCost = ctxs.map((ctx) => ctx!.candidates.map((_, a) => ctx!.score(a, extFp, extAABB)));
+      const curIdx = comp.map((id, i) => {
+        const cur = result.get(id)!;
+        const cs = ctxs[i]!.candidates;
+        for (let a = 0; a < cs.length; a++) if (cs[a].placement.x === cur.x && cs[a].placement.y === cur.y && cs[a].fp.angle === (cur.angle ?? 0)) return a;
+        return 0;
+      });
+      const cost = (asg: number[]): number => {
+        let c = 0;
+        for (let i = 0; i < K; i++) c += extCost[i][asg[i]];
+        for (let i = 0; i < K; i++) for (let j = i + 1; j < K; j++) {
+          c += interaction(ctxs[i]!.candidates[asg[i]].fp, ctxs[i]!.aabbs[asg[i]], ctxs[j]!.candidates[asg[j]].fp, ctxs[j]!.aabbs[asg[j]]);
+        }
+        return c;
+      };
+      const curCost = cost(curIdx);
+      const bestAsg = curIdx.slice();
+      let bestCost = curCost;
+      const asg = new Array<number>(K).fill(0);
+      const rec = (i: number): void => {
+        if (i === K) { const c = cost(asg); if (c < bestCost) { bestCost = c; for (let k = 0; k < K; k++) bestAsg[k] = asg[k]; } return; }
+        for (let a = 0; a < ctxs[i]!.candidates.length; a++) { asg[i] = a; rec(i + 1); }
+      };
+      rec(0);
+      if (bestCost >= curCost - 1e-6) return 'kept';
+      for (let i = 0; i < K; i++) {
+        const id = comp[i];
+        const ctx = ctxs[i]!;
+        const a = bestAsg[i];
+        chosenOffset.set(id, ctx.offsetOf(a));
+        fpByNode.set(id, ctx.candidates[a].fp);
+        aabbByNode.set(id, ctx.aabbs[a]);
+        result.set(id, ctx.placementOf(a));
+      }
+      return 'moved';
+    };
+
+    // per-label coordinate descent (fallback for groups too big to search jointly)
+    const perLabelMove = (id: string): boolean => {
+      const node = nodeById.get(id);
+      if (!node) return false;
+      const others: Footprint[] = [];
+      const othersAABB: Box[] = [];
+      for (const [oid, ofp] of fpByNode) if (oid !== id) { others.push(ofp); othersAABB.push(aabbByNode.get(oid)!); }
+      const r = placeNode(node, others, othersAABB, result.get(id));
+      if (r && r.bestCost < r.currentCost - 1e-6) {
+        chosenOffset.set(id, r.offset);
+        fpByNode.set(id, r.fp);
+        aabbByNode.set(id, fpAabb(r.fp));
+        result.set(id, r.placement);
+        return true;
+      }
+      return false;
+    };
+
+    for (let round = 0; round < 4; round++) {
+      let moved = false;
+      const ids = [...fpByNode.keys()]; // insertion order (deterministic)
+      const order = new Map(ids.map((id, i) => [id, i] as const));
+      // connected components of the overlap graph
+      const adj = new Map<string, string[]>();
+      const link = (a: string, b: string) => { let arr = adj.get(a); if (!arr) adj.set(a, (arr = [])); arr.push(b); };
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          if (fpOverlap(fpByNode.get(ids[i])!, fpByNode.get(ids[j])!)) { link(ids[i], ids[j]); link(ids[j], ids[i]); }
+        }
+      }
+      const seen = new Set<string>();
+      for (const start of ids) {
+        if (seen.has(start) || !adj.has(start)) continue;
+        const comp: string[] = [];
+        const q = [start];
+        seen.add(start);
+        while (q.length) { const c = q.pop()!; comp.push(c); for (const nb of adj.get(c) ?? []) if (!seen.has(nb)) { seen.add(nb); q.push(nb); } }
+        comp.sort((a, b) => order.get(a)! - order.get(b)!);
+        const res = jointMove(comp);
+        if (res === 'moved') moved = true;
+        else if (res === 'toobig') { for (const id of comp) if (perLabelMove(id)) moved = true; }
+      }
+      if (!moved) break;
+    }
   }
 
   return result;
@@ -243,6 +665,20 @@ export function renderLabel(
   prims?: Prim[],
 ): string {
   const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
+  const angle = placement.angle ?? 0;
+  // Group transform: translate to the text origin, then rotate about it when the
+  // placement is octilinear. Flat (angle 0) emits translate-only, byte-identical
+  // to the pre-rotation renderer.
+  const xf =
+    'translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')' +
+    (angle !== 0 ? ' rotate(' + angle + ')' : '');
+  // Two wrapped lines stack as tspans one line-height apart; a single line renders
+  // exactly as before (no tspan), so unwrapped labels stay byte-identical.
+  const lines = placement.lines && placement.lines.length > 1 ? placement.lines : null;
+  const LINE_DY = LABEL_FONT_SIZE + 2;
+  const inner = lines
+    ? '<tspan x="0">' + escapeXml(lines[0]) + '</tspan><tspan x="0" dy="' + LINE_DY + '">' + escapeXml(lines[1]) + '</tspan>'
+    : escapeXml(node.label);
   // Translate the group to the TEXT position (placement) with the text at the
   // origin, so size scaling (panel/export/canvas) pivots around the text's own
   // anchor. The gap from the dot stays CONSTANT as label size changes; only the
@@ -267,15 +703,18 @@ export function renderLabel(
       fill,
       layer: 'stations',
       worldScale: false,
+      // Carry the angle/lines only when set, so flat single-line prims are byte-identical.
+      ...(angle !== 0 ? { angle } : {}),
+      ...(lines ? { lines } : {}),
     });
   }
   return (
     '<g class="imp-lbl" data-station-id="' + escapeXml(node.id) +
-    '" transform="translate(' + placement.x.toFixed(1) + ',' + placement.y.toFixed(1) + ')">' +
+    '" transform="' + xf + '">' +
     '<g class="imp-lbl-s">' +
     '<text x="0" y="0" text-anchor="' + placement.anchor +
     '" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="' +
     LABEL_FONT_SIZE + '" fill="' + fill + '" font-weight="500">' +
-    escapeXml(node.label) + '</text></g></g>'
+    inner + '</text></g></g>'
   );
 }
