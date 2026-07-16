@@ -134,6 +134,26 @@ test('a lone label with room stays flat (flat when it fits)', () => {
   assert.equal(placeLabels(graph, nodePx, stops, []).get('n0')!.angle ?? 0, 0);
 });
 
+test('the overlap rescue is a no-op when nothing overlaps (never perturbs a clean layout)', () => {
+  // Well-spaced stops: no labels overlap, so the rescue must change nothing -- the
+  // result is identical to running with the rescue disabled.
+  const graph = lineGraph([[0, 0], [200, 0], [400, 0]]);
+  const nodePx = new Map<string, Pixel>([['n0', [0, 0]], ['n1', [200, 0]], ['n2', [400, 0]]]);
+  const stops = new Map<string, StopMark[]>([
+    ['n0', [{ lineId: 'L', color: '#000', pos: [0, 0], seq: 0 }]],
+    ['n1', [{ lineId: 'L', color: '#000', pos: [200, 0], seq: 1 }]],
+    ['n2', [{ lineId: 'L', color: '#000', pos: [400, 0], seq: 2 }]],
+  ]);
+  const withRescue = [...placeLabels(graph, nodePx, stops, []).entries()];
+  process.env.OCTI_LABEL_NO_RESCUE = '1';
+  try {
+    const without = [...placeLabels(graph, nodePx, stops, []).entries()];
+    assert.deepEqual(withRescue, without);
+  } finally {
+    delete process.env.OCTI_LABEL_NO_RESCUE;
+  }
+});
+
 test('placeLabels is deterministic (same input, same placements twice)', () => {
   const graph = lineGraph([[0, 0], [30, 0], [60, 0]]);
   const nodePx = new Map<string, Pixel>([['n0', [0, 0]], ['n1', [30, 0]], ['n2', [60, 0]]]);

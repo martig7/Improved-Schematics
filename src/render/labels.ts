@@ -347,11 +347,24 @@ export function placeLabels(
     ? { order: nodesWithStops.sort((a, b) => b.label.length - a.label.length), prevOnBundle: new Map<string, string>() }
     : bundleOrder(nodesWithStops, stopsByNode);
   const chosenOffset = new Map<string, [number, number]>();
+  const fpByNode = new Map<string, Footprint>(); // final footprint per node, for the rescue pass
+  const aabbByNode = new Map<string, Box>();
   const WSIDE = 5; // same-bundle side-mismatch penalty (tunable at the render checkpoint)
 
-  for (const node of placeOrder) {
+  // Build and score a node's label candidates against a given set of OTHER label
+  // footprints, returning the lowest-cost one. Greedy passes the labels placed so
+  // far; the rescue pass passes every OTHER final label, so a label greedy boxed in
+  // can re-seat against the full layout. When `current` (the node's existing
+  // placement) is given, its cost is returned too, so the rescue moves only on a
+  // strict improvement.
+  const placeNode = (
+    node: LabelNode,
+    others: Footprint[],
+    othersAABB: Box[],
+    current?: Placement,
+  ): { placement: Placement; fp: Footprint; offset: [number, number]; bestCost: number; currentCost: number } | null => {
     const p = nodePx.get(node.id);
-    if (!p) continue;
+    if (!p) return null;
     const fh = LABEL_FONT_SIZE + 2;
     const off = LABEL_OFFSET;
     // Two-line wrap for long names (space split only, never mid-word). The legacy
@@ -442,6 +455,7 @@ export function placeLabels(
 
     let best = candidates[0];
     let bestCost = Infinity;
+    let currentCost = Infinity;
     for (const cand of candidates) {
       let cost = 0;
       const aabb = fpAabb(cand.fp);
@@ -449,8 +463,8 @@ export function placeLabels(
       // last resorts, plus the overlap AREA so forced overlaps still minimize instead
       // of pricing every overlap the same and cascading into full stacks. Legacy stays
       // flat 100 (byte-identical).
-      for (let i = 0; i < placed.length; i++) {
-        if (fpOverlap(cand.fp, placed[i])) cost += noRotate ? 100 : SOFT_INF + OVL_FRAC_W * overlapFraction(aabb, placedAABB[i]);
+      for (let i = 0; i < others.length; i++) {
+        if (fpOverlap(cand.fp, others[i])) cost += noRotate ? 100 : SOFT_INF + OVL_FRAC_W * overlapFraction(aabb, othersAABB[i]);
       }
       for (const b of stationBoxes) if (fpHitsBox(cand.fp, b)) cost += 30;
       for (const s of segments) if (fpSeg(cand.fp, s)) cost += 12;
@@ -462,21 +476,68 @@ export function placeLabels(
       }
       if (!noRotate) {
         // gentle, broad clearance: labels + markers + lines
-        let clr = encroachment(aabb, placedAABB, CLEAR_MARGIN) + encroachment(aabb, stationBoxes, CLEAR_MARGIN);
+        let clr = encroachment(aabb, othersAABB, CLEAR_MARGIN) + encroachment(aabb, stationBoxes, CLEAR_MARGIN);
         for (const s of nearSegs) { const g = boxSegGap(aabb, s.p1, s.p2); if (g < CLEAR_MARGIN) clr += CLEAR_MARGIN - g; }
         // sharp, label-only adjacency: two labels must never crowd close enough to read as one
-        const adj = noAdj ? 0 : encroachment(aabb, placedAABB, ADJ_MARGIN);
+        const adj = noAdj ? 0 : encroachment(aabb, othersAABB, ADJ_MARGIN);
         cost += W_CLEAR * clr + W_ADJ * adj;
       }
       if (cost < bestCost) {
         bestCost = cost;
         best = cand;
       }
+      // cost of the node's CURRENT placement (rescue passes it; greedy leaves it undefined)
+      if (current && cand.placement.x === current.x && cand.placement.y === current.y && cand.fp.angle === (current.angle ?? 0)) currentCost = cost;
     }
-    chosenOffset.set(node.id, [best.placement.x - cx, best.placement.y - cy]);
-    placed.push(best.fp);
-    placedAABB.push(fpAabb(best.fp));
-    result.set(node.id, lines.length > 1 ? { ...best.placement, lines } : best.placement);
+    const placement = lines.length > 1 ? { ...best.placement, lines } : best.placement;
+    return { placement, fp: best.fp, offset: [best.placement.x - cx, best.placement.y - cy], bestCost, currentCost };
+  };
+
+  // ---- greedy pass: place each label against those already placed ------------
+  for (const node of placeOrder) {
+    const r = placeNode(node, placed, placedAABB);
+    if (!r) continue;
+    chosenOffset.set(node.id, r.offset);
+    placed.push(r.fp);
+    placedAABB.push(fpAabb(r.fp));
+    fpByNode.set(node.id, r.fp);
+    aabbByNode.set(node.id, fpAabb(r.fp));
+    result.set(node.id, r.placement);
+  }
+
+  // ---- overlap rescue: re-seat still-overlapping labels against the FULL layout
+  // Greedy scores each label only against those placed BEFORE it, so an early choice
+  // can force a later overlap that a different arrangement would avoid. Each round
+  // re-runs every still-overlapping label against every OTHER final label, moving it
+  // only when a candidate strictly lowers its cost. Coordinate descent: each move
+  // lowers that label's cost (hence the total), so it converges; the round cap bounds
+  // it regardless. Off in the legacy path (byte-identical) and via OCTI_LABEL_NO_RESCUE=1.
+  if (!noRotate && envStr('OCTI_LABEL_NO_RESCUE') !== '1') {
+    const nodeById = new Map(placeOrder.map((n) => [n.id, n] as const));
+    for (let round = 0; round < 4; round++) {
+      let moved = false;
+      const overlapping = [...fpByNode.keys()].filter((id) => {
+        const fp = fpByNode.get(id)!;
+        for (const [oid, ofp] of fpByNode) if (oid !== id && fpOverlap(fp, ofp)) return true;
+        return false;
+      });
+      for (const id of overlapping) {
+        const node = nodeById.get(id);
+        if (!node) continue;
+        const others: Footprint[] = [];
+        const othersAABB: Box[] = [];
+        for (const [oid, ofp] of fpByNode) if (oid !== id) { others.push(ofp); othersAABB.push(aabbByNode.get(oid)!); }
+        const r = placeNode(node, others, othersAABB, result.get(id));
+        if (r && r.bestCost < r.currentCost - 1e-6) {
+          chosenOffset.set(id, r.offset);
+          fpByNode.set(id, r.fp);
+          aabbByNode.set(id, fpAabb(r.fp));
+          result.set(id, r.placement);
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
   }
 
   return result;
