@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { separateFusedStations, collapseFoldStubs, spliceStopFolds } from '../imageMerge';
+import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from '../imageMerge';
 import type { Image, Pixel, SupportGraph } from '../types';
 
 /** Straight 3-node corridor A -(e1)- N -(e2)- B with lines L1+L2 on both
@@ -550,4 +550,74 @@ test('spliceStopFolds discards a rewrite that would empty the course', () => {
   assert.equal(n, 0, 'empty-course rewrite discarded');
   assert.equal(h.lineTraversals.get('L1')!.length, 2, 'course untouched');
   assert.ok(h.stopAt.has('L1|mS'), 'stop untouched');
+});
+
+test('mergeCoincidentPaths fuses an edge overlapping a chain with a sub-lattice interior vertex', () => {
+  // eLong (A->C) lies exactly on the chain eS1 (A->B) + eS2 (B->C), but B sits
+  // at a sub-lattice position eLong's path never keyed. Without mutual vertex
+  // phase alignment the span re-emits as parallel duplicates and a line riding
+  // eLong out and back draws a twin-strand fold.
+  const nodes = new Map([
+    ['A', { id: 'A', pos: [0, 0] as Pixel }],
+    ['B', { id: 'B', pos: [23, 0] as Pixel }],
+    ['C', { id: 'C', pos: [30, 0] as Pixel }],
+  ]);
+  const edges = new Map([
+    ['eLong', { id: 'eLong', from: 'A', to: 'C', points: [[0, 0], [30, 0]] as Pixel[], lineIds: new Set(['L1']) }],
+    ['eS1', { id: 'eS1', from: 'A', to: 'B', points: [[0, 0], [23, 0]] as Pixel[], lineIds: new Set(['L2']) }],
+    ['eS2', { id: 'eS2', from: 'B', to: 'C', points: [[23, 0], [30, 0]] as Pixel[], lineIds: new Set(['L2']) }],
+  ]);
+  const h: SupportGraph = {
+    nodes,
+    edges,
+    adj: new Map([
+      ['A', ['eLong', 'eS1']],
+      ['B', ['eS1', 'eS2']],
+      ['C', ['eLong', 'eS2']],
+    ]),
+    lineRefs: new Map(),
+    lineTraversals: new Map([
+      ['L1', [
+        { edgeId: 'eLong', reversed: false },
+        { edgeId: 'eLong', reversed: true },
+      ]],
+      ['L2', [
+        { edgeId: 'eS1', reversed: false },
+        { edgeId: 'eS2', reversed: false },
+      ]],
+    ]),
+    stations: new Map(),
+    stopAt: new Set(),
+  };
+  const img: Image = {
+    placement: new Map([
+      ['A', [0, 0] as Pixel],
+      ['B', [23, 0] as Pixel],
+      ['C', [30, 0] as Pixel],
+    ]),
+    paths: new Map([
+      ['eLong', [[0, 0], [30, 0]] as Pixel[]],
+      ['eS1', [[0, 0], [23, 0]] as Pixel[]],
+      ['eS2', [[23, 0], [30, 0]] as Pixel[]],
+    ]),
+    cellSize: 16,
+  };
+  const merged = mergeCoincidentPaths(h, img);
+  // no parallel duplicates: each unordered node pair carries at most one edge
+  const pairSeen = new Set<string>();
+  for (const e of merged.h.edges.values()) {
+    const k = e.from < e.to ? e.from + '|' + e.to : e.to + '|' + e.from;
+    assert.ok(!pairSeen.has(k), `duplicate edge between ${k}`);
+    pairSeen.add(k);
+    // the overlapping span carries BOTH lines on every piece
+    assert.deepEqual([...e.lineIds].sort(), ['L1', 'L2'], `fused lines on ${e.id}`);
+  }
+  assert.equal(merged.h.edges.size, 2, 'chain of two spans');
+  // L1's out-and-back is now a same-edge retrace over the chain
+  const t1 = merged.h.lineTraversals.get('L1')!;
+  assert.equal(t1.length, 4);
+  assert.equal(t1[0].edgeId, t1[3].edgeId);
+  assert.equal(t1[1].edgeId, t1[2].edgeId);
+  assert.notEqual(t1[0].reversed, t1[3].reversed);
+  assert.notEqual(t1[1].reversed, t1[2].reversed);
 });

@@ -23,6 +23,22 @@ export function traceFoldCollapse(
   );
 }
 
+/** OCTI_FOLD_TRACE=1: one line per stop-fold SPLICE candidate (a same-edge
+ *  out-and-back pair), accepted or not, with every gate value, for diagnosing
+ *  folds that survive the splice. */
+export function traceSpliceCandidate(
+  line: string,
+  edgeId: string,
+  tip: string,
+  d: { arc: number; maxArc: number; inked: boolean; stopAtTip: boolean; gids: number; veto: boolean; taken: boolean },
+): void {
+  if (typeof process === 'undefined' || envStr('OCTI_FOLD_TRACE') !== '1') return;
+  console.error(
+    `[fold] SPLICE ${d.taken ? 'TAKE' : 'DECLINE'} ${line.slice(0, 8)} edge=${edgeId} tip=${tip} ` +
+    `arc=${d.arc.toFixed(1)}/${d.maxArc.toFixed(1)} inked=${d.inked} stopAtTip=${d.stopAtTip} gids=${d.gids} veto=${d.veto}`,
+  );
+}
+
 export function debugMergeChains(
   edgeVerts: Map<string, string[]>,
   vPos: Map<string, Pixel>,

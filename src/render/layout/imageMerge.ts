@@ -11,7 +11,8 @@
 // support graph + image whose edges are those runs. Line traversals, station
 // anchors, and stop flags are remapped onto the new edges.
 
-import { debugMergeChains, traceFoldCollapse } from './debug/imageMerge.debug';
+import { debugMergeChains, traceFoldCollapse, traceSpliceCandidate } from './debug/imageMerge.debug';
+import { LINE_WIDTH, LINE_GAP } from '../constants';
 import type {
   Pixel,
   SupportGraph,
@@ -79,18 +80,102 @@ export function mergeCoincidentPaths(
   // floor keeps degenerate cell sizes from exploding the vertex count.
   const lattice = Math.max(4, (img.cellSize ?? 16) / 2);
 
+  // ---- pass 0: mutual vertex phase alignment -------------------------------
+  // Coincident paths can carry vertices at different arc positions (grid
+  // nodes vs interpolated slice points vs station snaps). splitAtLattice
+  // aligns grid-phase geometry, but a SUB-LATTICE vertex of one path leaves
+  // the other path's overlapping segment keyed straight past it: the shared
+  // span never groups by owner set, and the two paths re-emit as parallel
+  // duplicate edges on identical pixels. A line that rides one duplicate out
+  // and the other back then draws a twin-strand fold with a self-crossing
+  // instead of a coincident retrace. Split every path at any vertex (of any
+  // path, or any node placement) that lies on a segment interior, so
+  // coincident geometry always shares vertex phase.
+  const preSplit = new Map<string, Pixel[]>();
+  const candSeen = new Set<string>();
+  const cands: Pixel[] = [];
+  const addCand = (p: Pixel): void => {
+    const k = vKey(p);
+    if (candSeen.has(k)) return;
+    candSeen.add(k);
+    cands.push([p[0], p[1]]);
+  };
+  const edgeIdsAll = [...h.edges.keys()].sort();
+  for (const eid of edgeIdsAll) {
+    const rawPath = img.paths.get(eid);
+    if (!rawPath || rawPath.length < 2) continue;
+    const path = splitAtLattice(rawPath, lattice);
+    preSplit.set(eid, path);
+    for (const p of path) addCand(p);
+  }
+  for (const nid of [...h.nodes.keys()].sort()) {
+    const p = img.placement.get(nid);
+    if (p) addCand(p);
+  }
+  const CELL = Math.max(4, lattice);
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < cands.length; i++) {
+    const k = Math.floor(cands[i][0] / CELL) + ',' + Math.floor(cands[i][1] / CELL);
+    let arr = buckets.get(k);
+    if (!arr) buckets.set(k, (arr = []));
+    arr.push(i);
+  }
+  // On-segment tolerance: well under the vertex quantization step, so only
+  // genuinely coincident geometry gains vertices and the sub-quantum bend an
+  // insertion introduces cannot survive quantization.
+  const EPS = 0.25;
+  const splitAtForeignVerts = (pts: Pixel[]): Pixel[] => {
+    const out: Pixel[] = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-12) { out.push(b); continue; }
+      const ka = vKey(a);
+      const kb = vKey(b);
+      const x0 = Math.min(a[0], b[0]) - EPS;
+      const x1 = Math.max(a[0], b[0]) + EPS;
+      const y0 = Math.min(a[1], b[1]) - EPS;
+      const y1 = Math.max(a[1], b[1]) + EPS;
+      const hits: Array<{ t: number; k: string; p: Pixel }> = [];
+      for (let cx = Math.floor(x0 / CELL); cx <= Math.floor(x1 / CELL); cx++) {
+        for (let cy = Math.floor(y0 / CELL); cy <= Math.floor(y1 / CELL); cy++) {
+          const arr = buckets.get(cx + ',' + cy);
+          if (!arr) continue;
+          for (const ci of arr) {
+            const v = cands[ci];
+            const kv = vKey(v);
+            if (kv === ka || kv === kb) continue;
+            const t = ((v[0] - a[0]) * dx + (v[1] - a[1]) * dy) / len2;
+            if (t <= 1e-6 || t >= 1 - 1e-6) continue;
+            const ddx = v[0] - (a[0] + dx * t);
+            const ddy = v[1] - (a[1] + dy * t);
+            if (ddx * ddx + ddy * ddy > EPS * EPS) continue;
+            hits.push({ t, k: kv, p: [v[0], v[1]] });
+          }
+        }
+      }
+      hits.sort((u, w) => (u.t - w.t) || (u.k < w.k ? -1 : u.k > w.k ? 1 : 0));
+      for (const hh of hits) out.push(hh.p);
+      out.push(b);
+    }
+    return out;
+  };
+
   // ---- pass 1: vertex/segment inventory -----------------------------------
   const vPos = new Map<string, Pixel>();
   const edgeVerts = new Map<string, string[]>(); // edge -> vertex keys (from→to)
   const segOwners = new Map<string, Set<string>>();
 
   for (const e of h.edges.values()) {
-    const rawPath = img.paths.get(e.id);
-    if (!rawPath || rawPath.length < 2) {
+    const pre = preSplit.get(e.id);
+    if (!pre) {
       edgeVerts.set(e.id, []);
       continue;
     }
-    const path = splitAtLattice(rawPath, lattice);
+    const path = splitAtForeignVerts(pre);
     const verts: string[] = [];
     for (const p of path) {
       const k = vKey(p);
@@ -529,42 +614,64 @@ export function spliceStopFolds(
   const lineIds = [...h.lineTraversals.keys()].sort();
   for (const l of lineIds) {
     const steps = h.lineTraversals.get(l)!;
-    const out: TraversalStep[] = [];
     const movedTips = new Set<string>();
     const plannedBase = new Map<string, string>(); // tip -> base for THIS line
-    let changed = false;
-    for (let i = 0; i < steps.length; i++) {
-      const s1 = steps[i];
-      const s2 = steps[i + 1];
-      if (s1 && s2 && s1.edgeId === s2.edgeId && s1.reversed !== s2.reversed) {
-        const e = h.edges.get(s1.edgeId);
-        if (e && arcOf(e.points) <= maxArc) {
-          const tip = s1.reversed ? e.from : e.to;
-          const base = s1.reversed ? e.to : e.from;
-          const gids = gidsAt(tip);
-          const siblings = throughLines.get(s1.edgeId);
-          const corridorStaysInked = !!siblings && [...siblings].some((l2) => l2 !== l);
-          if (
-            corridorStaysInked &&
-            h.stopAt.has(l + '|' + tip) &&
-            gids.length > 0 &&
-            !gids.some((gid) => realTurnGroups.has(l + '|' + gid))
-          ) {
-            movedTips.add(tip);
-            if (!plannedBase.has(tip)) plannedBase.set(tip, base);
-            changed = true;
-            i++; // consume the pair
-            continue;
+    // A fold can be several edges deep (out over a chain, back over the same
+    // chain): consuming the innermost pair makes the next pair immediate, so
+    // the scan repeats on its own rewrite until a fixpoint. The bound is the
+    // deepest chain a stub cap's worth of edges can form.
+    let cur: TraversalStep[] = steps;
+    let changedAny = false;
+    for (let round = 0; round < 8; round++) {
+      const out: TraversalStep[] = [];
+      let changed = false;
+      for (let i = 0; i < cur.length; i++) {
+        const s1 = cur[i];
+        const s2 = cur[i + 1];
+        if (s1 && s2 && s1.edgeId === s2.edgeId && s1.reversed !== s2.reversed) {
+          const e = h.edges.get(s1.edgeId);
+          if (e) {
+            const arc = arcOf(e.points);
+            const tip = s1.reversed ? e.from : e.to;
+            const base = s1.reversed ? e.to : e.from;
+            const gids = gidsAt(tip);
+            const siblings = throughLines.get(s1.edgeId);
+            const corridorStaysInked = !!siblings && [...siblings].some((l2) => l2 !== l);
+            const veto = gids.some((gid) => realTurnGroups.has(l + '|' + gid));
+            const take =
+              arc <= maxArc &&
+              corridorStaysInked &&
+              h.stopAt.has(l + '|' + tip) &&
+              gids.length > 0 &&
+              !veto;
+            traceSpliceCandidate(l, s1.edgeId, tip, {
+              arc, maxArc, inked: corridorStaysInked,
+              stopAtTip: h.stopAt.has(l + '|' + tip), gids: gids.length, veto, taken: take,
+            });
+            if (take) {
+              movedTips.add(tip);
+              if (!plannedBase.has(tip)) plannedBase.set(tip, base);
+              changed = true;
+              i++; // consume the pair
+              continue;
+            }
           }
         }
+        out.push(s1);
       }
-      out.push(s1);
+      if (!changed) break;
+      changedAny = true;
+      cur = out;
     }
-    if (!changed) continue;
+    if (!changedAny) continue;
+    const out = cur;
 
     // Service conservation: the rewrite commits only if the new course is
     // non-empty and still visits every stop node of the line, counting each
-    // moved stop at its base. Otherwise discard the whole rewrite.
+    // moved stop at its base. A deep fold moves bases in a CHAIN (the outer
+    // pair's base is itself an inner tip), so targets resolve transitively to
+    // the first node the new course still visits. Otherwise discard the whole
+    // rewrite.
     const visited = new Set<string>();
     for (const s of out) {
       const e = h.edges.get(s.edgeId);
@@ -572,12 +679,21 @@ export function spliceStopFolds(
       visited.add(e.from);
       visited.add(e.to);
     }
+    const resolveBase = (n: string): string => {
+      let x = n;
+      for (let hops = 0; hops < 8 && movedTips.has(x) && !visited.has(x); hops++) {
+        const b = plannedBase.get(x);
+        if (!b) break;
+        x = b;
+      }
+      return x;
+    };
     let conserved = out.length > 0;
     if (conserved) {
       for (const key of h.stopAt) {
         if (!key.startsWith(l + '|')) continue;
         const n = key.slice(key.indexOf('|') + 1);
-        const target = movedTips.has(n) && !visited.has(n) ? plannedBase.get(n)! : n;
+        const target = resolveBase(n);
         // only stops the OLD course could reach are held to the invariant
         let reachableBefore = false;
         for (const s of steps) {
@@ -590,13 +706,13 @@ export function spliceStopFolds(
     if (!conserved) continue;
 
     h.lineTraversals.set(l, out);
-    for (const [tip, base] of plannedBase) if (!rehome.has(tip)) rehome.set(tip, base);
+    for (const tip of movedTips) if (!rehome.has(tip)) rehome.set(tip, resolveBase(tip));
     spliced += movedTips.size;
     // the stop follows only when the line no longer visits the tip at all;
     // a remaining genuine visit keeps its stop in place
     for (const tip of movedTips) {
       if (visited.has(tip)) continue;
-      const base = plannedBase.get(tip)!;
+      const base = resolveBase(tip);
       h.stopAt.delete(l + '|' + tip);
       h.stopAt.add(l + '|' + base);
       for (const gid of gidsAt(tip)) {
@@ -643,6 +759,22 @@ export function spliceStopFolds(
 // the station mapping are remapped. Mutates h and img in place.
 
 const MIN_SPLIT_ARC = 8; // px: min arc from either edge end (≈ 2 marker radii)
+
+// A station split seated INSIDE a junction's corner fan puts its marks where
+// the outer lanes have already turned off toward their meet points, and the
+// stranded lane piece between the mark and the corner degenerates into a
+// backward stub. The node-side split floor therefore scales with the fan's
+// depth: the widest incident bundle's half width, obliquity-corrected for
+// 45-degree corners, plus two lane pitches of margin.
+const fanDepthAt = (h: SupportGraph, nid: string): number => {
+  let maxLines = 1;
+  for (const eid of h.adj.get(nid) ?? []) {
+    const e = h.edges.get(eid);
+    if (e && e.lineIds.size > maxLines) maxLines = e.lineIds.size;
+  }
+  const pitch = LINE_WIDTH + LINE_GAP;
+  return ((maxLines - 1) / 2) * pitch * Math.SQRT2 + 2 * pitch;
+};
 
 export function separateFusedStations(
   h: SupportGraph,
@@ -755,6 +887,7 @@ export function separateFusedStations(
       .map((st) => ({ st, arc: getCandidates(st)[0]?.arcFromSplit ?? -Infinity }))
       .sort((a, b) => (b.arc - a.arc) || (a.st.id < b.st.id ? -1 : a.st.id > b.st.id ? 1 : 0));
 
+    const nodeFloor = Math.max(MIN_SPLIT_ARC, fanDepthAt(h, nid));
     for (const { st } of nonKeepers) {
       const candidates = getCandidates(st);
       let best: Cand | null = null;
@@ -765,7 +898,7 @@ export function separateFusedStations(
       let segIdx = 0;
       let splitP: Pixel | null = null;
       for (const cand of candidates) {
-        const arc = Math.max(MIN_SPLIT_ARC, Math.min(cand.arcTotal - MIN_SPLIT_ARC, cand.arcFromSplit));
+        const arc = Math.max(nodeFloor, Math.min(cand.arcTotal - MIN_SPLIT_ARC, cand.arcFromSplit));
         const pts = img.paths.get(cand.eid) ?? h.edges.get(cand.eid)!.points;
         let acc = 0;
         let sIdx = 0;
@@ -784,7 +917,7 @@ export function separateFusedStations(
           }
           acc += segLen;
         }
-        if (dist(sP, nodePos) < MIN_SPLIT_ARC) continue;
+        if (dist(sP, nodePos) < nodeFloor) continue;
         best = cand;
         segIdx = sIdx;
         splitP = sP;
