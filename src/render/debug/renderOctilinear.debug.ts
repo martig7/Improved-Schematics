@@ -6,9 +6,10 @@
 // overlap diagnostics), OCTI_CONN_TRACE (per-line connector trace),
 // CSPREAD_DEBUG (corridor-spread trace), or OCTI_DEBUG (vanished/slid/evicted
 // stations, egregious ring overlaps, ribbon summary).
-import { envStr } from '../../env';
+import { envStr, envNum } from '../../env';
 import type { Layout, Pixel } from '../layout/types';
 import { detectPaintedLoops } from '../layout/loopMetrics';
+import { findInkClips, type InkRef } from '../layout/clipMetrics';
 
 /** OCTI_JOIN_TRACE target line id (undefined outside Node / when unset). Kept
  *  as a value so the core's `JOIN_TRACE === lineId` guards read identically. */
@@ -77,6 +78,57 @@ export function reportPaintedLoops(d: {
   }
   const arts = loops.filter((l) => l.kind === 'artifact').length;
   console.error(`[loops] ${arts} artifact loops, ${loops.length - arts} bigloops (likely genuine routes)`);
+}
+
+/** OCTI_CLIPS: census of one line's FINAL ink riding through another line's
+ *  ink (sustained near-parallel sub-pitch overlap on the finished ribbons,
+ *  fillets/joins/connectors included). `parseInk` is the core's
+ *  drawnSegsByLine, passed as a callback so the parse only runs when the flag
+ *  is on. OCTI_CLIP_DIST / OCTI_CLIP_RUN override the thresholds (px). */
+export function reportBundleClips(d: {
+  layout: Layout;
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  spacing: number;
+  stations?: Array<{ nodeId: string }>;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (!envStr('OCTI_CLIPS')) return;
+  const { layout, lineById, dByLine, parseInk, spacing, stations, nodePx } = d;
+  const distMax = Number.isFinite(envNum('OCTI_CLIP_DIST')) ? envNum('OCTI_CLIP_DIST') : spacing * 0.75;
+  const runMin = Number.isFinite(envNum('OCTI_CLIP_RUN')) ? envNum('OCTI_CLIP_RUN') : spacing * 3;
+  const segsByLine = parseInk(dByLine);
+  const inks: InkRef[] = [];
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!lineById.has(lineId)) continue;
+    inks.push({ id: lineId, segs: segsByLine.get(lineId)! });
+  }
+  const clips = findInkClips(inks, distMax, runMin);
+  const groups: Array<{ pos: Pixel; label: string }> = [];
+  for (const st of stations ?? []) {
+    const pos = nodePx.get(st.nodeId);
+    if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+  }
+  const nearestGroup = (p: Pixel): string => {
+    let best = '?';
+    let bd = Infinity;
+    for (const g of groups) {
+      const dd = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+      if (dd < bd) { bd = dd; best = g.label; }
+    }
+    return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+  };
+  const rows = [...clips].sort((a, b) => b.run - a.run);
+  for (const r of rows.slice(0, 60)) {
+    const la = lineById.get(r.idA);
+    const lb = lineById.get(r.idB);
+    console.error(
+      `[clips] ${la?.label ?? r.idA} (${la?.color ?? '?'}) x ${lb?.label ?? r.idB} (${lb?.color ?? '?'}) ` +
+      `run=${r.run.toFixed(0)}px at=(${r.at[0].toFixed(0)},${r.at[1].toFixed(0)}) near=${nearestGroup(r.at)}`,
+    );
+  }
+  console.error(`[clips] ${rows.length} ink clips (dist<${distMax.toFixed(1)} run>=${runMin.toFixed(1)})`);
 }
 
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks

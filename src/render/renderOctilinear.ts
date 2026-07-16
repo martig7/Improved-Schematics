@@ -3,7 +3,7 @@
 // the smoothed renderer.
 
 import {
-  joinTraceTarget, makeJoinLog, reportPaintedLoops, reportVanishedStations,
+  joinTraceTarget, makeJoinLog, reportPaintedLoops, reportBundleClips, reportVanishedStations,
   reportFarAttach, reportSplitFit, reportCapsOverlap, reportPlatformSplit,
   reportCapsOvlStats, reportCapsAudit,
   reportRigidSlideDeclined, reportSlideStackDeclined,
@@ -3673,6 +3673,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   reportRibbonSummary({
     segCount: segPath.size, edgeCount: layout.edges.length,
     miteredCount: mitered.size, connCount: connSeen.size, lineCount: dByLine.size,
+  });
+  // Final-ink clip census (dByLine is complete here: fillets, joins and node
+  // connectors all applied).
+  reportBundleClips({
+    layout, lineById, dByLine, parseInk: drawnSegsByLine, spacing,
+    stations: args.stations, nodePx,
   });
 
   // Toronto crossings, from the FINAL drawn ribbons (dByLine is complete here:
