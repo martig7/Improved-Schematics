@@ -282,7 +282,18 @@ keeps its signature.
   into complete stacks where boxes are really close. It now keeps the strong base (any overlap
   still worse than a clean spot) and ADDS `OVL_FRAC_W` times the overlap fraction (of the
   smaller box), so the packer prefers the least-overlapping of forced placements. New pure
-  `overlapFraction`; legacy path stays flat and byte-identical.
+  `overlapFraction`; legacy path stays flat and byte-identical. `SOFT_INF` base makes text-text
+  overlap the last resort of last resorts (the packer crosses lines / turns sideways first).
+
+- **Overlap rescue pass.** Greedy scores each label only against those placed BEFORE it, so an
+  early choice can force a later overlap a different arrangement would avoid. The per-node
+  candidate build+score is extracted into `placeNode(node, others, othersAABB, current)`, and a
+  coordinate-descent rescue runs after greedy: each round re-runs every still-overlapping label
+  against every OTHER final label, moving it only when a candidate strictly lowers its cost.
+  Each move lowers that label's cost (hence the total), so it converges; a 4-round cap bounds
+  it. It is a no-op when nothing overlaps and gated by `!noRotate` + `OCTI_LABEL_NO_RESCUE`, so
+  legacy stays byte-identical. Measured (overlapping flat-label pairs): SEA 9->4, NYC 1 (an
+  unavoidable box-in) unchanged, LON 0.
 
 **Legacy guarantee, preserved.** All of the above are gated by the single legacy switch
 `OCTI_LABEL_NO_ROTATE=1` (which now means "all new label behaviour off"), so that flag still
