@@ -494,7 +494,15 @@ export function separateFusedStations(
     );
     const keeper = withTrue[0];
 
-    for (const st of withTrue.slice(1)) {
+    // Seat the non-keepers FARTHEST-from-keeper first. Each split subdivides the
+    // keeper-incident stub, and the BFS that finds a split corridor only reaches
+    // that stub (the far half is behind the new node), so a later, NEARER station
+    // projects onto the shortened stub. Nearest-first telescopes them backward into
+    // the end-clamp (arcTotal - MIN_SPLIT_ARC), reversing their order; farthest-first
+    // drops the far split beyond the nearer ones, so every subsequent projection
+    // lands within the remaining stub at its true arc and order is preserved.
+    // reverse() acts on the fresh slice, not withTrue; deterministic (stable sort).
+    for (const st of withTrue.slice(1).reverse()) {
       // Distinct station groups ALWAYS get their own markers: one marker per
       // station, with capsule-ness coming from the group itself. Even close
       // pairs split, with the min-arc guard keeping the dots visually apart on
