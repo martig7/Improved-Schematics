@@ -30,7 +30,7 @@ import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/t
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP, regimeDivisor } from './constants';
-import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs } from './layout/imageMerge';
+import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import { nodeSeqFromSupport } from './layout/stopSeq';
@@ -1173,6 +1173,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       }
     }
     collapseFoldStubs(merged.h, merged.img, realTurnGroups);
+    // Folds on SHARED corridors survive the node-level collapse (the tip is
+    // not a degree-1 stub); splice those per line against the same truth.
+    spliceStopFolds(merged.h, merged.img, realTurnGroups);
   }
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation

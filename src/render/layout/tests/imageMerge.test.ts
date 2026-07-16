@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { separateFusedStations, collapseFoldStubs } from '../imageMerge';
+import { separateFusedStations, collapseFoldStubs, spliceStopFolds } from '../imageMerge';
 import type { Image, Pixel, SupportGraph } from '../types';
 
 /** Straight 3-node corridor A -(e1)- N -(e2)- B with lines L1+L2 on both
@@ -407,4 +407,147 @@ test('collapseFoldStubs keeps a terminus station whose lines turn around beyond 
   const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 0, 'terminal station kept');
   assert.ok(h.nodes.has('mS') && h.edges.has('eS'));
+});
+
+/** Shared-corridor fold: L1 folds over eS (mJ -> mS -> back), but eS is a
+ *  segment of a through corridor L2 genuinely traverses (mJ - mS - mN), so
+ *  the tip mS is not a degree-1 stub. Station g1 seated at mS with L1's stop. */
+function sharedFoldFixture() {
+  const h: SupportGraph = {
+    nodes: new Map([
+      ['mA', { id: 'mA', pos: [0, 0] as Pixel }],
+      ['mJ', { id: 'mJ', pos: [100, 0] as Pixel }],
+      ['mS', { id: 'mS', pos: [100, -40] as Pixel }],
+      ['mN', { id: 'mN', pos: [100, -140] as Pixel }],
+      ['mB', { id: 'mB', pos: [200, 0] as Pixel }],
+    ]),
+    edges: new Map([
+      ['eA', { id: 'eA', from: 'mA', to: 'mJ', points: [[0, 0], [100, 0]] as Pixel[], lineIds: new Set(['L1']) }],
+      ['eS', { id: 'eS', from: 'mJ', to: 'mS', points: [[100, 0], [100, -40]] as Pixel[], lineIds: new Set(['L1', 'L2']) }],
+      ['eN', { id: 'eN', from: 'mS', to: 'mN', points: [[100, -40], [100, -140]] as Pixel[], lineIds: new Set(['L2']) }],
+      ['eB', { id: 'eB', from: 'mJ', to: 'mB', points: [[100, 0], [200, 0]] as Pixel[], lineIds: new Set(['L1']) }],
+    ]),
+    adj: new Map([
+      ['mA', ['eA']],
+      ['mJ', ['eA', 'eS', 'eB']],
+      ['mS', ['eS', 'eN']],
+      ['mN', ['eN']],
+      ['mB', ['eB']],
+    ]),
+    lineRefs: new Map(),
+    lineTraversals: new Map([
+      ['L1', [
+        { edgeId: 'eA', reversed: false },
+        { edgeId: 'eS', reversed: false },
+        { edgeId: 'eS', reversed: true },
+        { edgeId: 'eB', reversed: false },
+      ]],
+      ['L2', [
+        { edgeId: 'eS', reversed: false },
+        { edgeId: 'eN', reversed: false },
+      ]],
+    ]),
+    stations: new Map([
+      ['g1', { id: 'g1', label: 'Apex St', lngLat: [0, 0], nodeId: 'mS', stopNodes: new Map([['L1', 'mS']]) }],
+    ]),
+    stopAt: new Set(['L1|mS']),
+  };
+  const img: Image = {
+    placement: new Map([
+      ['mA', [0, 0] as Pixel],
+      ['mJ', [100, 0] as Pixel],
+      ['mS', [100, -40] as Pixel],
+      ['mN', [100, -140] as Pixel],
+      ['mB', [200, 0] as Pixel],
+    ]),
+    paths: new Map([
+      ['eA', [[0, 0], [100, 0]] as Pixel[]],
+      ['eS', [[100, 0], [100, -40]] as Pixel[]],
+      ['eN', [[100, -40], [100, -140]] as Pixel[]],
+      ['eB', [[100, 0], [200, 0]] as Pixel[]],
+    ]),
+    cellSize: 32,
+  };
+  return { h, img };
+}
+
+test('spliceStopFolds splices a shared-corridor fold and re-homes the stop', () => {
+  const { h, img } = sharedFoldFixture();
+  assert.equal(collapseFoldStubs(h, img, new Set()), 0, 'node-level collapse cannot act (degree 2)');
+  const n = spliceStopFolds(h, img, new Set());
+  assert.equal(n, 1, 'one pair spliced');
+  assert.deepEqual(h.lineTraversals.get('L1'), [
+    { edgeId: 'eA', reversed: false },
+    { edgeId: 'eB', reversed: false },
+  ], 'fold pair removed from the folded line only');
+  assert.deepEqual(h.lineTraversals.get('L2'), [
+    { edgeId: 'eS', reversed: false },
+    { edgeId: 'eN', reversed: false },
+  ], 'through line untouched');
+  assert.ok(h.stopAt.has('L1|mJ') && !h.stopAt.has('L1|mS'), 'stop flag moved to the base');
+  assert.equal(h.stations.get('g1')!.stopNodes!.get('L1'), 'mJ', 'per-line stop node moved');
+  assert.equal(h.stations.get('g1')!.nodeId, 'mJ', 'station follows once nothing anchors the tip');
+  assert.ok(!h.edges.get('eS')!.lineIds.has('L1'), 'folded line stripped from the shared edge');
+  assert.ok(h.edges.has('eS') && h.nodes.has('mS'), 'shared corridor survives');
+});
+
+test('spliceStopFolds keeps a fold whose station is a genuine graph turnaround', () => {
+  const { h, img } = sharedFoldFixture();
+  const n = spliceStopFolds(h, img, new Set(['L1|g1']));
+  assert.equal(n, 0);
+  assert.ok(h.stopAt.has('L1|mS'));
+});
+
+test('spliceStopFolds keeps the stop at a tip the line still genuinely visits', () => {
+  const { h, img } = sharedFoldFixture();
+  // L1 also continues through mS later in its course (via the through
+  // corridor), so removing the fold pair must not move its stop flag.
+  h.edges.get('eN')!.lineIds.add('L1');
+  h.lineTraversals.set('L1', [
+    { edgeId: 'eA', reversed: false },
+    { edgeId: 'eS', reversed: false },
+    { edgeId: 'eS', reversed: true },
+    { edgeId: 'eB', reversed: false },
+    { edgeId: 'eB', reversed: true },
+    { edgeId: 'eS', reversed: false },
+    { edgeId: 'eN', reversed: false },
+  ]);
+  const n = spliceStopFolds(h, img, new Set());
+  assert.equal(n, 1, 'the fold pair still splices');
+  assert.ok(h.stopAt.has('L1|mS'), 'stop stays: the line still visits the tip');
+  assert.equal(h.stations.get('g1')!.nodeId, 'mS', 'station stays anchored');
+});
+
+test('spliceStopFolds ignores stop-less folds (hook splice territory)', () => {
+  const { h, img } = sharedFoldFixture();
+  h.stopAt.clear();
+  const n = spliceStopFolds(h, img, new Set());
+  assert.equal(n, 0);
+});
+
+test('spliceStopFolds keeps a self-standing fold (no through sibling on the edge)', () => {
+  // Every line on the fold edge folds over it (a degenerate ring drawn as an
+  // out-and-back arm): the fold IS the ink reaching the station and must stay.
+  const { h, img } = sharedFoldFixture();
+  h.edges.get('eS')!.lineIds.delete('L2');
+  h.lineTraversals.set('L2', [{ edgeId: 'eN', reversed: false }]);
+  const n = spliceStopFolds(h, img, new Set());
+  assert.equal(n, 0, 'self-standing fold kept');
+  assert.ok(h.stopAt.has('L1|mS'));
+  assert.equal(h.lineTraversals.get('L1')!.length, 4, 'course untouched');
+});
+
+test('spliceStopFolds discards a rewrite that would empty the course', () => {
+  // L1's whole course is the fold pair; splicing it would leave no course at
+  // all, so service conservation rejects the rewrite even though the fold
+  // edge has a through sibling.
+  const { h, img } = sharedFoldFixture();
+  h.lineTraversals.set('L1', [
+    { edgeId: 'eS', reversed: false },
+    { edgeId: 'eS', reversed: true },
+  ]);
+  const n = spliceStopFolds(h, img, new Set());
+  assert.equal(n, 0, 'empty-course rewrite discarded');
+  assert.equal(h.lineTraversals.get('L1')!.length, 2, 'course untouched');
+  assert.ok(h.stopAt.has('L1|mS'), 'stop untouched');
 });

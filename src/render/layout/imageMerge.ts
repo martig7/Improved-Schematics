@@ -442,6 +442,191 @@ export function collapseFoldStubs(
   return collapsed;
 }
 
+// ---- per-line stop-fold splice ----------------------------------------------
+// A manufactured fold can sit on a SHARED corridor: the folded line retraces a
+// short edge that other lines genuinely pass through, so the fold tip is not a
+// degree-1 stub and the node-level collapse above cannot act (deleting the
+// edge would cut the through lines). The fold is still per-line course
+// fiction, and only that line's traversal needs repair: drop the immediate
+// out-and-back pair and re-home the line's stop onto the fold base, which
+// sits on its real course. Other lines and the shared edge are untouched.
+//
+// The through-sibling gate is what separates an ERASABLE fold from drawn
+// geometry. When another line traverses the fold edge without folding, the
+// corridor stays inked and the folded line loses nothing spatial. When every
+// line on the edge folds (a degenerate ring drawn as out-and-back arms), the
+// fold IS the ink that reaches those stations, and erasing it collapses real
+// service: courses hollow out, station groups pile onto one node, and the
+// one-label-per-node layout drops their names.
+
+/**
+ * Splice manufactured stop-pinned folds out of individual line traversals,
+ * in place.
+ *
+ * A candidate is an immediate same-edge out-and-back pair in one line's
+ * traversal whose tip hosts that line's stop flag, where the seated stations
+ * are all absent from the graph-course truth for the line (no genuine
+ * turnaround), the edge's arc stays within the stub cap, and at least one
+ * OTHER line traverses the fold edge without folding (the corridor is real
+ * ink that survives the splice). The pair is removed; the line's stop flag
+ * and per-line station stop node move to the fold base once the line no
+ * longer visits the tip at all (a remaining genuine visit keeps the stop
+ * where it is). Stop-less folds stay for the hook splice, and the station
+ * node itself follows only when no line's stop references the tip anymore.
+ *
+ * Each line's splices commit only if they conserve service: the rewritten
+ * course must stay non-empty and still visit every node the line stops at
+ * (with moved stops counted at their new base). A violating rewrite is
+ * discarded whole, so the pass can never hollow out a course.
+ *
+ * @param h    merged support graph (mutated)
+ * @param img  merged image (cellSize only; geometry is not touched)
+ * @param realTurnGroups genuine course turnarounds, "lineId|stationGroupId"
+ * @returns number of pairs spliced
+ */
+export function spliceStopFolds(
+  h: SupportGraph,
+  img: Image,
+  realTurnGroups: ReadonlySet<string>,
+): number {
+  const arcOf = (pts: Pixel[]): number => {
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0] - pts[i - 1][0];
+      const dy = pts[i][1] - pts[i - 1][1];
+      acc += Math.sqrt(dx * dx + dy * dy);
+    }
+    return acc;
+  };
+  const maxArc = FOLD_STUB_MAX_CELLS * (img.cellSize ?? 16);
+
+  const gidsAt = (nid: string): string[] => {
+    const gids: string[] = [];
+    for (const [gid, st] of h.stations) if (st.nodeId === nid) gids.push(gid);
+    return gids;
+  };
+
+  // Lines that traverse each edge WITHOUT folding (any step over the edge
+  // that is not half of an immediate same-edge out-and-back pair). Built
+  // once from the pristine traversals.
+  const throughLines = new Map<string, Set<string>>();
+  for (const [l, steps] of h.lineTraversals) {
+    for (let i = 0; i < steps.length; i++) {
+      const prev = steps[i - 1];
+      const next = steps[i + 1];
+      const s = steps[i];
+      const pairedPrev = prev && prev.edgeId === s.edgeId && prev.reversed !== s.reversed;
+      const pairedNext = next && next.edgeId === s.edgeId && next.reversed !== s.reversed;
+      if (pairedPrev || pairedNext) continue;
+      let set = throughLines.get(s.edgeId);
+      if (!set) throughLines.set(s.edgeId, (set = new Set()));
+      set.add(l);
+    }
+  }
+
+  let spliced = 0;
+  const rehome = new Map<string, string>(); // tip node -> fold base (first wins)
+  const lineIds = [...h.lineTraversals.keys()].sort();
+  for (const l of lineIds) {
+    const steps = h.lineTraversals.get(l)!;
+    const out: TraversalStep[] = [];
+    const movedTips = new Set<string>();
+    const plannedBase = new Map<string, string>(); // tip -> base for THIS line
+    let changed = false;
+    for (let i = 0; i < steps.length; i++) {
+      const s1 = steps[i];
+      const s2 = steps[i + 1];
+      if (s1 && s2 && s1.edgeId === s2.edgeId && s1.reversed !== s2.reversed) {
+        const e = h.edges.get(s1.edgeId);
+        if (e && arcOf(e.points) <= maxArc) {
+          const tip = s1.reversed ? e.from : e.to;
+          const base = s1.reversed ? e.to : e.from;
+          const gids = gidsAt(tip);
+          const siblings = throughLines.get(s1.edgeId);
+          const corridorStaysInked = !!siblings && [...siblings].some((l2) => l2 !== l);
+          if (
+            corridorStaysInked &&
+            h.stopAt.has(l + '|' + tip) &&
+            gids.length > 0 &&
+            !gids.some((gid) => realTurnGroups.has(l + '|' + gid))
+          ) {
+            movedTips.add(tip);
+            if (!plannedBase.has(tip)) plannedBase.set(tip, base);
+            changed = true;
+            i++; // consume the pair
+            continue;
+          }
+        }
+      }
+      out.push(s1);
+    }
+    if (!changed) continue;
+
+    // Service conservation: the rewrite commits only if the new course is
+    // non-empty and still visits every stop node of the line, counting each
+    // moved stop at its base. Otherwise discard the whole rewrite.
+    const visited = new Set<string>();
+    for (const s of out) {
+      const e = h.edges.get(s.edgeId);
+      if (!e) continue;
+      visited.add(e.from);
+      visited.add(e.to);
+    }
+    let conserved = out.length > 0;
+    if (conserved) {
+      for (const key of h.stopAt) {
+        if (!key.startsWith(l + '|')) continue;
+        const n = key.slice(key.indexOf('|') + 1);
+        const target = movedTips.has(n) && !visited.has(n) ? plannedBase.get(n)! : n;
+        // only stops the OLD course could reach are held to the invariant
+        let reachableBefore = false;
+        for (const s of steps) {
+          const e = h.edges.get(s.edgeId);
+          if (e && (e.from === n || e.to === n)) { reachableBefore = true; break; }
+        }
+        if (reachableBefore && !visited.has(target)) { conserved = false; break; }
+      }
+    }
+    if (!conserved) continue;
+
+    h.lineTraversals.set(l, out);
+    for (const [tip, base] of plannedBase) if (!rehome.has(tip)) rehome.set(tip, base);
+    spliced += movedTips.size;
+    // the stop follows only when the line no longer visits the tip at all;
+    // a remaining genuine visit keeps its stop in place
+    for (const tip of movedTips) {
+      if (visited.has(tip)) continue;
+      const base = plannedBase.get(tip)!;
+      h.stopAt.delete(l + '|' + tip);
+      h.stopAt.add(l + '|' + base);
+      for (const gid of gidsAt(tip)) {
+        const st = h.stations.get(gid)!;
+        if (st.stopNodes?.get(l) === tip) st.stopNodes.set(l, base);
+      }
+    }
+    // membership follows usage: strip the line from edges its rewritten
+    // traversal no longer covers, so no unused lane is painted
+    const used = new Set(out.map((s) => s.edgeId));
+    for (const s of steps) {
+      if (used.has(s.edgeId)) continue;
+      h.edges.get(s.edgeId)?.lineIds.delete(l);
+    }
+  }
+
+  // a station whose stops all moved off its node follows them to the base
+  for (const st of h.stations.values()) {
+    const base = rehome.get(st.nodeId);
+    if (!base) continue;
+    let anchored = false;
+    for (const key of h.stopAt) {
+      if (key.slice(key.indexOf('|') + 1) === st.nodeId) { anchored = true; break; }
+    }
+    if (!anchored) st.nodeId = base;
+  }
+
+  return spliced;
+}
+
 // ---- per-group station separation ------------------------------------------
 // Distinct station groups can end up fused onto ONE drawn node. Corridors that
 // genuinely converge below the merge radius put their anchor nodes within a
