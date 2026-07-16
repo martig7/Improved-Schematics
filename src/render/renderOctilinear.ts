@@ -849,8 +849,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // junction runs (downtown trunk: six nodes in ~70px) read as a braid even
   // with zero ordering changes. Give each edge one scalar lateral bias so
   // continuing lines keep their lateral position across nodes; the bundle
-  // rides slightly off the corridor centerline (clamped to ~one slot), which
-  // is invisible, instead of recentering at every composition change.
+  // rides slightly off the corridor centerline instead of recentering at
+  // every composition change.
+  // Clamp rule: an edge may shift one slot freely, plus however far its
+  // constraint mates already legitimately reach (their bias plus their half
+  // width, recomputed each pass so an inherited shift can propagate and then
+  // decay). A fixed one-slot clamp fails the thin continuation of a WIDE
+  // bundle: its lines sit far out on the flank, the centered corridor forces
+  // a multi-slot taper right where the turning lines' corner sweeps fan out,
+  // and the two cross at shallow angles (painted clips). With the scaled
+  // clamp the continuation exits at its seats and passes clear of the fan.
   // Sign care: lateral offsets apply along the from→to normal; traversing an
   // edge reversed flips the travel-frame sign.
   const biasOf = new Map<string, number>();
@@ -890,13 +898,22 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       byEdge.get(c.eB)!.push(c);
     }
     const maxBias = spacing;
+    // Widest lane offset each edge holds (its painted half width).
+    const halfWidthOf = new Map<string, number>();
+    for (const [eid, order] of orderOf) {
+      halfWidthOf.set(eid, ((order.length - 1) / 2) * spacing);
+    }
     const edgeIds = [...byEdge.keys()].sort();
     for (let pass = 0; pass < 12; pass++) {
       let moved = 0;
       for (const eid of edgeIds) {
         let sum = 0;
         let n = 0;
+        let cap = maxBias;
         for (const c of byEdge.get(eid)!) {
+          const mate = c.eA === eid ? c.eB : c.eA;
+          const reach = Math.abs(biasOf.get(mate) ?? 0) + (halfWidthOf.get(mate) ?? 0);
+          if (reach > cap) cap = reach;
           if (c.eA === eid) {
             // sA*(slotA + bA) = sB*(slotB + bB)  =>  bA = sA*K - slotA
             const k = c.sB * (c.slotB + (biasOf.get(c.eB) ?? 0));
@@ -909,7 +926,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
         }
         if (n === 0) continue;
-        const target = Math.max(-maxBias, Math.min(maxBias, sum / n));
+        const target = Math.max(-cap, Math.min(cap, sum / n));
         const cur = biasOf.get(eid) ?? 0;
         if (Math.abs(target - cur) > 0.05) moved++;
         biasOf.set(eid, target);
