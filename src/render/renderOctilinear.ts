@@ -1283,18 +1283,27 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (C) {
             const dispA = hyp(C[0] - qa[0], C[1] - qa[1]);
             const dispB = hyp(C[0] - qb[0], C[1] - qb[1]);
-            // The meet must land inside the corner's own footprint so a
-            // near-parallel pair (intersection far away) keeps the S connector.
-            // At an inside corner each end's displacement equals this line's
-            // lateral slot offset on the MATING edge, divided by the sine of
-            // the turn angle (at most sqrt(2) for octilinear corners), so the
-            // cap must scale with that offset. A fixed cap fails the outermost
-            // inside line of a wide bundle, and its declined miter leaves raw
-            // lane pieces that cross each other: a painted mini-loop.
-            const slotEff = (edgeId: string): number =>
-              Math.abs((slotOf.get(edgeId + '|' + lineId) ?? 0) + (biasOf.get(edgeId) ?? 0));
-            const capA = Math.max(spacing * 6, lenA, (slotEff(b.edgeId) + spacing) * Math.SQRT2);
-            const capB = Math.max(spacing * 6, lenB, (slotEff(a.edgeId) + spacing) * Math.SQRT2);
+            // The meet must land inside the corner's own fan so a
+            // near-parallel pair (intersection far away) keeps the S
+            // connector. The fan's reach is set by the REAL geometry: the
+            // meet of two offset lanes sits within the two bundles' combined
+            // half widths divided by the sine of the turn angle (an obtuse
+            // hairpin turn slides the meet much further out than a right
+            // angle, cot of the half angle, which the sine bound covers with
+            // margin). Fixed caps, and per-line slot caps with a fixed
+            // obliquity factor, both failed real corners: the outermost line
+            // of a wide bundle at a right angle, then any line of a wide
+            // trunk at a hairpin; each declined miter leaves raw lane pieces
+            // that cross each other as a painted mini-loop or triangle.
+            const halfWidthOf = (edgeId: string): number => {
+              const n = orderOf.get(edgeId)?.length ?? 1;
+              return ((n - 1) / 2) * spacing + Math.abs(biasOf.get(edgeId) ?? 0);
+            };
+            const den = Math.abs(dirA[0] * dirB[1] - dirA[1] * dirB[0]);
+            const fanReach =
+              (halfWidthOf(a.edgeId) + halfWidthOf(b.edgeId) + 2 * spacing) / Math.max(den, 0.5);
+            const capA = Math.max(spacing * 6, lenA, fanReach);
+            const capB = Math.max(spacing * 6, lenB, fanReach);
             // the corner must lie BEHIND the inbound end (clip/retract, not extend
             // past it forward) and AHEAD of the outbound end — i.e. on the turn's
             // inside — so the legs shorten into the bend rather than overshoot it
