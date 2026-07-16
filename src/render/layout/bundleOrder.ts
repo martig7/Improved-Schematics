@@ -13,6 +13,7 @@
 // renderGeographic call site.
 
 import { makeBlocksTrace, debugBlocks } from './debug/bundleOrder.debug';
+import { envStr } from '../../env';
 import type { Layout, LayoutEdge } from './types';
 import {
   type Block,
@@ -270,6 +271,161 @@ const cmpKeys = (a: number[], b: number[]): number => {
   }
   return 0;
 };
+
+/** Residual placement: repair ROOT-SEED interleaves the derivation cannot
+ *  reach. A root corridor is ordered by forward exit keys from ONE end, so the
+ *  flank placement of sub-groups within a forward group is blind to the other
+ *  end's arrival grouping; when it lands wrong, one arrival bundle is seated
+ *  INSIDE another and the inserted lines must cross half of it, braiding the
+ *  junction complex. Joins cannot produce such interleaves (they concatenate),
+ *  so these are pure seed residuals.
+ *
+ *  The physical cost model counts pairs of lines whose lateral order
+ *  disagrees with the angular rank of the neighbour corridors they connect to
+ *  (the same walk-relative ranking the split plan uses, so the model matches
+ *  the machinery's own flank physics).
+ *
+ *  The move is an ADJACENT pair swap applied across the pair's whole
+ *  CO-TRAVEL STRETCH (every corridor the two lines ride together, connected
+ *  through ends where both continue into the same neighbour). Swapping a
+ *  single corridor in isolation would fall out of step with the neighbours'
+ *  orders and materialize same-section twists, which are worse than any
+ *  wedge; swapping the whole stretch keeps every interior boundary consistent
+ *  by construction, and at the stretch ends the two lines part ways, so no
+ *  boundary carries their shared order. Only the swapped pair's own rank
+ *  contributions change (adjacency everywhere means no third line's order
+ *  moves), so the acceptance test is exact: the pair's summed disagreement
+ *  over the stretch-end junctions must strictly drop. A pair whose two
+ *  stretch ends make conflicting demands stays put (its crossing is genuine
+ *  and must materialize at one end or the other). Every acceptance strictly
+ *  lowers the global rank potential, so sweeps converge. A line with no
+ *  neighbour at either end sitting between a disagreeing pair blocks the
+ *  bubble (swapping past it is cost-neutral, and only strict wins are
+ *  accepted); interleaves are through-traffic in practice, so this residual
+ *  is accepted rather than special-cased.
+ *  Deterministic: sorted sweeps, quantized angles, index-ordered pair scans. */
+export function placeResiduals(
+  flats: Map<number, string[]>,
+  cs: CorridorSet,
+  flows: Map<string, Map<string, LineFlow>>,
+  trace?: (c: Corridor, msg: string) => void,
+): number {
+  // Neighbour corridor of `line` at `nd`, seen from corridor c: the non-c
+  // member of the line's recorded transition. Null when the line starts or
+  // ends here, turns around, or when the recorded transition does not involve
+  // c (a route revisiting the node on another corridor pair).
+  const neighborOf = (c: Corridor, nd: string, line: string): number | null => {
+    const f = flows.get(nd)?.get(line);
+    if (!f) return null;
+    if (f.from !== c.id && f.to !== c.id) return null;
+    const other = f.from === c.id ? f.to : f.from;
+    return other === null || other === undefined || other === c.id ? null : other;
+  };
+  const rankCache = new Map<string, number>();
+  const rankOf = (c: Corridor, nd: string, gid: number): number => {
+    const k = c.id + '|' + nd + '|' + gid;
+    let r = rankCache.get(k);
+    if (r === undefined) {
+      r = relAngleAt(cs.corridors[gid], nd, facingAfter(c, nd));
+      rankCache.set(k, r);
+    }
+    return r;
+  };
+  // Node walking frame (reading INTO nd), same convention as processJunction.
+  const nodeFrame = (c: Corridor, nd: string, canonical: readonly string[]): string[] =>
+    nd === c.endB ? [...canonical] : [...canonical].reverse();
+
+  // Rank-disagreement contribution of the ordered pair (x before y, in the
+  // canonical frame of c) at end nd: 1 when their neighbour corridors differ
+  // in angular rank and the pair's lateral order at nd contradicts it.
+  const pairCostAt = (c: Corridor, nd: string, x: string, y: string): number => {
+    const gx = neighborOf(c, nd, x);
+    const gy = neighborOf(c, nd, y);
+    if (gx === null || gy === null || gx === gy) return 0;
+    const rx = rankOf(c, nd, gx);
+    const ry = rankOf(c, nd, gy);
+    if (rx === ry) return 0;
+    // canonical "x before y" reads in the node frame as-is at endB, flipped
+    // at endA
+    const xFirstAtNd = nd === c.endB;
+    const disagreeIfXFirst = rx > ry;
+    return xFirstAtNd === disagreeIfXFirst ? 1 : 0;
+  };
+
+  // Co-travel stretch of a pair: corridors both lines ride, connected through
+  // ends where both continue into the SAME neighbour.
+  const stretchOf = (c0: Corridor, x: string, y: string): Corridor[] => {
+    const out: Corridor[] = [c0];
+    const seen = new Set<number>([c0.id]);
+    const queue: Corridor[] = [c0];
+    while (queue.length > 0) {
+      const c = queue.pop()!;
+      for (const nd of [c.endA, c.endB]) {
+        const gx = neighborOf(c, nd, x);
+        const gy = neighborOf(c, nd, y);
+        if (gx === null || gy === null || gx !== gy || seen.has(gx)) continue;
+        const n = cs.corridors[gx];
+        if (!n.lines.includes(x) || !n.lines.includes(y)) continue;
+        seen.add(gx);
+        out.push(n);
+        queue.push(n);
+      }
+    }
+    return out;
+  };
+
+  const order = [...cs.corridors].sort(
+    (a, b) => (b.lines.length - a.lines.length) || (a.id - b.id),
+  );
+  let moves = 0;
+  for (let pass = 0; pass < 16; pass++) {
+    let changed = false;
+    for (const c of order) {
+      const flat = flats.get(c.id);
+      if (!flat || flat.length < 2) continue;
+      for (let i = 0; i + 1 < flat.length; i++) {
+        const x = flat[i];
+        const y = flat[i + 1];
+        const S = stretchOf(c, x, y);
+        // the swap is clean only when the pair is adjacent in EVERY corridor
+        // of the stretch (no third line's order can move)
+        const spots: Array<{ s: Corridor; ix: number; xFirst: boolean }> = [];
+        let cleanAdjacent = true;
+        for (const s of S) {
+          const f = flats.get(s.id);
+          if (!f) { cleanAdjacent = false; break; }
+          const ix = f.indexOf(x);
+          const iy = f.indexOf(y);
+          if (ix < 0 || iy < 0 || Math.abs(ix - iy) !== 1) { cleanAdjacent = false; break; }
+          spots.push({ s, ix: Math.min(ix, iy), xFirst: ix < iy });
+        }
+        if (!cleanAdjacent) continue;
+        let before = 0;
+        let after = 0;
+        for (const { s, xFirst } of spots) {
+          for (const nd of [s.endA, s.endB]) {
+            // pairCostAt takes the canonical-frame leader; after the swap the
+            // leader flips in every corridor of the stretch
+            before += xFirst ? pairCostAt(s, nd, x, y) : pairCostAt(s, nd, y, x);
+            after += xFirst ? pairCostAt(s, nd, y, x) : pairCostAt(s, nd, x, y);
+          }
+        }
+        if (after >= before) continue;
+        for (const { s, ix } of spots) {
+          const f = flats.get(s.id)!;
+          const tmp = f[ix];
+          f[ix] = f[ix + 1];
+          f[ix + 1] = tmp;
+        }
+        if (trace) trace(c, `PLACE swap ${x.slice(0, 8)}x${y.slice(0, 8)} stretch=${S.length} cost ${before}->${after}`);
+        moves++;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return moves;
+}
 
 /** The pipeline: assign a Block to every corridor, then write back. */
 export function orderByBlocks(layout: Layout): void {
@@ -545,14 +701,26 @@ export function orderByBlocks(layout: Layout): void {
     remaining = remaining.filter((c) => !visited.has(c.id));
   }
 
-  // write-back: flatten per corridor, mirror rev parts
+  // Residual placement on the flattened orders (root-seed interleaves the
+  // derivation cannot reach; see placeResiduals). OCTI_PLACE_RESIDUALS=0
+  // disables for A/B falsification runs.
+  const flats = new Map<number, string[]>();
   for (const c of cs.corridors) {
     const b = blocks.get(c.id) ?? seedBlock(c);
-    const flat = flattenBlock(b);
+    flats.set(c.id, flattenBlock(b));
+  }
+  const placed =
+    envStr('OCTI_PLACE_RESIDUALS') === '0'
+      ? 0
+      : placeResiduals(flats, cs, flows, (c, msg) => tlog(c, msg));
+
+  // write-back: flatten per corridor, mirror rev parts
+  for (const c of cs.corridors) {
+    const flat = flats.get(c.id)!;
     for (const p of c.parts) {
       p.edge.lineOrder = p.rev ? [...flat].reverse() : [...flat];
     }
   }
 
-  debugBlocks(layout, cs, flows, plannedSwaps, residualSwaps);
+  debugBlocks(layout, cs, flows, plannedSwaps, residualSwaps, placed);
 }

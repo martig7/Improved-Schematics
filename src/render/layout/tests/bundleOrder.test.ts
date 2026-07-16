@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCorridors, classifyFlows, orderByBlocks } from '../bundleOrder';
+import { buildCorridors, classifyFlows, orderByBlocks, placeResiduals } from '../bundleOrder';
 import type { Layout, LayoutEdge, LineRef, TraversalStep } from '../types';
 
 const L = (id: string): LineRef => ({ id, label: id, color: '#000' });
@@ -407,4 +407,94 @@ test('blocks: bidirectional corridor seeds by arrival, not a turnaround key', ()
   const pos = new Map(t.lineOrder.map((l, i) => [l, i]));
   assert.equal(Math.abs(pos.get('P')! - pos.get('R')!), 1,
     `P and R (both ride cx) adjacent, R not stranded (got ${t.lineOrder})`);
+});
+
+test('placeResiduals: an interleaved seed bubbles apart by exit angle', () => {
+  // trunk t {a,b,x,y,z}: a,b exit to p (up), x,y exit to q (down), z ends at n2.
+  const layout = makeLayout(
+    [['n1', 0, 0], ['n2', 20, 0], ['pe', 30, -10], ['qe', 30, 10]],
+    [
+      { id: 't', from: 'n1', to: 'n2', lines: ['a', 'b', 'x', 'y', 'z'] },
+      { id: 'p', from: 'n2', to: 'pe', lines: ['a', 'b'] },
+      { id: 'q', from: 'n2', to: 'qe', lines: ['x', 'y'] },
+    ],
+    {
+      a: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      b: [{ edgeId: 't', reversed: false }, { edgeId: 'p', reversed: false }],
+      x: [{ edgeId: 't', reversed: false }, { edgeId: 'q', reversed: false }],
+      y: [{ edgeId: 't', reversed: false }, { edgeId: 'q', reversed: false }],
+      z: [{ edgeId: 't', reversed: false }],
+    },
+  );
+  const cs = buildCorridors(layout);
+  const flows = classifyFlows(layout, cs);
+  const tCorr = cs.byEdge.get('t')!;
+  // x (down-exit) seated inside the up-exit pair a,b: the adjacent (x,b) pair
+  // disagrees with the exit angles and swaps; the free line z keeps its slot.
+  const flats = new Map<number, string[]>([[tCorr.id, ['a', 'x', 'b', 'y', 'z']]]);
+  const moves = placeResiduals(flats, cs, flows);
+  assert.equal(moves, 1);
+  assert.deepEqual(flats.get(tCorr.id), ['a', 'b', 'x', 'y', 'z']);
+  // idempotent: a second run makes no further moves
+  assert.equal(placeResiduals(flats, cs, flows), 0);
+});
+
+test('placeResiduals: the swap applies across the whole co-travel stretch', () => {
+  // two-corridor stretch: {x,y} ride t1 (with w) then t2, then split at n3.
+  // The interleave (x inside w..y? here: y before x) disagrees only at n3;
+  // both corridors must swap together so the n2 boundary stays consistent.
+  const layout = makeLayout(
+    [['n1', 0, 0], ['n2', 20, 0], ['n3', 40, 0], ['we', 30, -10], ['xe', 50, -10], ['ye', 50, 10]],
+    [
+      { id: 't1', from: 'n1', to: 'n2', lines: ['w', 'x', 'y'] },
+      { id: 'w1', from: 'n2', to: 'we', lines: ['w'] },
+      { id: 't2', from: 'n2', to: 'n3', lines: ['x', 'y'] },
+      { id: 'ex', from: 'n3', to: 'xe', lines: ['x'] },
+      { id: 'ey', from: 'n3', to: 'ye', lines: ['y'] },
+    ],
+    {
+      w: [{ edgeId: 't1', reversed: false }, { edgeId: 'w1', reversed: false }],
+      x: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'ex', reversed: false }],
+      y: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'ey', reversed: false }],
+    },
+  );
+  const cs = buildCorridors(layout);
+  const flows = classifyFlows(layout, cs);
+  const t1 = cs.byEdge.get('t1')!;
+  const t2 = cs.byEdge.get('t2')!;
+  // y before x contradicts the n3 exit angles (x exits up, y exits down)
+  const flats = new Map<number, string[]>([
+    [t1.id, ['w', 'y', 'x']],
+    [t2.id, ['y', 'x']],
+  ]);
+  const moves = placeResiduals(flats, cs, flows);
+  assert.equal(moves, 1);
+  assert.deepEqual(flats.get(t1.id), ['w', 'x', 'y']);
+  assert.deepEqual(flats.get(t2.id), ['x', 'y']);
+});
+
+test('placeResiduals: genuinely conflicting end demands stay untouched', () => {
+  // corridor t {u,v}: at n1 u exits up / v down; at n2 u exits down / v up.
+  // Whatever the order, one end pays; strict improvement never fires.
+  const layout = makeLayout(
+    [['n1', 0, 0], ['n2', 20, 0], ['ua', -10, -10], ['va', -10, 10], ['ub', 30, 10], ['vb', 30, -10]],
+    [
+      { id: 't', from: 'n1', to: 'n2', lines: ['u', 'v'] },
+      { id: 'eua', from: 'ua', to: 'n1', lines: ['u'] },
+      { id: 'eva', from: 'va', to: 'n1', lines: ['v'] },
+      { id: 'eub', from: 'n2', to: 'ub', lines: ['u'] },
+      { id: 'evb', from: 'n2', to: 'vb', lines: ['v'] },
+    ],
+    {
+      u: [{ edgeId: 'eua', reversed: false }, { edgeId: 't', reversed: false }, { edgeId: 'eub', reversed: false }],
+      v: [{ edgeId: 'eva', reversed: false }, { edgeId: 't', reversed: false }, { edgeId: 'evb', reversed: false }],
+    },
+  );
+  const cs = buildCorridors(layout);
+  const flows = classifyFlows(layout, cs);
+  const tCorr = cs.byEdge.get('t')!;
+  const flats = new Map<number, string[]>([[tCorr.id, ['u', 'v']]]);
+  const moves = placeResiduals(flats, cs, flows);
+  assert.equal(moves, 0);
+  assert.deepEqual(flats.get(tCorr.id), ['u', 'v']);
 });

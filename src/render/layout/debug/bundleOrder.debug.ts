@@ -39,10 +39,11 @@ export function debugBlocks(
   flows: Map<string, Map<string, LineFlow>>,
   plannedSwaps: number,
   residualSwaps: number,
+  placedMoves: number,
 ): void {
   if (!envStr('OCTI_DEBUG')) return;
   console.error(
-    `[blocks] corridors=${cs.corridors.length} planned-crossings=${plannedSwaps} cycle-residuals=${residualSwaps} (all at junctions by construction)`,
+    `[blocks] corridors=${cs.corridors.length} planned-crossings=${plannedSwaps} cycle-residuals=${residualSwaps} placed-residuals=${placedMoves} (all at junctions by construction)`,
   );
   reportStraightFlips(layout, cs, flows);
 }
