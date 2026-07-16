@@ -696,6 +696,20 @@ export function separateFusedStations(
         for (const l of movedLines) {
           const steps = h.lineTraversals.get(l);
           if (!steps) continue;
+          // A CLOSED circular course "starts and ends" at the fused node only
+          // because its seam sits there: the boundary steps are the course's
+          // real loop-closing legs, not bare tails past a relocated terminus,
+          // and trimming one opens the drawn ring. Detect closure before any
+          // edit and leave a closed course's boundary steps alone.
+          const closed = (() => {
+            if (steps.length === 0) return false;
+            const eF = h.edges.get(steps[0].edgeId);
+            const eL = h.edges.get(steps[steps.length - 1].edgeId);
+            if (!eF || !eL) return false;
+            const start = steps[0].reversed ? eF.to : eF.from;
+            const end = steps[steps.length - 1].reversed ? eL.from : eL.to;
+            return start === end;
+          })();
           const out: TraversalStep[] = [];
           for (let i = 0; i < steps.length; i++) {
             const s1 = steps[i];
@@ -712,13 +726,14 @@ export function separateFusedStations(
             out.push(s1);
           }
           // routes that START or END at the old fused node leave a single
-          // keeper-half step at the boundary; trim it as well
+          // keeper-half step at the boundary; trim it as well (open courses
+          // only: a closed course's boundary step is its loop-closing leg)
           const eH = h.edges.get(keeperHalf);
-          if (eH && out.length && out[0].edgeId === keeperHalf) {
+          if (!closed && eH && out.length && out[0].edgeId === keeperHalf) {
             const startNode = out[0].reversed ? eH.to : eH.from;
             if (startNode === nid) out.shift();
           }
-          if (eH && out.length && out[out.length - 1].edgeId === keeperHalf) {
+          if (!closed && eH && out.length && out[out.length - 1].edgeId === keeperHalf) {
             const last = out[out.length - 1];
             const endNode = last.reversed ? eH.from : eH.to;
             if (endNode === nid) out.pop();

@@ -135,6 +135,104 @@ test('separateFusedStations trims terminating lines back to the split node', () 
   );
 });
 
+/** Ring A -(e1)- N -(e2)- B -(e3)- A with two station groups fused at N.
+ *  L1 runs straight through N (keeper's line); L2 is a CLOSED circular course
+ *  whose seam sits at N, built in either orientation. */
+function ringFixture(l2Steps: { edgeId: string; reversed: boolean }[]): { h: SupportGraph; img: Image } {
+  const nodes = new Map([
+    ['A', { id: 'A', pos: [0, 0] as Pixel }],
+    ['N', { id: 'N', pos: [100, 0] as Pixel }],
+    ['B', { id: 'B', pos: [200, 0] as Pixel }],
+  ]);
+  const edges = new Map([
+    ['e1', { id: 'e1', from: 'A', to: 'N', points: [[0, 0], [100, 0]] as Pixel[], lineIds: new Set(['L1', 'L2']) }],
+    ['e2', { id: 'e2', from: 'N', to: 'B', points: [[100, 0], [200, 0]] as Pixel[], lineIds: new Set(['L1', 'L2']) }],
+    ['e3', { id: 'e3', from: 'B', to: 'A', points: [[200, 0], [100, 80], [0, 0]] as Pixel[], lineIds: new Set(['L2']) }],
+  ]);
+  const h: SupportGraph = {
+    nodes,
+    edges,
+    adj: new Map([
+      ['A', ['e1', 'e3']],
+      ['N', ['e1', 'e2']],
+      ['B', ['e2', 'e3']],
+    ]),
+    lineRefs: new Map(),
+    lineTraversals: new Map([
+      ['L1', [{ edgeId: 'e1', reversed: false }, { edgeId: 'e2', reversed: false }]],
+      ['L2', l2Steps],
+    ]),
+    stations: new Map([
+      ['g1', { id: 'g1', label: 'Near St', lngLat: [0, 0], nodeId: 'N', truePos: [97, 2] as Pixel, stopLines: new Set(['L1']) }],
+      ['g2', { id: 'g2', label: 'Loop Stop', lngLat: [0, 0], nodeId: 'N', truePos: [140, 10] as Pixel, stopLines: new Set(['L2']) }],
+    ]),
+    stopAt: new Set(['L1|N', 'L2|N']),
+  };
+  const img: Image = {
+    placement: new Map([
+      ['A', [0, 0] as Pixel],
+      ['N', [100, 0] as Pixel],
+      ['B', [200, 0] as Pixel],
+    ]),
+    paths: new Map([
+      ['e1', [[0, 0], [100, 0]] as Pixel[]],
+      ['e2', [[100, 0], [200, 0]] as Pixel[]],
+      ['e3', [[200, 0], [100, 80], [0, 0]] as Pixel[]],
+    ]),
+    cellSize: 16,
+  };
+  return { h, img };
+}
+
+/** Course endpoints of a traversal: [start node, end node]. */
+function courseEnds(h: SupportGraph, lineId: string): [string, string] {
+  const steps = h.lineTraversals.get(lineId)!;
+  const eF = h.edges.get(steps[0].edgeId)!;
+  const eL = h.edges.get(steps[steps.length - 1].edgeId)!;
+  return [
+    steps[0].reversed ? eF.to : eF.from,
+    steps[steps.length - 1].reversed ? eL.from : eL.to,
+  ];
+}
+
+test('separateFusedStations keeps a circular course closed (seam at the tail)', () => {
+  // L2 circles N -> A -> B -> N; the final leg re-enters N over the edge the
+  // split cuts. The boundary trim must not pop the loop-closing step.
+  const { h, img } = ringFixture([
+    { edgeId: 'e1', reversed: true },  // N -> A
+    { edgeId: 'e3', reversed: true },  // A -> B
+    { edgeId: 'e2', reversed: true },  // B -> N (loop-closing leg)
+  ]);
+  separateFusedStations(h, img, 16);
+  const g2 = h.stations.get('g2')!;
+  assert.notEqual(g2.nodeId, 'N', 'loop stop split onto its own node');
+  const [start, end] = courseEnds(h, 'L2');
+  assert.equal(start, end, `circular course stays closed (got ${start} -> ${end})`);
+  const steps = h.lineTraversals.get('L2')!;
+  assert.ok(
+    steps.some((s) => {
+      const e = h.edges.get(s.edgeId)!;
+      return e.from === g2.nodeId || e.to === g2.nodeId;
+    }),
+    'course still reaches the split stop node',
+  );
+});
+
+test('separateFusedStations keeps a circular course closed (seam at the head)', () => {
+  // Same ring, opposite direction: the FIRST leg departs N over the split
+  // edge. The head-side trim must not shift the departing step away.
+  const { h, img } = ringFixture([
+    { edgeId: 'e2', reversed: false }, // N -> B
+    { edgeId: 'e3', reversed: false }, // B -> A
+    { edgeId: 'e1', reversed: false }, // A -> N
+  ]);
+  separateFusedStations(h, img, 16);
+  const g2 = h.stations.get('g2')!;
+  assert.notEqual(g2.nodeId, 'N');
+  const [start, end] = courseEnds(h, 'L2');
+  assert.equal(start, end, `circular course stays closed (got ${start} -> ${end})`);
+});
+
 /** Corridor A -(eA)- J -(eB)- B with a fold stub J -(eS)- S: every line rides
  *  out and back over the stub, S hosts the stop of `stopLine`. The pre-merge
  *  support graph runs the same lines straight through a mid-course node
