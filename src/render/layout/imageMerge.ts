@@ -492,42 +492,18 @@ export function separateFusedStations(
       (a, b) => (dist(a.truePos!, nodePos) - dist(b.truePos!, nodePos)) ||
         (a.id < b.id ? -1 : a.id > b.id ? 1 : 0), // raw compare (localeCompare is engine-dependent)
     );
-    const keeper = withTrue[0];
+    void minSep; // distinct groups ALWAYS get their own markers; capsule-ness is the group's
 
-    // Seat the non-keepers FARTHEST-from-keeper first. Each split subdivides the
-    // keeper-incident stub, and the BFS that finds a split corridor only reaches
-    // that stub (the far half is behind the new node), so a later, NEARER station
-    // projects onto the shortened stub. Nearest-first telescopes them backward into
-    // the end-clamp (arcTotal - MIN_SPLIT_ARC), reversing their order; farthest-first
-    // drops the far split beyond the nearer ones, so every subsequent projection
-    // lands within the remaining stub at its true arc and order is preserved.
-    // reverse() acts on the fresh slice, not withTrue; deterministic (stable sort).
-    for (const st of withTrue.slice(1).reverse()) {
-      // Distinct station groups ALWAYS get their own markers: one marker per
-      // station, with capsule-ness coming from the group itself. Even close
-      // pairs split, with the min-arc guard keeping the dots visually apart on
-      // the bundled corridor.
-      void minSep;
-
-      // best projection of the true position onto the adjacent drawn edges
-      let best: {
-        eid: string;
-        segIdx: number;
-        t: number;
-        p: Pixel;
-        d: number;
-        arcFromSplit: number;
-        arcTotal: number;
-      } | null = null;
-      // Candidate edges: those at the node, HOPPING OVER edges too short to
-      // split. A short hop to an adjacent junction must not win "best" and then
-      // bail, because the true position usually projects cleanly onto the
-      // corridor just past it.
-      // A candidate must CARRY one of the station's serving lines: the stop
-      // flag only renders on an edge that carries the line, so splitting onto
-      // a foreign corridor makes the station vanish entirely (no marker, no
-      // label). With no valid candidate the pair stays fused, since a shared
-      // capsule beats a disappeared station.
+    // Candidate corridors for a station's true position: edges at the fused node
+    // (hopping OVER ones too short to split) that CARRY one of its serving lines,
+    // each with the closest projection of the true position and its arc along the
+    // edge. A stop flag only renders on an edge carrying the line, so a foreign
+    // corridor would make the station vanish; with no candidate the pair stays
+    // fused (a shared capsule beats a disappeared station). Same side of the node
+    // as the true position first, then nearest projection. Reads the CURRENT
+    // geometry on each call.
+    type Cand = { eid: string; segIdx: number; t: number; p: Pixel; d: number; arcFromSplit: number; arcTotal: number };
+    const getCandidates = (st: SupportStation): Cand[] => {
       const serves = (e: SupportEdge): boolean => {
         const lines = st.stopLines;
         if (!lines || lines.size === 0) return true;
@@ -548,26 +524,19 @@ export function separateFusedStations(
           if (arc >= 2 * MIN_SPLIT_ARC && serves(e)) {
             candEdges.add(eid);
           } else if (arc < 2 * MIN_SPLIT_ARC) {
-            // too short to split: hop across it and consider the far side
             const other = e.from === cur ? e.to : e.from;
-            if (!visited.has(other)) {
-              visited.add(other);
-              frontier.push(other);
-            }
+            if (!visited.has(other)) { visited.add(other); frontier.push(other); }
           }
         }
       }
-      const candidates: Array<NonNullable<typeof best>> = [];
+      const cands: Cand[] = [];
       for (const eid of candEdges) {
         const e = h.edges.get(eid)!;
         const pts = img.paths.get(eid) ?? e.points;
         let arc = 0;
         const arcs: number[] = [0];
-        for (let i = 1; i < pts.length; i++) {
-          arc += dist(pts[i - 1], pts[i]);
-          arcs.push(arc);
-        }
-        let bestOnEdge: NonNullable<typeof best> | null = null;
+        for (let i = 1; i < pts.length; i++) { arc += dist(pts[i - 1], pts[i]); arcs.push(arc); }
+        let bestOnEdge: Cand | null = null;
         for (let i = 1; i < pts.length; i++) {
           const a = pts[i - 1];
           const b = pts[i];
@@ -583,16 +552,33 @@ export function separateFusedStations(
           if (bestOnEdge && d >= bestOnEdge.d) continue;
           bestOnEdge = { eid, segIdx: i - 1, t, p, d, arcFromSplit: arcAt, arcTotal: arc };
         }
-        if (bestOnEdge) candidates.push(bestOnEdge);
+        if (bestOnEdge) cands.push(bestOnEdge);
       }
-      // same-side candidates first (the marker should sit on the side of the
-      // node its true position lies on), then by projection distance
-      const side = (c: (typeof candidates)[number]): number => {
+      const side = (c: Cand): number => {
         const dx = st.truePos![0] - nodePos[0];
         const dy = st.truePos![1] - nodePos[1];
         return (c.p[0] - nodePos[0]) * dx + (c.p[1] - nodePos[1]) * dy > 0 ? 0 : 1;
       };
-      candidates.sort((x, y) => (side(x) - side(y)) || (x.d - y.d) || (x.p[0] - y.p[0]) || (x.p[1] - y.p[1])); // total tie-break by position (cross-V8 stable)
+      cands.sort((x, y) => (side(x) - side(y)) || (x.d - y.d) || (x.p[0] - y.p[0]) || (x.p[1] - y.p[1])); // total tie-break by position (cross-V8 stable)
+      return cands;
+    };
+
+    // Seat non-keepers FARTHEST-ALONG-THE-CORRIDOR first, keyed by the true ARC of
+    // each station's projection on the ORIGINAL (unsplit) geometry. Each split
+    // subdivides the keeper-incident stub, and the split-corridor BFS only reaches
+    // that stub, so a nearer station projects onto the shortened stub; seating the
+    // farthest first drops its split beyond the nearer ones, so every later
+    // projection lands within the remaining stub at its true arc and drawn order ==
+    // route order. Arc (not Euclidean distance to the keeper) is the correct key on
+    // a CURVED corridor, where along-line order and straight-line distance disagree.
+    // withTrue[0] is the keeper (closest to the drawn node); it stays put.
+    const nonKeepers = withTrue.slice(1)
+      .map((st) => ({ st, arc: getCandidates(st)[0]?.arcFromSplit ?? -Infinity }))
+      .sort((a, b) => (b.arc - a.arc) || (a.st.id < b.st.id ? -1 : a.st.id > b.st.id ? 1 : 0));
+
+    for (const { st } of nonKeepers) {
+      const candidates = getCandidates(st);
+      let best: Cand | null = null;
 
       // try candidates closest-first until one yields a split point with real
       // visual separation from the fused node (an edge can pass right next to
