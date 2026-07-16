@@ -257,11 +257,10 @@ test('separateFusedStations still trims a round-trip course originating at the f
 });
 
 /** Corridor A -(eA)- J -(eB)- B with a fold stub J -(eS)- S: every line rides
- *  out and back over the stub, S hosts the stop of `stopLine`. The pre-merge
- *  support graph runs the same lines straight through a mid-course node
- *  (no retrace) unless `preRetrace` plants a real out-and-back at S's
- *  position. */
-function foldStubFixture(opts: { stopLine?: string; preRetrace?: boolean; stubArc?: number } = {}) {
+ *  out and back over the stub, S hosts the stop of `stopLine` (station group
+ *  g1 seated on S). The graph-course truth is passed per test as the
+ *  realTurnGroups set: empty = every course passes straight through. */
+function foldStubFixture(opts: { stopLine?: string; stubArc?: number } = {}) {
   const stopLine = opts.stopLine ?? 'L1';
   const sPos: Pixel = [100 + (opts.stubArc ?? 30), -(opts.stubArc ?? 30)];
   const h: SupportGraph = {
@@ -316,38 +315,12 @@ function foldStubFixture(opts: { stopLine?: string; preRetrace?: boolean; stubAr
     ]),
     cellSize: 32,
   };
-  // pre-merge support: straight course through a mid-station node hS placed
-  // (by octi) exactly where the merged stub tip sits
-  const pre: SupportGraph = {
-    nodes: new Map([
-      ['hA', { id: 'hA', pos: [0, 0] as Pixel }],
-      ['hS', { id: 'hS', pos: [110, 0] as Pixel }],
-      ['hB', { id: 'hB', pos: [200, 0] as Pixel }],
-    ]),
-    edges: new Map([
-      ['p1', { id: 'p1', from: 'hA', to: 'hS', points: [[0, 0], [110, 0]] as Pixel[], lineIds: new Set(['L1', 'L2']) }],
-      ['p2', { id: 'p2', from: 'hS', to: 'hB', points: [[110, 0], [200, 0]] as Pixel[], lineIds: new Set(['L1', 'L2']) }],
-    ]),
-    adj: new Map([['hA', ['p1']], ['hS', ['p1', 'p2']], ['hB', ['p2']]]),
-    lineRefs: new Map(),
-    lineTraversals: new Map([
-      ['L1', opts.preRetrace
-        ? [{ edgeId: 'p1', reversed: false }, { edgeId: 'p1', reversed: true }, { edgeId: 'p1', reversed: false }, { edgeId: 'p2', reversed: false }]
-        : [{ edgeId: 'p1', reversed: false }, { edgeId: 'p2', reversed: false }]],
-      ['L2', [{ edgeId: 'p2', reversed: true }, { edgeId: 'p1', reversed: true }]],
-    ]),
-    stations: new Map(),
-    stopAt: new Set(),
-  };
-  // octi placed the pre station node at the merged stub tip
-  const prePos = (nid: string): Pixel | undefined =>
-    nid === 'hS' ? sPos : pre.nodes.get(nid)?.pos;
-  return { h, img, pre, prePos };
+  return { h, img };
 }
 
 test('collapseFoldStubs collapses a manufactured stop-fold onto the fold base', () => {
-  const { h, img, pre, prePos } = foldStubFixture();
-  const n = collapseFoldStubs(h, img, pre, prePos);
+  const { h, img } = foldStubFixture();
+  const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 1, 'one stub collapsed');
   assert.ok(!h.edges.has('eS') && !h.nodes.has('mS'), 'stub edge and tip gone');
   assert.equal(h.stations.get('g1')!.nodeId, 'mJ', 'station relocated to the fold base');
@@ -360,41 +333,60 @@ test('collapseFoldStubs collapses a manufactured stop-fold onto the fold base', 
   assert.ok(!img.paths.has('eS') && !img.placement.has('mS'), 'image cleaned');
 });
 
-test('collapseFoldStubs keeps a REAL out-and-back (support traversal retraces)', () => {
-  const { h, img, pre, prePos } = foldStubFixture({ preRetrace: true });
-  const n = collapseFoldStubs(h, img, pre, prePos);
+test('collapseFoldStubs keeps a REAL out-and-back (graph course turns around at the station)', () => {
+  const { h, img } = foldStubFixture();
+  const n = collapseFoldStubs(h, img, new Set(['L1|g1']));
   assert.equal(n, 0, 'real branch tip kept');
   assert.ok(h.edges.has('eS') && h.nodes.has('mS'));
 });
 
+test('collapseFoldStubs collapses a support-level fold the graph course passes through', () => {
+  // The drawn traversal retraces the stub for every line, but the graph
+  // course truth says no line turns around at the seated station: the fold
+  // was manufactured upstream (weld/contraction) and must still collapse.
+  const { h, img } = foldStubFixture();
+  const n = collapseFoldStubs(h, img, new Set(['L1|gOther', 'L2|gOther']));
+  assert.equal(n, 1, 'upstream-manufactured fold collapsed');
+  assert.equal(h.stations.get('g1')!.nodeId, 'mJ');
+});
+
 test('collapseFoldStubs keeps a stub when a line terminates on it', () => {
-  const { h, img, pre, prePos } = foldStubFixture();
+  const { h, img } = foldStubFixture();
   // L2 now ENDS at the tip instead of retracing: a real terminus stub
   h.lineTraversals.set('L2', [
     { edgeId: 'eB', reversed: true },
     { edgeId: 'eS', reversed: false },
   ]);
-  const n = collapseFoldStubs(h, img, pre, prePos);
+  const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 0, 'terminus stub kept');
 });
 
 test('collapseFoldStubs keeps a stop-less stub for the hook splice', () => {
-  const { h, img, pre, prePos } = foldStubFixture();
+  const { h, img } = foldStubFixture();
   h.stopAt.clear();
-  const n = collapseFoldStubs(h, img, pre, prePos);
+  const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 0);
 });
 
+test('collapseFoldStubs keeps a stub whose stop has no seated station', () => {
+  // A stop flag with no station entry offers no group to consult the graph
+  // truth with; the stub stays rather than collapse on a guess.
+  const { h, img } = foldStubFixture();
+  h.stations.clear();
+  const n = collapseFoldStubs(h, img, new Set());
+  assert.equal(n, 0, 'stationless stub kept');
+});
+
 test('collapseFoldStubs keeps a stub longer than the placement-artifact cap', () => {
-  const { h, img, pre, prePos } = foldStubFixture({ stubArc: 80 }); // > 2 cells of 32
-  const n = collapseFoldStubs(h, img, pre, prePos);
+  const { h, img } = foldStubFixture({ stubArc: 80 }); // > 2 cells of 32
+  const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 0, 'long stub is real geometry');
 });
 
 test('collapseFoldStubs is deterministic on repeat', () => {
   const run = () => {
-    const { h, img, pre, prePos } = foldStubFixture();
-    collapseFoldStubs(h, img, pre, prePos);
+    const { h, img } = foldStubFixture();
+    collapseFoldStubs(h, img, new Set());
     return JSON.stringify([[...h.edges.keys()].sort(), [...h.stopAt].sort(), h.lineTraversals.get('L1')]);
   };
   assert.equal(run(), run());
@@ -403,7 +395,7 @@ test('collapseFoldStubs is deterministic on repeat', () => {
 test('collapseFoldStubs keeps a terminus station whose lines turn around beyond it', () => {
   // The station sits at the stub node, but its lines START there and turn
   // around at the OTHER end (tip = fold base): a real terminal, not a fold.
-  const { h, img, pre, prePos } = foldStubFixture();
+  const { h, img } = foldStubFixture();
   h.lineTraversals.set('L1', [
     { edgeId: 'eS', reversed: true },
     { edgeId: 'eS', reversed: false },
@@ -412,7 +404,7 @@ test('collapseFoldStubs keeps a terminus station whose lines turn around beyond 
     { edgeId: 'eS', reversed: true },
     { edgeId: 'eS', reversed: false },
   ]);
-  const n = collapseFoldStubs(h, img, pre, prePos);
+  const n = collapseFoldStubs(h, img, new Set());
   assert.equal(n, 0, 'terminal station kept');
   assert.ok(h.nodes.has('mS') && h.edges.has('eS'));
 });

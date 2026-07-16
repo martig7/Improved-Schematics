@@ -303,19 +303,22 @@ export function mergeCoincidentPaths(
 }
 
 // ---- manufactured fold-stub collapse ----------------------------------------
-// The octilinear solver can place a mid-course station OFF the line between its
-// neighbors, routing both incident edges through an identical approach. The
+// A mid-course station can end up drawn OFF the line between its neighbors,
+// with both incident course legs merged onto one shared approach. The
 // coincident-path merge above then honestly turns that shared approach into a
 // stub edge hanging off a junction, and every line's course goes out and back
 // over the stub. A non-stopping line's detour is spliced later by the hook
 // pass, but a STOP pins the fold forever: a mid-route station renders as a
 // fake branch tip.
 //
-// Such a fold is MANUFACTURED: the support traversal runs straight through the
-// station. A REAL out-and-back (a terminus platform, a genuine stub track)
-// retraces in the support traversal too, and keeps its stub. Collapsing moves
-// the station onto the fold base, which sits on its actual course, and drops
-// the stub edge plus the retrace from every traversal.
+// Such a fold is MANUFACTURED: the GRAPH course runs straight through the
+// station. The graph traversal is the course truth, so it identifies a fold
+// no matter which stage manufactured it (the drawn-level merge, or an earlier
+// weld/contraction that folded the support graph itself). A REAL out-and-back
+// (a terminus platform, a genuine stub track the route serves and returns
+// from) retraces in the GRAPH traversal too, and keeps its stub. Collapsing
+// moves the station onto the fold base, which sits on its actual course, and
+// drops the stub edge plus the retrace from every traversal.
 
 // Longest stub the collapse treats as a placement artifact, in grid cells. A
 // manufactured fold spans the station's displacement off its course (one or
@@ -327,36 +330,23 @@ const FOLD_STUB_MAX_CELLS = 2;
  *
  * A candidate stub is a degree-1 node S whose single edge E carries at least
  * one stop flag at S, where EVERY line on E immediately retraces E (out and
- * back through S), no line has a REAL retrace at S's drawn position in the
- * pre-merge support traversals, and E's arc stays within the stub cap.
+ * back through S), no line on E genuinely turns around at a station seated on
+ * S per the graph-course truth, and E's arc stays within the stub cap.
  * S's stations, stop flags, and traversals remap onto the fold base node.
  *
  * @param h    merged support graph (mutated)
  * @param img  merged image (mutated)
- * @param pre  pre-merge support graph (the course-topology reference)
- * @param prePos pre-merge node id -> drawn position (octi placement)
+ * @param realTurnGroups genuine course turnarounds from the GRAPH traversals,
+ *   as "lineId|stationGroupId" keys: the stations where a line's course
+ *   really reverses. A stub whose seated stations are all absent from this
+ *   set is a manufactured fold for every line that retraces it.
  * @returns number of stubs collapsed
  */
 export function collapseFoldStubs(
   h: SupportGraph,
   img: Image,
-  pre: SupportGraph,
-  prePos: (nodeId: string) => Pixel | undefined,
+  realTurnGroups: ReadonlySet<string>,
 ): number {
-  // Real out-and-back tips per line, keyed by drawn position: the shared node
-  // of any immediate same-edge retrace in the PRE-merge traversals.
-  const realTips = new Set<string>();
-  for (const [lineId, steps] of pre.lineTraversals) {
-    for (let i = 1; i < steps.length; i++) {
-      if (steps[i].edgeId !== steps[i - 1].edgeId || steps[i].reversed === steps[i - 1].reversed) continue;
-      const e = pre.edges.get(steps[i - 1].edgeId);
-      if (!e) continue;
-      const tip = steps[i - 1].reversed ? e.from : e.to;
-      const p = prePos(tip);
-      if (p) realTips.add(lineId + '|' + vKey(p));
-    }
-  }
-
   const arcOf = (pts: Pixel[]): number => {
     let acc = 0;
     for (let i = 1; i < pts.length; i++) {
@@ -383,17 +373,21 @@ export function collapseFoldStubs(
     for (const l of e.lineIds) if (h.stopAt.has(l + '|' + sid)) { hasStop = true; break; }
     if (!hasStop) continue;
     if (arcOf(e.points) > maxArc) continue;
-    const sPos = h.nodes.get(sid)?.pos;
-    if (!sPos) continue;
+    // The graph-truth veto is keyed by the stations seated on the stub. A
+    // stop flag with no seated station has no truth to consult; keep the
+    // stub rather than guess.
+    const gidsAtStub: string[] = [];
+    for (const [gid, st] of h.stations) if (st.nodeId === sid) gidsAtStub.push(gid);
+    if (gidsAtStub.length === 0) continue;
     // every line on the stub must go out and back over it WITH S AS THE TIP
     // (each visit is an adjacent flipped pair whose turnaround point is S).
     // A lone step means the line TERMINATES on the stub, and a pair whose tip
     // is the OTHER end means S is a terminus station whose lines turn around
-    // beyond it; both are real geometry. None of the lines may have a REAL
-    // support-level out-and-back at this drawn position either.
+    // beyond it; both are real geometry. A line whose GRAPH course genuinely
+    // turns around at a station seated here keeps its stub too.
     let ok = true;
     for (const l of e.lineIds) {
-      if (realTips.has(l + '|' + vKey(sPos))) { ok = false; break; }
+      if (gidsAtStub.some((gid) => realTurnGroups.has(l + '|' + gid))) { ok = false; break; }
       const steps = h.lineTraversals.get(l) ?? [];
       let visits = 0;
       for (let i = 0; i < steps.length; i++) {

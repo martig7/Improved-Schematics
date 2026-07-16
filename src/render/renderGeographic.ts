@@ -1146,13 +1146,34 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     (lid) => merged.h.lineRefs.get(lid)?.label ?? lid.slice(0, 8),
   );
   lap('mergeCoincident');
-  // A station the solver placed off its course draws both incident edges
-  // through one shared approach; the merge above turns that into a stub the
-  // course retraces, and a stop pins it against the later hook splice (a
-  // mid-route station renders as a fake branch tip). Collapse such stubs
-  // back onto the fold base; support-level retraces (real branch tips and
-  // terminus platforms) keep their stubs.
-  collapseFoldStubs(merged.h, merged.img, support, (nid) => imageRaw.placement.get(nid) ?? support.nodes.get(nid)?.pos);
+  // A station drawn off its course gets both course legs merged onto one
+  // shared approach; the merge above turns that into a stub the course
+  // retraces, and a stop pins it against the later hook splice (a mid-route
+  // station renders as a fake branch tip). Collapse such stubs back onto the
+  // fold base. The GRAPH traversal is the course truth: a line genuinely
+  // turns around only where its graph course retraces an edge, so those
+  // stations (real branch tips and terminus platforms) keep their stubs and
+  // every other retrace is a manufactured fold, whichever stage folded it.
+  {
+    const realTurnGroups = new Set<string>();
+    const sidToGid = new Map<string, string>();
+    for (const g of groups as { id: string; stationIds?: string[] }[]) {
+      for (const sid of g.stationIds ?? []) sidToGid.set(sid, g.id);
+    }
+    const gEdgeById = new Map(graph.edges.map((e) => [e.id, e]));
+    for (const [lid, steps] of graph.lineTraversals) {
+      for (let i = 1; i < steps.length; i++) {
+        if (steps[i].edgeId !== steps[i - 1].edgeId || steps[i].reversed === steps[i - 1].reversed) continue;
+        const e = gEdgeById.get(steps[i - 1].edgeId);
+        if (!e) continue;
+        const tip = steps[i - 1].reversed ? e.from : e.to;
+        // graph nodes are group ids, or member station ids under the
+        // per-station build; key the truth by group either way
+        realTurnGroups.add(lid + '|' + (sidToGid.get(tip) ?? tip));
+      }
+    }
+    collapseFoldStubs(merged.h, merged.img, realTurnGroups);
+  }
   // Distinct station groups fused onto one drawn node (converged corridors +
   // octi contraction) get separate markers again when their true separation
   // exceeds the merge radius; closer pairs stay a shared interchange capsule.
