@@ -108,6 +108,15 @@ export function auditTraversals(
       }
       prevEnd = b;
     }
+    // Course endpoints: a circular line must stay closed (start == end)
+    // through every rewrite. A stage where `closed` flips to false for a
+    // circle identifies the pass that opened the ring.
+    if (trav.length > 0) {
+      const f = trav[0];
+      const ef = getEdge(f.edgeId);
+      const firstStart = ef ? (f.reversed ? ef.to : ef.from) : '?';
+      console.error(`[audit:${stage}] ${name} ends: start=${fmt(firstStart)} end=${prevEnd ? fmt(prevEnd) : '?'} closed=${firstStart === prevEnd}`);
+    }
   }
   console.error(`[audit:${stage}] defects=${defects}`);
 }

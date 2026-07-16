@@ -3503,32 +3503,64 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const connSeen = new Set<string>();
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
+    // A CLOSED circular course continues across its seam node too: the pair
+    // (last drawn lane, first drawn lane) is a real continuation the linear
+    // scan never visits. The join pass wraps the same seam, but every one of
+    // its decline paths falls through to THIS connector as the last resort,
+    // so the seam must be reachable here as well or a circle whose seam join
+    // declines is left with a bare gap. One extra iteration revisits the
+    // first drawn lane when the course closes on itself.
+    let wrap = 0;
+    if (traversal.length > 1) {
+      const f = traversal[0];
+      const l = traversal[traversal.length - 1];
+      const ef = edgeById.get(f.edgeId);
+      const el = edgeById.get(l.edgeId);
+      const firstStart = f.reversed ? ef?.to : ef?.from;
+      const lastEnd = l.reversed ? el?.from : el?.to;
+      if (firstStart !== undefined && firstStart === lastEnd) wrap = 1;
+    }
     let prevIdx = -1;
-    for (let i = 0; i < traversal.length; i++) {
-      if (!segPath.has(traversal[i].edgeId + '|' + lineId)) continue; // undrawn/suppressed
+    let firstIdx = -1;
+    for (let i = 0; i < traversal.length + wrap; i++) {
+      const wrapped = i >= traversal.length;
+      const idx = wrapped ? firstIdx : i;
+      if (idx < 0) break; // wrap visit with no drawn lane at all
+      if (!wrapped && !segPath.has(traversal[idx].edgeId + '|' + lineId)) continue; // undrawn/suppressed
       if (prevIdx < 0) {
-        prevIdx = i;
+        prevIdx = idx;
+        firstIdx = idx;
         continue;
       }
+      if (wrapped && prevIdx === idx) break; // single drawn lane, no seam pair
       const a = traversal[prevIdx];
-      const b = traversal[i];
+      const b = traversal[idx];
       // a gap of SUPPRESSED slivers between two drawn lanes still bridges:
-      // the guest line crosses the host bundle in one stroke
+      // the guest line crosses the host bundle in one stroke. At the seam
+      // the gap wraps around: the undrawn tail past the last drawn lane plus
+      // the undrawn head before the first drawn lane.
+      const between: number[] = [];
+      if (wrapped) {
+        for (let k = prevIdx + 1; k < traversal.length; k++) between.push(k);
+        for (let k = 0; k < idx; k++) between.push(k);
+      } else {
+        for (let k = prevIdx + 1; k < i; k++) between.push(k);
+      }
       let bridging = false;
-      if (i > prevIdx + 1) {
+      if (between.length > 0) {
         bridging = true;
-        for (let k = prevIdx + 1; k < i; k++) {
+        for (const k of between) {
           if (!suppressed.has(traversal[k].edgeId + '|' + lineId)) {
             bridging = false;
             break;
           }
         }
         if (!bridging) {
-          prevIdx = i;
+          prevIdx = idx;
           continue;
         }
       }
-      prevIdx = i;
+      prevIdx = idx;
       const ea = edgeById.get(a.edgeId);
       const eb = edgeById.get(b.edgeId);
       if (!ea || !eb) continue;
