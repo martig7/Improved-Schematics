@@ -165,7 +165,7 @@ export function mergeIntersectingBoxes(boxes: DenseBox[]): DenseBox[] {
   return out;
 }
 
-export type BoxKind = 'density' | 'contraction' | 'capsule';
+export type BoxKind = 'density' | 'contraction' | 'capsule' | 'corridor';
 /** A pairwise spacing requirement: the warped distance between nodes a,b must
  *  reach `required` px (capsule separation — CONSTANT under the warp, unlike
  *  the octi contraction threshold, which moves as the map stretches). */
@@ -271,6 +271,157 @@ export function findCapsuleBoxes(
   const out: DemandBox[] = [];
   for (const e of byRoot.values()) {
     out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+  }
+  return out;
+}
+
+export interface CorridorOracleOptions {
+  /** Drawn lane pitch in px (LINE_WIDTH + LINE_GAP at the call site). */
+  spacing: number;
+  /** Clearance beyond the two painted half widths, px. Default one pitch. */
+  margin?: number;
+  /** Ignore passes closer than this: near-coincident corridors get welded or
+   *  contracted into ONE drawn corridor downstream, so demanding painted
+   *  clearance between them is over-demand. Supplied by the build (the
+   *  contraction threshold); default 0. */
+  minDist?: number;
+  /** Ignore pairs whose requirement is at most this: the octi grid separates
+   *  distinct corridors by at least one cell, so only paint that outgrows a
+   *  cell step is a real squeeze. Supplied by the build (the cell estimate
+   *  with headroom); default 0. */
+  minReq?: number;
+}
+
+/** Corridor-clearance oracle: a node whose corridor passes ALONGSIDE another
+ *  corridor closer than their combined painted half widths. Lines are
+ *  zero-width to the layout, but a bundle paints (lineCount-1)/2 lanes to each
+ *  side of its centerline; where a neighbouring corridor's clearance is
+ *  smaller than that, the drawn lanes ride through the neighbour's ink.
+ *  Flags (node, segment) pairs: the node's perpendicular foot must fall on the
+ *  segment INTERIOR (a genuine flank pass), and graph-adjacent geometry is
+ *  excluded (corridors that MEET at a node are a junction, not a squeeze).
+ *  Each hit becomes a pair target against the segment's nearer endpoint, with
+ *  the requirement scaled by the diagonal-to-perpendicular ratio so lifting
+ *  the node pair to the target lifts the true clearance to what the paint
+ *  needs. Deterministic: index-ordered scans, plain arithmetic. */
+export function findCorridorBoxes(
+  g: BoxGraph,
+  edgeLines: readonly (readonly string[])[],
+  o: CorridorOracleOptions,
+): DemandBox[] {
+  const margin = o.margin ?? o.spacing;
+  const minDist = o.minDist ?? 0;
+  const minReq = o.minReq ?? 0;
+  const halfW = (ei: number): number => {
+    const lc = edgeLines[ei]?.length ?? 1;
+    return lc >= 2 ? ((lc - 1) * o.spacing) / 2 : 0;
+  };
+  // Per-node adjacency, widest incident half width, and the union of lines
+  // through the node (a corridor that SHARES a line with the edge is the same
+  // service: it merges or interlines downstream, never a foreign squeeze).
+  const adj = new Map<number, Set<number>>();
+  const nodeHalfW = new Array<number>(g.nodes.length).fill(0);
+  const nodeLines: Array<Set<string> | undefined> = new Array(g.nodes.length);
+  for (let ei = 0; ei < g.edges.length; ei++) {
+    const [a, b] = g.edges[ei];
+    if (!adj.has(a)) adj.set(a, new Set());
+    if (!adj.has(b)) adj.set(b, new Set());
+    adj.get(a)!.add(b);
+    adj.get(b)!.add(a);
+    const w = halfW(ei);
+    if (w > nodeHalfW[a]) nodeHalfW[a] = w;
+    if (w > nodeHalfW[b]) nodeHalfW[b] = w;
+    for (const n of [a, b]) {
+      let s = nodeLines[n];
+      if (!s) nodeLines[n] = s = new Set();
+      for (const l of edgeLines[ei] ?? []) s.add(l);
+    }
+  }
+  const parent = new Map<number, number>();
+  const find = (i: number): number => {
+    let root = i;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (parent.get(i) !== i) { const nx = parent.get(i)!; parent.set(i, root); i = nx; }
+    return root;
+  };
+  const ensure = (i: number): void => { if (!parent.has(i)) parent.set(i, i); };
+  let maxNodeHalfW = 0;
+  for (const w of nodeHalfW) if (w > maxNodeHalfW) maxNodeHalfW = w;
+  const pairs: PairTarget[] = [];
+  const padOf = new Map<number, number>(); // node -> widest requirement seen
+  for (let ei = 0; ei < g.edges.length; ei++) {
+    const [a, b] = g.edges[ei];
+    const pa = g.nodes[a];
+    const pb = g.nodes[b];
+    const vx = pb[0] - pa[0];
+    const vy = pb[1] - pa[1];
+    const len2 = vx * vx + vy * vy;
+    if (len2 < 1e-9) continue;
+    const wE = halfW(ei);
+    const adjA = adj.get(a)!;
+    const adjB = adj.get(b)!;
+    // Segment AABB inflated by the largest requirement this edge can make.
+    const maxReq = wE + maxNodeHalfW + margin;
+    if (wE + maxNodeHalfW <= 0) continue; // both sides zero-width everywhere
+    const x0 = Math.min(pa[0], pb[0]) - maxReq;
+    const x1 = Math.max(pa[0], pb[0]) + maxReq;
+    const y0 = Math.min(pa[1], pb[1]) - maxReq;
+    const y1 = Math.max(pa[1], pb[1]) + maxReq;
+    const linesE = edgeLines[ei] ?? [];
+    for (let u = 0; u < g.nodes.length; u++) {
+      if (u === a || u === b) continue;
+      if (adjA.has(u) || adjB.has(u)) continue; // meets this corridor at a junction
+      const req = wE + nodeHalfW[u] + margin;
+      if (req <= margin) continue; // neither side paints beyond a single lane
+      if (req <= minReq) continue; // a one-cell grid step absorbs this pair
+      const p = g.nodes[u];
+      if (p[0] < x0 || p[0] > x1 || p[1] < y0 || p[1] > y1) continue;
+      const uLines = nodeLines[u];
+      if (uLines) {
+        let shared = false;
+        for (const l of linesE) { if (uLines.has(l)) { shared = true; break; } }
+        if (shared) continue; // same service: merges or interlines, not a squeeze
+      }
+      const t = ((p[0] - pa[0]) * vx + (p[1] - pa[1]) * vy) / len2;
+      if (t < 0.15 || t > 0.85) continue; // endpoint zone: junction/contraction territory
+      const fx = pa[0] + vx * t;
+      const fy = pa[1] + vy * t;
+      const d = Math.sqrt((p[0] - fx) ** 2 + (p[1] - fy) ** 2);
+      if (d < minDist || d < 1e-9 || d >= req) continue;
+      const v = t < 0.5 ? a : b;
+      const pv = g.nodes[v];
+      const duv = Math.sqrt((p[0] - pv[0]) ** 2 + (p[1] - pv[1]) ** 2);
+      if (duv < 1e-9) continue;
+      // Lift the node pair so the same scale lifts the perpendicular
+      // clearance d to req.
+      pairs.push({ a: Math.min(u, v), b: Math.max(u, v), required: duv * (req / d) });
+      ensure(u); ensure(v);
+      const ru = find(u), rv = find(v);
+      if (ru !== rv) parent.set(rv, ru);
+      if (req > (padOf.get(u) ?? 0)) padOf.set(u, req);
+      if (req > (padOf.get(v) ?? 0)) padOf.set(v, req);
+    }
+  }
+  if (pairs.length === 0) return [];
+  const byRoot = new Map<number, { x0: number; y0: number; x1: number; y1: number; pairs: PairTarget[]; pad: number }>();
+  for (const t of pairs) {
+    const r = find(t.a);
+    let e = byRoot.get(r);
+    if (!e) { e = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, pairs: [], pad: 0 }; byRoot.set(r, e); }
+    for (const n of [t.a, t.b]) {
+      const p = g.nodes[n];
+      if (p[0] < e.x0) e.x0 = p[0];
+      if (p[0] > e.x1) e.x1 = p[0];
+      if (p[1] < e.y0) e.y0 = p[1];
+      if (p[1] > e.y1) e.y1 = p[1];
+      const pad = padOf.get(n) ?? 0;
+      if (pad > e.pad) e.pad = pad;
+    }
+    e.pairs.push(t);
+  }
+  const out: DemandBox[] = [];
+  for (const e of byRoot.values()) {
+    out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'corridor', pairs: e.pairs });
   }
   return out;
 }
@@ -392,7 +543,7 @@ export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
   const out = boxes.map((b) => ({ ...b, pairs: [...b.pairs] }));
   const contains = (a: DemandBox, b: DemandBox): boolean =>
     b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
-  const rank: Record<BoxKind, number> = { density: 0, contraction: 1, capsule: 2 };
+  const rank: Record<BoxKind, number> = { density: 0, contraction: 1, capsule: 2, corridor: 3 };
   let merged = true;
   while (merged) {
     merged = false;
@@ -584,7 +735,7 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
               y0: Math.max(b.y0, Math.min(pa[1], pb[1]) - pad),
               x1: Math.min(b.x1, Math.max(pa[0], pb[0]) + pad),
               y1: Math.min(b.y1, Math.max(pa[1], pb[1]) + pad),
-              kind: 'capsule', pairs: [t],
+              kind: b.kind, pairs: [t],
             });
           }
           // overlapping orphan boxes would double-stack, so union them
@@ -703,6 +854,13 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
     /** Per-g.nodes-index stopping-line estimate (lines through the node,
      *  an upper bound on stop marks; slack-friendly). */
     lineCounts: readonly number[];
+  };
+  /** Corridor-clearance oracle inputs. Optional: omitted by unit-level
+   *  callers and dev tools without a line model, in which case the oracle
+   *  doesn't run. */
+  corridor?: CorridorOracleOptions & {
+    /** Per-g.edges-index line ids (painted width + same-service exclusion). */
+    edgeLines: readonly (readonly string[])[];
   };
 }
 
@@ -867,10 +1025,21 @@ export function buildDemandBoxWarp(
   const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
   const contraction = findContractionBoxes(g, (cell / 2) * safety);
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
+  // The corridor oracle ignores passes inside the contraction threshold (those
+  // corridors get welded or contracted into ONE drawn corridor downstream) and
+  // pairs whose paint a single grid cell already absorbs.
+  const corridor = opts.corridor
+    ? findCorridorBoxes(g, opts.corridor.edgeLines, {
+        ...opts.corridor,
+        minDist: Math.max(opts.corridor.minDist ?? 0, (cell / 2) * safety),
+        minReq: Math.max(opts.corridor.minReq ?? 0, cell * 1.25),
+      })
+    : [];
   const merged = mergeDemandBoxes([
     ...density.map((b) => ({ ...b, kind: 'density' as const, pairs: [] })),
     ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
     ...capsule,
+    ...corridor,
   ]);
   const need = (cell / 2) * slack;
   // Direction intelligence step 1: break direction-mixed boxes into coherent
@@ -1027,7 +1196,7 @@ export function buildDemandBoxWarp(
 
   debugBoxWarp({
     boxCount: boxes.length, densityCount: density.length, contractionCount: contraction.length,
-    capsuleCount: capsule.length, mergedCount: merged.length, cell, need, expands, rs, anisoAmt,
+    capsuleCount: capsule.length, corridorCount: corridor.length, mergedCount: merged.length, cell, need, expands, rs, anisoAmt,
     growthX: result.growthX, growthY: result.growthY, maxGrowth,
   });
   return result;

@@ -742,11 +742,20 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // Node order = graph.nodes insertion order (already id-canonicalized upstream).
   const nodeIds = [...graph.nodes.keys()];
   const nodeIndex = new Map(nodeIds.map((id, i) => [id, i]));
+  // Per-boxGraph.edges-index line ids (corridor-oracle input): built in the
+  // SAME pass as the index pairs so the two arrays stay parallel.
+  const edgeLines: string[][] = [];
+  const boxEdges: [number, number][] = [];
+  for (const e of graph.edges) {
+    const a = nodeIndex.get(e.from);
+    const b = nodeIndex.get(e.to);
+    if (a === undefined || b === undefined) continue;
+    boxEdges.push([a, b]);
+    edgeLines.push(e.lines.map((l) => l.id));
+  }
   const boxGraph: BoxGraph = {
     nodes: nodeIds.map((id) => nodePos.get(id)!),
-    edges: graph.edges
-      .map((e) => [nodeIndex.get(e.from), nodeIndex.get(e.to)] as [number | undefined, number | undefined])
-      .filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined),
+    edges: boxEdges,
   };
   // ĉ estimate for the contraction oracle: mirrors the real post-warp
   // cellSize = max(12, medianSupportEdgeLen / divisor). graph edge count is a
@@ -761,6 +770,14 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // per-capsule slack / inter-capsule clearance for dev sweeps.
   const capsMargin = Number.isFinite(envNum('OCTI_CAPS_MARGIN')) && envNum('OCTI_CAPS_MARGIN') >= 0 ? envNum('OCTI_CAPS_MARGIN') : 4;
   const capsCasing = Number.isFinite(envNum('OCTI_CAPS_CASING')) && envNum('OCTI_CAPS_CASING') >= 0 ? envNum('OCTI_CAPS_CASING') : 8;
+  // Corridor-clearance oracle margin (px beyond the two painted half widths).
+  // EXPERIMENTAL, default OFF: on a map whose demand warp already saturates
+  // the growth cap, corridor demand is zero-sum (it redistributes throttled
+  // expansion away from the density/contraction/capsule boxes), re-rolling
+  // the layout without buying clearance. Set OCTI_CORR_MARGIN >= 0 px to
+  // enable for sweeps on maps with growth headroom.
+  const corrMarginEnv = envNum('OCTI_CORR_MARGIN');
+  const corrMargin = Number.isFinite(corrMarginEnv) ? corrMarginEnv : -1;
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
@@ -768,6 +785,9 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     maxGrowth: boxMaxGrowth,
     cellFromMedLen,
     capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
+    ...(corrMargin >= 0
+      ? { corridor: { spacing: LINE_WIDTH + LINE_GAP, margin: corrMargin, edgeLines } }
+      : {}),
   };
   const sepOpts = { alpha: warpAlpha, maxScale: warpMaxScale, minScale: warpMinScale };
   // Capture the dense boxes the warp magnified (box/both modes), in the warp's

@@ -49,7 +49,7 @@ export function probeBoxes(
 
 /** OCTI_WARP_DEBUG: one-line summary of the solved box warp. */
 export function debugBoxWarp(d: {
-  boxCount: number; densityCount: number; contractionCount: number; capsuleCount: number; mergedCount: number;
+  boxCount: number; densityCount: number; contractionCount: number; capsuleCount: number; corridorCount: number; mergedCount: number;
   cell: number; need: number; expands: number[]; rs: number[]; anisoAmt: number;
   growthX: number; growthY: number; maxGrowth: number;
 }): void {
@@ -57,7 +57,7 @@ export function debugBoxWarp(d: {
   const ex = d.expands.map((e) => e.toFixed(2)).join(',');
   const an = d.rs.map((r) => r.toFixed(2)).join(',');
   console.error(
-    `[boxwarp] boxes=${d.boxCount} (density=${d.densityCount} contraction=${d.contractionCount} capsule=${d.capsuleCount} merged=${d.mergedCount}) ` +
+    `[boxwarp] boxes=${d.boxCount} (density=${d.densityCount} contraction=${d.contractionCount} capsule=${d.capsuleCount} corridor=${d.corridorCount} merged=${d.mergedCount}) ` +
     `cell=${d.cell.toFixed(1)} need=${d.need.toFixed(1)} expands=[${ex}] aniso=[${an}] (amt=${d.anisoAmt}) growth=${d.growthX.toFixed(2)},${d.growthY.toFixed(2)} (cap=${d.maxGrowth})`,
   );
 }

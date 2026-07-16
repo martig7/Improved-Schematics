@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
+import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, findCorridorBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
 import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from '../densityBoxWarp';
 import { buildDensityWarp } from '../densityWarp';
 import type { WarpFn } from '../densityWarp';
@@ -372,6 +372,78 @@ test('findCapsuleBoxes: proximity does not require a shared edge', () => {
   const boxes = findCapsuleBoxes(g, [5, 5], { spacing: 5.5, margin: 4, casing: 8 });
   assert.equal(boxes.length, 1);
   assert.equal(boxes[0].pairs.length, 1);
+});
+
+const TRUNK8 = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'];
+
+test('findCorridorBoxes: a corridor node inside a wide edge clearance flags a scaled pair', () => {
+  // edge (0,1): 8-line trunk along y=0; node 2 sits 15px off its interior and
+  // belongs to a separate 1-line corridor (2,3) that never touches the trunk.
+  const g: BoxGraph = {
+    nodes: [[0, 0], [200, 0], [100, 15], [300, 300]],
+    edges: [[0, 1], [2, 3]],
+  };
+  const spacing = 5.5;
+  const boxes = findCorridorBoxes(g, [TRUNK8, ['z']], { spacing, margin: spacing });
+  assert.equal(boxes.length, 1);
+  const b = boxes[0];
+  assert.equal(b.kind, 'corridor');
+  assert.equal(b.pairs.length, 1);
+  const t = b.pairs[0];
+  // pair = (node 2, nearer endpoint of the trunk); at t=0.5 the far endpoint
+  // is chosen, so accept either endpoint index.
+  assert.ok(t.a === 2 || t.b === 2);
+  const v = t.a === 2 ? t.b : t.a;
+  assert.ok(v === 0 || v === 1);
+  // required lifts the node pair by the same scale that lifts the 15px
+  // perpendicular clearance to halfW(19.25) + nodeHalfW(0) + margin(5.5).
+  const req = ((8 - 1) * spacing) / 2 + 0 + spacing;
+  const duv = Math.sqrt(100 ** 2 + 15 ** 2);
+  assert.ok(Math.abs(t.required - duv * (req / 15)) < 1e-9);
+});
+
+test('findCorridorBoxes: junction-adjacent nodes and endpoint-zone passes stay silent', () => {
+  const g: BoxGraph = {
+    nodes: [[0, 0], [200, 0], [10, 15], [190, 300], [10, 15]],
+    edges: [[0, 1], [0, 2], [1, 3]],
+  };
+  // node 2 is graph-adjacent to endpoint 0 (a junction leg, not a squeeze);
+  // node 4 duplicates its position but has no edges, yet sits at t=0.05
+  // (endpoint zone). Neither flags.
+  const boxes = findCorridorBoxes(g, [TRUNK8, ['z1'], ['z2']], { spacing: 5.5 });
+  assert.equal(boxes.length, 0);
+});
+
+test('findCorridorBoxes: a same-service parallel and a sub-threshold pass stay silent', () => {
+  const g: BoxGraph = {
+    nodes: [[0, 0], [200, 0], [100, 15], [300, 300], [100, 6], [320, 300]],
+    edges: [[0, 1], [2, 3], [4, 5]],
+  };
+  // node 2's corridor shares line t1 with the trunk (same service: merges or
+  // interlines downstream); node 4 sits 6px off the trunk, under the 10px
+  // weld/contraction threshold. Neither flags.
+  const boxes = findCorridorBoxes(g, [TRUNK8, ['t1'], ['z']], { spacing: 5.5, minDist: 10 });
+  assert.equal(boxes.length, 0);
+});
+
+test('findCorridorBoxes: single-line corridors everywhere produce no demand', () => {
+  const g: BoxGraph = {
+    nodes: [[0, 0], [200, 0], [100, 4]],
+    edges: [[0, 1]],
+  };
+  const boxes = findCorridorBoxes(g, [['z']], { spacing: 5.5 });
+  assert.equal(boxes.length, 0);
+});
+
+test('findCorridorBoxes: deterministic', () => {
+  const g: BoxGraph = {
+    nodes: [[0, 0], [200, 0], [100, 15], [100, 40], [300, 300]],
+    edges: [[0, 1], [2, 4], [3, 4]],
+  };
+  const a = findCorridorBoxes(g, [TRUNK8, ['y1', 'y2', 'y3'], ['y1', 'y2', 'y3']], { spacing: 5.5 });
+  const b = findCorridorBoxes(g, [TRUNK8, ['y1', 'y2', 'y3'], ['y1', 'y2', 'y3']], { spacing: 5.5 });
+  assert.deepEqual(a, b);
+  assert.ok(a.length >= 1);
 });
 
 test('findCapsuleBoxes: deterministic', () => {
