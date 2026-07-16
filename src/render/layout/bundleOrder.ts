@@ -285,24 +285,38 @@ const cmpKeys = (a: number[], b: number[]): number => {
  *  (the same walk-relative ranking the split plan uses, so the model matches
  *  the machinery's own flank physics).
  *
- *  The move is an ADJACENT pair swap applied across the pair's whole
+ *  The move orients one ADJACENT pair uniformly across the pair's whole
  *  CO-TRAVEL STRETCH (every corridor the two lines ride together, connected
- *  through ends where both continue into the same neighbour). Swapping a
+ *  through ends where both continue into the same neighbour). Reordering a
  *  single corridor in isolation would fall out of step with the neighbours'
  *  orders and materialize same-section twists, which are worse than any
- *  wedge; swapping the whole stretch keeps every interior boundary consistent
- *  by construction, and at the stretch ends the two lines part ways, so no
- *  boundary carries their shared order. Only the swapped pair's own rank
- *  contributions change (adjacency everywhere means no third line's order
- *  moves), so the acceptance test is exact: the pair's summed disagreement
- *  over the stretch-end junctions must strictly drop. A pair whose two
- *  stretch ends make conflicting demands stays put (its crossing is genuine
- *  and must materialize at one end or the other). Every acceptance strictly
- *  lowers the global rank potential, so sweeps converge. A line with no
- *  neighbour at either end sitting between a disagreeing pair blocks the
- *  bubble (swapping past it is cost-neutral, and only strict wins are
- *  accepted); interleaves are through-traffic in practice, so this residual
- *  is accepted rather than special-cased.
+ *  wedge; orienting the whole stretch keeps every interior boundary
+ *  consistent, and at the stretch ends the two lines part ways, so no
+ *  boundary carries their shared order. Only the pair's own contributions
+ *  change (adjacency everywhere means no third line's order moves), so the
+ *  acceptance test is exact. The objective per pair, lexicographic:
+ *  1. physical crossings = rank disagreements at the stretch-end junctions
+ *     plus inconsistent interior boundaries (a pair already ordered
+ *     differently in adjacent corridors IS a drawn crossing; orienting it
+ *     uniformly repairs the residual twist);
+ *  2. boundary inconsistencies alone (twists are worse than wedges);
+ *  3. placement of a surviving disagreement: a pair whose two stretch ends
+ *     make genuinely conflicting demands must cross SOMEWHERE. It may move
+ *     its crossing only to the end that already hosts strictly MORE of its
+ *     sibling pairs (pairs of the same two neighbour services), or, when the
+ *     siblings tie, to a strictly larger angular separation (a wide fan
+ *     draws one clean crossing; a shallow one smears into a tangent braid).
+ *     Majority hosting makes every pair of the same two services settle on
+ *     the same end: the services ride GROUPED and their forced crossings
+ *     concentrate into one bundle-over-bundle crossing instead of
+ *     interleaving along the trunk, while a lone already-hosted crossing
+ *     never wanders (the sum of minority-hosted counts strictly decreases,
+ *     so sweeps converge).
+ *  Every acceptance strictly lowers the pair's potential and touches no
+ *  other pair, so sweeps converge. A line with no neighbour at either end
+ *  sitting between a disagreeing pair blocks the bubble (only strict wins
+ *  are accepted); interleaves are through-traffic in practice, so this
+ *  residual is accepted rather than special-cased.
  *  Deterministic: sorted sweeps, quantized angles, index-ordered pair scans. */
 export function placeResiduals(
   flats: Map<number, string[]>,
@@ -335,44 +349,94 @@ export function placeResiduals(
   const nodeFrame = (c: Corridor, nd: string, canonical: readonly string[]): string[] =>
     nd === c.endB ? [...canonical] : [...canonical].reverse();
 
-  // Rank-disagreement contribution of the ordered pair (x before y, in the
-  // canonical frame of c) at end nd: 1 when their neighbour corridors differ
-  // in angular rank and the pair's lateral order at nd contradicts it.
-  const pairCostAt = (c: Corridor, nd: string, x: string, y: string): number => {
-    const gx = neighborOf(c, nd, x);
-    const gy = neighborOf(c, nd, y);
-    if (gx === null || gy === null || gx === gy) return 0;
-    const rx = rankOf(c, nd, gx);
-    const ry = rankOf(c, nd, gy);
-    if (rx === ry) return 0;
-    // canonical "x before y" reads in the node frame as-is at endB, flipped
-    // at endA
-    const xFirstAtNd = nd === c.endB;
-    const disagreeIfXFirst = rx > ry;
-    return xFirstAtNd === disagreeIfXFirst ? 1 : 0;
+  // A stretch-end junction where the pair's neighbour corridors differ in
+  // angular rank, with everything needed to score an orientation.
+  interface PairEnd { s: Corridor; nd: string; rx: number; ry: number; sep: number }
+  const endInfo = (s: Corridor, nd: string, x: string, y: string): PairEnd | null => {
+    const gx = neighborOf(s, nd, x);
+    const gy = neighborOf(s, nd, y);
+    if (gx === null || gy === null || gx === gy) return null;
+    const rx = rankOf(s, nd, gx);
+    const ry = rankOf(s, nd, gy);
+    if (rx === ry) return null;
+    return { s, nd, rx, ry, sep: Math.abs(rx - ry) };
+  };
+  // Does orientation o (x before y in s's canonical frame) disagree with the
+  // angular ranks at this end? Canonical reads into the node as-is at endB,
+  // flipped at endA.
+  const disagrees = (e: PairEnd, o: boolean): boolean => {
+    const xFirstAtNd = e.nd === e.s.endB ? o : !o;
+    return xFirstAtNd === (e.rx > e.ry);
+  };
+  // Interior boundary consistency across a shared node: s reads INTO nd, n
+  // reads OUT of nd (the back-edge comparison convention).
+  const linkConsistent = (s: Corridor, nd: string, n: Corridor, oS: boolean, oN: boolean): boolean => {
+    const sAt = nd === s.endB ? oS : !oS;
+    const nAt = nd === n.endA ? oN : !oN;
+    return sAt === nAt;
   };
 
   // Co-travel stretch of a pair: corridors both lines ride, connected through
-  // ends where both continue into the SAME neighbour.
-  const stretchOf = (c0: Corridor, x: string, y: string): Corridor[] => {
-    const out: Corridor[] = [c0];
+  // ends where both continue into the SAME neighbour, plus those links.
+  interface Stretch { corrs: Corridor[]; links: Array<{ s: Corridor; nd: string; n: Corridor }> }
+  const stretchOf = (c0: Corridor, x: string, y: string): Stretch => {
+    const corrs: Corridor[] = [c0];
+    const links: Array<{ s: Corridor; nd: string; n: Corridor }> = [];
     const seen = new Set<number>([c0.id]);
     const queue: Corridor[] = [c0];
+    const linkSeen = new Set<string>();
     while (queue.length > 0) {
       const c = queue.pop()!;
       for (const nd of [c.endA, c.endB]) {
         const gx = neighborOf(c, nd, x);
         const gy = neighborOf(c, nd, y);
-        if (gx === null || gy === null || gx !== gy || seen.has(gx)) continue;
+        if (gx === null || gy === null || gx !== gy) continue;
         const n = cs.corridors[gx];
         if (!n.lines.includes(x) || !n.lines.includes(y)) continue;
+        const lk = Math.min(c.id, n.id) + '|' + nd + '|' + Math.max(c.id, n.id);
+        if (!linkSeen.has(lk)) {
+          linkSeen.add(lk);
+          links.push({ s: c, nd, n });
+        }
+        if (seen.has(gx)) continue;
         seen.add(gx);
-        out.push(n);
+        corrs.push(n);
         queue.push(n);
       }
     }
-    return out;
+    return { corrs, links };
   };
+
+  // Sibling hosting count at a rank end: how many pairs between the same two
+  // neighbour services (one line each side) currently sit on the wrong side
+  // of the ranks there, i.e. host their crossing at this end.
+  const hostCount = (e: PairEnd, x: string, y: string): number => {
+    const gx = neighborOf(e.s, e.nd, x)!;
+    const gy = neighborOf(e.s, e.nd, y)!;
+    const f = flats.get(e.s.id);
+    if (!f) return 0;
+    const seq = nodeFrame(e.s, e.nd, f);
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < seq.length; i++) {
+      const g = neighborOf(e.s, e.nd, seq[i]);
+      if (g === gx) xs.push(i);
+      else if (g === gy) ys.push(i);
+    }
+    // a crossing is hosted here when the gx line sits on the side its rank
+    // says the gy line should hold
+    const gxFirstExpected = rankOf(e.s, e.nd, gx) < rankOf(e.s, e.nd, gy);
+    let hosted = 0;
+    for (const i of xs) {
+      for (const j of ys) {
+        if ((i < j) !== gxFirstExpected) hosted++;
+      }
+    }
+    return hosted;
+  };
+  interface Score { cross: number; inc: number; hostedAt: PairEnd[] }
+  const cmpScore = (a: Score, b: Score): number =>
+    (a.cross - b.cross) || (a.inc - b.inc);
 
   const order = [...cs.corridors].sort(
     (a, b) => (b.lines.length - a.lines.length) || (a.id - b.id),
@@ -386,38 +450,83 @@ export function placeResiduals(
       for (let i = 0; i + 1 < flat.length; i++) {
         const x = flat[i];
         const y = flat[i + 1];
-        const S = stretchOf(c, x, y);
-        // the swap is clean only when the pair is adjacent in EVERY corridor
+        const { corrs, links } = stretchOf(c, x, y);
+        // the move is clean only when the pair is adjacent in EVERY corridor
         // of the stretch (no third line's order can move)
-        const spots: Array<{ s: Corridor; ix: number; xFirst: boolean }> = [];
+        const spots: Array<{ s: Corridor; lo: number; xFirst: boolean }> = [];
         let cleanAdjacent = true;
-        for (const s of S) {
+        for (const s of corrs) {
           const f = flats.get(s.id);
           if (!f) { cleanAdjacent = false; break; }
           const ix = f.indexOf(x);
           const iy = f.indexOf(y);
           if (ix < 0 || iy < 0 || Math.abs(ix - iy) !== 1) { cleanAdjacent = false; break; }
-          spots.push({ s, ix: Math.min(ix, iy), xFirst: ix < iy });
+          spots.push({ s, lo: Math.min(ix, iy), xFirst: ix < iy });
         }
         if (!cleanAdjacent) continue;
-        let before = 0;
-        let after = 0;
-        for (const { s, xFirst } of spots) {
+        const ends: PairEnd[] = [];
+        for (const s of corrs) {
           for (const nd of [s.endA, s.endB]) {
-            // pairCostAt takes the canonical-frame leader; after the swap the
-            // leader flips in every corridor of the stretch
-            before += xFirst ? pairCostAt(s, nd, x, y) : pairCostAt(s, nd, y, x);
-            after += xFirst ? pairCostAt(s, nd, y, x) : pairCostAt(s, nd, x, y);
+            const e = endInfo(s, nd, x, y);
+            if (e) ends.push(e);
           }
         }
-        if (after >= before) continue;
-        for (const { s, ix } of spots) {
-          const f = flats.get(s.id)!;
-          const tmp = f[ix];
-          f[ix] = f[ix + 1];
-          f[ix + 1] = tmp;
+        const orientOf = new Map(spots.map((sp) => [sp.s.id, sp.xFirst]));
+        const scoreOf = (orient: (sid: number) => boolean): Score => {
+          let cross = 0;
+          const hostedAt: PairEnd[] = [];
+          for (const e of ends) {
+            if (disagrees(e, orient(e.s.id))) {
+              cross++;
+              hostedAt.push(e);
+            }
+          }
+          let inc = 0;
+          for (const lk of links) {
+            if (!linkConsistent(lk.s, lk.nd, lk.n, orient(lk.s.id), orient(lk.n.id))) inc++;
+          }
+          return { cross: cross + inc, inc, hostedAt };
+        };
+        const cur = scoreOf((sid) => orientOf.get(sid)!);
+        if (cur.cross === 0) continue;
+        const uniX = scoreOf(() => true);
+        const uniY = scoreOf(() => false);
+        let target: boolean | null = null;
+        let best = cur;
+        if (cmpScore(uniX, best) < 0) { best = uniX; target = true; }
+        if (cmpScore(uniY, best) < 0) { best = uniY; target = false; }
+        // Placement tie-break: a genuine conflict hosts its crossing at one
+        // rank end either way. Move it only toward the sibling majority, or
+        // on a sibling tie toward the strictly wider angular fan.
+        if (target === null && cur.hostedAt.length === 1 && cur.inc === 0) {
+          for (const [cand, t] of [[uniX, true], [uniY, false]] as Array<[Score, boolean]>) {
+            if (cmpScore(cand, cur) !== 0 || cand.hostedAt.length !== 1) continue;
+            const from = cur.hostedAt[0];
+            const to = cand.hostedAt[0];
+            if (from.s.id === to.s.id && from.nd === to.nd) continue;
+            // counts exclude this pair: it is hosted at `from` right now
+            const othersFrom = hostCount(from, x, y) - 1;
+            const othersTo = hostCount(to, x, y);
+            if (trace) trace(c, `TIE ${x.slice(0, 8)}x${y.slice(0, 8)} from=c${from.s.id}@${from.nd}(sep ${from.sep.toFixed(3)}, others ${othersFrom}) to=c${to.s.id}@${to.nd}(sep ${to.sep.toFixed(3)}, others ${othersTo})`);
+            // seps compare with a milliradian tolerance: the quantized angle
+            // arithmetic wobbles at the last digit and sub-milliradian fan
+            // differences carry no placement meaning
+            if (othersTo > othersFrom || (othersTo === othersFrom && to.sep > from.sep + 1e-3)) {
+              target = t;
+              best = cand;
+              break;
+            }
+          }
         }
-        if (trace) trace(c, `PLACE swap ${x.slice(0, 8)}x${y.slice(0, 8)} stretch=${S.length} cost ${before}->${after}`);
+        if (target === null) continue;
+        for (const sp of spots) {
+          if (sp.xFirst === target) continue;
+          const f = flats.get(sp.s.id)!;
+          const tmp = f[sp.lo];
+          f[sp.lo] = f[sp.lo + 1];
+          f[sp.lo + 1] = tmp;
+        }
+        if (trace) trace(c, `PLACE orient ${x.slice(0, 8)}x${y.slice(0, 8)} stretch=${corrs.length} (cross,inc) ${cur.cross},${cur.inc}->${best.cross},${best.inc}`);
         moves++;
         changed = true;
       }

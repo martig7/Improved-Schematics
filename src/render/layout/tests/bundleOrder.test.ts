@@ -473,9 +473,12 @@ test('placeResiduals: the swap applies across the whole co-travel stretch', () =
   assert.deepEqual(flats.get(t2.id), ['x', 'y']);
 });
 
-test('placeResiduals: genuinely conflicting end demands stay untouched', () => {
+test('placeResiduals: a genuine two-end conflict keeps one crossing, hosted deterministically', () => {
   // corridor t {u,v}: at n1 u exits up / v down; at n2 u exits down / v up.
-  // Whatever the order, one end pays; strict improvement never fires.
+  // Whatever the order one end pays, so the crossing count cannot drop; the
+  // placement tie-break hosts the disagreement at the preferred end (equal
+  // angular separations here, so the smaller node id wins) and a second run
+  // is a fixpoint.
   const layout = makeLayout(
     [['n1', 0, 0], ['n2', 20, 0], ['ua', -10, -10], ['va', -10, 10], ['ub', 30, 10], ['vb', 30, -10]],
     [
@@ -494,7 +497,42 @@ test('placeResiduals: genuinely conflicting end demands stay untouched', () => {
   const flows = classifyFlows(layout, cs);
   const tCorr = cs.byEdge.get('t')!;
   const flats = new Map<number, string[]>([[tCorr.id, ['u', 'v']]]);
+  placeResiduals(flats, cs, flows);
+  const settled = [...flats.get(tCorr.id)!];
+  assert.equal(placeResiduals(flats, cs, flows), 0);
+  assert.deepEqual(flats.get(tCorr.id), settled);
+  assert.deepEqual([...settled].sort(), ['u', 'v']);
+});
+
+test('placeResiduals: an inconsistently oriented pair is repaired to one uniform order', () => {
+  // {x,y} ride t1 then t2 (kept distinct corridors by the extra line w on t2)
+  // with the pair FLIPPED between them, a residual boundary twist. Orienting
+  // the stretch uniformly removes the boundary inversion.
+  const layout = makeLayout(
+    [['n1', 0, 0], ['n2', 20, 0], ['n3', 40, 0], ['xe', 50, -10], ['ye', 50, 10]],
+    [
+      { id: 't1', from: 'n1', to: 'n2', lines: ['x', 'y'] },
+      { id: 't2', from: 'n2', to: 'n3', lines: ['w', 'x', 'y'] },
+      { id: 'ex', from: 'n3', to: 'xe', lines: ['x'] },
+      { id: 'ey', from: 'n3', to: 'ye', lines: ['y'] },
+    ],
+    {
+      w: [{ edgeId: 't2', reversed: false }],
+      x: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'ex', reversed: false }],
+      y: [{ edgeId: 't1', reversed: false }, { edgeId: 't2', reversed: false }, { edgeId: 'ey', reversed: false }],
+    },
+  );
+  const cs = buildCorridors(layout);
+  const flows = classifyFlows(layout, cs);
+  const t1 = cs.byEdge.get('t1')!;
+  const t2 = cs.byEdge.get('t2')!;
+  const flats = new Map<number, string[]>([
+    [t1.id, ['y', 'x']],
+    [t2.id, ['w', 'x', 'y']],
+  ]);
   const moves = placeResiduals(flats, cs, flows);
-  assert.equal(moves, 0);
-  assert.deepEqual(flats.get(tCorr.id), ['u', 'v']);
+  assert.ok(moves >= 1);
+  // uniform, and matching the n3 exit angles (x up, y down): x before y in both
+  assert.deepEqual(flats.get(t1.id), ['x', 'y']);
+  assert.deepEqual(flats.get(t2.id), ['w', 'x', 'y']);
 });
