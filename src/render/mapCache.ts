@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 19; // bump to invalidate every cached entry on a format change
+const VERSION = 20; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -50,6 +50,9 @@ const VERSION = 19; // bump to invalidate every cached entry on a format change
 // regime map of cropped lanes (the crop now takes a design-agnostic footprint,
 // so any opaque design crops its termini). A pre with the old field would leave
 // London/Tokyo interchange termini uncropped; purge so every cached pre refreshes.
+// v20: pre.geometry's drawn ribbons changed shape at wide-bundle corners (turn
+// miter caps and the lane-continuity bias clamp now scale with bundle width).
+// Purge so cached geometry redraws with the scaled corners.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {
