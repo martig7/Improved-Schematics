@@ -285,15 +285,20 @@ keeps its signature.
   `overlapFraction`; legacy path stays flat and byte-identical. `SOFT_INF` base makes text-text
   overlap the last resort of last resorts (the packer crosses lines / turns sideways first).
 
-- **Overlap rescue pass.** Greedy scores each label only against those placed BEFORE it, so an
-  early choice can force a later overlap a different arrangement would avoid. The per-node
-  candidate build+score is extracted into `placeNode(node, others, othersAABB, current)`, and a
-  coordinate-descent rescue runs after greedy: each round re-runs every still-overlapping label
-  against every OTHER final label, moving it only when a candidate strictly lowers its cost.
-  Each move lowers that label's cost (hence the total), so it converges; a 4-round cap bounds
-  it. It is a no-op when nothing overlaps and gated by `!noRotate` + `OCTI_LABEL_NO_RESCUE`, so
-  legacy stays byte-identical. Measured (overlapping flat-label pairs): SEA 9->4, NYC 1 (an
-  unavoidable box-in) unchanged, LON 0.
+- **Overlap rescue pass (joint, entangled-group).** Greedy scores each label only against those
+  placed BEFORE it, so an early choice can force a later overlap a different arrangement would
+  avoid. The candidate model is extracted into `buildNode` (shared by greedy and the rescue).
+  After greedy, each round groups the still-overlapping labels into connected components of the
+  overlap graph (the ENTANGLED groups); for a small group it solves the joint MIN-COST assignment
+  exhaustively over all members' candidate combinations at once, so two labels each blocking the
+  other's only good spot move TOGETHER -- which no one-at-a-time step can. The joint cost is
+  exact: each candidate's cost vs the fixed external labels (`score`) plus the per-pair internal
+  interaction. Larger groups fall back to per-label coordinate descent (a `MAX_COMBOS` ceiling).
+  Every accepted move strictly lowers the group's total, so it converges; a 4-round cap bounds
+  it. No-op on clean layouts; deterministic; subsumes per-label (never worse); gated `!noRotate`
+  + `OCTI_LABEL_NO_RESCUE` so legacy stays byte-identical. Measured (overlapping flat-label
+  pairs): the dense SF-jul-15 dump no rescue 45, per-label 35, JOINT 26 (the joint move resolves
+  cyclic entanglements per-label can't); SEA 9->4, NYC 1 (unavoidable), LON 0.
 
 **Legacy guarantee, preserved.** All of the above are gated by the single legacy switch
 `OCTI_LABEL_NO_ROTATE=1` (which now means "all new label behaviour off"), so that flag still
