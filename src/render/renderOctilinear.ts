@@ -1266,11 +1266,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           if (C) {
             const dispA = hyp(C[0] - qa[0], C[1] - qa[1]);
             const dispB = hyp(C[0] - qb[0], C[1] - qb[1]);
-            // the meet must land inside the node neighbourhood (cap each end's
-            // move at the lane-end segment length, with a slot-scaled floor) so a
-            // near-parallel pair (intersection far away) keeps the S connector
-            const capA = Math.max(spacing * 6, lenA);
-            const capB = Math.max(spacing * 6, lenB);
+            // The meet must land inside the corner's own footprint so a
+            // near-parallel pair (intersection far away) keeps the S connector.
+            // At an inside corner each end's displacement equals this line's
+            // lateral slot offset on the MATING edge, divided by the sine of
+            // the turn angle (at most sqrt(2) for octilinear corners), so the
+            // cap must scale with that offset. A fixed cap fails the outermost
+            // inside line of a wide bundle, and its declined miter leaves raw
+            // lane pieces that cross each other: a painted mini-loop.
+            const slotEff = (edgeId: string): number =>
+              Math.abs((slotOf.get(edgeId + '|' + lineId) ?? 0) + (biasOf.get(edgeId) ?? 0));
+            const capA = Math.max(spacing * 6, lenA, (slotEff(b.edgeId) + spacing) * Math.SQRT2);
+            const capB = Math.max(spacing * 6, lenB, (slotEff(a.edgeId) + spacing) * Math.SQRT2);
             // the corner must lie BEHIND the inbound end (clip/retract, not extend
             // past it forward) and AHEAD of the outbound end — i.e. on the turn's
             // inside — so the legs shorten into the bend rather than overshoot it
