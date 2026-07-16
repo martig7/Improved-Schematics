@@ -20,6 +20,7 @@ import type { WaterCollection } from './types';
 import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0 } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
+import { buildFanJoins } from './fanJoin';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -1157,7 +1158,25 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const noDogleg =
     envStr('OCTI_NO_DOGLEG') === '1';
   const JOIN_TRACE = joinTraceTarget();
-  for (const [lineId, traversal] of layout.lineTraversals) {
+  // Fan builder (default): every corner computed once per (junction, turn
+  // group) with a shared trim and fan-reach gates, so bundle-mates get
+  // nested sweeps by construction (see src/render/fanJoin.ts and
+  // docs/draw-geometry-invariants.md). OCTI_FAN=0 runs the legacy per-line
+  // join ladder below instead, kept for A/B until the rebuild is signed off.
+  const useFanJoins = envStr('OCTI_FAN') !== '0';
+  if (useFanJoins) {
+    const fan = buildFanJoins({
+      lineTraversals: layout.lineTraversals,
+      lineIds: new Set(lineById.keys()),
+      edgeById, segPath, orderOf, biasOf, nodePx,
+      spacing, smoothR: SMOOTH_R, bigGapMult,
+    });
+    for (const c of fan.joinCurves) joinCurves.push(c);
+    for (const [k, v] of fan.joinStopPos) joinStopPos.set(k, v);
+    for (const k of fan.endMoved) endMoved.add(k);
+    for (const k of fan.mitered) mitered.add(k);
+  }
+  if (!useFanJoins) for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     const jlog = makeJoinLog(JOIN_TRACE, lineId);
     // A CLOSED circular course meets itself at its seam node: the pair
