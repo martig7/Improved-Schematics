@@ -696,18 +696,24 @@ export function separateFusedStations(
         for (const l of movedLines) {
           const steps = h.lineTraversals.get(l);
           if (!steps) continue;
-          // A CLOSED circular course "starts and ends" at the fused node only
+          // A circular RING course "starts and ends" at the fused node only
           // because its seam sits there: the boundary steps are the course's
           // real loop-closing legs, not bare tails past a relocated terminus,
-          // and trimming one opens the drawn ring. Detect closure before any
-          // edit and leave a closed course's boundary steps alone.
+          // and trimming one opens the drawn ring. Detect the ring before any
+          // edit and leave its boundary steps alone. An out-and-back course
+          // also ends where it starts, but its seam retraces ONE edge (first
+          // and last steps are the same edge in opposite directions); its
+          // boundary steps really are turnaround tails and must keep the trim.
           const closed = (() => {
-            if (steps.length === 0) return false;
-            const eF = h.edges.get(steps[0].edgeId);
-            const eL = h.edges.get(steps[steps.length - 1].edgeId);
+            if (steps.length < 2) return false;
+            const first = steps[0];
+            const last = steps[steps.length - 1];
+            if (first.edgeId === last.edgeId && first.reversed !== last.reversed) return false;
+            const eF = h.edges.get(first.edgeId);
+            const eL = h.edges.get(last.edgeId);
             if (!eF || !eL) return false;
-            const start = steps[0].reversed ? eF.to : eF.from;
-            const end = steps[steps.length - 1].reversed ? eL.from : eL.to;
+            const start = first.reversed ? eF.to : eF.from;
+            const end = last.reversed ? eL.from : eL.to;
             return start === end;
           })();
           const out: TraversalStep[] = [];

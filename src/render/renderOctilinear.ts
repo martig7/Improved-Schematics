@@ -3503,22 +3503,25 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const connSeen = new Set<string>();
   for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
-    // A CLOSED circular course continues across its seam node too: the pair
+    // A circular RING course continues across its seam node too: the pair
     // (last drawn lane, first drawn lane) is a real continuation the linear
     // scan never visits. The join pass wraps the same seam, but every one of
     // its decline paths falls through to THIS connector as the last resort,
-    // so the seam must be reachable here as well or a circle whose seam join
+    // so the seam must be reachable here as well or a ring whose seam join
     // declines is left with a bare gap. One extra iteration revisits the
-    // first drawn lane when the course closes on itself.
+    // first drawn lane when the course closes on itself. An out-and-back
+    // course also ends where it starts, but its seam retraces ONE edge
+    // (same edge, opposite directions), which has nothing to bridge.
     let wrap = 0;
     if (traversal.length > 1) {
       const f = traversal[0];
       const l = traversal[traversal.length - 1];
+      const sameEdgeSeam = f.edgeId === l.edgeId && f.reversed !== l.reversed;
       const ef = edgeById.get(f.edgeId);
       const el = edgeById.get(l.edgeId);
       const firstStart = f.reversed ? ef?.to : ef?.from;
       const lastEnd = l.reversed ? el?.from : el?.to;
-      if (firstStart !== undefined && firstStart === lastEnd) wrap = 1;
+      if (!sameEdgeSeam && firstStart !== undefined && firstStart === lastEnd) wrap = 1;
     }
     let prevIdx = -1;
     let firstIdx = -1;

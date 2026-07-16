@@ -233,6 +233,29 @@ test('separateFusedStations keeps a circular course closed (seam at the head)', 
   assert.equal(start, end, `circular course stays closed (got ${start} -> ${end})`);
 });
 
+test('separateFusedStations still trims a round-trip course originating at the fused node', () => {
+  // L2 is a round trip N -> B -> N (same-edge seam, not a ring). Its origin
+  // stop splits onto the corridor; the boundary keeper-half steps are real
+  // turnaround tails and must still be trimmed so the drawn course turns
+  // around at the new marker instead of overshooting to the keeper.
+  const { h, img } = ringFixture([
+    { edgeId: 'e2', reversed: false }, // N -> B
+    { edgeId: 'e2', reversed: true },  // B -> N
+  ]);
+  separateFusedStations(h, img, 16);
+  const g2 = h.stations.get('g2')!;
+  assert.notEqual(g2.nodeId, 'N');
+  const keeperHalf = h.adj.get('N')!.find((id) => id.startsWith('e2'));
+  const steps = h.lineTraversals.get('L2')!;
+  assert.ok(
+    !steps.some((s) => s.edgeId === keeperHalf),
+    `round-trip course no longer reaches the keeper (got ${JSON.stringify(steps)})`,
+  );
+  const [start, end] = courseEnds(h, 'L2');
+  assert.equal(start, g2.nodeId, 'course starts at the split stop');
+  assert.equal(end, g2.nodeId, 'course ends at the split stop');
+});
+
 /** Corridor A -(eA)- J -(eB)- B with a fold stub J -(eS)- S: every line rides
  *  out and back over the stub, S hosts the stop of `stopLine`. The pre-merge
  *  support graph runs the same lines straight through a mid-course node
