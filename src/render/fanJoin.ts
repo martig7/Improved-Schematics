@@ -612,7 +612,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
       taperLaneEnd(e.pOut, m.outAtStart, e.qa, t);
       tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: t });
       markDone(g, m);
-      flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${t.toFixed(1)}`);
+      flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${t.toFixed(1)} caps=${capA.toFixed(1)}/${capB.toFixed(1)} rooms=${roomIn.toFixed(1)}/${roomOut.toFixed(1)} n=${nIn}/${nOut}`);
       return;
     }
     if (oneSided === 'in') {
@@ -620,7 +620,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
       taperLaneEnd(e.pIn, m.inAtStart, e.qb, t);
       tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: t });
       markDone(g, m);
-      flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${t.toFixed(1)}`);
+      flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${t.toFixed(1)} caps=${capA.toFixed(1)}/${capB.toFixed(1)} rooms=${roomIn.toFixed(1)}/${roomOut.toFixed(1)} n=${nIn}/${nOut}`);
       return;
     }
     if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
@@ -681,7 +681,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
     tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: tA });
     tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: tB });
     markDone(g, m);
-    flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)}`);
+    flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)} caps=${capA.toFixed(1)}/${capB.toFixed(1)} rooms=${roomIn.toFixed(1)}/${roomOut.toFixed(1)} n=${nIn}/${nOut}`);
   };
   const deferredJogs: Array<{ g: Group; m: Member; flog: (s: string) => void }> = [];
 
