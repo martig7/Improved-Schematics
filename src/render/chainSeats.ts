@@ -60,7 +60,8 @@ export interface ChainSeatResult {
   /** edge.id|lineId -> ladder-frame lateral offset (edge from->to frame)
    *  for every chain-interior lane of a framed participant. */
   seats: Map<string, number>;
-  /** One row per chain that seated at least one run; recording-only. */
+  /** One row per seated overlap component (a chain can hold several);
+   *  recording-only. */
   report: ChainSeatReport[];
 }
 
@@ -201,44 +202,87 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       }
     }
 
-    // The shared ladder (spec 2.3): order by desired seat, pitch slots,
-    // centered by the deterministic lower median.
-    runs.sort((a, b) => (a.desired - b.desired) || (a.lineId < b.lineId ? -1 : 1));
-    const centerK = (runs.length - 1) / 2;
-    const offsets = runs
-      .map((r, k) => r.desired - (k - centerK) * spacing)
-      .sort((a, b) => a - b);
-    const c = offsets[Math.floor((offsets.length - 1) / 2)];
-    runs.forEach((r, k) => { r.ladderSeat = (k - centerK) * spacing + c; });
-
-    const conflicts: ChainSeatConflict[] = [];
-    for (const r of runs) {
-      for (const edgeId of r.edgeIds) {
-        const key = edgeId + '|' + r.lineId;
-        const fwd = orientedForward.get(edgeId) ?? true;
-        const seat = fwd ? r.ladderSeat : -r.ladderSeat;
-        if (out.has(key)) {
-          conflicts.push({
-            key,
-            kept: out.get(key)!,
-            keptChain: keyOwner.get(key) ?? -1,
-            discarded: seat,
-          });
-          continue;
+    // Ladders form per OVERLAP COMPONENT, not per chain: runs that never
+    // share an edge occupy independent lateral space, and a global ladder
+    // would let one covered stretch inflate the span of another. Runs are
+    // grouped by connected overlap (shared interior edges); each group
+    // gets its own ladder (spec 2.3 ordering, pitch slots, deterministic
+    // lower-median centering).
+    const compOf = new Map<ChainSeatRun, number>();
+    {
+      const byEdge = new Map<string, ChainSeatRun[]>();
+      for (const r of runs) {
+        for (const edgeId of r.edgeIds) {
+          const list = byEdge.get(edgeId);
+          if (list) list.push(r); else byEdge.set(edgeId, [r]);
         }
-        out.set(key, seat);
-        keyOwner.set(key, chainIndex);
+      }
+      let nextComp = 0;
+      for (const seed of runs) {
+        if (compOf.has(seed)) continue;
+        const comp = nextComp++;
+        const queue = [seed];
+        compOf.set(seed, comp);
+        while (queue.length) {
+          const r = queue.pop()!;
+          for (const edgeId of r.edgeIds) {
+            for (const other of byEdge.get(edgeId)!) {
+              if (!compOf.has(other)) {
+                compOf.set(other, comp);
+                queue.push(other);
+              }
+            }
+          }
+        }
       }
     }
-    report.push({
-      chainIndex,
-      anchorA: chain.anchorA,
-      anchorB: chain.anchorB,
-      edgeIds: chain.edgeIds,
-      c,
-      runs,
-      conflicts,
-    });
+    const components = new Map<number, ChainSeatRun[]>();
+    for (const r of runs) {
+      const comp = compOf.get(r)!;
+      const list = components.get(comp);
+      if (list) list.push(r); else components.set(comp, [r]);
+    }
+
+    for (const group of components.values()) {
+      group.sort((a, b) => (a.desired - b.desired) || (a.lineId < b.lineId ? -1 : 1));
+      const centerK = (group.length - 1) / 2;
+      const offsets = group
+        .map((r, k) => r.desired - (k - centerK) * spacing)
+        .sort((a, b) => a - b);
+      const c = offsets[Math.floor((offsets.length - 1) / 2)];
+      group.forEach((r, k) => { r.ladderSeat = (k - centerK) * spacing + c; });
+
+      const conflicts: ChainSeatConflict[] = [];
+      for (const r of group) {
+        for (const edgeId of r.edgeIds) {
+          const key = edgeId + '|' + r.lineId;
+          const fwd = orientedForward.get(edgeId) ?? true;
+          const seat = fwd ? r.ladderSeat : -r.ladderSeat;
+          if (out.has(key)) {
+            conflicts.push({
+              key,
+              kept: out.get(key)!,
+              keptChain: keyOwner.get(key) ?? -1,
+              discarded: seat,
+            });
+            continue;
+          }
+          out.set(key, seat);
+          keyOwner.set(key, chainIndex);
+        }
+      }
+      const covered = new Set<string>();
+      for (const r of group) for (const edgeId of r.edgeIds) covered.add(edgeId);
+      report.push({
+        chainIndex,
+        anchorA: chain.anchorA,
+        anchorB: chain.anchorB,
+        edgeIds: chain.edgeIds.filter((id) => covered.has(id)),
+        c,
+        runs: group,
+        conflicts,
+      });
+    }
   }
   return { seats: out, report };
 }

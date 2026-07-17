@@ -95,6 +95,34 @@ test('seats: a round-trip line occupies ONE ladder slot (no directional duplicat
   }
 });
 
+test('seats: runs on disjoint interior spans ladder independently', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  const chains = detectChains({
+    edges: EDGES,
+    basePoly: (id) => BASES[id],
+    laneCount: (id) => Object.keys(OFFSETS[id] ?? {}).length,
+    spacing: SP,
+  });
+  // x occupies only m1, y occupies only m2: they never share an edge, so
+  // neither may consume a slot in the other's ladder.
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(EDGES.map((e) => [e.id, e])),
+    basePoly: (id) => BASES[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId === 'x' ? (edgeId === 'a' || edgeId === 'm1' ? 0 : undefined)
+        : lineId === 'y' ? (edgeId === 'm2' || edgeId === 'b' ? 0 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['x', [fwd('a'), fwd('m1')]],
+      ['y', [fwd('m2'), fwd('b')]],
+    ]),
+    spacing: SP,
+  }).seats;
+  assert.ok(Math.abs((seats.get('m1|x') ?? NaN) - 0) < 1e-9, 'x keeps its desired seat: ' + seats.get('m1|x'));
+  assert.ok(Math.abs((seats.get('m2|y') ?? NaN) - 0) < 1e-9, 'y keeps its desired seat: ' + seats.get('m2|y'));
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });
