@@ -823,6 +823,37 @@ export function buildFanJoins(args: FanArgs): FanResult {
         }
         return true;
       };
+      // BOTH flanks first: a corner whose near lane is engulfed on EACH
+      // side absorbs both and spans through-corridor to through-corridor,
+      // so the seat seams at BOTH far nodes resolve inside the corner
+      // instead of leaving one to a taper that ramps through its sweep.
+      if (mode === 'seat'
+        && m.nextEdge && m.nextEdge !== m.edgeIn && polyLenOf(e.pOut) < fanReach
+        && m.prevEdge && m.prevEdge !== m.edgeOut && polyLenOf(e.pIn) < fanReach) {
+        const farOut = farNodeOf(m.edgeOut, m.outAtStart);
+        const farIn = farNodeOf(m.edgeIn, m.inAtStart);
+        const thrOut = farOut !== undefined && farOut !== g.node ? throughRef(m.lineId, m.nextEdge, farOut, false) : null;
+        const thrIn = farIn !== undefined && farIn !== g.node ? throughRef(m.lineId, m.prevEdge, farIn, true) : null;
+        if (thrOut && thrIn
+          && seatTakes(m.edgeOut, e.pOut, thrOut.dir) && farGap(e.pOut, m.outAtStart, thrOut.q) >= 0.5
+          && seatTakes(m.edgeIn, e.pIn, thrIn.dir) && farGap(e.pIn, m.inAtStart, thrIn.q) >= 0.5) {
+          const p = planCorner(m, e, limit, thrIn, thrOut);
+          if (p) {
+            p.consumeKeys.push(m.edgeOut + '|' + m.lineId, m.edgeIn + '|' + m.lineId);
+            p.moveKeys.push(
+              keyOut(m), endKeyAt(m.edgeOut, !m.outAtStart, m.lineId),
+              keyIn(m), endKeyAt(m.edgeIn, !m.inAtStart, m.lineId),
+            );
+            p.miterKeys.push(
+              m.lineId + '|' + g.node + '|' + pairOf(m.edgeIn, m.edgeOut),
+              m.lineId + '|' + farOut + '|' + pairOf(m.edgeOut, thrOut.edgeId),
+              m.lineId + '|' + farIn + '|' + pairOf(m.edgeIn, thrIn.edgeId),
+            );
+            p.stopNodes.push(farOut!, farIn!);
+            if (!p.moveKeys.some((k) => endMoved.has(k))) return p;
+          }
+        }
+      }
       if (m.nextEdge && m.nextEdge !== m.edgeIn && polyLenOf(e.pOut) < fanReach) {
         const farNode = farNodeOf(m.edgeOut, m.outAtStart);
         const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.nextEdge, farNode, false) : null;

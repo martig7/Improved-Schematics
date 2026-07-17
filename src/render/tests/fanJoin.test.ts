@@ -288,6 +288,55 @@ test('absorption: through reference rides the base corridor, not a tapered micro
   assert.ok(Math.abs(abs!.apex[0] - 101) < 0.5, 'apex on the corridor-parallel ray: x=' + abs!.apex[0]);
 });
 
+test('absorption: a corner engulfed on both flanks absorbs both and spans corridor to corridor', () => {
+  // m1 turns at N between two micro edges whose lanes both sit off their
+  // through seats; the corner absorbs BOTH and spans e1 -> e2, resolving
+  // the seat seams at P and Q inside the corner.
+  const f: Fixture = {
+    edges: [
+      { id: 'e1', from: 'A', to: 'P' },
+      { id: 'eM1', from: 'P', to: 'N' },
+      { id: 'eM2', from: 'N', to: 'Q' },
+      { id: 'e2', from: 'Q', to: 'B' },
+    ],
+    bases: new Map([
+      ['e1', [[0, 100], [92, 100]] as Pixel[]],
+      ['eM1', [[92, 100], [100, 100]] as Pixel[]],
+      ['eM2', [[100, 100], [100, 92]] as Pixel[]],
+      ['e2', [[100, 92], [100, 0]] as Pixel[]],
+    ]),
+    orders: new Map([
+      ['e1', ['m1']],
+      ['eM1', ['m1']],
+      ['eM2', ['m1']],
+      ['e2', ['m1']],
+    ]),
+    traversals: new Map([['m1', [fwd('e1'), fwd('eM1'), fwd('eM2'), fwd('e2')]]]),
+  };
+  const args = makeArgs(f);
+  args.segPath.set('eM1|m1', [[92, 101], [100, 101]]);
+  args.segPath.set('eM2|m1', [[101, 100], [101, 92]]);
+  args.baseEndDir = (edgeId, node) => {
+    const base = f.bases.get(edgeId);
+    const e = f.edges.find((x) => x.id === edgeId);
+    if (!base || !e) return null;
+    const atStart = e.from === node;
+    if (!atStart && e.to !== node) return null;
+    const a = atStart ? base[0] : base[base.length - 1];
+    const b = atStart ? base[1] : base[base.length - 2];
+    const l = Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+    return l > 1e-6 ? [(b[0] - a[0]) / l, (b[1] - a[1]) / l] : null;
+  };
+  const r = buildFanJoins(args);
+  const abs = r.joinCurves.find((c) => c.lineId === 'm1' && c.edgeA === 'e1' && c.edgeB === 'e2');
+  assert.ok(abs, 'corner spans corridor to corridor');
+  assert.ok(Math.abs(abs!.apex[0] - 100) < 0.5 && Math.abs(abs!.apex[1] - 100) < 0.5, 'apex at the junction: ' + abs!.apex);
+  assert.equal(args.segPath.has('eM1|m1'), false, 'inbound micro consumed');
+  assert.equal(args.segPath.has('eM2|m1'), false, 'outbound micro consumed');
+  assert.ok(args.suppressed.has('eM1|m1') && args.suppressed.has('eM2|m1'), 'both marked bridgeable');
+  assert.ok(r.joinStopPos.has('N|m1') && r.joinStopPos.has('P|m1') && r.joinStopPos.has('Q|m1'), 'stops at all spanned nodes');
+});
+
 test('sharp fan: hairpin turn pins both lane ends to the shared meet', () => {
   const f: Fixture = {
     edges: [
