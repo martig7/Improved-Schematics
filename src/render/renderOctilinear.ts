@@ -995,7 +995,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     })
     : null;
   const chainSeatOf = chainSeatRes?.seats ?? new Map<string, number>();
-  reportChainSeats({ report: chainSeatRes?.report ?? [], nodePx });
+  reportChainSeats({ report: chainSeatRes?.report ?? [], nodePx, edgeById });
 
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);

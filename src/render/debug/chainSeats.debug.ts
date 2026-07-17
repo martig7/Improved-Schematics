@@ -11,6 +11,7 @@ import type { ChainSeatReport } from '../chainSeats';
 export function reportChainSeats(d: {
   report: ChainSeatReport[];
   nodePx: Map<string, Pixel>;
+  edgeById: Map<string, { id: string; from: string; to: string }>;
 }): void {
   if (envStr('OCTI_CHAIN_DUMP') !== '1') return;
   const f1 = (v: number | undefined): string => (v === undefined ? '-' : v.toFixed(1));
@@ -19,7 +20,8 @@ export function reportChainSeats(d: {
   let maxDistort = 0;
   let maxDistortAt = '';
   for (const r of d.report) {
-    const p = (r.anchorA && d.nodePx.get(r.anchorA)) || (r.anchorB && d.nodePx.get(r.anchorB)) || undefined;
+    const first = d.edgeById.get(r.edgeIds[0]);
+    const p = first ? d.nodePx.get(first.from) : undefined;
     console.warn(
       '[chainseat] chain#' + r.chainIndex + ' ' + r.edgeIds.join('>') +
       ' anchors=' + (r.anchorA ?? 'terminus') + '..' + (r.anchorB ?? 'terminus') +
