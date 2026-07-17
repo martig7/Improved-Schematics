@@ -432,39 +432,54 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
         }
         if (unsafe) break;
       }
-      // Geometric half of the gate: a covered edge with a sub-clearance
-      // overlapping-parallel drawn edge OUTSIDE the group sits beside
-      // lanes the ladder cannot move (parallel covered edges would have
-      // merged into this group already, so an outside edge is slot+bias
-      // ink). Seating beside it risks the same sub-pitch adjacency.
-      if (!unsafe && halfWidthOf && drawnEdgeIds) {
-        if (drawnGeoms === null) {
-          drawnGeoms = [];
-          for (const id of [...drawnEdgeIds].sort()) {
-            const pts = basePoly(id);
-            if (pts && pts.length >= 2) drawnGeoms.push(edgeGeom(id, pts));
-          }
+      if (unsafe) continue;
+    }
+
+    // Fixed obstacles: lanes of sub-clearance overlapping-parallel drawn
+    // edges OUTSIDE the group (parallel covered edges would have merged
+    // into this group already, so an outside edge is slot+bias ink the
+    // ladder cannot move). Their positions, projected into the group's
+    // root frame, constrain the ladder: the whole ladder may shift to
+    // clear them, and a group that cannot clear declines to seat.
+    const obstacles: number[] = [];
+    if (halfWidthOf && drawnEdgeIds) {
+      if (drawnGeoms === null) {
+        drawnGeoms = [];
+        for (const id of [...drawnEdgeIds].sort()) {
+          const pts = basePoly(id);
+          if (pts && pts.length >= 2) drawnGeoms.push(edgeGeom(id, pts));
         }
-        outer:
-        for (const edgeId of linesOn.keys()) {
-          const gC = geomOf.get(edgeId);
-          if (!gC) continue;
-          for (const gD of drawnGeoms) {
-            if (linesOn.has(gD.id)) continue;
-            const reach = (gC.arc + gD.arc) / 2;
-            const dx = gC.mid[0] - gD.mid[0];
-            const dy = gC.mid[1] - gD.mid[1];
-            if (dx * dx + dy * dy > reach * reach) continue;
-            const [L, S] = gC.arc >= gD.arc ? [gC, gD] : [gD, gC];
-            const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
-            if (projectParallel(L, S, thresh)) {
-              unsafe = true;
-              break outer;
-            }
+      }
+      const coveredHere = new Set<string>();
+      for (const i of idxs) for (const edgeId of allRuns[i].run.edgeIds) coveredHere.add(edgeId);
+      for (const edgeId of [...coveredHere].sort()) {
+        const gC = geomOf.get(edgeId);
+        if (!gC) continue;
+        const iC = (runsOnEdge.get(edgeId) ?? [])[0];
+        if (iC === undefined) continue;
+        const pC = find(iC);
+        const sC = sgn(allRuns[iC].chain, edgeId);
+        for (const gD of drawnGeoms) {
+          if (coveredHere.has(gD.id)) continue;
+          const reach = (gC.arc + gD.arc) / 2;
+          const dx = gC.mid[0] - gD.mid[0];
+          const dy = gC.mid[1] - gD.mid[1];
+          if (dx * dx + dy * dy > reach * reach) continue;
+          const [L, S] = gC.arc >= gD.arc ? [gC, gD] : [gD, gC];
+          const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
+          const hit = projectParallel(L, S, thresh);
+          if (!hit) continue;
+          for (const lineId of lineIds) {
+            const o = laneOffsetOf(gD.id, lineId);
+            if (o === undefined) continue;
+            // outside lane offset -> covered edge frame -> chain frame
+            // -> root frame
+            const inEdgeC = gC === L ? hit.d0 + hit.sign * o : hit.sign * (o - hit.d0);
+            const inChain = sC * inEdgeC;
+            obstacles.push(pC.s * inChain + pC.t);
           }
         }
       }
-      if (unsafe) continue;
     }
 
     // Ladder in the shared root frame (spec 2.3 ordering, pitch slots,
@@ -483,7 +498,39 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
     const offsets = parts
       .map((p, k) => p.d - (k - centerK) * spacing)
       .sort((a, b) => a - b);
-    const c = offsets[Math.floor((offsets.length - 1) / 2)];
+    let c = offsets[Math.floor((offsets.length - 1) / 2)];
+    // Obstacle clearance: every ladder seat must keep most of a pitch
+    // from every fixed outside lane. The whole ladder shifts by the
+    // smallest offset that clears (internal pitch preserved); a ladder
+    // that cannot clear within a bounded shift declines to seat.
+    if (obstacles.length > 0) {
+      const CLEAR = spacing * 0.8;
+      const MAX_SHIFT = spacing * 1.5;
+      const seatAt = (k: number, dc: number): number => (k - centerK) * spacing + c + dc;
+      const clears = (dc: number): boolean => {
+        for (let k = 0; k < parts.length; k++) {
+          for (const ob of obstacles) {
+            if (Math.abs(seatAt(k, dc) - ob) < CLEAR) return false;
+          }
+        }
+        return true;
+      };
+      const candidates: number[] = [0];
+      for (let k = 0; k < parts.length; k++) {
+        for (const ob of obstacles) {
+          candidates.push(ob + CLEAR - seatAt(k, 0));
+          candidates.push(ob - CLEAR - seatAt(k, 0));
+        }
+      }
+      candidates.sort((a, b) => (Math.abs(a) - Math.abs(b)) || (a - b));
+      let found: number | null = null;
+      for (const dc of candidates) {
+        if (Math.abs(dc) > MAX_SHIFT) continue;
+        if (clears(dc)) { found = dc; break; }
+      }
+      if (found === null) continue;
+      c += found;
+    }
     const conflicts: ChainSeatConflict[] = [];
     const groupRuns: ChainSeatRun[] = [];
     for (let k = 0; k < parts.length; k++) {

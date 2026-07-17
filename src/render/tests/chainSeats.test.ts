@@ -230,11 +230,11 @@ test('seats: half-length-staggered parallel chains still merge', () => {
   assert.ok(Math.abs(gap - SP) < 1e-6, 'physical gap at pitch: ' + gap);
 });
 
-test('seats: a chain beside a sub-clearance parallel NON-chain edge does not seat', () => {
+test('seats: a chain beside a sub-clearance parallel NON-chain edge shifts clear of it', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   // Same two parallel corridors, but corridor 2 is NOT a chain: its lane
-  // stays on slot+bias, so seating corridor 1's ladder beside that
-  // unmoved ink risks sub-pitch adjacency. The group must decline.
+  // stays on slot+bias, a fixed obstacle. The ladder seats but shifts
+  // whole to keep most of a pitch from the unmoved ink.
   const edges: ChainEdgeRef[] = [
     { id: 'a1', from: 'A1', to: 'B1' }, { id: 'm1', from: 'B1', to: 'C1' }, { id: 'b1', from: 'C1', to: 'D1' },
     { id: 'm2', from: 'B2', to: 'C2' },
@@ -262,7 +262,10 @@ test('seats: a chain beside a sub-clearance parallel NON-chain edge does not sea
     halfWidthOf: () => 0,
     drawnEdgeIds: ['a1', 'm1', 'b1', 'm2'],
   }).seats;
-  assert.equal(seats.get('m1|p'), undefined, 'chain declines beside unmoved parallel ink');
+  const sp3 = seats.get('m1|p');
+  assert.ok(sp3 !== undefined, 'chain still seats beside unmoved parallel ink');
+  assert.ok(Math.abs((0 + sp3!) - 4) >= SP * 0.8 - 1e-9,
+    'ladder shifted clear of the fixed lane: ' + sp3);
 });
 
 test('seats: output is per-edge and identical for a reversed traversal', () => {
