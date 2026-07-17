@@ -589,12 +589,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
     // Sub-pixel-class gaps keep the long shallow ramp: a crisp step
     // that small is direction noise, and a ramp that shallow sits
     // inside the spike tolerance anyway.
-    // The small-gap long ramp stretches until its slope drops under the
-    // straightness threshold (about nine degrees): a fixed pitch-scale
-    // length leaves an 11-to-15-degree drift that still reads as a
-    // sub-octilinear kink.
     const drift = gap <= spacing
-      ? (gap >= spacing * 0.4 ? gap * 1.2 : Math.max(spacing * 1.5, gap * 6.3))
+      ? (gap >= spacing * 0.4 ? gap * 1.2 : spacing * 1.5)
       : Math.max(spacing * 1.5, gap * 1.2);
     const arcIn = polyLenOf(e.pIn);
     const arcOut = polyLenOf(e.pOut);
