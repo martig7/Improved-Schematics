@@ -69,9 +69,10 @@ export interface FanResult {
   endMoved: Set<string>;
   /** lineId|node|pairKey — pairs handled here (no node connector needed). */
   mitered: Set<string>;
-  /** Fan zone per constructing junction: the farthest point any applied
-   *  corner construction placed from the node (invariant I3's exclusive
-   *  reach, measured not theoretical). Consumed by the fan-zone census. */
+  /** Fan zone per (junction, corridor): the farthest point any applied
+   *  corner construction placed from the node along edgeA (invariant I3's
+   *  exclusive reach, measured and directional, not theoretical). Consumed
+   *  by the fan-zone census. */
   zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
   /** Applied composition-change tapers: ramp length along `edgeId` starting
    *  at `node`. Consumed by the fan-zone census (a ramp reaching into
@@ -247,17 +248,19 @@ export function buildFanJoins(args: FanArgs): FanResult {
   const mitered = new Set<string>();
   const zones: FanResult['zones'] = [];
   const tapers: FanResult['tapers'] = [];
-  // Actual constructed extent per node: the farthest point any applied
-  // corner construction (curve trim or sharp pin) placed from the node.
-  // This, not the theoretical fan reach, is the exclusive zone the census
-  // tests against: a near-parallel group's clamped reach can exceed whole
-  // edges while it constructs nothing but tapers.
+  // Actual constructed extent per (node, edge): the farthest point any
+  // applied corner construction (curve trim or sharp pin) placed from the
+  // node ALONG that corridor. Directional, not radial: a corner's long leg
+  // up one corridor must not veto ramps on the junction's other corridors.
+  // And measured, not theoretical: a near-parallel group's clamped fan
+  // reach can exceed whole edges while it constructs nothing but tapers.
   const extentAt = new Map<string, number>();
-  const bumpExtent = (node: string, p: Pixel): void => {
+  const bumpExtent = (node: string, edgeId: string, p: Pixel): void => {
     const np = nodePx.get(node);
     if (!np) return;
     const d = hyp(p[0] - np[0], p[1] - np[1]);
-    if (d > (extentAt.get(node) ?? 0)) extentAt.set(node, d);
+    const k = node + '|' + edgeId;
+    if (d > (extentAt.get(k) ?? 0)) extentAt.set(k, d);
   };
   const trace = fanTraceTarget();
 
@@ -465,7 +468,10 @@ export function buildFanJoins(args: FanArgs): FanResult {
     if (subA) moveKeys.push(endKeyAt(m.edgeIn, !m.inAtStart, m.lineId), endKeyAt(subA.edgeId, subA.atStart, m.lineId));
     if (subB) moveKeys.push(endKeyAt(m.edgeOut, !m.outAtStart, m.lineId), endKeyAt(subB.edgeId, subB.atStart, m.lineId));
     if (moveKeys.some((k) => endMoved.has(k))) return false;
-    bumpExtent(g.node, C);
+    bumpExtent(g.node, m.edgeIn, C);
+    bumpExtent(g.node, m.edgeOut, C);
+    if (subA) bumpExtent(g.node, subA.edgeId, C);
+    if (subB) bumpExtent(g.node, subB.edgeId, C);
     if (subA) setEnd(subA.poly, subA.atStart, subA.dir, C);
     else setEnd(e.pIn, m.inAtStart, e.dirIn, C);
     if (subB) setEnd(subB.poly, subB.atStart, [-subB.dir[0], -subB.dir[1]], C);
@@ -580,8 +586,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
     // node's constructed zone.
     const farIn = farNodeOf(m.edgeIn, m.inAtStart);
     const farOut = farNodeOf(m.edgeOut, m.outAtStart);
-    const roomIn = Math.max(0, arcIn - (farIn !== undefined ? extentAt.get(farIn) ?? 0 : 0));
-    const roomOut = Math.max(0, arcOut - (farOut !== undefined ? extentAt.get(farOut) ?? 0 : 0));
+    const roomIn = Math.max(0, arcIn - (farIn !== undefined ? extentAt.get(farIn + '|' + m.edgeIn) ?? 0 : 0));
+    const roomOut = Math.max(0, arcOut - (farOut !== undefined ? extentAt.get(farOut + '|' + m.edgeOut) ?? 0 : 0));
     const capA = Math.min(taperA, roomIn);
     const capB = Math.min(taperB, roomOut);
     // Ride until the node, recenter past it (invariant I4): a seat change
@@ -968,8 +974,13 @@ export function buildFanJoins(args: FanArgs): FanResult {
       // back through the corner as a painted lobe.
       setEnd(p.sIn.poly, p.sIn.atStart, ua, a);
       setEnd(p.sOut.poly, p.sOut.atStart, ub, b);
-      bumpExtent(g.node, a);
-      bumpExtent(g.node, b);
+      bumpExtent(g.node, p.sIn.edgeId, a);
+      bumpExtent(g.node, p.sOut.edgeId, b);
+      for (const key of p.consumeKeys) {
+        const consumedEdge = key.slice(0, key.indexOf('|'));
+        bumpExtent(g.node, consumedEdge, a);
+        bumpExtent(g.node, consumedEdge, b);
+      }
       joinCurves.push({ lineId: m.lineId, node: g.node, a, apex: [apex[0], apex[1]], b, edgeA: p.pair[0], edgeB: p.pair[1] });
       // A stop at any node the corner spans (the shared node, plus the far
       // node of an absorbed micro lane) draws ON the curve.
@@ -1020,8 +1031,9 @@ export function buildFanJoins(args: FanArgs): FanResult {
     jogTaper(g, m, e, flog);
   }
 
-  for (const [node, reach] of [...extentAt.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
-    zones.push({ node, edgeA: '', edgeB: '', reach });
+  for (const [key, reach] of [...extentAt.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
+    const cut = key.indexOf('|');
+    zones.push({ node: key.slice(0, cut), edgeA: key.slice(cut + 1), edgeB: '', reach });
   }
   return { joinCurves, joinStopPos, endMoved, mitered, zones, tapers };
 }

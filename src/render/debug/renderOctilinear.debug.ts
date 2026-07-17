@@ -32,14 +32,15 @@ export function reportFanZones(d: {
   if (envStr('OCTI_FANZONE') !== '1') return;
   const zoneAt = new Map<string, number>();
   for (const z of d.zones) {
-    zoneAt.set(z.node, Math.max(zoneAt.get(z.node) ?? 0, z.reach));
+    const k = z.node + '|' + z.edgeA;
+    zoneAt.set(k, Math.max(zoneAt.get(k) ?? 0, z.reach));
   }
   let count = 0;
   for (const t of d.tapers) {
     const e = d.edgeById.get(t.edgeId);
     if (!e) continue;
     const other = e.from === t.node ? e.to : e.from;
-    const reach = zoneAt.get(other);
+    const reach = zoneAt.get(other + '|' + t.edgeId);
     if (reach === undefined) continue;
     const arc = d.arcOf(t.edgeId);
     const overlap = t.len - (arc - reach);
