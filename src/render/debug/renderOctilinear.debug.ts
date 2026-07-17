@@ -264,6 +264,27 @@ export function reportLaneSeats(d: {
 }): void {
   const want = envStr('OCTI_LANES');
   if (!want) return;
+  // line:<idPrefix>@x0,y0,x1,y1 dumps every lane of that line entering
+  // the bbox, when the hosting edge is unknown.
+  if (want.startsWith('line:')) {
+    const [prefix, box] = want.slice(5).split('@');
+    const [x0, y0, x1, y1] = (box ?? '').split(',').map(Number);
+    for (const [key, poly] of d.segPath) {
+      const [edgeId, lineId] = [key.slice(0, key.indexOf('|')), key.slice(key.indexOf('|') + 1)];
+      if (!lineId.startsWith(prefix)) continue;
+      const hit = !box || poly.some((p) => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1);
+      if (!hit) continue;
+      const bias = d.biasOf.get(edgeId) ?? 0;
+      const slot = d.slotOf.get(key);
+      const a = poly[0];
+      const b = poly[poly.length - 1];
+      console.error(
+        `[lanes] ${edgeId} ${lineId.slice(0, 4)} slot=${slot?.toFixed(2)} bias=${bias.toFixed(2)}` +
+        ` a=(${a?.[0].toFixed(1)},${a?.[1].toFixed(1)}) b=(${b?.[0].toFixed(1)},${b?.[1].toFixed(1)})`,
+      );
+    }
+    return;
+  }
   for (const edgeId of want.split(',').filter(Boolean)) {
     const order = d.orderOf.get(edgeId);
     if (!order) { console.error(`[lanes] ${edgeId}: no order`); continue; }

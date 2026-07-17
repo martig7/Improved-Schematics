@@ -27,7 +27,85 @@ export interface ChainSeatArgs {
    *  merge of overlapping-parallel interiors; absent = same-edge merges
    *  only. */
   halfWidthOf?: (edgeId: string) => number;
+  /** All drawn edges (edges carrying at least one lane). Enables the
+   *  geometric cohabitant gate: a group declines to seat when a covered
+   *  edge has a sub-clearance overlapping-parallel drawn edge outside
+   *  the group, whose unmoved lanes the ladder would sit beside. */
+  drawnEdgeIds?: string[];
 }
+
+interface EdgeGeom {
+  id: string;
+  pts: Pixel[];
+  arc: number;
+  mid: Pixel;
+  midDir: Pixel;
+}
+
+const edgeGeom = (id: string, pts: Pixel[]): EdgeGeom => {
+  let arc = 0;
+  for (let k = 1; k < pts.length; k++) arc += hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+  let acc = 0;
+  let mid: Pixel = pts[0];
+  let midDir: Pixel = [1, 0];
+  for (let k = 1; k < pts.length; k++) {
+    const segLen = hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    if (acc + segLen >= arc / 2 && segLen > 0) {
+      const t = (arc / 2 - acc) / segLen;
+      mid = [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t];
+      midDir = [(pts[k][0] - pts[k - 1][0]) / segLen, (pts[k][1] - pts[k - 1][1]) / segLen];
+      break;
+    }
+    acc += segLen;
+  }
+  return { id, pts, arc, mid, midDir };
+};
+
+/** Interior, parallel, sub-clearance projection of the SHORTER edge's
+ *  midpoint onto the LONGER edge's polyline. Returns the signed lateral
+ *  offset of S relative to L along L's local perp and the chord
+ *  alignment sign; null when the edges do not overlap side by side
+ *  (end-to-end continuations clamp or spill past L's ends). */
+const projectParallel = (
+  L: EdgeGeom,
+  S: EdgeGeom,
+  thresh: number,
+): { d0: number; sign: number } | null => {
+  let best = Infinity;
+  let bq: Pixel = L.pts[0];
+  let bdir: Pixel = [1, 0];
+  let bClamped = true;
+  for (let k = 1; k < L.pts.length; k++) {
+    const p0 = L.pts[k - 1];
+    const p1 = L.pts[k];
+    const vx = p1[0] - p0[0], vy = p1[1] - p0[1];
+    const len2 = vx * vx + vy * vy;
+    if (len2 === 0) continue;
+    let t = ((S.mid[0] - p0[0]) * vx + (S.mid[1] - p0[1]) * vy) / len2;
+    const clamped = t <= 0 || t >= 1;
+    t = Math.min(1, Math.max(0, t));
+    const q: Pixel = [p0[0] + vx * t, p0[1] + vy * t];
+    const dist = hyp(S.mid[0] - q[0], S.mid[1] - q[1]);
+    if (dist < best) {
+      best = dist;
+      bq = q;
+      const l = Math.sqrt(len2);
+      bdir = [vx / l, vy / l];
+      bClamped = clamped && ((k === 1 && t <= 0) || (k === L.pts.length - 1 && t >= 1));
+    }
+  }
+  const endGap = Math.min(
+    hyp(bq[0] - L.pts[0][0], bq[1] - L.pts[0][1]),
+    hyp(bq[0] - L.pts[L.pts.length - 1][0], bq[1] - L.pts[L.pts.length - 1][1]),
+  );
+  if (bClamped || endGap < 2) return null;
+  const dot = S.midDir[0] * bdir[0] + S.midDir[1] * bdir[1];
+  if (Math.abs(dot) < 0.9) return null;
+  if (best >= thresh) return null;
+  const perpL: Pixel = [-bdir[1], bdir[0]];
+  const d0 = (S.mid[0] - bq[0]) * perpL[0] + (S.mid[1] - bq[1]) * perpL[1];
+  return { d0, sign: dot >= 0 ? 1 : -1 };
+};
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
@@ -73,7 +151,7 @@ export interface ChainSeatResult {
 }
 
 export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
-  const { chains, edgeById, basePoly, laneOffsetOf, lineTraversals, spacing, halfWidthOf } = args;
+  const { chains, edgeById, basePoly, laneOffsetOf, lineTraversals, spacing, halfWidthOf, drawnEdgeIds } = args;
   const out = new Map<string, number>();
   const keyOwner = new Map<string, number>();
   const report: ChainSeatReport[] = [];
@@ -257,14 +335,10 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
   };
 
   const runsOnEdge = new Map<string, number[]>();
-  const chainsOnEdge = new Map<string, Set<number>>();
   for (let i = 0; i < allRuns.length; i++) {
     for (const edgeId of allRuns[i].run.edgeIds) {
       const list = runsOnEdge.get(edgeId);
       if (list) list.push(i); else runsOnEdge.set(edgeId, [i]);
-      let set = chainsOnEdge.get(edgeId);
-      if (!set) { set = new Set(); chainsOnEdge.set(edgeId, set); }
-      set.add(allRuns[i].chain);
     }
   }
   // Shared-edge links: runs on one edge share lateral space. Same chain
@@ -280,96 +354,36 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       union(i, j, ls, 0);
     }
   }
-  // Overlapping-parallel links across chains: the joint-seating idea
-  // scoped to chain interiors, WITHOUT the shared-hub gate (chain
-  // interiors are short dominated micro-corridors, not unrelated close
-  // streets). The sampled corridor detector cannot see these: micro
-  // edges are shorter than its sustained-run floor and staggered
-  // long-vs-short pairs defeat midpoint symmetry. Instead the SHORTER
-  // edge's midpoint projects onto the LONGER edge's polyline; an
-  // interior, parallel, sub-clearance projection is a pair, and its
-  // signed offset is the frame transform.
+  // Overlapping-parallel links: the joint-seating idea scoped to chain
+  // interiors, WITHOUT the shared-hub gate (chain interiors are short
+  // dominated micro-corridors, not unrelated close streets). The sampled
+  // corridor detector cannot see these: micro edges are shorter than its
+  // sustained-run floor and staggered long-vs-short pairs defeat
+  // midpoint symmetry. Any two covered edges whose lanes would overlap
+  // side by side link into one shared frame, across chains and across
+  // separated components of one chain alike.
+  const geomOf = new Map<string, EdgeGeom>();
   if (halfWidthOf) {
-    interface EdgeInfo { id: string; pts: Pixel[]; arc: number; mid: Pixel; midDir: Pixel }
-    const infos: EdgeInfo[] = [];
     for (const id of [...runsOnEdge.keys()].sort()) {
       const pts = basePoly(id);
-      if (!pts || pts.length < 2) continue;
-      let arc = 0;
-      for (let k = 1; k < pts.length; k++) arc += hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
-      // midpoint by arclength, with the local segment direction
-      let acc = 0;
-      let mid: Pixel = pts[0];
-      let midDir: Pixel = [1, 0];
-      for (let k = 1; k < pts.length; k++) {
-        const segLen = hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
-        if (acc + segLen >= arc / 2 && segLen > 0) {
-          const t = (arc / 2 - acc) / segLen;
-          mid = [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t];
-          midDir = [(pts[k][0] - pts[k - 1][0]) / segLen, (pts[k][1] - pts[k - 1][1]) / segLen];
-          break;
-        }
-        acc += segLen;
-      }
-      infos.push({ id, pts, arc, mid, midDir });
+      if (pts && pts.length >= 2) geomOf.set(id, edgeGeom(id, pts));
     }
+    const infos = [...geomOf.values()];
     for (let a = 0; a < infos.length; a++) {
       for (let b = a + 1; b < infos.length; b++) {
-        const chainsA = chainsOnEdge.get(infos[a].id)!;
-        const chainsB = chainsOnEdge.get(infos[b].id)!;
-        let cross = false;
-        for (const c of chainsA) if (!chainsB.has(c)) { cross = true; break; }
-        if (!cross) continue;
         // longer edge hosts the projection; tie broken by the sort order
         const [L, S] = infos[a].arc >= infos[b].arc ? [infos[a], infos[b]] : [infos[b], infos[a]];
         const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
-        // nearest point on L for S's midpoint, tracking the local direction
-        let best = Infinity;
-        let bq: Pixel = L.pts[0];
-        let bdir: Pixel = [1, 0];
-        let bClamped = true;
-        for (let k = 1; k < L.pts.length; k++) {
-          const p0 = L.pts[k - 1];
-          const p1 = L.pts[k];
-          const vx = p1[0] - p0[0], vy = p1[1] - p0[1];
-          const len2 = vx * vx + vy * vy;
-          if (len2 === 0) continue;
-          let t = ((S.mid[0] - p0[0]) * vx + (S.mid[1] - p0[1]) * vy) / len2;
-          const clamped = t <= 0 || t >= 1;
-          t = Math.min(1, Math.max(0, t));
-          const q: Pixel = [p0[0] + vx * t, p0[1] + vy * t];
-          const dist = hyp(S.mid[0] - q[0], S.mid[1] - q[1]);
-          if (dist < best) {
-            best = dist;
-            bq = q;
-            const l = Math.sqrt(len2);
-            bdir = [vx / l, vy / l];
-            bClamped = clamped && (k === 1 && t <= 0 || k === L.pts.length - 1 && t >= 1);
-          }
-        }
-        // interior of L (not spilling past its ends), parallel, in the
-        // sub-clearance band
-        const endGap = Math.min(
-          hyp(bq[0] - L.pts[0][0], bq[1] - L.pts[0][1]),
-          hyp(bq[0] - L.pts[L.pts.length - 1][0], bq[1] - L.pts[L.pts.length - 1][1]),
-        );
-        if (bClamped || endGap < 2) continue;
-        const dot = S.midDir[0] * bdir[0] + S.midDir[1] * bdir[1];
-        if (Math.abs(dot) < 0.9) continue;
-        if (best >= thresh) continue;
-        const perpL: Pixel = [-bdir[1], bdir[0]];
-        const d0 = (S.mid[0] - bq[0]) * perpL[0] + (S.mid[1] - bq[1]) * perpL[1];
-        const sign = dot >= 0 ? 1 : -1;
-        // frame transform with eA = L, eB = S
+        const hit = projectParallel(L, S, thresh);
+        if (!hit) continue;
         const i = runsOnEdge.get(L.id)![0];
         const j = runsOnEdge.get(S.id)![0];
-        if (allRuns[i].chain === allRuns[j].chain) continue;
-        crossPairs.push({ eA: L.id, eB: S.id, d0, sign, needed: thresh });
+        crossPairs.push({ eA: L.id, eB: S.id, d0: hit.d0, sign: hit.sign, needed: thresh });
         const sa = sgn(allRuns[i].chain, L.id);
         const sb = sgn(allRuns[j].chain, S.id);
         // edge frame of L: pos = sa*seat_i; S's lane pos = d0 + sign*sb*seat_j
         // seat_i equivalent = sa*(d0 + sign*sb*seat_j)
-        union(i, j, sa * sign * sb, sa * d0);
+        union(i, j, sa * hit.sign * sb, sa * hit.d0);
       }
     }
   }
@@ -380,6 +394,7 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
     const list = groups.get(root);
     if (list) list.push(i); else groups.set(root, [i]);
   }
+  let drawnGeoms: EdgeGeom[] | null = null;
 
   for (const idxs of [...groups.values()]) {
     // Cohabitant gate: every lane on a covered edge must belong to a
@@ -404,6 +419,38 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
           }
         }
         if (unsafe) break;
+      }
+      // Geometric half of the gate: a covered edge with a sub-clearance
+      // overlapping-parallel drawn edge OUTSIDE the group sits beside
+      // lanes the ladder cannot move (parallel covered edges would have
+      // merged into this group already, so an outside edge is slot+bias
+      // ink). Seating beside it risks the same sub-pitch adjacency.
+      if (!unsafe && halfWidthOf && drawnEdgeIds) {
+        if (drawnGeoms === null) {
+          drawnGeoms = [];
+          for (const id of [...drawnEdgeIds].sort()) {
+            const pts = basePoly(id);
+            if (pts && pts.length >= 2) drawnGeoms.push(edgeGeom(id, pts));
+          }
+        }
+        outer:
+        for (const edgeId of linesOn.keys()) {
+          const gC = geomOf.get(edgeId);
+          if (!gC) continue;
+          for (const gD of drawnGeoms) {
+            if (linesOn.has(gD.id)) continue;
+            const reach = (gC.arc + gD.arc) / 2;
+            const dx = gC.mid[0] - gD.mid[0];
+            const dy = gC.mid[1] - gD.mid[1];
+            if (dx * dx + dy * dy > reach * reach) continue;
+            const [L, S] = gC.arc >= gD.arc ? [gC, gD] : [gD, gC];
+            const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
+            if (projectParallel(L, S, thresh)) {
+              unsafe = true;
+              break outer;
+            }
+          }
+        }
       }
       if (unsafe) continue;
     }

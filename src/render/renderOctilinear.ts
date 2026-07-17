@@ -993,6 +993,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       lineTraversals: layout.lineTraversals,
       spacing,
       halfWidthOf: (id) => Math.max(0, (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing),
+      drawnEdgeIds: layout.edges.filter((e) => (orderOf.get(e.id)?.length ?? 0) > 0).map((e) => e.id),
     })
     : null;
   const chainSeatOf = chainSeatRes?.seats ?? new Map<string, number>();

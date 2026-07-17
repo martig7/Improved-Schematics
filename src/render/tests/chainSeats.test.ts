@@ -191,6 +191,41 @@ test('seats: two overlapping parallel chains merge into one pitched ladder', () 
   assert.ok(Math.abs(gap - SP) < 1e-6, 'physical gap at pitch: ' + gap);
 });
 
+test('seats: a chain beside a sub-clearance parallel NON-chain edge does not seat', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  // Same two parallel corridors, but corridor 2 is NOT a chain: its lane
+  // stays on slot+bias, so seating corridor 1's ladder beside that
+  // unmoved ink risks sub-pitch adjacency. The group must decline.
+  const edges: ChainEdgeRef[] = [
+    { id: 'a1', from: 'A1', to: 'B1' }, { id: 'm1', from: 'B1', to: 'C1' }, { id: 'b1', from: 'C1', to: 'D1' },
+    { id: 'm2', from: 'B2', to: 'C2' },
+  ];
+  const bases: Record<string, Pixel[]> = {
+    a1: [[0, 0], [60, 0]], m1: [[60, 0], [120, 0]], b1: [[120, 0], [180, 0]],
+    m2: [[60, 4], [120, 4]],
+  };
+  const chains = [
+    { edgeIds: ['m1'], anchorA: 'a1', anchorB: 'b1', arc: 60, interiorNodes: [] },
+  ];
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(edges.map((e) => [e.id, e])),
+    basePoly: (id) => bases[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId === 'p' ? (edgeId === 'a1' || edgeId === 'm1' || edgeId === 'b1' ? 0 : undefined)
+        : lineId === 'q' ? (edgeId === 'm2' ? 0 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['p', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['q', [fwd('m2')]],
+    ]),
+    spacing: SP,
+    halfWidthOf: () => 0,
+    drawnEdgeIds: ['a1', 'm1', 'b1', 'm2'],
+  }).seats;
+  assert.equal(seats.get('m1|p'), undefined, 'chain declines beside unmoved parallel ink');
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });
