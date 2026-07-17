@@ -1106,6 +1106,17 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     applyJointSeating({ pairs: sepPairs, polyOf: polyOfEdge, orderOf, segPath, spacing });
   }
 
+  const chains = detectChains({
+    edges: layout.edges,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    laneCount: (id) => orderOf.get(id)?.length ?? 0,
+    spacing,
+  });
+  reportChains({ chains, nodePx, edgeById });
+
   // Chain rails (invariant I3, chains spec C2, OCTI_CHAIN=1 to enable):
   // over each chain's interior, lines ride rails derived from the anchor
   // frames they enter and leave with, replacing interior lanes in place so
@@ -1245,16 +1256,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // docs/draw-geometry-invariants.md). OCTI_FAN=0 runs the legacy per-line
   // join ladder below instead, kept for A/B until the rebuild is signed off.
   const useFanJoins = envStr('OCTI_FAN') !== '0';
-  const chains = detectChains({
-    edges: layout.edges,
-    basePoly: (id) => {
-      const e = edgeById.get(id);
-      return e ? edgePolyline(e) : undefined;
-    },
-    laneCount: (id) => orderOf.get(id)?.length ?? 0,
-    spacing,
-  });
-  reportChains({ chains, nodePx, edgeById });
   let fanZones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }> = [];
   if (useFanJoins) {
     const fan = buildFanJoins({
