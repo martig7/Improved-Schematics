@@ -20,6 +20,10 @@ export interface Chain {
   anchorB: string | null;
   /** Total interior arc, px. */
   arc: number;
+  /** Shared node between each consecutive interior edge pair, with its
+   *  theoretical corner reach (rails place seat transitions outside
+   *  these balls). */
+  interiorNodes: Array<{ node: string; reach: number }>;
 }
 
 export interface ChainArgs {
@@ -141,10 +145,18 @@ export function detectChains(args: ChainArgs): Chain[] {
       nd = ci.from === nd ? ci.to : ci.from;
       cur = c.next;
     }
+    const interiorNodes: Array<{ node: string; reach: number }> = [];
+    for (let i = 1; i < run.length; i++) {
+      const A = infos.get(run[i - 1])!;
+      const B = infos.get(run[i])!;
+      const shared = (A.from === B.from || A.from === B.to) ? A.from : A.to;
+      interiorNodes.push({ node: shared, reach: reachAt.get(shared) ?? 0 });
+    }
     chains.push({
       edgeIds: run,
       anchorA, anchorB,
       arc: run.reduce((s, eid) => s + infos.get(eid)!.arc, 0),
+      interiorNodes,
     });
   }
   return chains;

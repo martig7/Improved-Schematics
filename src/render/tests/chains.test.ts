@@ -41,6 +41,9 @@ test('chains: a dominated run between two anchors is one chain', () => {
   assert.deepEqual(chains[0].edgeIds, ['m1', 'm2']);
   assert.equal(chains[0].anchorA, 'a');
   assert.equal(chains[0].anchorB, 'b');
+  assert.equal(chains[0].interiorNodes.length, 1);
+  assert.equal(chains[0].interiorNodes[0].node, 'C');
+  assert.ok(chains[0].interiorNodes[0].reach > 0);
 });
 
 test('chains: an isolated long edge is not chained', () => {
