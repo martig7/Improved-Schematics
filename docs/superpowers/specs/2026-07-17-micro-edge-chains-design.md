@@ -130,7 +130,10 @@ line's construction re-framing ink beside another's.
   on the pinned corpus; clip/loop/zig censuses no worse anywhere; the
   settings-variant sweep (station-split off, warp growth changed) shows
   strictly fewer visible clips than its current baselines (4 and 3) and
-  no artifact loops. mapCache bump.
+  ZERO artifact loops. The loop census is the authoritative ruler for the
+  small self-cross "plus" shape (a route crossing its own ink at a
+  turn): it is same-color, so the clip census cannot see it, and the
+  variant sweeps must gate on it explicitly.
 - **C4. Consolidation.** Fold the machinery the chains subsume; the
   superseded paths move to `old/` per the deprecation policy only after
   sign-off.
