@@ -21,6 +21,7 @@ import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0 } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
+import { assembleDByLine } from './assemblePath';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -135,6 +136,20 @@ export function drawnSegsByLine(dByLine: Map<string, string[]>): Map<string, Arr
         const s = sampleQuadratic(cur, pts[0], pts[1], 6);
         for (let i = 1; i < s.length; i++) segs.push([s[i - 1], s[i]]);
         cur = pts[1];
+      } else if (cmd[0] === 'C' && cur && pts[2]) {
+        // cubic transitions (in-path lateral jogs): sampled like quadratics
+        // so the censuses measure this ink too
+        let prev: Pixel = cur;
+        for (let i = 1; i <= 6; i++) {
+          const t = i / 6, u = 1 - t;
+          const p: Pixel = [
+            u * u * u * cur[0] + 3 * u * u * t * pts[0][0] + 3 * u * t * t * pts[1][0] + t * t * t * pts[2][0],
+            u * u * u * cur[1] + 3 * u * u * t * pts[0][1] + 3 * u * t * t * pts[1][1] + t * t * t * pts[2][1],
+          ];
+          segs.push([prev, p]);
+          prev = p;
+        }
+        cur = pts[2];
       }
     }
     out.set(lineId, segs);
@@ -185,6 +200,7 @@ export function computeLaneCrops(
   joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }>,
   filletR: number,
   inset = 0,
+  emitD?: (seg: Map<string, Pixel[]>) => Map<string, string[]>,
 ): Map<string, string[]> {
   // A shallow copy of the segPath map: entries start as the real polyline
   // references and are REPLACED (not mutated) with fresh cropped arrays, so the
@@ -275,9 +291,9 @@ export function computeLaneCrops(
     }
   }
 
-  // Re-emit from the cropped clone; segments are the live collision set, so pass
-  // no sink here (the crop re-emit must not pollute it).
-  return buildDByLine(cropSeg, joinCurves, filletR);
+  // Re-emit from the cropped clone; segments are the live collision set, so
+  // neither emitter gets a sink here (the crop re-emit must not pollute it).
+  return emitD ? emitD(cropSeg) : buildDByLine(cropSeg, joinCurves, filletR);
 }
 
 const snapAxis = (dx: number, dy: number): Pixel => {
@@ -1059,7 +1075,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // the line), not the trimmed endpoint.
   const mitered = new Set<string>(); // lineId|node|pairKey
   const endMoved = new Set<string>(); // edgeId|lineId|end
-  const joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel }> = [];
+  const joinCurves: Array<{ lineId: string; node: string; a: Pixel; apex: Pixel; b: Pixel; edgeA?: string; edgeB?: string }> = [];
   const joinStopPos = new Map<string, Pixel>(); // nodeId|lineId -> on-curve position
   // Proper-crossing intersection point of segments p1p2 and p3p4, else null.
   // Strict opposite orientations both sides → collinear/touching pairs reject.
@@ -1507,8 +1523,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // also trim the terminating lanes back to the slid marker. The per-line 'd'
   // arrays and the straight-segment collision set both come from buildDByLine
   // over the real segPath, so the drawn lanes are byte-identical to before.
+  // Path assembler (default): per-line continuous emission with in-path
+  // joints, replacing the fragment emission plus the standalone connector
+  // pass below. OCTI_ASSEMBLE=0 keeps the legacy pair for A/B.
+  const useAssembler = envStr('OCTI_ASSEMBLE') !== '0';
+  const assembleOver = (seg: Map<string, Pixel[]>, sink?: Segment[]) =>
+    assembleDByLine({
+      segPath: seg, joinCurves, filletR: FILLET_R,
+      lineTraversals: layout.lineTraversals, lineIds: new Set(lineById.keys()),
+      edgeById, orderOf, suppressed, spacing, segmentsOut: sink,
+      nodeCellOf: (nid) => layout.nodes.get(nid)?.cell,
+    });
   const emitLanes = () => {
-    dByLine = buildDByLine(segPath, joinCurves, FILLET_R, segments);
+    dByLine = useAssembler
+      ? assembleOver(segPath, segments)
+      : buildDByLine(segPath, joinCurves, FILLET_R, segments);
   };
 
   /** A line's drawn endpoint at a node (offset polylines run from→to). */
@@ -3532,7 +3561,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         endMoved.add(keyB);
         const pk = a.edgeId < b.edgeId ? a.edgeId + '|' + b.edgeId : b.edgeId + '|' + a.edgeId;
         mitered.add(lineId + '|' + endA + '|' + pk);
-        joinCurves.push({ lineId, node: endA, a: rj.a, apex: rj.apex, b: rj.b });
+        const [eA2, eB2] = a.edgeId < b.edgeId ? [a.edgeId, b.edgeId] : [b.edgeId, a.edgeId];
+        joinCurves.push({ lineId, node: endA, a: rj.a, apex: rj.apex, b: rj.b, edgeA: eA2, edgeB: eB2 });
       }
     }
   }
@@ -3546,14 +3576,19 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // The real dByLine above is untouched, so a design whose regime is absent stays
   // byte-identical.
   for (const [regime, targets] of cropTargetsByRegime) {
-    cropDPartsByRegime.set(regime, computeLaneCrops(targets, segPath, layout.edges, joinCurves, FILLET_R, LINE_WIDTH / 2));
+    cropDPartsByRegime.set(regime, computeLaneCrops(
+      targets, segPath, layout.edges, joinCurves, FILLET_R, LINE_WIDTH / 2,
+      useAssembler ? (seg) => assembleOver(seg) : undefined,
+    ));
   }
 
   // Node connectors: where a line continues across a node between two edges
   // whose lane slots differ, bridge the lateral jog so the line reads as
   // continuous. Driven by traversals (the line's actual edge sequence).
+  // Legacy pass: the assembler constructs these joints in-path, so this
+  // runs only under OCTI_ASSEMBLE=0.
   const connSeen = new Set<string>();
-  for (const [lineId, traversal] of layout.lineTraversals) {
+  if (!useAssembler) for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;
     // A circular RING course continues across its seam node too: the pair
     // (last drawn lane, first drawn lane) is a real continuation the linear

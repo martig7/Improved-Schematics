@@ -22,71 +22,71 @@ resvg rasterization for visual checkpoints.
 
 **Files:** Create `src/render/fanJoin.ts`, `src/render/tests/fanJoin.test.ts`.
 
-- [ ] Types (`FanArgs`, `FanResult`, `JoinCurve` with `edgeA`/`edgeB`),
+- [x] Types (`FanArgs`, `FanResult`, `JoinCurve` with `edgeA`/`edgeB`),
       continuation-pair enumeration (consecutive traversal steps at a shared
       node, same-edge skip, ring-seam wrap), grouping by
       `(node, sorted edge pair)`, member ordering by slot, sorted group
       iteration.
-- [ ] Unit test: a 3-line bundle turning a corner yields one group with 3
+- [x] Unit test: a 3-line bundle turning a corner yields one group with 3
       slot-ordered members; a ring course contributes its seam pair; an
       out-and-back same-edge seam does not.
-- [ ] `npm test` green. Commit.
+- [x] `npm test` green. Commit.
 
 ### Task 2: group frame + classification + jog tapers
 
-- [ ] Group frame from base edge polylines (`edgePolyline` ends at the
+- [x] Group frame from base edge polylines (`edgePolyline` ends at the
       node); `dot` bands: jog (>= 0.85), curve (-0.3..0.85), sharp (<= -0.3).
-- [ ] Jog groups: port the taper branch per member (drift = max(spacing*1.5,
+- [x] Jog groups: port the taper branch per member (drift = max(spacing*1.5,
       gap*1.2), 8-slot cap, 0.45 arc share, short-edge decline, gap cap
       `spacing * bigGapMult`).
-- [ ] Unit test: two parallel collinear edges with a slot change taper to
+- [x] Unit test: two parallel collinear edges with a slot change taper to
       midpoints; short edge declines.
-- [ ] Commit.
+- [x] Commit.
 
 ### Task 3: curve fan with shared trim + fanReach limit
 
-- [ ] Per-member apex (lane-line meet), cut-back of apexes behind ends
+- [x] Per-member apex (lane-line meet), cut-back of apexes behind ends
       (port `cutBackTo`), shared trim
       `f = min(smoothR, 0.6*min(la), 0.6*min(lb))`, member curve emission
       (joinCurves + joinStopPos + endMoved + mitered), apex limit
       `max(spacing*4, fanReach)`.
-- [ ] Per-member fallback to sharp pin when the member's curve construction
+- [x] Per-member fallback to sharp pin when the member's curve construction
       fails; trace every decision (`debug/fanJoin.debug.ts`, OCTI_FAN_TRACE).
-- [ ] Unit test: 3 parallel lanes at a 90-degree corner produce 3 nested
+- [x] Unit test: 3 parallel lanes at a 90-degree corner produce 3 nested
       non-crossing quadratics with one shared trim; outermost lane of a wide
       bundle (apex past spacing*4) still curves via fanReach.
-- [ ] Commit.
+- [x] Commit.
 
 ### Task 4: sharp fan (miter unification) + dogleg fallback
 
-- [ ] Per-member lineMeet pin with behind/ahead gates, fanReach cap,
+- [x] Per-member lineMeet pin with behind/ahead gates, fanReach cap,
       collinear-vertex popping (port `setEnd`); crossing-segments case comes
       free (meet == crossing).
-- [ ] Forward-turn dogleg fallback (single-corner variant, far-node
+- [x] Forward-turn dogleg fallback (single-corner variant, far-node
       overshoot decline) for curve-band members whose meet gates fail.
-- [ ] Unit test: out-and-back sharp pair pins both ends to the shared meet;
+- [x] Unit test: out-and-back sharp pair pins both ends to the shared meet;
       hairpin obtuse turn into a wide trunk miters within fanReach.
-- [ ] Commit.
+- [x] Commit.
 
 ### Task 5: integration into computeRibbonGeometry
 
 **Files:** Modify `src/render/renderOctilinear.ts`.
 
-- [ ] `OCTI_FAN` gate: default calls `buildFanJoins` (mutating segPath,
+- [x] `OCTI_FAN` gate: default calls `buildFanJoins` (mutating segPath,
       returning joinCurves/joinStopPos/endMoved/mitered into the existing
       locals); `OCTI_FAN=0` runs the legacy ladder loop unchanged.
-- [ ] mapCache VERSION 20 -> 21.
-- [ ] `npm test` green. Commit.
+- [x] mapCache VERSION 20 -> 21.
+- [x] `npm test` green. Commit.
 
 ### Task 6 (M2 gate): corpus verification
 
-- [ ] Rulers on 1-per-city (most recent: NYC-jul-16-2, LON-jul-16, HOR,
+- [x] Rulers on 1-per-city (most recent: NYC-jul-16-2, LON-jul-16, HOR,
       SEA-jul-11-2, DEN, SF if present): loops/clips at or below current;
       twists at or below baseline; interleave/contiguity unchanged.
-- [ ] Render + rasterize hot-spot crops (hairpin trunk corner, micro-edge
+- [x] Render + rasterize hot-spot crops (hairpin trunk corner, micro-edge
       fold station, grouped-services hub, wide-bundle corner) and surface
       them.
-- [ ] Fix regressions or revert falsified pieces (one invariant at a time).
+- [x] Fix regressions or revert falsified pieces (one invariant at a time).
       Commit results.
 
 ### Task 7 (M3): per-line assembler
