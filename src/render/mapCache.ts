@@ -54,9 +54,10 @@ const VERSION = 21; // bump to invalidate every cached entry on a format change
 // miter caps and the lane-continuity bias clamp now scale with bundle width).
 // Purge so cached geometry redraws with the scaled corners.
 // v21: node corners are now built by the junction fan builder (one shared
-// construction per turn group: shared trim, fan-reach gates, nested sharp
-// pins), changing drawn corner geometry everywhere. Purge so cached geometry
-// redraws with fan corners.
+// construction per turn group: nested trims, fan-reach gates, nested sharp
+// pins), lines emit as continuous assembled paths, and the geometry carries
+// bundle-coherent paint groups. Purge so cached geometry redraws with fan
+// corners and layered bundles.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

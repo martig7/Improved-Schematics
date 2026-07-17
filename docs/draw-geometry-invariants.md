@@ -111,6 +111,16 @@ bundle half widths, lane pitch, cell size, or the actual angles involved.
 A constant that a wider bundle or sharper turn can outgrow is a deferred
 defect, as the entire fix series demonstrates.
 
+**I8. Bundle-coherent layering.** Lines of one bundle paint on one layer:
+the paint order groups bundle-mates contiguously (each group its casings,
+then its strokes), so wherever two bundles or a line and a bundle overlap,
+one passes over the other as a WHOLE, with the upper group's casing
+separating it cleanly from the lower. Per-line paint order interleaves the
+two bundles' strokes at a crossing into an incoherent braid, and the
+casing-then-stroke split across ALL lines lets no crossing separate at
+all. Grouping derives from co-run share (the fraction of a line's drawn
+length spent beside another), not from any hand-kept list.
+
 ## 4. Direction for the rebuild
 
 Replace the join-ladder-plus-connector architecture with two cooperating
@@ -131,6 +141,11 @@ mid-corridor migration, the miter is the fan meet, the dogleg its multi-bend
 variant. What changes is that they become one construction with shared
 context instead of a chain of independent fallbacks, and the raw chord
 disappears entirely.
+
+- **Paint layer builder.** Cluster lines by co-run share into paint groups
+  (I8), emitted group by group (casings, then strokes). Pure paint-order
+  work over the finished geometry; computed once with the geometry so
+  repaints stay cheap.
 
 Rulers that gate the rebuild, all existing: painted-loop census
 (`OCTI_LOOPS`), ink-clip census (`OCTI_CLIPS`), same-section twist census,

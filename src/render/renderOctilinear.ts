@@ -22,6 +22,7 @@ import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
 import { assembleDByLine } from './assemblePath';
+import { computePaintGroups } from './paintLayers';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -495,6 +496,12 @@ export interface RibbonGeometry {
    *  time. Used only when no geography frame is passed. OPTIONAL: absent in
    *  geometry serialized before it existed; paint then rescans inline. */
   contentFrame?: FrameRect;
+  /** Ordered paint layers: groups of bundle-mate line ids, longest bundle
+   *  first, so overlapping bundles stack coherently (each group paints its
+   *  casings then its strokes). OPTIONAL: absent in geometry serialized
+   *  before it existed; paint then falls back to the flat all-casings,
+   *  all-strokes order. */
+  paintGroups?: string[][];
   /** Per node: the London bubble-chain interchange geometry (paired ticket-hall
    *  bubbles + connector bars), built from the final mark positions. Design-
    *  agnostic and inert for non-London designs, which never read it. OPTIONAL:
@@ -3797,7 +3804,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // once here instead of on every repaint that lacks a geography frame.
   const frameRect = contentFrame(nodePx, layout.edges, edgePolyline, args.width, args.height);
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode };
+  // Bundle-coherent paint layers (invariant I8): computed once with the
+  // geometry so every repaint just walks the groups.
+  const arcOfEdge = new Map<string, number>();
+  for (const edge of layout.edges) {
+    const base = edgePolyline(edge);
+    let arc = 0;
+    for (let i = 1; i < base.length; i++) arc += hyp(base[i][0] - base[i - 1][0], base[i][1] - base[i - 1][1]);
+    arcOfEdge.set(edge.id, arc);
+  }
+  const paintGroups = computePaintGroups(orderOf, arcOfEdge, [...lineById.keys()]);
+
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, paintGroups };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -3812,8 +3830,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // draw with no connectors rather than crash on an undefined iterate
   const splitGroups = geom.splitGroups ?? new Map<string, string[]>();
 
-  const casingParts: string[] = [];
-  const strokeParts: string[] = [];
 
   // A design that paints an opaque interchange footprint draws its lanes cropped
   // to it: consult the cached cropped lanes for the active design's capsule
@@ -3834,20 +3850,40 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const rectStopPos = isRect ? geom.tokyuStopPos : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? geom.bubbleByNode : undefined;
   const torontoByNode = activeCapsule === 'toronto' ? geom.torontoByNode : undefined;
-  for (const [lineId, line] of lineById) {
-    const d = dByLine.get(lineId);
-    if (!d || d.length < 2) continue;
-    const dStr = activeCropped?.get(lineId) ?? d.join(' ');
-    casingParts.push(
-      '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
-        '" stroke-linecap="round" stroke-linejoin="round"/>',
-    );
-    strokeParts.push(
-      '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
-        LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
-    );
+  // Bundle-coherent layers (I8): each paint group draws its casings then its
+  // strokes, so a later group's casing separates it cleanly from everything
+  // it crosses below. Geometry without the field (older caches) falls back
+  // to one flat group, which reproduces the classic all-casings,
+  // all-strokes order exactly. Lines missing from the groups (defensive)
+  // paint last.
+  const grouped = new Set<string>();
+  const paintGroups: string[][] = [];
+  for (const g of geom.paintGroups ?? [[...lineById.keys()]]) {
+    paintGroups.push(g);
+    for (const id of g) grouped.add(id);
   }
-  const edgeParts: string[] = [...casingParts, ...strokeParts];
+  const tail = [...lineById.keys()].filter((id) => !grouped.has(id));
+  if (tail.length > 0) paintGroups.push(tail);
+  const edgeParts: string[] = [];
+  for (const group of paintGroups) {
+    const gCasings: string[] = [];
+    const gStrokes: string[] = [];
+    for (const lineId of group) {
+      const line = lineById.get(lineId);
+      const d = dByLine.get(lineId);
+      if (!line || !d || d.length < 2) continue;
+      const dStr = activeCropped?.get(lineId) ?? d.join(' ');
+      gCasings.push(
+        '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
+          '" stroke-linecap="round" stroke-linejoin="round"/>',
+      );
+      gStrokes.push(
+        '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
+          LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
+      );
+    }
+    edgeParts.push(...gCasings, ...gStrokes);
+  }
 
   const stopsPrims: Prim[] = [];
 
@@ -3978,21 +4014,24 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
     // neighborhood-name area labels: under the network, over the backdrop
     for (const p of placesPrims(shownPlaces, dark, args.placesFontPx)) prims.push(p);
-    // edges: the markup emits ALL casings first, THEN all strokes
-    // (edgeParts = [...casingParts, ...strokeParts]); match that order exactly.
-    const casingPrims: Prim[] = [];
-    const strokePrims: Prim[] = [];
-    for (const [lineId, line] of lineById) {
-      const d = dByLine.get(lineId);
-      if (!d || d.length < 2) continue;
-      // Same cropped-lane source as the SVG markup above; a design with no
-      // cropped lanes reads dByLine only, so the scene IR stays identical.
-      const dStr = activeCropped?.get(lineId) ?? d.join(' ');
-      casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: casingWidth, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
-      strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: LINE_WIDTH, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+    // edges: the markup emits per paint GROUP, casings then strokes (I8);
+    // match that order exactly.
+    for (const group of paintGroups) {
+      const casingPrims: Prim[] = [];
+      const strokePrims: Prim[] = [];
+      for (const lineId of group) {
+        const line = lineById.get(lineId);
+        const d = dByLine.get(lineId);
+        if (!line || !d || d.length < 2) continue;
+        // Same cropped-lane source as the SVG markup above; a design with no
+        // cropped lanes reads dByLine only, so the scene IR stays identical.
+        const dStr = activeCropped?.get(lineId) ?? d.join(' ');
+        casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: casingWidth, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: LINE_WIDTH, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+      }
+      for (const p of casingPrims) prims.push(p);
+      for (const p of strokePrims) prims.push(p);
     }
-    for (const p of casingPrims) prims.push(p);
-    for (const p of strokePrims) prims.push(p);
     // stops: station markers (dots/capsules/rings + bullet text),
     // built alongside the markup by renderStops in source/concatenation order.
     for (const p of stopsPrims) prims.push(p);
