@@ -535,6 +535,61 @@ export function reportZigzags(d: {
   console.error(`[zigs] ${count} perpendicular steps or steep ramps (window ${W.toFixed(1)})`);
 }
 
+interface StraightRun {
+  dir: Pixel;
+  arcLen: number;
+  start: Pixel;
+  end: Pixel;
+}
+
+/** Maximal straight runs of a drawn polyline: direction stable within
+ *  `coneDeg` over at least `minRun` arclength. Curve samples between
+ *  runs never qualify, so the runs are the design-strategy segments. */
+const straightRunsOf = (pts: Pixel[], minRun: number, coneDeg: number): StraightRun[] => {
+  const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  const dir = (a: Pixel, b: Pixel): Pixel | null => {
+    const l = len(a, b);
+    return l < 1e-6 ? null : [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+  };
+  const deg = (dot: number): number => (Math.acos(Math.min(1, Math.max(-1, dot))) * 180) / Math.PI;
+  const runs: StraightRun[] = [];
+  let runStart = 0;
+  let runDir: Pixel | null = null;
+  let runArc = 0;
+  const closeRun = (endIdx: number): void => {
+    if (runDir && runArc >= minRun) {
+      const d0 = dir(pts[runStart], pts[endIdx]);
+      if (d0) runs.push({ dir: d0, arcLen: runArc, start: pts[runStart], end: pts[endIdx] });
+    }
+  };
+  for (let i = 1; i < pts.length; i++) {
+    const d0 = dir(pts[i - 1], pts[i]);
+    const step = len(pts[i - 1], pts[i]);
+    if (!d0) continue;
+    if (runDir && deg(runDir[0] * d0[0] + runDir[1] * d0[1]) <= coneDeg) {
+      runArc += step;
+      continue;
+    }
+    closeRun(i - 1);
+    runStart = i - 1;
+    runDir = d0;
+    runArc = step;
+  }
+  closeRun(pts.length - 1);
+  return runs;
+};
+
+const inkChains = (segs: Array<[Pixel, Pixel]>): Pixel[][] => {
+  const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  const chains: Pixel[][] = [];
+  let cur: Pixel[] | null = null;
+  for (const [a, b] of segs) {
+    if (cur && len(cur[cur.length - 1], a) <= 1e-6) cur.push(b);
+    else chains.push((cur = [a, b]));
+  }
+  return chains;
+};
+
 /** OCTI_SPIKES: census of sub-octilinear angles in the FINAL ink. The
  *  design strategy allows straight travel and 45-degree-multiple turns;
  *  any sustained direction change below that family is a spike. Two
@@ -589,38 +644,8 @@ export function reportSpikes(d: {
   for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
     const segs = segsByLine.get(lineId)!;
-    const chains: Pixel[][] = [];
-    let cur: Pixel[] | null = null;
-    for (const [a, b] of segs) {
-      if (cur && len(cur[cur.length - 1], a) <= 1e-6) cur.push(b);
-      else chains.push((cur = [a, b]));
-    }
-    for (const pts of chains) {
-      interface Run { dir: Pixel; arcLen: number; end: Pixel }
-      const runs: Run[] = [];
-      let runStart = 0;
-      let runDir: Pixel | null = null;
-      let runArc = 0;
-      const closeRun = (endIdx: number): void => {
-        if (runDir && runArc >= MIN_RUN) {
-          const d0 = dir(pts[runStart], pts[endIdx]);
-          if (d0) runs.push({ dir: d0, arcLen: runArc, end: pts[endIdx] });
-        }
-      };
-      for (let i = 1; i < pts.length; i++) {
-        const d0 = dir(pts[i - 1], pts[i]);
-        const step = len(pts[i - 1], pts[i]);
-        if (!d0) continue;
-        if (runDir && deg(runDir[0] * d0[0] + runDir[1] * d0[1]) <= STRAIGHT_DEG) {
-          runArc += step;
-          continue;
-        }
-        closeRun(i - 1);
-        runStart = i - 1;
-        runDir = d0;
-        runArc = step;
-      }
-      closeRun(pts.length - 1);
+    for (const pts of inkChains(segs)) {
+      const runs = straightRunsOf(pts, MIN_RUN, STRAIGHT_DEG);
       for (let k = 1; k < runs.length; k++) {
         const a = runs[k - 1];
         const b = runs[k];
@@ -639,6 +664,82 @@ export function reportSpikes(d: {
     }
   }
   console.error(`[spikes] ${count} sub-octilinear angles between straight runs (>=${MIN_RUN.toFixed(0)}px runs, off-grid > ${OFF_GRID_DEG}deg)`);
+}
+
+/** OCTI_STAIRS: census of staircasing in the FINAL ink. A single
+ *  45-degree jog is the sanctioned way to resolve an offset; STAIRS are
+ *  the repeated form: four or more consecutive straight runs alternating
+ *  between two grid directions a 45-degree turn apart, with short treads
+ *  between the outer runs. The design preference is one straight
+ *  resolution over a flight of small steps. */
+export function reportStairs(d: {
+  layout: Layout;
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  spacing: number;
+  stations?: Array<{ nodeId: string }>;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (!envStr('OCTI_STAIRS')) return;
+  const { layout, lineById, dByLine, parseInk, spacing, stations, nodePx } = d;
+  const segsByLine = parseInk(dByLine);
+  const groups: Array<{ pos: Pixel; label: string }> = [];
+  for (const st of stations ?? []) {
+    const pos = nodePx.get(st.nodeId);
+    if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+  }
+  const nearestGroup = (p: Pixel): string => {
+    let best = '?';
+    let bd = Infinity;
+    for (const g of groups) {
+      const dd = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+      if (dd < bd) { bd = dd; best = g.label; }
+    }
+    return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+  };
+  const deg = (dot: number): number => (Math.acos(Math.min(1, Math.max(-1, dot))) * 180) / Math.PI;
+  const MIN_RUN = Math.max(8, spacing * 1.5);
+  const STRAIGHT_DEG = 6;
+  // A tread longer than this reads as genuine travel, not a step.
+  const MAX_TREAD = spacing * 5;
+  let flights = 0;
+  let steps = 0;
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!lineById.has(lineId)) continue;
+    const segs = segsByLine.get(lineId)!;
+    for (const pts of inkChains(segs)) {
+      const runs = straightRunsOf(pts, MIN_RUN, STRAIGHT_DEG);
+      let k = 0;
+      while (k + 3 < runs.length + 1 && k < runs.length - 1) {
+        const turn01 = deg(runs[k].dir[0] * runs[k + 1].dir[0] + runs[k].dir[1] * runs[k + 1].dir[1]);
+        if (turn01 < 35 || turn01 > 55) { k++; continue; }
+        // extend the alternation dirA, dirB, dirA, dirB, ...
+        let j = k + 1;
+        while (
+          j + 1 < runs.length &&
+          deg(runs[j + 1].dir[0] * runs[j - 1].dir[0] + runs[j + 1].dir[1] * runs[j - 1].dir[1]) <= STRAIGHT_DEG &&
+          runs[j].arcLen <= MAX_TREAD
+        ) j++;
+        const turns = j - k;
+        if (turns >= 3) {
+          flights++;
+          steps += turns - 1;
+          if (flights <= 40) {
+            const ln = lineById.get(lineId);
+            console.error(
+              `[stairs] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) turns=${turns} ` +
+              `at=(${runs[k].end[0].toFixed(0)},${runs[k].end[1].toFixed(0)}) near=${nearestGroup(runs[k].end)}`,
+            );
+          }
+          k = j;
+        } else {
+          k++;
+        }
+      }
+    }
+  }
+  console.error(`[stairs] ${flights} staircases (${steps} steps, treads <= ${MAX_TREAD.toFixed(0)}px)`);
 }
 
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
