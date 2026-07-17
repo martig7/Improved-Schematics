@@ -27,11 +27,48 @@ export interface ChainSeatArgs {
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
-/** edge.id|lineId -> ladder-frame lateral offset (edge from->to frame)
- *  for every chain-interior lane of a framed participant. */
-export function computeChainSeats(args: ChainSeatArgs): Map<string, number> {
+export interface ChainSeatRun {
+  lineId: string;
+  edgeIds: string[];
+  /** Chain-frame bounding seats; undefined when that bound contributed no frame. */
+  entry?: number;
+  exit?: number;
+  desired: number;
+  ladderSeat: number;
+}
+
+export interface ChainSeatConflict {
+  /** edgeId|lineId that a later chain also tried to seat. */
+  key: string;
+  kept: number;
+  keptChain: number;
+  discarded: number;
+}
+
+export interface ChainSeatReport {
+  chainIndex: number;
+  anchorA: string | null;
+  anchorB: string | null;
+  edgeIds: string[];
+  /** Ladder center (lower-median of the runs' implied centers). */
+  c: number;
+  runs: ChainSeatRun[];
+  conflicts: ChainSeatConflict[];
+}
+
+export interface ChainSeatResult {
+  /** edge.id|lineId -> ladder-frame lateral offset (edge from->to frame)
+   *  for every chain-interior lane of a framed participant. */
+  seats: Map<string, number>;
+  /** One row per chain that seated at least one run; recording-only. */
+  report: ChainSeatReport[];
+}
+
+export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
   const { chains, edgeById, basePoly, laneOffsetOf, lineTraversals, spacing } = args;
   const out = new Map<string, number>();
+  const keyOwner = new Map<string, number>();
+  const report: ChainSeatReport[] = [];
   const lineIds = [...lineTraversals.keys()].sort();
 
   const endDirInto = (edgeId: string, node: string): Pixel | null => {
@@ -46,7 +83,8 @@ export function computeChainSeats(args: ChainSeatArgs): Map<string, number> {
     return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
   };
 
-  for (const chain of chains) {
+  for (let chainIndex = 0; chainIndex < chains.length; chainIndex++) {
+    const chain = chains[chainIndex];
     const interior = new Set(chain.edgeIds);
     // Chain orientation per interior edge (true = the chain runs the edge
     // from->to): one lateral frame for the whole chain.
@@ -74,14 +112,7 @@ export function computeChainSeats(args: ChainSeatArgs): Map<string, number> {
       }
     }
 
-    interface Run {
-      lineId: string;
-      edgeIds: string[];
-      /** CHAIN-frame desired seat from the bounding frames. */
-      desired: number;
-      ladderSeat: number;
-    }
-    const runs: Run[] = [];
+    const runs: ChainSeatRun[] = [];
     for (const lineId of lineIds) {
       const trav = lineTraversals.get(lineId)!;
       let i = 0;
@@ -130,6 +161,8 @@ export function computeChainSeats(args: ChainSeatArgs): Map<string, number> {
           runs.push({
             lineId,
             edgeIds: steps.map((s) => s.edgeId),
+            entry,
+            exit,
             desired: entry !== undefined && exit !== undefined ? (entry + exit) / 2 : (entry ?? exit!),
             ladderSeat: 0,
           });
@@ -149,14 +182,34 @@ export function computeChainSeats(args: ChainSeatArgs): Map<string, number> {
     const c = offsets[Math.floor((offsets.length - 1) / 2)];
     runs.forEach((r, k) => { r.ladderSeat = (k - centerK) * spacing + c; });
 
+    const conflicts: ChainSeatConflict[] = [];
     for (const r of runs) {
       for (const edgeId of r.edgeIds) {
         const key = edgeId + '|' + r.lineId;
-        if (out.has(key)) continue;
         const fwd = orientedForward.get(edgeId) ?? true;
-        out.set(key, fwd ? r.ladderSeat : -r.ladderSeat);
+        const seat = fwd ? r.ladderSeat : -r.ladderSeat;
+        if (out.has(key)) {
+          conflicts.push({
+            key,
+            kept: out.get(key)!,
+            keptChain: keyOwner.get(key) ?? -1,
+            discarded: seat,
+          });
+          continue;
+        }
+        out.set(key, seat);
+        keyOwner.set(key, chainIndex);
       }
     }
+    report.push({
+      chainIndex,
+      anchorA: chain.anchorA,
+      anchorB: chain.anchorB,
+      edgeIds: chain.edgeIds,
+      c,
+      runs,
+      conflicts,
+    });
   }
-  return out;
+  return { seats: out, report };
 }

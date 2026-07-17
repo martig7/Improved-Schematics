@@ -50,7 +50,7 @@ function setup(travOverride?: Map<string, Array<{ edgeId: string; reversed: bool
       ['l4', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b')]],
     ]),
     spacing: SP,
-  });
+  }).seats;
 }
 
 test('seats: every interior pair sits at pitch or more (cross-feeder included)', () => {

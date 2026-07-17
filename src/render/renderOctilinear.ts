@@ -13,6 +13,7 @@ import {
   reportSlidStations, reportEvictedStations,
   reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
+import { reportChainSeats } from './debug/chainSeats.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
@@ -976,7 +977,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // edges of a chain take their lane offsets from the chain's shared seat
   // ladder instead of slot+bias, so interior bias seams vanish and the
   // seams at the chain ends are ordinary jogs the fan already closes.
-  const chainSeatOf = envStr('OCTI_CHAIN') === '1'
+  const chainSeatRes = envStr('OCTI_CHAIN') === '1'
     ? computeChainSeats({
       chains,
       edgeById,
@@ -992,7 +993,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       lineTraversals: layout.lineTraversals,
       spacing,
     })
-    : new Map<string, number>();
+    : null;
+  const chainSeatOf = chainSeatRes?.seats ?? new Map<string, number>();
+  reportChainSeats({ report: chainSeatRes?.report ?? [], nodePx });
 
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);
