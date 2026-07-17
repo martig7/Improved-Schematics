@@ -23,6 +23,7 @@ import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
 import { assembleDByLine } from './assemblePath';
 import { computePaintGroups } from './paintLayers';
+import { findParallelPairs } from './layout/corridorSep';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -927,6 +928,28 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [eid, order] of orderOf) {
       halfWidthOf.set(eid, ((order.length - 1) / 2) * spacing);
     }
+    // Parallel-corridor separation, EXPERIMENTAL and default OFF
+    // (OCTI_SEP=1 enables): pushing two near-parallel corridors apart by
+    // whole-edge bias was falsified twice on the corpus (loops and clips
+    // explode; the shared hub tears and every member's corner degrades).
+    // The compressed-corridor family needs lane-level joint seating along
+    // the overlapped span, not a constant edge shift; the detector stays
+    // for diagnostics.
+    const sepPairs = envStr('OCTI_SEP') === '1'
+      ? findParallelPairs(
+          layout.edges.filter((e) => (orderOf.get(e.id)?.length ?? 0) > 0).map((e) => e.id),
+          (id) => {
+            const e = edgeById.get(id);
+            return e ? edgePolyline(e) : undefined;
+          },
+          (id) => Math.max(0, halfWidthOf.get(id) ?? 0),
+          spacing,
+          (id) => {
+            const e = edgeById.get(id);
+            return e ? [e.from, e.to] : undefined;
+          },
+        )
+      : [];
     const edgeIds = [...byEdge.keys()].sort();
     for (let pass = 0; pass < 12; pass++) {
       let moved = 0;
@@ -954,6 +977,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const cur = biasOf.get(eid) ?? 0;
         if (Math.abs(target - cur) > 0.05) moved++;
         biasOf.set(eid, target);
+      }
+      // Separation nudges after each continuity sweep: each violated pair
+      // splits its clearance deficit, widening along the side the stacks
+      // already lean toward; continuity then propagates the shift.
+      for (const sp of sepPairs) {
+        const bA = biasOf.get(sp.eA) ?? 0;
+        const bB = biasOf.get(sp.eB) ?? 0;
+        const lat = sp.d0 + sp.sign * bB - bA;
+        const mag = Math.abs(lat);
+        if (mag >= sp.needed - 0.05) continue;
+        const push = (sp.needed - mag) / 2;
+        const dir = lat >= 0 ? 1 : -1;
+        biasOf.set(sp.eA, bA - dir * push);
+        biasOf.set(sp.eB, bB + dir * push * sp.sign);
+        moved++;
       }
       if (moved === 0) break;
     }
