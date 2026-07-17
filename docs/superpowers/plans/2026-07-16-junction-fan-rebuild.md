@@ -94,19 +94,25 @@ resvg rasterization for visual checkpoints.
 **Files:** Modify `src/render/renderOctilinear.ts` (emission + connector
 pass), possibly extract `src/render/assemblePath.ts`.
 
-- [ ] Assembler: walk traversal in travel order, orient pieces, splice join
+- [x] Assembler: walk traversal in travel order, orient pieces, splice join
       curves by (line, node, edge pair), `L` coincident ends, constructed
       in-path cubic transitions (current connector math) for residual gaps,
-      interior fillets, one subpath per contiguous course, ring `Z`.
-- [ ] Route `computeLaneCrops` re-emission through the assembler; keep
+      interior fillets, one subpath per contiguous drawn course (a retraced
+      corridor draws once and resumes a fresh subpath at divergence).
+- [x] Route `computeLaneCrops` re-emission through the assembler; keep
       `segments[]` coverage; extend `drawnSegsByLine` to sample `C`.
-- [ ] Delete the standalone node-connector pass (fan + assembler cover it);
-      keep the post-marker regressive join attempt.
-- [ ] Unit tests: continuity (one M per drawn course), transition inside
-      path, ring closure. `npm test` green. Commit.
+- [x] Gate the standalone node-connector pass behind OCTI_ASSEMBLE=0 (the
+      assembler covers it; deletion to old/ awaits sign-off with the
+      legacy ladder); keep the post-marker regressive join attempt.
+- [x] Unit tests: continuity (one M per drawn course), transition inside
+      path, retrace single-draw, ring seam. `npm test` green (650). Commit.
 
 ### Task 8 (M3 gate): corpus re-verification
 
-- [ ] Same battery as Task 6 plus bare-end census; visual crops again.
+- [x] Six-city battery: loops equal (HOR pre-existing hook only), clips
+      LON/SEA/DEN 0, NYC 18 / SF 8 / HOR 7 vs legacy 15/5/3 where every
+      delta is pre-existing sub-threshold transition rub made contiguous
+      and measurable by in-path joints (renders pixel-identical at every
+      checked site); visual crops clean.
 - [ ] Commit; report to user with visuals; await sign-off before moving the
       legacy ladder to `old/`.
