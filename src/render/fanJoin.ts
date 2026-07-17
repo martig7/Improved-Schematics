@@ -9,6 +9,7 @@
 import type { Pixel, TraversalStep } from './layout/types';
 import { taperLaneEnd } from './layout/offsets';
 import { fanTraceTarget, makeFanLog } from './debug/fanJoin.debug';
+import { envStr } from '../env';
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
@@ -36,8 +37,13 @@ export interface FanArgs {
   lineIds: Set<string>;
   edgeById: Map<string, FanEdgeRef>;
   /** edge.id|lineId -> offset lane polyline. End vertices are MUTATED in
-   *  place (trims, pins, tapers), exactly like the join ladder did. */
+   *  place (trims, pins, tapers), exactly like the join ladder did; a lane
+   *  consumed by multi-edge corner absorption is DELETED. */
   segPath: Map<string, Pixel[]>;
+  /** Suppressed lane keys (jog slivers). Absorption ADDS consumed lanes so
+   *  every bridging consumer (assembler, legacy connectors) already knows
+   *  to carry the course across them in one stroke. */
+  suppressed: Set<string>;
   /** Drawn lane order per edge (post sliver suppression). */
   orderOf: Map<string, string[]>;
   biasOf: Map<string, number>;
@@ -199,7 +205,9 @@ export function collectFanGroups(
  * sorted group iteration, sqrt-only math.
  */
 export function buildFanJoins(args: FanArgs): FanResult {
-  const { segPath, edgeById, orderOf, biasOf, nodePx, spacing, smoothR, bigGapMult } = args;
+  const { segPath, suppressed, edgeById, orderOf, biasOf, nodePx, spacing, smoothR, bigGapMult } = args;
+  // OCTI_ABSORB=0 disables multi-edge corner absorption (A/B).
+  const absorbOn = envStr('OCTI_ABSORB') !== '0';
   const joinCurves: JoinCurve[] = [];
   const joinStopPos = new Map<string, Pixel>();
   const endMoved = new Set<string>();
@@ -291,10 +299,11 @@ export function buildFanJoins(args: FanArgs): FanResult {
   };
   /** Corridor reference line through a line's lane at `node`: its end point
    *  there, its end-segment direction (pointing INTO the node when `into`,
-   *  OUT of it otherwise), and the end segment length. */
+   *  OUT of it otherwise), the end segment length, and the lane itself so
+   *  an absorbing construction can move its end. */
   const throughRef = (
     lineId: string, edgeId: string, node: string | undefined, into: boolean,
-  ): { q: Pixel; dir: Pixel; len: number } | null => {
+  ): { q: Pixel; q1: Pixel; dir: Pixel; len: number; poly: Pixel[]; atStart: boolean; edgeId: string } | null => {
     if (!node) return null;
     const poly = segPath.get(edgeId + '|' + lineId);
     const ed = edgeById.get(edgeId);
@@ -306,9 +315,10 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const len = hyp(q[0] - q1[0], q[1] - q1[1]);
     if (len < 1e-6) return null;
     return {
-      q,
+      q, q1,
       dir: into ? [(q[0] - q1[0]) / len, (q[1] - q1[1]) / len] : [(q1[0] - q[0]) / len, (q1[1] - q[1]) / len],
       len,
+      poly, atStart, edgeId,
     };
   };
 
@@ -327,6 +337,10 @@ export function buildFanJoins(args: FanArgs): FanResult {
    *  returns. When the line continues beyond such a stub, the meet is
    *  computed against the THROUGH lane's line instead (the first slice of
    *  multi-edge corner absorption). Returns true when applied. */
+  const endKeyAt = (edgeId: string, atStart: boolean, lineId: string): string =>
+    edgeId + '|' + lineId + '|' + (atStart ? 's' : 'e');
+  const pairOf = (a: string, b: string): string => (a < b ? a + '|' + b : b + '|' + a);
+
   /** Does `C` overrun the lane: for the pin to live on this lane's line,
    *  its projection along the lane's chord (node end toward far end) must
    *  not pass the far end. When it does, the whole lane is inside the
@@ -343,17 +357,23 @@ export function buildFanJoins(args: FanArgs): FanResult {
   const sharpPin = (g: Group, m: Member, e: Ends, fanReach: number, allowExtend: boolean, flog: (s: string) => void): boolean => {
     let refA = { q: e.qa, dir: e.dirIn, len: e.lenA };
     let refB = { q: e.qb, dir: e.dirOut, len: e.lenB };
+    let subA: ReturnType<typeof throughRef> = null;
+    let subB: ReturnType<typeof throughRef> = null;
+    let farA: string | undefined;
+    let farB: string | undefined;
     const C0 = lineMeet(refA.q, refA.dir, refB.q, refB.dir);
     if (!C0) return false;
-    if (m.prevEdge && overruns(e.pIn, m.inAtStart, C0)) {
-      const sub = throughRef(m.lineId, m.prevEdge, farNodeOf(m.edgeIn, m.inAtStart), true);
-      if (sub) refA = sub;
+    if (m.prevEdge && m.prevEdge !== m.edgeOut && overruns(e.pIn, m.inAtStart, C0)) {
+      farA = farNodeOf(m.edgeIn, m.inAtStart);
+      const sub = farA !== undefined && farA !== g.node ? throughRef(m.lineId, m.prevEdge, farA, true) : null;
+      if (sub) { refA = sub; subA = sub; }
     }
-    if (m.nextEdge && overruns(e.pOut, m.outAtStart, C0)) {
-      const sub = throughRef(m.lineId, m.nextEdge, farNodeOf(m.edgeOut, m.outAtStart), false);
-      if (sub) refB = sub;
+    if (m.nextEdge && m.nextEdge !== m.edgeIn && overruns(e.pOut, m.outAtStart, C0)) {
+      farB = farNodeOf(m.edgeOut, m.outAtStart);
+      const sub = farB !== undefined && farB !== g.node ? throughRef(m.lineId, m.nextEdge, farB, false) : null;
+      if (sub) { refB = sub; subB = sub; }
     }
-    const C = refA.q === e.qa && refB.q === e.qb ? C0 : lineMeet(refA.q, refA.dir, refB.q, refB.dir);
+    const C = !subA && !subB ? C0 : lineMeet(refA.q, refA.dir, refB.q, refB.dir);
     if (!C) return false;
     const dispA = hyp(C[0] - e.qa[0], C[1] - e.qa[1]);
     const dispB = hyp(C[0] - e.qb[0], C[1] - e.qb[1]);
@@ -362,10 +382,39 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const behindA = allowExtend || (C[0] - refA.q[0]) * refA.dir[0] + (C[1] - refA.q[1]) * refA.dir[1] <= 0.01 * refA.len;
     const aheadB = allowExtend || (C[0] - refB.q[0]) * refB.dir[0] + (C[1] - refB.q[1]) * refB.dir[1] >= -0.01 * refB.len;
     if (!(dispA <= capA && dispB <= capB && behindA && aheadB)) return false;
-    setEnd(e.pIn, m.inAtStart, e.dirIn, C);
-    setEnd(e.pOut, m.outAtStart, [-e.dirOut[0], -e.dirOut[1]], C);
-    markDone(g, m);
-    flog(`${m.lineId} PIN C=(${C[0].toFixed(1)},${C[1].toFixed(1)}) dispA=${dispA.toFixed(1)} dispB=${dispB.toFixed(1)}`);
+    // A substituted side ABSORBS its micro lane when absorption is on: the
+    // pin moves the through lane's end instead and the micro's ink is
+    // erased (the corner owns it). With absorption off the substituted
+    // MEET stands but the micro keeps its ink (the prior behaviour).
+    if (!absorbOn) { subA = null; subB = null; }
+    const moveKeys = [keyIn(m), keyOut(m)];
+    if (subA) moveKeys.push(endKeyAt(m.edgeIn, !m.inAtStart, m.lineId), endKeyAt(subA.edgeId, subA.atStart, m.lineId));
+    if (subB) moveKeys.push(endKeyAt(m.edgeOut, !m.outAtStart, m.lineId), endKeyAt(subB.edgeId, subB.atStart, m.lineId));
+    if (moveKeys.some((k) => endMoved.has(k))) return false;
+    if (subA) setEnd(subA.poly, subA.atStart, subA.dir, C);
+    else setEnd(e.pIn, m.inAtStart, e.dirIn, C);
+    if (subB) setEnd(subB.poly, subB.atStart, [-subB.dir[0], -subB.dir[1]], C);
+    else setEnd(e.pOut, m.outAtStart, [-e.dirOut[0], -e.dirOut[1]], C);
+    for (const k of moveKeys) endMoved.add(k);
+    mitered.add(m.lineId + '|' + g.node + '|' + pairOf(m.edgeIn, m.edgeOut));
+    const consumed: string[] = [];
+    if (subA && farA) {
+      const key = m.edgeIn + '|' + m.lineId;
+      segPath.delete(key);
+      suppressed.add(key);
+      consumed.push(key);
+      mitered.add(m.lineId + '|' + farA + '|' + pairOf(subA.edgeId, m.edgeIn));
+      mitered.add(m.lineId + '|' + farA + '|' + pairOf(subA.edgeId, m.edgeOut));
+    }
+    if (subB && farB) {
+      const key = m.edgeOut + '|' + m.lineId;
+      segPath.delete(key);
+      suppressed.add(key);
+      consumed.push(key);
+      mitered.add(m.lineId + '|' + farB + '|' + pairOf(subB.edgeId, m.edgeOut));
+      mitered.add(m.lineId + '|' + farB + '|' + pairOf(subB.edgeId, m.edgeIn));
+    }
+    flog(`${m.lineId} PIN C=(${C[0].toFixed(1)},${C[1].toFixed(1)}) dispA=${dispA.toFixed(1)} dispB=${dispB.toFixed(1)}${consumed.length ? ' ABSORB ' + consumed.join(',') : ''}`);
     return true;
   };
 
@@ -479,9 +528,109 @@ export function buildFanJoins(args: FanArgs): FanResult {
 
     // Corner construction first for every non-regressive group: plan every
     // member's apex without mutating, resolve the nested per-member trims,
-    // then apply. Members with no apex within reach fall back by band:
-    // near-parallel ones jog-taper, corner ones pin sharp.
-    interface Plan { m: Member; e: Ends; apex: Pixel; cutIn: number | null; cutOut: number | null; la: number; lb: number }
+    // then apply. Each plan carries its two reference lanes explicitly: for
+    // a plain corner they are the member's own; a corner whose apex OVERRUNS
+    // a near lane shorter than the fan's reach ABSORBS it (multi-edge
+    // corner, invariant I2): the reference becomes the through lane beyond
+    // the micro, whose ink the corner curve replaces entirely. Members with
+    // no apex within reach fall back by band: near-parallel ones jog-taper,
+    // corner ones pin sharp.
+    interface SideRef { q: Pixel; q1: Pixel; poly: Pixel[]; atStart: boolean; edgeId: string }
+    interface PlanSide { poly: Pixel[]; atStart: boolean; cut: number | null }
+    interface Plan {
+      m: Member; e: Ends; apex: Pixel; la: number; lb: number;
+      sIn: PlanSide; sOut: PlanSide;
+      moveKeys: string[];
+      miterKeys: string[];
+      stopNodes: string[];
+      consumeKeys: string[];
+      pair: [string, string];
+    }
+    const planCorner = (m: Member, e: Ends, limit: number, rIn: SideRef, rOut: SideRef): Plan | null => {
+      const d1: Pixel = [rIn.q[0] - rIn.q1[0], rIn.q[1] - rIn.q1[1]];
+      const d2: Pixel = [rOut.q[0] - rOut.q1[0], rOut.q[1] - rOut.q1[1]];
+      const scale = hyp(d1[0], d1[1]) * hyp(d2[0], d2[1]);
+      const denom = d1[0] * d2[1] - d1[1] * d2[0];
+      if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) return null;
+      const t = ((rOut.q1[0] - rIn.q1[0]) * d2[1] - (rOut.q1[1] - rIn.q1[1]) * d2[0]) / denom;
+      const x = rIn.q1[0] + t * d1[0];
+      const y = rIn.q1[1] + t * d1[1];
+      if (hyp(x - rIn.q[0], y - rIn.q[1]) > limit || hyp(x - rOut.q[0], y - rOut.q[1]) > limit) return null;
+      // An apex behind an end means the lane overdrew the corner: plan a
+      // cut back to the apex (declining if the apex is off the lane).
+      let cutIn: number | null = null;
+      let cutOut: number | null = null;
+      if ((x - rIn.q1[0]) * d1[0] + (y - rIn.q1[1]) * d1[1] <= 0) {
+        cutIn = findCutBack(rIn.poly, rIn.atStart, x, y);
+        if (cutIn === null) return null;
+      }
+      if ((x - rOut.q1[0]) * d2[0] + (y - rOut.q1[1]) * d2[1] <= 0) {
+        cutOut = findCutBack(rOut.poly, rOut.atStart, x, y);
+        if (cutOut === null) return null;
+      }
+      // Leg lengths from the effective inner vertex to the apex (what the
+      // trim must fit inside after any cut back).
+      const innerIn = cutIn !== null
+        ? (rIn.atStart ? rIn.poly[cutIn + 1] : rIn.poly[rIn.poly.length - 2 - cutIn])
+        : rIn.q1;
+      const innerOut = cutOut !== null
+        ? (rOut.atStart ? rOut.poly[cutOut + 1] : rOut.poly[rOut.poly.length - 2 - cutOut])
+        : rOut.q1;
+      const la = hyp(x - innerIn[0], y - innerIn[1]);
+      const lb = hyp(x - innerOut[0], y - innerOut[1]);
+      if (la < 1e-6 || lb < 1e-6) return null;
+      const pair: [string, string] = rIn.edgeId < rOut.edgeId ? [rIn.edgeId, rOut.edgeId] : [rOut.edgeId, rIn.edgeId];
+      return {
+        m, e, apex: [x, y], la, lb,
+        sIn: { poly: rIn.poly, atStart: rIn.atStart, cut: cutIn },
+        sOut: { poly: rOut.poly, atStart: rOut.atStart, cut: cutOut },
+        moveKeys: [endKeyAt(rIn.edgeId, rIn.atStart, m.lineId), endKeyAt(rOut.edgeId, rOut.atStart, m.lineId)],
+        miterKeys: [m.lineId + '|' + g.node + '|' + pair[0] + '|' + pair[1]],
+        stopNodes: [g.node],
+        consumeKeys: [],
+        pair,
+      };
+    };
+    const tryAbsorb = (m: Member, e: Ends, limit: number): Plan | null => {
+      if (!absorbOn) return null;
+      const rIn: SideRef = { q: e.qa, q1: e.qa1, poly: e.pIn, atStart: m.inAtStart, edgeId: m.edgeIn };
+      const rOut: SideRef = { q: e.qb, q1: e.qb1, poly: e.pOut, atStart: m.outAtStart, edgeId: m.edgeOut };
+      if (m.nextEdge && m.nextEdge !== m.edgeIn && polyLenOf(e.pOut) < fanReach) {
+        const farNode = farNodeOf(m.edgeOut, m.outAtStart);
+        const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.nextEdge, farNode, false) : null;
+        if (thr) {
+          const p = planCorner(m, e, limit, rIn, thr);
+          if (p && overruns(e.pOut, m.outAtStart, p.apex)) {
+            p.consumeKeys.push(m.edgeOut + '|' + m.lineId);
+            p.moveKeys.push(keyOut(m), endKeyAt(m.edgeOut, !m.outAtStart, m.lineId));
+            p.miterKeys.push(
+              m.lineId + '|' + g.node + '|' + pairOf(m.edgeIn, m.edgeOut),
+              m.lineId + '|' + farNode + '|' + pairOf(m.edgeOut, thr.edgeId),
+            );
+            p.stopNodes.push(farNode!);
+            return p;
+          }
+        }
+      }
+      if (m.prevEdge && m.prevEdge !== m.edgeOut && polyLenOf(e.pIn) < fanReach) {
+        const farNode = farNodeOf(m.edgeIn, m.inAtStart);
+        const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.prevEdge, farNode, true) : null;
+        if (thr) {
+          const p = planCorner(m, e, limit, thr, rOut);
+          if (p && overruns(e.pIn, m.inAtStart, p.apex)) {
+            p.consumeKeys.push(m.edgeIn + '|' + m.lineId);
+            p.moveKeys.push(keyIn(m), endKeyAt(m.edgeIn, !m.inAtStart, m.lineId));
+            p.miterKeys.push(
+              m.lineId + '|' + g.node + '|' + pairOf(m.edgeIn, m.edgeOut),
+              m.lineId + '|' + farNode + '|' + pairOf(m.edgeIn, thr.edgeId),
+            );
+            p.stopNodes.push(farNode!);
+            return p;
+          }
+        }
+      }
+      return null;
+    };
     const planned: Plan[] = [];
     const fallback: Array<{ m: Member; e: Ends }> = [];
     if (dot > -0.3) {
@@ -490,40 +639,11 @@ export function buildFanJoins(args: FanArgs): FanResult {
       // lateral jogs (far apexes) fall to the taper, as before.
       const limit = dot >= 0.85 ? spacing * 4 : Math.max(spacing * 4, fanReach);
       for (const { m, e } of live) {
-        // Apex: infinite-line meet of the two end segments (the lane lines).
-        const d1: Pixel = [e.qa[0] - e.qa1[0], e.qa[1] - e.qa1[1]];
-        const d2: Pixel = [e.qb[0] - e.qb1[0], e.qb[1] - e.qb1[1]];
-        const denom = d1[0] * d2[1] - d1[1] * d2[0];
-        const scale = e.lenA * e.lenB;
-        if (scale < 1e-9 || Math.abs(denom) < 1e-3 * scale) { fallback.push({ m, e }); continue; }
-        const t = ((e.qb1[0] - e.qa1[0]) * d2[1] - (e.qb1[1] - e.qa1[1]) * d2[0]) / denom;
-        const x = e.qa1[0] + t * d1[0];
-        const y = e.qa1[1] + t * d1[1];
-        if (hyp(x - e.qa[0], y - e.qa[1]) > limit || hyp(x - e.qb[0], y - e.qb[1]) > limit) { fallback.push({ m, e }); continue; }
-        // An apex behind an end means the lane overdrew the corner: plan a
-        // cut back to the apex (declining if the apex is off the lane).
-        let cutIn: number | null = null;
-        let cutOut: number | null = null;
-        if ((x - e.qa1[0]) * d1[0] + (y - e.qa1[1]) * d1[1] <= 0) {
-          cutIn = findCutBack(e.pIn, m.inAtStart, x, y);
-          if (cutIn === null) { fallback.push({ m, e }); continue; }
-        }
-        if ((x - e.qb1[0]) * d2[0] + (y - e.qb1[1]) * d2[1] <= 0) {
-          cutOut = findCutBack(e.pOut, m.outAtStart, x, y);
-          if (cutOut === null) { fallback.push({ m, e }); continue; }
-        }
-        // Leg lengths from the effective inner vertex to the apex (what the
-        // trim must fit inside after any cut back).
-        const innerIn = cutIn !== null
-          ? (m.inAtStart ? e.pIn[cutIn + 1] : e.pIn[e.pIn.length - 2 - cutIn])
-          : e.qa1;
-        const innerOut = cutOut !== null
-          ? (m.outAtStart ? e.pOut[cutOut + 1] : e.pOut[e.pOut.length - 2 - cutOut])
-          : e.qb1;
-        const la = hyp(x - innerIn[0], y - innerIn[1]);
-        const lb = hyp(x - innerOut[0], y - innerOut[1]);
-        if (la < 1e-6 || lb < 1e-6) { fallback.push({ m, e }); continue; }
-        planned.push({ m, e, apex: [x, y], cutIn, cutOut, la, lb });
+        const rIn: SideRef = { q: e.qa, q1: e.qa1, poly: e.pIn, atStart: m.inAtStart, edgeId: m.edgeIn };
+        const rOut: SideRef = { q: e.qb, q1: e.qb1, poly: e.pOut, atStart: m.outAtStart, edgeId: m.edgeOut };
+        const plan = planCorner(m, e, limit, rIn, rOut) ?? tryAbsorb(m, e, limit);
+        if (plan) planned.push(plan);
+        else fallback.push({ m, e });
       }
     } else {
       for (const le of live) fallback.push(le);
@@ -563,17 +683,17 @@ export function buildFanJoins(args: FanArgs): FanResult {
       // Re-check at apply time: a twice-visited corner's second member
       // shares both polylines with the first and must not re-apply onto
       // the mutated geometry (its cached refs are stale).
-      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
-      if (p.cutIn !== null) applyCutBack(e.pIn, m.inAtStart, p.cutIn, apex[0], apex[1]);
-      if (p.cutOut !== null) applyCutBack(e.pOut, m.outAtStart, p.cutOut, apex[0], apex[1]);
+      if (p.moveKeys.some((k) => endMoved.has(k))) continue;
+      if (p.sIn.cut !== null) applyCutBack(p.sIn.poly, p.sIn.atStart, p.sIn.cut, apex[0], apex[1]);
+      if (p.sOut.cut !== null) applyCutBack(p.sOut.poly, p.sOut.atStart, p.sOut.cut, apex[0], apex[1]);
       // Re-resolve ends after cut backs, then trim both legs back from the
       // apex by this member's nested trim and bridge with a quadratic
       // through the apex.
-      if (e.pIn.length < 2 || e.pOut.length < 2) continue;
-      const ra = m.inAtStart ? e.pIn[0] : e.pIn[e.pIn.length - 1];
-      const ra1 = m.inAtStart ? e.pIn[1] : e.pIn[e.pIn.length - 2];
-      const rb = m.outAtStart ? e.pOut[0] : e.pOut[e.pOut.length - 1];
-      const rb1 = m.outAtStart ? e.pOut[1] : e.pOut[e.pOut.length - 2];
+      if (p.sIn.poly.length < 2 || p.sOut.poly.length < 2) continue;
+      const ra = p.sIn.atStart ? p.sIn.poly[0] : p.sIn.poly[p.sIn.poly.length - 1];
+      const ra1 = p.sIn.atStart ? p.sIn.poly[1] : p.sIn.poly[p.sIn.poly.length - 2];
+      const rb = p.sOut.atStart ? p.sOut.poly[0] : p.sOut.poly[p.sOut.poly.length - 1];
+      const rb1 = p.sOut.atStart ? p.sOut.poly[1] : p.sOut.poly[p.sOut.poly.length - 2];
       const la = hyp(apex[0] - ra1[0], apex[1] - ra1[1]);
       const lb = hyp(apex[0] - rb1[0], apex[1] - rb1[1]);
       if (la < 1e-6 || lb < 1e-6) { fallback.push({ m, e }); continue; }
@@ -583,16 +703,28 @@ export function buildFanJoins(args: FanArgs): FanResult {
       const b: Pixel = [apex[0] - ub[0] * f, apex[1] - ub[1] * f];
       ra[0] = a[0]; ra[1] = a[1];
       rb[0] = b[0]; rb[1] = b[1];
-      joinCurves.push({ lineId: m.lineId, node: g.node, a, apex: [apex[0], apex[1]], b, edgeA: g.edgeA, edgeB: g.edgeB });
-      const stopKey = g.node + '|' + m.lineId;
-      if (!joinStopPos.has(stopKey)) {
-        joinStopPos.set(stopKey, [
-          (a[0] + 2 * apex[0] + b[0]) / 4,
-          (a[1] + 2 * apex[1] + b[1]) / 4,
-        ]);
+      joinCurves.push({ lineId: m.lineId, node: g.node, a, apex: [apex[0], apex[1]], b, edgeA: p.pair[0], edgeB: p.pair[1] });
+      // A stop at any node the corner spans (the shared node, plus the far
+      // node of an absorbed micro lane) draws ON the curve.
+      for (const nd of p.stopNodes) {
+        const stopKey = nd + '|' + m.lineId;
+        if (!joinStopPos.has(stopKey)) {
+          joinStopPos.set(stopKey, [
+            (a[0] + 2 * apex[0] + b[0]) / 4,
+            (a[1] + 2 * apex[1] + b[1]) / 4,
+          ]);
+        }
       }
-      markDone(g, m);
-      flog(`${m.lineId} CURVE apex=(${apex[0].toFixed(1)},${apex[1].toFixed(1)}) f=${f.toFixed(1)}`);
+      for (const k of p.moveKeys) endMoved.add(k);
+      for (const k of p.miterKeys) mitered.add(k);
+      // An absorbed micro lane's ink is replaced by the corner curve; erase
+      // it and mark it suppressed so every bridging consumer carries the
+      // course across in one stroke.
+      for (const key of p.consumeKeys) {
+        segPath.delete(key);
+        suppressed.add(key);
+      }
+      flog(`${m.lineId} CURVE apex=(${apex[0].toFixed(1)},${apex[1].toFixed(1)}) f=${f.toFixed(1)}${p.consumeKeys.length ? ' ABSORB ' + p.consumeKeys.join(',') : ''}`);
     }
 
     // Fallbacks by band. Near-parallel members whose curve found no corner

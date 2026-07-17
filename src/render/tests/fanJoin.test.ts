@@ -43,6 +43,7 @@ function makeArgs(f: Fixture): FanArgs {
     lineIds,
     edgeById,
     segPath,
+    suppressed: new Set<string>(),
     orderOf,
     biasOf: new Map(),
     nodePx,
@@ -202,6 +203,38 @@ test('jog group: lateral slot change tapers both ends to the midpoint', () => {
   assert.deepEqual(end, [100, 100]); // midpoint of the two lane ends
   assert.ok(r.endMoved.has('e1|j1|e'));
   assert.ok(r.mitered.has('j1|N|e1|e2'));
+});
+
+test('absorption: a corner overrunning a micro lane consumes it and spans to the through corridor', () => {
+  // 3-line horizontal bundle: m1 rides the outer slot (y=94), turns north
+  // at N through a 4px micro edge to F, then continues on e2. Its apex
+  // (100,94) lies BEYOND F (y=96), so the corner absorbs the micro lane.
+  const f: Fixture = {
+    edges: [
+      { id: 'e1', from: 'A', to: 'N' },
+      { id: 'eM', from: 'N', to: 'F' },
+      { id: 'e2', from: 'F', to: 'B' },
+    ],
+    bases: new Map([
+      ['e1', [[0, 100], [100, 100]] as Pixel[]],
+      ['eM', [[100, 100], [100, 96]] as Pixel[]],
+      ['e2', [[100, 96], [100, 0]] as Pixel[]],
+    ]),
+    orders: new Map([
+      ['e1', ['m1', 'x', 'y']],
+      ['eM', ['m1']],
+      ['e2', ['m1']],
+    ]),
+    traversals: new Map([['m1', [fwd('e1'), fwd('eM'), fwd('e2')]]]),
+  };
+  const args = makeArgs(f);
+  const r = buildFanJoins(args);
+  const abs = r.joinCurves.find((c) => c.lineId === 'm1');
+  assert.ok(abs, 'absorbed corner curve exists');
+  assert.deepEqual([abs!.edgeA, abs!.edgeB], ['e1', 'e2'], 'curve spans to the through corridor');
+  assert.equal(args.segPath.has('eM|m1'), false, 'micro lane consumed');
+  assert.ok(args.suppressed.has('eM|m1'), 'consumed lane marked bridgeable');
+  assert.ok(r.joinStopPos.has('N|m1') && r.joinStopPos.has('F|m1'), 'stops at both spanned nodes sit on the curve');
 });
 
 test('sharp fan: hairpin turn pins both lane ends to the shared meet', () => {

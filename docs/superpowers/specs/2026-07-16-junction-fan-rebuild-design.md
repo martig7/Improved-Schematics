@@ -151,15 +151,28 @@ Consequences handled in the same milestone:
 - The second (post-marker, allowRegressive) join attempt stays: it repairs
   ends the marker pass moved, and its output is a curve, not a chord.
 
+### Milestone 4 (built after the initial spec): multi-edge absorption
+
+A corner whose apex OVERRUNS a near lane (the meet's projection passes the
+lane's far end) with the line continuing beyond it absorbs the micro lane:
+the plan re-references the through lane past it, the corner curve or sharp
+pin spans both nodes, and the micro's ink is erased (deleted from segPath
+and marked suppressed, so the assembler and the legacy connectors bridge
+it in one stroke). Stops at either spanned node draw on the curve
+(joinStopPos for both). One level of absorption per side; the drawn order
+re-filters after the fan exactly as after sliver suppression.
+`OCTI_ABSORB=0` disables (the substituted pin meet stays, the prior
+behaviour).
+
 ### Explicitly deferred (follow-up milestones, not this build)
 
-- **Multi-edge absorption** (I2's micro-edge corners): the fan consuming
-  interior pieces shorter than its reach. Needs marker/stop re-homing for
-  consumed pieces.
+- **Micro-edge chains**: absorption crosses ONE micro lane per side;
+  corners spanning several consecutive micro edges still decline.
 - **Fan zone exclusivity** (I3) beyond the existing fan-depth station-split
   floor.
 - **Transition clearance** (I4): neighbour-aware shaping of the constructed
-  transitions.
+  transitions (would retire the pre-existing sub-pitch rubs the assembler
+  made measurable).
 
 ## Caching and determinism
 

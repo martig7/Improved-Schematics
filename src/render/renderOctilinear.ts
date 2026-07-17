@@ -1191,13 +1191,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const fan = buildFanJoins({
       lineTraversals: layout.lineTraversals,
       lineIds: new Set(lineById.keys()),
-      edgeById, segPath, orderOf, biasOf, nodePx,
+      edgeById, segPath, suppressed, orderOf, biasOf, nodePx,
       spacing, smoothR: SMOOTH_R, bigGapMult,
     });
     for (const c of fan.joinCurves) joinCurves.push(c);
     for (const [k, v] of fan.joinStopPos) joinStopPos.set(k, v);
     for (const k of fan.endMoved) endMoved.add(k);
     for (const k of fan.mitered) mitered.add(k);
+    // Multi-edge corner absorption erases consumed micro lanes from segPath;
+    // re-filter the drawn order so every later consumer (marker lane counts,
+    // connector spans, paint groups) measures surviving lanes only, exactly
+    // as after jog-sliver suppression above.
+    for (const [edgeId, order] of orderOf) {
+      const kept = order.filter((lineId) => segPath.has(edgeId + '|' + lineId));
+      if (kept.length !== order.length) orderOf.set(edgeId, kept);
+    }
   }
   if (!useFanJoins) for (const [lineId, traversal] of layout.lineTraversals) {
     if (!lineById.has(lineId)) continue;

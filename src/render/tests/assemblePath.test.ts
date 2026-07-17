@@ -40,8 +40,9 @@ function build(f: Fixture): { args: AssembleArgs; segPath: Map<string, Pixel[]> 
   }
   const lineIds = new Set<string>();
   for (const o of f.orders.values()) for (const id of o) lineIds.add(id);
+  const suppressed = new Set<string>();
   const fan = buildFanJoins({
-    lineTraversals: f.traversals, lineIds, edgeById, segPath, orderOf,
+    lineTraversals: f.traversals, lineIds, edgeById, segPath, suppressed, orderOf,
     biasOf: new Map(), nodePx, spacing: SPACING, smoothR: 15, bigGapMult: 16,
   });
   return {
@@ -49,7 +50,7 @@ function build(f: Fixture): { args: AssembleArgs; segPath: Map<string, Pixel[]> 
     args: {
       segPath, joinCurves: fan.joinCurves, filletR: 15,
       lineTraversals: f.traversals, lineIds, edgeById, orderOf,
-      suppressed: new Set(), spacing: SPACING,
+      suppressed, spacing: SPACING,
     },
   };
 }
@@ -142,6 +143,32 @@ test('assembler: a ring course constructs its seam joint', () => {
   const d = assembleDByLine(args).get('r')!;
   assert.equal(countCmd(d, 'M'), 1, 'one closed subpath: ' + d.join(' '));
   assert.equal(countCmd(d, 'Q'), 4, 'all four corners incl. the seam: ' + d.join(' '));
+});
+
+test('assembler: an absorbed micro lane bridges in one continuous subpath', () => {
+  const f: Fixture = {
+    edges: [
+      { id: 'e1', from: 'A', to: 'N' },
+      { id: 'eM', from: 'N', to: 'F' },
+      { id: 'e2', from: 'F', to: 'B' },
+    ],
+    bases: new Map([
+      ['e1', [[0, 100], [100, 100]] as Pixel[]],
+      ['eM', [[100, 100], [100, 96]] as Pixel[]],
+      ['e2', [[100, 96], [100, 0]] as Pixel[]],
+    ]),
+    orders: new Map([
+      ['e1', ['m1', 'x', 'y']],
+      ['eM', ['m1']],
+      ['e2', ['m1']],
+    ]),
+    traversals: new Map([['m1', [fwd('e1'), fwd('eM'), fwd('e2')]]]),
+  };
+  const { args, segPath } = build(f);
+  assert.equal(segPath.has('eM|m1'), false, 'micro lane consumed by the fan');
+  const d = assembleDByLine(args).get('m1')!;
+  assert.equal(countCmd(d, 'M'), 1, 'one continuous subpath across the absorbed corner: ' + d.join(' '));
+  assert.equal(countCmd(d, 'Q'), 1, 'the spanning curve spliced in-path');
 });
 
 test('assembler: traversal-less lines keep standalone lane emission', () => {
