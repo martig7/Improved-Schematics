@@ -558,6 +558,127 @@ export function buildFanJoins(args: FanArgs): FanResult {
     return true;
   };
 
+  /** The lateral-jog taper: a member's ends drift to their shared midpoint
+   *  over an arc that scales with its own gap, so small swaps localize at
+   *  the node and band exchanges spread into a long shallow crossing. The
+   *  FALLBACK for near-parallel members whose curve planning found no
+   *  corner within reach. Runs in a SECOND pass after every group's corner
+   *  constructions (invariant I3): each ramp then places itself in the
+   *  room its edge has before the far junction's measured zone, going
+   *  one-sided away from an engulfing corner instead of spreading a ramp
+   *  through its sweeps. */
+  const jogTaper = (g: Group, m: Member, e: Ends, flog: (s: string) => void): void => {
+    if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) return;
+    const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
+    if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
+    const drift = Math.max(spacing * 1.5, gap * 1.2);
+    const arcIn = polyLenOf(e.pIn);
+    const arcOut = polyLenOf(e.pOut);
+    const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
+    const taperB = Math.min(drift, spacing * 8, arcOut * 0.45);
+    // Zone room per side: the ramp may only use the arc before the far
+    // node's constructed zone.
+    const farIn = farNodeOf(m.edgeIn, m.inAtStart);
+    const farOut = farNodeOf(m.edgeOut, m.outAtStart);
+    const roomIn = Math.max(0, arcIn - (farIn !== undefined ? extentAt.get(farIn) ?? 0 : 0));
+    const roomOut = Math.max(0, arcOut - (farOut !== undefined ? extentAt.get(farOut) ?? 0 : 0));
+    const capA = Math.min(taperA, roomIn);
+    const capB = Math.min(taperB, roomOut);
+    // Ride until the node, recenter past it (invariant I4): a seat change
+    // between edges of DIFFERENT bundle widths absorbs entirely on the
+    // sparser side, where the departing lines' seats are vacant; the group
+    // drifts in parallel at preserved pitch. Equal widths keep the
+    // symmetric midpoint drift unless a neighbouring zone engulfs one
+    // side, which pushes the whole change to the side with room.
+    const nIn = orderOf.get(m.edgeIn)?.length ?? 0;
+    const nOut = orderOf.get(m.edgeOut)?.length ?? 0;
+    let oneSided = nIn !== nOut
+      ? (nIn > nOut
+          ? (capB >= gap ? 'out' : null)
+          : (capA >= gap ? 'in' : null))
+      : null;
+    if (oneSided === null) {
+      if (capA < gap / 2 && capB >= gap) oneSided = 'out';
+      else if (capB < gap / 2 && capA >= gap) oneSided = 'in';
+    }
+    if (oneSided === 'out') {
+      const t = Math.min(taperB, Math.max(capB, gap));
+      taperLaneEnd(e.pOut, m.outAtStart, e.qa, t);
+      tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: t });
+      markDone(g, m);
+      flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${t.toFixed(1)}`);
+      return;
+    }
+    if (oneSided === 'in') {
+      const t = Math.min(taperA, Math.max(capA, gap));
+      taperLaneEnd(e.pIn, m.inAtStart, e.qb, t);
+      tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: t });
+      markDone(g, m);
+      flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${t.toFixed(1)}`);
+      return;
+    }
+    if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
+      // A lane too short for the standard drift SLANTS over its whole arc
+      // instead of leaving a perpendicular step at its end (invariant I9):
+      // the far end stays fixed (the fade reaches zero exactly there) and
+      // the jog spreads across every pixel the lane has. Only a jog larger
+      // than a side's whole arc (a bend past 45 degrees) still declines.
+      if (arcIn >= gap && arcOut >= gap) {
+        const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
+        taperLaneEnd(e.pIn, m.inAtStart, mid, Math.min(spacing * 8, arcIn));
+        taperLaneEnd(e.pOut, m.outAtStart, mid, Math.min(spacing * 8, arcOut));
+        tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: Math.min(spacing * 8, arcIn) });
+        tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: Math.min(spacing * 8, arcOut) });
+        markDone(g, m);
+        flog(`${m.lineId} JOG-SLANT gap=${gap.toFixed(1)} arcIn=${arcIn.toFixed(1)} arcOut=${arcOut.toFixed(1)}`);
+        return;
+      }
+      flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+      return;
+    }
+    // A jog whose endpoints bracket another line's seat at this node is a
+    // FORCED CROSSING: the ramp must pass over that lane's ink, and the
+    // gentle drift profile crosses a near-parallel mate so shallowly the
+    // two read as one doubled stroke for a long run. Such ramps take a
+    // decisive slope (about 35 degrees per side, inside the 45-degree
+    // step ceiling) so the crossing resolves in a few pitches.
+    const bracketsMate = (): boolean => {
+      const ab: Pixel = [e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]];
+      const len2 = ab[0] * ab[0] + ab[1] * ab[1];
+      if (len2 < 1e-9) return false;
+      const sides: Array<[string, boolean]> = [[m.edgeIn, m.inAtStart], [m.edgeOut, m.outAtStart]];
+      for (const [edgeX, atStart] of sides) {
+        for (const L of orderOf.get(edgeX) ?? []) {
+          if (L === m.lineId) continue;
+          const lp = segPath.get(edgeX + '|' + L);
+          if (!lp || lp.length < 2) continue;
+          const qL = atStart ? lp[0] : lp[lp.length - 1];
+          const t = ((qL[0] - e.qa[0]) * ab[0] + (qL[1] - e.qa[1]) * ab[1]) / len2;
+          if (t > 0.1 && t < 0.9) return true;
+        }
+      }
+      return false;
+    };
+    const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
+    // Midpoint ramps respect zone caps down to the 45-degree half-ramp
+    // floor (a steeper step violates I9; below the floor the intrusion
+    // stands and the census reports it).
+    let tA = Math.min(taperA, Math.max(capA, gap / 2));
+    let tB = Math.min(taperB, Math.max(capB, gap / 2));
+    if (bracketsMate()) {
+      const steep = Math.max(spacing, gap * 0.71);
+      tA = Math.min(tA, steep);
+      tB = Math.min(tB, steep);
+    }
+    taperLaneEnd(e.pIn, m.inAtStart, mid, tA);
+    taperLaneEnd(e.pOut, m.outAtStart, mid, tB);
+    tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: tA });
+    tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: tB });
+    markDone(g, m);
+    flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)}`);
+  };
+  const deferredJogs: Array<{ g: Group; m: Member; flog: (s: string) => void }> = [];
+
   for (const g of collectFanGroups(args.lineTraversals, args.lineIds, edgeById, orderOf, segPath, suppressed)) {
     const flog = makeFanLog(trace, g.members.map((m) => m.lineId));
     // Members whose ends an earlier group already moved sit this group out.
@@ -587,107 +708,6 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const fanReach = (halfWidthOf(g.edgeA) + halfWidthOf(g.edgeB) + 2 * spacing) / Math.max(den, 0.5);
     flog(`group ${g.node} ${g.edgeA}x${g.edgeB} n=${live.length} dot=${dot.toFixed(2)} fanReach=${fanReach.toFixed(1)}`);
 
-    // The lateral-jog taper: a member's ends drift to their shared midpoint
-    // over an arc that scales with its own gap, so small swaps localize at
-    // the node and band exchanges spread into a long shallow crossing. The
-    // FALLBACK for near-parallel members whose curve planning found no
-    // corner within reach (matching the old ladder's rung order: a slightly
-    // bent near-zero-gap pair takes the curve, which also erases the hair
-    // crossing its raw ends would paint).
-    const jogTaper = (m: Member, e: Ends): void => {
-      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) return;
-      const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
-      if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
-      const drift = Math.max(spacing * 1.5, gap * 1.2);
-      const arcIn = polyLenOf(e.pIn);
-      const arcOut = polyLenOf(e.pOut);
-      const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
-      const taperB = Math.min(drift, spacing * 8, arcOut * 0.45);
-      // Ride until the node, recenter past it (invariant I4): a seat change
-      // between edges of DIFFERENT bundle widths absorbs entirely on the
-      // sparser side, where the departing lines' seats are vacant. Every
-      // continuing line then shifts on the same side with a gap-scaled
-      // profile, so the group drifts in parallel at preserved pitch instead
-      // of compressing against its mates over the crowded stretch. Equal
-      // widths keep the symmetric midpoint drift.
-      const nIn = orderOf.get(m.edgeIn)?.length ?? 0;
-      const nOut = orderOf.get(m.edgeOut)?.length ?? 0;
-      const oneSided = nIn !== nOut
-        ? (nIn > nOut
-            ? (taperB >= gap ? 'out' : null)
-            : (taperA >= gap ? 'in' : null))
-        : null;
-      if (oneSided === 'out') {
-        taperLaneEnd(e.pOut, m.outAtStart, e.qa, taperB);
-        tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: taperB });
-        markDone(g, m);
-        flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${taperB.toFixed(1)}`);
-        return;
-      }
-      if (oneSided === 'in') {
-        taperLaneEnd(e.pIn, m.inAtStart, e.qb, taperA);
-        tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: taperA });
-        markDone(g, m);
-        flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)}`);
-        return;
-      }
-      if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
-        // A lane too short for the standard drift SLANTS over its whole arc
-        // instead of leaving a perpendicular step at its end (invariant I9):
-        // the far end stays fixed (the fade reaches zero exactly there) and
-        // the jog spreads across every pixel the lane has. Only a jog larger
-        // than a side's whole arc (a bend past 45 degrees) still declines.
-        if (arcIn >= gap && arcOut >= gap) {
-          const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
-          taperLaneEnd(e.pIn, m.inAtStart, mid, Math.min(spacing * 8, arcIn));
-          taperLaneEnd(e.pOut, m.outAtStart, mid, Math.min(spacing * 8, arcOut));
-          tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: Math.min(spacing * 8, arcIn) });
-          tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: Math.min(spacing * 8, arcOut) });
-          markDone(g, m);
-          flog(`${m.lineId} JOG-SLANT gap=${gap.toFixed(1)} arcIn=${arcIn.toFixed(1)} arcOut=${arcOut.toFixed(1)}`);
-          return;
-        }
-        flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
-        return;
-      }
-      // A jog whose endpoints bracket another line's seat at this node is a
-      // FORCED CROSSING: the ramp must pass over that lane's ink, and the
-      // gentle drift profile crosses a near-parallel mate so shallowly the
-      // two read as one doubled stroke for a long run. Such ramps take a
-      // decisive slope (about 35 degrees per side, inside the 45-degree
-      // step ceiling) so the crossing resolves in a few pitches.
-      const bracketsMate = (): boolean => {
-        const ab: Pixel = [e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]];
-        const len2 = ab[0] * ab[0] + ab[1] * ab[1];
-        if (len2 < 1e-9) return false;
-        const sides: Array<[string, boolean]> = [[m.edgeIn, m.inAtStart], [m.edgeOut, m.outAtStart]];
-        for (const [edgeX, atStart] of sides) {
-          for (const L of orderOf.get(edgeX) ?? []) {
-            if (L === m.lineId) continue;
-            const lp = segPath.get(edgeX + '|' + L);
-            if (!lp || lp.length < 2) continue;
-            const qL = atStart ? lp[0] : lp[lp.length - 1];
-            const t = ((qL[0] - e.qa[0]) * ab[0] + (qL[1] - e.qa[1]) * ab[1]) / len2;
-            if (t > 0.1 && t < 0.9) return true;
-          }
-        }
-        return false;
-      };
-      const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
-      let tA = taperA;
-      let tB = taperB;
-      if (bracketsMate()) {
-        const steep = Math.max(spacing, gap * 0.71);
-        tA = Math.min(tA, steep);
-        tB = Math.min(tB, steep);
-      }
-      taperLaneEnd(e.pIn, m.inAtStart, mid, tA);
-      taperLaneEnd(e.pOut, m.outAtStart, mid, tB);
-      tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: tA });
-      tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: tB });
-      markDone(g, m);
-      flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)}`);
-    };
 
     // Corner construction first for every non-regressive group: plan every
     // member's apex without mutating, resolve the nested per-member trims,
@@ -980,12 +1000,24 @@ export function buildFanJoins(args: FanArgs): FanResult {
     // gates fail keep the dogleg. Residual members are left for the
     // connector bridge.
     for (const { m, e } of fallback) {
-      if (dot >= 0.85) { jogTaper(m, e); continue; }
+      if (dot >= 0.85) { deferredJogs.push({ g, m, flog }); continue; }
       if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
       if (sharpPin(g, m, e, fanReach, dot <= -0.3, flog)) continue;
       if (dot > 0 && doglegPin(g, m, e, flog)) continue;
       flog(`${m.lineId} DECLINE (connector)`);
     }
+  }
+
+  // Second pass: composition-change tapers, after EVERY junction's corner
+  // constructions exist. Corners are primary (their references stay
+  // pristine and their zones are measured); a jog member whose ends a
+  // corner claimed meanwhile sits out, and ends are re-resolved so all
+  // corner mutations are seen.
+  for (const { g, m, flog } of deferredJogs) {
+    if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
+    const e = endsOf(m);
+    if (!e) continue;
+    jogTaper(g, m, e, flog);
   }
 
   for (const [node, reach] of [...extentAt.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {

@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 24; // bump to invalidate every cached entry on a format change
+const VERSION = 25; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -69,6 +69,10 @@ const VERSION = 24; // bump to invalidate every cached entry on a format change
 // v24: jog ramps that must cross another line's seat take a decisive slope
 // instead of the gentle drift profile. Purge so cached geometry redraws
 // forced-crossing jogs.
+// v25: composition-change tapers apply in a second pass after every
+// junction's corner constructions and place their ramps in the room before
+// neighbouring measured zones (invariant I3). Purge so cached geometry
+// redraws jogs beside junctions.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {
