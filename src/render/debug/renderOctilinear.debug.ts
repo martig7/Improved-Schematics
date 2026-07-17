@@ -535,6 +535,112 @@ export function reportZigzags(d: {
   console.error(`[zigs] ${count} perpendicular steps or steep ramps (window ${W.toFixed(1)})`);
 }
 
+/** OCTI_SPIKES: census of sub-octilinear angles in the FINAL ink. The
+ *  design strategy allows straight travel and 45-degree-multiple turns;
+ *  any sustained direction change below that family is a spike. Two
+ *  shapes qualify: a RAMP (travel continues straight overall while a
+ *  local stretch deviates by a sub-octilinear angle, the Z a jog taper
+ *  paints) and a BEND (the run direction itself changes by a lasting
+ *  sub-octilinear angle). Windowed like the zig census so smooth curve
+ *  samples near sanctioned corners never qualify: their net change
+ *  reaches the full 45 degrees. */
+export function reportSpikes(d: {
+  layout: Layout;
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  spacing: number;
+  stations?: Array<{ nodeId: string }>;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (!envStr('OCTI_SPIKES')) return;
+  const { layout, lineById, dByLine, parseInk, spacing, stations, nodePx } = d;
+  const segsByLine = parseInk(dByLine);
+  const groups: Array<{ pos: Pixel; label: string }> = [];
+  for (const st of stations ?? []) {
+    const pos = nodePx.get(st.nodeId);
+    if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+  }
+  const nearestGroup = (p: Pixel): string => {
+    let best = '?';
+    let bd = Infinity;
+    for (const g of groups) {
+      const dd = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+      if (dd < bd) { bd = dd; best = g.label; }
+    }
+    return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+  };
+  const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  const dir = (a: Pixel, b: Pixel): Pixel | null => {
+    const l = len(a, b);
+    return l < 1e-6 ? null : [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+  };
+  const deg = (dot: number): number => (Math.acos(Math.min(1, Math.max(-1, dot))) * 180) / Math.PI;
+  // The design strategy is straight octilinear segments joined by
+  // 45-degree-family turns (rounded by fillets). Extract STRAIGHT RUNS
+  // (direction stable within a small cone over a material arclength) and
+  // measure the angle between consecutive runs; fillet samples between
+  // them never qualify as straight and cannot fire. A spike is a
+  // straight-to-straight angle that sits away from every multiple of 45.
+  const MIN_RUN = Math.max(8, spacing * 1.5);
+  const STRAIGHT_DEG = 6;
+  const OFF_GRID_DEG = 10;
+  let count = 0;
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!lineById.has(lineId)) continue;
+    const segs = segsByLine.get(lineId)!;
+    const chains: Pixel[][] = [];
+    let cur: Pixel[] | null = null;
+    for (const [a, b] of segs) {
+      if (cur && len(cur[cur.length - 1], a) <= 1e-6) cur.push(b);
+      else chains.push((cur = [a, b]));
+    }
+    for (const pts of chains) {
+      interface Run { dir: Pixel; arcLen: number; end: Pixel }
+      const runs: Run[] = [];
+      let runStart = 0;
+      let runDir: Pixel | null = null;
+      let runArc = 0;
+      const closeRun = (endIdx: number): void => {
+        if (runDir && runArc >= MIN_RUN) {
+          const d0 = dir(pts[runStart], pts[endIdx]);
+          if (d0) runs.push({ dir: d0, arcLen: runArc, end: pts[endIdx] });
+        }
+      };
+      for (let i = 1; i < pts.length; i++) {
+        const d0 = dir(pts[i - 1], pts[i]);
+        const step = len(pts[i - 1], pts[i]);
+        if (!d0) continue;
+        if (runDir && deg(runDir[0] * d0[0] + runDir[1] * d0[1]) <= STRAIGHT_DEG) {
+          runArc += step;
+          continue;
+        }
+        closeRun(i - 1);
+        runStart = i - 1;
+        runDir = d0;
+        runArc = step;
+      }
+      closeRun(pts.length - 1);
+      for (let k = 1; k < runs.length; k++) {
+        const a = runs[k - 1];
+        const b = runs[k];
+        const theta = deg(a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1]);
+        const offGrid = Math.abs(theta - Math.round(theta / 45) * 45);
+        if (theta < OFF_GRID_DEG || offGrid <= OFF_GRID_DEG) continue;
+        count++;
+        if (count <= 40) {
+          const ln = lineById.get(lineId);
+          console.error(
+            `[spikes] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) angle=${theta.toFixed(0)}deg ` +
+            `runs=${a.arcLen.toFixed(0)}/${b.arcLen.toFixed(0)}px at=(${a.end[0].toFixed(0)},${a.end[1].toFixed(0)}) near=${nearestGroup(a.end)}`,
+          );
+        }
+      }
+    }
+  }
+  console.error(`[spikes] ${count} sub-octilinear angles between straight runs (>=${MIN_RUN.toFixed(0)}px runs, off-grid > ${OFF_GRID_DEG}deg)`);
+}
+
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
  *  all fail to resolve renders nothing while its edges still draw). */
 export function reportVanishedStations(d: {

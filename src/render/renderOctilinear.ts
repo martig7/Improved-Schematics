@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { reportChainSeats } from './debug/chainSeats.debug';
 import { envStr, envNum } from '../env';
@@ -3900,6 +3900,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   });
   // Perpendicular micro-step census (invariant I9), same final ink.
   reportZigzags({
+    layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine, spacing,
+    stations: args.stations, nodePx,
+  });
+  reportSpikes({
     layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine, spacing,
     stations: args.stations, nodePx,
   });
