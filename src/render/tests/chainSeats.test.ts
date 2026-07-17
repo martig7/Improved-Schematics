@@ -78,6 +78,23 @@ test('seats: anchors and unframed lanes are not assigned', () => {
   assert.equal(seats.get('br|bl'), undefined);
 });
 
+test('seats: a round-trip line occupies ONE ladder slot (no directional duplicates)', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  const rev = (edgeId: string) => ({ edgeId, reversed: true });
+  const oneWay = setup();
+  const roundTrip = setup(new Map([
+    ['l1', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b'), rev('b'), rev('m2'), rev('m1'), rev('a')]],
+    ['l2', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b'), rev('b'), rev('m2'), rev('m1'), rev('a')]],
+    ['l3', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b'), rev('b'), rev('m2'), rev('m1'), rev('a')]],
+    ['bl', [fwd('a'), fwd('m1'), fwd('br'), rev('br'), rev('m1'), rev('a')]],
+    ['l4', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b'), rev('b'), rev('m2'), rev('m1'), rev('a')]],
+  ]));
+  for (const key of ['m1|l1', 'm1|l2', 'm1|l3', 'm1|bl', 'm1|l4', 'm2|l1', 'm2|l4']) {
+    assert.ok(Math.abs((oneWay.get(key) ?? NaN) - (roundTrip.get(key) ?? NaN)) < 1e-9,
+      key + ': ' + oneWay.get(key) + ' vs ' + roundTrip.get(key));
+  }
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });

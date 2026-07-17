@@ -172,6 +172,35 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
     }
     if (runs.length === 0) continue;
 
+    // Merge directional duplicates: a line traversing the same interior
+    // span in both directions is ONE ladder participant, not two. Without
+    // this a bidirectional service doubles the ladder's occupancy and the
+    // pitch quantization drags every seat away from its anchor frame.
+    // Genuinely distinct visits (different edge spans) stay separate.
+    {
+      const byKey = new Map<string, ChainSeatRun[]>();
+      for (const r of runs) {
+        const f = r.edgeIds.join('>');
+        const b = [...r.edgeIds].reverse().join('>');
+        const key = r.lineId + '|' + (f < b ? f : b);
+        const list = byKey.get(key);
+        if (list) list.push(r); else byKey.set(key, [r]);
+      }
+      if (byKey.size < runs.length) {
+        runs.length = 0;
+        for (const group of byKey.values()) {
+          const first = group[0];
+          const bounds: number[] = [];
+          for (const g of group) {
+            if (g.entry !== undefined) bounds.push(g.entry);
+            if (g.exit !== undefined) bounds.push(g.exit);
+          }
+          first.desired = bounds.reduce((s, v) => s + v, 0) / bounds.length;
+          runs.push(first);
+        }
+      }
+    }
+
     // The shared ladder (spec 2.3): order by desired seat, pitch slots,
     // centered by the deterministic lower median.
     runs.sort((a, b) => (a.desired - b.desired) || (a.lineId < b.lineId ? -1 : 1));
