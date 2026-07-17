@@ -305,6 +305,39 @@ export function simplifyPolyline(points: Pixel[], eps = 0.5): Pixel[] {
  *  sit on the same drawn ribbon. The miter floor caps the lateral overshoot
  *  at sharp turns so an acute corner can't extend the offset polyline more
  *  than ~sqrt(1/0.5) ≈ 1.41× the offset distance. */
+/** offsetPolyline with a PER-VERTEX offset (px). Same miter-bisector
+ *  normals; the caller is responsible for inserting vertices at every
+ *  offset-transition boundary (a transition between two vertices is
+ *  linear along the segment). Does not simplify. */
+export function offsetPolylineVar(pts: Pixel[], offsets: number[]): Pixel[] {
+  if (pts.length < 2 || offsets.length !== pts.length) return pts.map((p) => p.slice() as Pixel);
+  const out: Pixel[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    const next = pts[i + 1];
+    let normal: Pixel;
+    if (!prev) {
+      normal = perp(unit(cur, next));
+    } else if (!next) {
+      normal = perp(unit(prev, cur));
+    } else {
+      const n1 = perp(unit(prev, cur));
+      const n2 = perp(unit(cur, next));
+      const sum: Pixel = [n1[0] + n2[0], n1[1] + n2[1]];
+      const sumLen = hyp(sum[0], sum[1]);
+      if (sumLen < 1e-6) {
+        normal = n1;
+      } else {
+        const miter = Math.max(0.5, (n1[0] * n2[0] + n1[1] * n2[1] + 1) / 2);
+        normal = [sum[0] / sumLen / Math.sqrt(miter), sum[1] / sumLen / Math.sqrt(miter)];
+      }
+    }
+    out.push([cur[0] + normal[0] * offsets[i], cur[1] + normal[1] * offsets[i]]);
+  }
+  return out;
+}
+
 export function offsetPolyline(points: Pixel[], offset: number, simplify = true): Pixel[] {
   const pts = simplify ? simplifyPolyline(points, 0.5) : points;
   if (pts.length < 2) return pts;

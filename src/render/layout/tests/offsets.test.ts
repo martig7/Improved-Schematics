@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCanonicalOffsets, offsetPolyline, curveLaneJoin } from '../offsets';
+import { computeCanonicalOffsets, offsetPolyline, offsetPolylineVar, curveLaneJoin } from '../offsets';
 import { LINE_WIDTH, LINE_GAP } from '../../constants';
 import type { Layout, LayoutEdge, LineRef, Pixel } from '../types';
 
@@ -106,4 +106,19 @@ test('curveLaneJoin rejects corners beyond the limit', () => {
   const polyB: Pixel[] = [[12, 2], [22, 1]];
   const join = curveLaneJoin(polyA, false, polyB, true, 6, 5);
   assert.equal(join, null);
+});
+
+test('offsetPolylineVar: per-vertex offsets with miter bisectors', () => {
+  // L-shaped centerline; constant offsets must match offsetPolyline's
+  // corner behaviour, varying offsets must interpolate at the vertices.
+  const pts: Pixel[] = [[0, 0], [50, 0], [100, 0], [100, 50]];
+  const rail = offsetPolylineVar(pts, [4, 4, 4, 4]);
+  assert.equal(rail.length, 4);
+  assert.ok(Math.abs(rail[0][1] - 4) < 1e-6, 'start offset: ' + rail[0][1]);
+  assert.ok(Math.abs(rail[3][0] - 96) < 1e-6, 'end offset: ' + rail[3][0]);
+  // corner vertex offset along the bisector (a right angle bows inward)
+  assert.ok(rail[2][0] < 100 && rail[2][1] > 0, 'corner on the bisector side: ' + rail[2]);
+  const vary = offsetPolylineVar(pts, [0, 2, 4, 4]);
+  assert.ok(Math.abs(vary[0][1]) < 1e-6, 'zero start stays');
+  assert.ok(Math.abs(vary[1][1] - 2) < 1e-6, 'mid vertex at its own offset: ' + vary[1][1]);
 });
