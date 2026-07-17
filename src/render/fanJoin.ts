@@ -580,7 +580,18 @@ export function buildFanJoins(args: FanArgs): FanResult {
     }
     const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
     if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
-    const drift = Math.max(spacing * 1.5, gap * 1.2);
+    // A sub-pitch seam resolves as ONE crisp near-45-degree step, the
+    // sanctioned way to move over: stretching it across the pitch-scale
+    // minimum paints a sub-octilinear ramp, which reads as a spike
+    // against the strategy's straight-and-45 family. The 1.2 slope
+    // factor keeps the step just inside the 45-degree family with
+    // margin against the perpendicular-step ceiling (invariant I9).
+    // Sub-pixel-class gaps keep the long shallow ramp: a crisp step
+    // that small is direction noise, and a ramp that shallow sits
+    // inside the spike tolerance anyway.
+    const drift = gap <= spacing
+      ? (gap >= spacing * 0.4 ? gap * 1.2 : spacing * 1.5)
+      : Math.max(spacing * 1.5, gap * 1.2);
     const arcIn = polyLenOf(e.pIn);
     const arcOut = polyLenOf(e.pOut);
     const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
