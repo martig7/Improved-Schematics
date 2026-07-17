@@ -623,11 +623,41 @@ export function buildFanJoins(args: FanArgs): FanResult {
         flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
         return;
       }
+      // A jog whose endpoints bracket another line's seat at this node is a
+      // FORCED CROSSING: the ramp must pass over that lane's ink, and the
+      // gentle drift profile crosses a near-parallel mate so shallowly the
+      // two read as one doubled stroke for a long run. Such ramps take a
+      // decisive slope (about 35 degrees per side, inside the 45-degree
+      // step ceiling) so the crossing resolves in a few pitches.
+      const bracketsMate = (): boolean => {
+        const ab: Pixel = [e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]];
+        const len2 = ab[0] * ab[0] + ab[1] * ab[1];
+        if (len2 < 1e-9) return false;
+        const sides: Array<[string, boolean]> = [[m.edgeIn, m.inAtStart], [m.edgeOut, m.outAtStart]];
+        for (const [edgeX, atStart] of sides) {
+          for (const L of orderOf.get(edgeX) ?? []) {
+            if (L === m.lineId) continue;
+            const lp = segPath.get(edgeX + '|' + L);
+            if (!lp || lp.length < 2) continue;
+            const qL = atStart ? lp[0] : lp[lp.length - 1];
+            const t = ((qL[0] - e.qa[0]) * ab[0] + (qL[1] - e.qa[1]) * ab[1]) / len2;
+            if (t > 0.1 && t < 0.9) return true;
+          }
+        }
+        return false;
+      };
       const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
-      taperLaneEnd(e.pIn, m.inAtStart, mid, taperA);
-      taperLaneEnd(e.pOut, m.outAtStart, mid, taperB);
+      let tA = taperA;
+      let tB = taperB;
+      if (bracketsMate()) {
+        const steep = Math.max(spacing, gap * 0.71);
+        tA = Math.min(tA, steep);
+        tB = Math.min(tB, steep);
+      }
+      taperLaneEnd(e.pIn, m.inAtStart, mid, tA);
+      taperLaneEnd(e.pOut, m.outAtStart, mid, tB);
       markDone(g, m);
-      flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+      flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)}`);
     };
 
     // Corner construction first for every non-regressive group: plan every
