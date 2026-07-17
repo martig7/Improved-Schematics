@@ -23,6 +23,8 @@ export interface InkClip {
   idB: string;
   run: number; // arc length of the sustained overlap, px
   at: Pixel; // midpoint of the overlap run
+  a: Pixel; // run start (on ink A)
+  b: Pixel; // run end (on ink A)
 }
 
 /** Uniform grid over one ink's segments for near-neighbour lookup. */
@@ -134,12 +136,12 @@ export function findInkClips(
       let run = 0;
       let runStart: Pixel | null = null;
       let last: Pixel | null = null;
-      let best: { run: number; at: Pixel } | null = null;
+      let best: { run: number; at: Pixel; a: Pixel; b: Pixel } | null = null;
       const closeRun = (): void => {
         if (runStart && last && run >= runMin) {
           const at: Pixel = [(runStart[0] + last[0]) / 2, (runStart[1] + last[1]) / 2];
-          const b = best as { run: number; at: Pixel } | null;
-          if (!b || run > b.run) best = { run, at };
+          const b = best as { run: number; at: Pixel; a: Pixel; b: Pixel } | null;
+          if (!b || run > b.run) best = { run, at, a: runStart, b: last };
         }
         run = 0;
         runStart = null;
@@ -171,8 +173,8 @@ export function findInkClips(
         }
       }
       closeRun();
-      const b = best as { run: number; at: Pixel } | null;
-      if (b) out.push({ idA: A.id, idB: B.id, run: b.run, at: b.at });
+      const b = best as { run: number; at: Pixel; a: Pixel; b: Pixel } | null;
+      if (b) out.push({ idA: A.id, idB: B.id, run: b.run, at: b.at, a: b.a, b: b.b });
     }
   }
   return out;

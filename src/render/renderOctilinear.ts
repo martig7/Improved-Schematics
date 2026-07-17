@@ -3802,13 +3802,24 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   });
   // Final-ink clip census (dByLine is complete here: fillets, joins and node
   // connectors all applied).
+  // The clip and step censuses measure the ink a reader SEES: when a
+  // capsule regime crops lane ends under its boxes, the cropped lanes are
+  // the painted truth and the uncropped ends under the markers must not
+  // count. Fall back to dByLine when no crop exists.
+  const censusInk = (() => {
+    const rect = cropDPartsByRegime.get('rectRows');
+    if (!rect || rect.size === 0) return dByLine;
+    const m = new Map(dByLine);
+    for (const [lineId, parts] of rect) m.set(lineId, parts);
+    return m;
+  })();
   reportBundleClips({
-    layout, lineById, dByLine, parseInk: drawnSegsByLine, spacing,
+    layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine, spacing,
     stations: args.stations, nodePx,
   });
   // Perpendicular micro-step census (invariant I9), same final ink.
   reportZigzags({
-    layout, lineById, dByLine, parseInk: drawnSegsByLine, spacing,
+    layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine, spacing,
     stations: args.stations, nodePx,
   });
 

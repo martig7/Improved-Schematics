@@ -561,6 +561,32 @@ export function buildFanJoins(args: FanArgs): FanResult {
       const arcOut = polyLenOf(e.pOut);
       const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
       const taperB = Math.min(drift, spacing * 8, arcOut * 0.45);
+      // Ride until the node, recenter past it (invariant I4): a seat change
+      // between edges of DIFFERENT bundle widths absorbs entirely on the
+      // sparser side, where the departing lines' seats are vacant. Every
+      // continuing line then shifts on the same side with a gap-scaled
+      // profile, so the group drifts in parallel at preserved pitch instead
+      // of compressing against its mates over the crowded stretch. Equal
+      // widths keep the symmetric midpoint drift.
+      const nIn = orderOf.get(m.edgeIn)?.length ?? 0;
+      const nOut = orderOf.get(m.edgeOut)?.length ?? 0;
+      const oneSided = nIn !== nOut
+        ? (nIn > nOut
+            ? (taperB >= gap ? 'out' : null)
+            : (taperA >= gap ? 'in' : null))
+        : null;
+      if (oneSided === 'out') {
+        taperLaneEnd(e.pOut, m.outAtStart, e.qa, taperB);
+        markDone(g, m);
+        flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${taperB.toFixed(1)}`);
+        return;
+      }
+      if (oneSided === 'in') {
+        taperLaneEnd(e.pIn, m.inAtStart, e.qb, taperA);
+        markDone(g, m);
+        flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)}`);
+        return;
+      }
       if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
         // A lane too short for the standard drift SLANTS over its whole arc
         // instead of leaving a perpendicular step at its end (invariant I9):

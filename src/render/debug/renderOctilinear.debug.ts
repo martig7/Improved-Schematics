@@ -141,6 +141,13 @@ export function reportBundleClips(d: {
       `run=${r.run.toFixed(0)}px at=(${r.at[0].toFixed(0)},${r.at[1].toFixed(0)}) near=${nearestGroup(r.at)}` +
       (invisible ? ' [same-color]' : ''),
     );
+    // OCTI_CLIP_SEGS=1 additionally prints the run extent and ids.
+    if (envStr('OCTI_CLIP_SEGS') === '1') {
+      console.error(
+        `[clips]   idA=${r.idA.slice(0, 8)} idB=${r.idB.slice(0, 8)} ` +
+        `a=(${r.a[0].toFixed(1)},${r.a[1].toFixed(1)}) b=(${r.b[0].toFixed(1)},${r.b[1].toFixed(1)})`,
+      );
+    }
   }
   console.error(
     `[clips] ${rows.length} ink clips, ${rows.length - sameColor} visible + ${sameColor} same-color ` +
