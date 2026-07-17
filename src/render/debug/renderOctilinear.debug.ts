@@ -17,6 +17,45 @@ export function joinTraceTarget(): string | undefined {
   return typeof process !== 'undefined' ? envStr('OCTI_JOIN_TRACE') : undefined;
 }
 
+/** OCTI_FANZONE: fan-zone exclusivity census (invariant I3). Every
+ *  constructed fan group owns a zone of its reach along its corridors; a
+ *  composition-change taper whose ramp reaches INTO another junction's
+ *  zone interleaves foreign machinery with that junction's corner sweeps.
+ *  Prints each intrusion with its overlap depth and a summary count. */
+export function reportFanZones(d: {
+  zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
+  tapers: Array<{ node: string; edgeId: string; lineId: string; len: number }>;
+  edgeById: Map<string, { id: string; from: string; to: string }>;
+  arcOf: (edgeId: string) => number;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (envStr('OCTI_FANZONE') !== '1') return;
+  const zoneAt = new Map<string, number>();
+  for (const z of d.zones) {
+    zoneAt.set(z.node, Math.max(zoneAt.get(z.node) ?? 0, z.reach));
+  }
+  let count = 0;
+  for (const t of d.tapers) {
+    const e = d.edgeById.get(t.edgeId);
+    if (!e) continue;
+    const other = e.from === t.node ? e.to : e.from;
+    const reach = zoneAt.get(other);
+    if (reach === undefined) continue;
+    const arc = d.arcOf(t.edgeId);
+    const overlap = t.len - (arc - reach);
+    if (overlap <= 0) continue;
+    count++;
+    const p = d.nodePx.get(other);
+    console.warn(
+      `[fanzone] taper ${t.lineId.slice(0, 4)} on ${t.edgeId} from ${t.node}` +
+      ` len=${t.len.toFixed(1)} intrudes ${other}` +
+      (p ? ` (${p[0].toFixed(0)},${p[1].toFixed(0)})` : '') +
+      ` reach=${reach.toFixed(1)} overlap=${overlap.toFixed(1)}px arc=${arc.toFixed(1)}`,
+    );
+  }
+  console.warn(`[fanzone] ${count} taper intrusions across ${d.zones.length} zones`);
+}
+
 /** OCTI_LANES=<edgeId,edgeId,...>: print each listed edge's lane seating
  *  right after lane construction: the drawn order and, per line, its slot,
  *  the edge bias, and the lane polyline's end points. */

@@ -69,6 +69,14 @@ export interface FanResult {
   endMoved: Set<string>;
   /** lineId|node|pairKey — pairs handled here (no node connector needed). */
   mitered: Set<string>;
+  /** Fan zone per constructing junction: the farthest point any applied
+   *  corner construction placed from the node (invariant I3's exclusive
+   *  reach, measured not theoretical). Consumed by the fan-zone census. */
+  zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
+  /** Applied composition-change tapers: ramp length along `edgeId` starting
+   *  at `node`. Consumed by the fan-zone census (a ramp reaching into
+   *  ANOTHER junction's zone violates I3). */
+  tapers: Array<{ node: string; edgeId: string; lineId: string; len: number }>;
 }
 
 /** One line's continuation through a node: arrives on edgeIn, leaves on
@@ -237,6 +245,20 @@ export function buildFanJoins(args: FanArgs): FanResult {
   const joinStopPos = new Map<string, Pixel>();
   const endMoved = new Set<string>();
   const mitered = new Set<string>();
+  const zones: FanResult['zones'] = [];
+  const tapers: FanResult['tapers'] = [];
+  // Actual constructed extent per node: the farthest point any applied
+  // corner construction (curve trim or sharp pin) placed from the node.
+  // This, not the theoretical fan reach, is the exclusive zone the census
+  // tests against: a near-parallel group's clamped reach can exceed whole
+  // edges while it constructs nothing but tapers.
+  const extentAt = new Map<string, number>();
+  const bumpExtent = (node: string, p: Pixel): void => {
+    const np = nodePx.get(node);
+    if (!np) return;
+    const d = hyp(p[0] - np[0], p[1] - np[1]);
+    if (d > (extentAt.get(node) ?? 0)) extentAt.set(node, d);
+  };
   const trace = fanTraceTarget();
 
   const halfWidthOf = (edgeId: string): number => {
@@ -443,6 +465,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
     if (subA) moveKeys.push(endKeyAt(m.edgeIn, !m.inAtStart, m.lineId), endKeyAt(subA.edgeId, subA.atStart, m.lineId));
     if (subB) moveKeys.push(endKeyAt(m.edgeOut, !m.outAtStart, m.lineId), endKeyAt(subB.edgeId, subB.atStart, m.lineId));
     if (moveKeys.some((k) => endMoved.has(k))) return false;
+    bumpExtent(g.node, C);
     if (subA) setEnd(subA.poly, subA.atStart, subA.dir, C);
     else setEnd(e.pIn, m.inAtStart, e.dirIn, C);
     if (subB) setEnd(subB.poly, subB.atStart, [-subB.dir[0], -subB.dir[1]], C);
@@ -596,12 +619,14 @@ export function buildFanJoins(args: FanArgs): FanResult {
         : null;
       if (oneSided === 'out') {
         taperLaneEnd(e.pOut, m.outAtStart, e.qa, taperB);
+        tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: taperB });
         markDone(g, m);
         flog(`${m.lineId} JOG-HOLD in gap=${gap.toFixed(1)} taperB=${taperB.toFixed(1)}`);
         return;
       }
       if (oneSided === 'in') {
         taperLaneEnd(e.pIn, m.inAtStart, e.qb, taperA);
+        tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: taperA });
         markDone(g, m);
         flog(`${m.lineId} JOG-HOLD out gap=${gap.toFixed(1)} taperA=${taperA.toFixed(1)}`);
         return;
@@ -616,6 +641,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
           const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
           taperLaneEnd(e.pIn, m.inAtStart, mid, Math.min(spacing * 8, arcIn));
           taperLaneEnd(e.pOut, m.outAtStart, mid, Math.min(spacing * 8, arcOut));
+          tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: Math.min(spacing * 8, arcIn) });
+          tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: Math.min(spacing * 8, arcOut) });
           markDone(g, m);
           flog(`${m.lineId} JOG-SLANT gap=${gap.toFixed(1)} arcIn=${arcIn.toFixed(1)} arcOut=${arcOut.toFixed(1)}`);
           return;
@@ -656,6 +683,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
       }
       taperLaneEnd(e.pIn, m.inAtStart, mid, tA);
       taperLaneEnd(e.pOut, m.outAtStart, mid, tB);
+      tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: tA });
+      tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: tB });
       markDone(g, m);
       flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)}`);
     };
@@ -919,6 +948,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
       // back through the corner as a painted lobe.
       setEnd(p.sIn.poly, p.sIn.atStart, ua, a);
       setEnd(p.sOut.poly, p.sOut.atStart, ub, b);
+      bumpExtent(g.node, a);
+      bumpExtent(g.node, b);
       joinCurves.push({ lineId: m.lineId, node: g.node, a, apex: [apex[0], apex[1]], b, edgeA: p.pair[0], edgeB: p.pair[1] });
       // A stop at any node the corner spans (the shared node, plus the far
       // node of an absorbed micro lane) draws ON the curve.
@@ -957,5 +988,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
     }
   }
 
-  return { joinCurves, joinStopPos, endMoved, mitered };
+  for (const [node, reach] of [...extentAt.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
+    zones.push({ node, edgeA: '', edgeB: '', reach });
+  }
+  return { joinCurves, joinStopPos, endMoved, mitered, zones, tapers };
 }

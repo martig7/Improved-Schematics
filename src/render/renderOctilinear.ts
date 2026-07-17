@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -1242,6 +1242,22 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [k, v] of fan.joinStopPos) joinStopPos.set(k, v);
     for (const k of fan.endMoved) endMoved.add(k);
     for (const k of fan.mitered) mitered.add(k);
+    reportFanZones({
+      zones: fan.zones,
+      tapers: fan.tapers,
+      edgeById,
+      arcOf: (edgeId) => {
+        const e = edgeById.get(edgeId);
+        if (!e) return 0;
+        const base = edgePolyline(e);
+        let arc = 0;
+        for (let i = 1; i < base.length; i++) {
+          arc += Math.sqrt((base[i][0] - base[i - 1][0]) ** 2 + (base[i][1] - base[i - 1][1]) ** 2);
+        }
+        return arc;
+      },
+      nodePx,
+    });
     // Multi-edge corner absorption erases consumed micro lanes from segPath;
     // re-filter the drawn order so every later consumer (marker lane counts,
     // connector spans, paint groups) measures surviving lanes only, exactly
