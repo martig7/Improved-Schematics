@@ -184,38 +184,63 @@ export function reportZigzags(d: {
     const l = len(a, b);
     return l < 1e-6 ? null : [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
   };
+  // Windowed detection: hard steps AND smooth-but-tight S ramps both read
+  // as zigzags, but a tight ramp's individual samples never deviate much
+  // from their immediate neighbours. Compare each material segment against
+  // the RUN DIRECTIONS one and a half pitches before and after it: travel
+  // that continues straight overall (runs near-parallel) while the local
+  // segment deviates steeply from it is a step, whatever its smoothness.
+  // A genuine corner fails the run-parallel test; a sanctioned shallow
+  // taper never deviates 45 degrees from its surrounding run.
+  const W = spacing * 1.5;
   let count = 0;
   for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
     const segs = segsByLine.get(lineId)!;
-    for (let i = 1; i + 1 < segs.length; i++) {
-      const [pa, pb] = segs[i - 1];
-      const [da, db] = segs[i];
-      const [na, nb] = segs[i + 1];
-      // contiguous chain only (an M boundary breaks adjacency)
-      if (len(pb, da) > 1e-6 || len(db, na) > 1e-6) continue;
-      const step = len(da, db);
-      // material steps up to two pitches (a full-slot staircase notch is
-      // still a zigzag; curve samples never qualify because a sampled arc
-      // turns far less than the 60 degree bend the direction tests demand)
-      if (step < 0.5 || step >= spacing * 2) continue;
-      const dp = dir(pa, pb);
-      const dd = dir(da, db);
-      const dn = dir(na, nb);
-      if (!dp || !dd || !dn) continue;
-      if (dp[0] * dn[0] + dp[1] * dn[1] < 0.85) continue; // travel continues straight
-      if (Math.abs(dd[0] * dp[0] + dd[1] * dp[1]) > 0.5) continue; // step not steep
-      count++;
-      if (count <= 40) {
-        const ln = lineById.get(lineId);
-        console.error(
-          `[zigs] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) step=${len(da, db).toFixed(1)}px ` +
-          `at=(${da[0].toFixed(0)},${da[1].toFixed(0)}) near=${nearestGroup(da)}`,
-        );
+    // contiguous chains as polylines (an M boundary breaks adjacency)
+    const chains: Pixel[][] = [];
+    let cur: Pixel[] | null = null;
+    for (const [a, b] of segs) {
+      if (cur && len(cur[cur.length - 1], a) <= 1e-6) cur.push(b);
+      else chains.push((cur = [a, b]));
+    }
+    for (const pts of chains) {
+      const arc: number[] = [0];
+      for (let i = 1; i < pts.length; i++) arc.push(arc[i - 1] + len(pts[i - 1], pts[i]));
+      const total = arc[arc.length - 1];
+      if (total < 2 * W) continue;
+      const at = (s: number): Pixel => {
+        if (s <= 0) return pts[0];
+        if (s >= total) return pts[pts.length - 1];
+        let i = 1;
+        while (arc[i] < s) i++;
+        const t = (s - arc[i - 1]) / (arc[i] - arc[i - 1] || 1);
+        return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+      };
+      let skipUntil = -1;
+      for (let i = 1; i < pts.length; i++) {
+        if (arc[i - 1] < Math.max(W, skipUntil) || arc[i] > total - W) continue;
+        const step = len(pts[i - 1], pts[i]);
+        if (step < 0.5) continue;
+        const dBefore = dir(at(arc[i - 1] - W), pts[i - 1]);
+        const dAfter = dir(pts[i], at(arc[i] + W));
+        const dd = dir(pts[i - 1], pts[i]);
+        if (!dBefore || !dAfter || !dd) continue;
+        if (dBefore[0] * dAfter[0] + dBefore[1] * dAfter[1] < 0.85) continue;
+        if (Math.abs(dd[0] * dBefore[0] + dd[1] * dBefore[1]) > 0.7) continue;
+        count++;
+        skipUntil = arc[i] + W;
+        if (count <= 40) {
+          const ln = lineById.get(lineId);
+          console.error(
+            `[zigs] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) step=${step.toFixed(1)}px ` +
+            `at=(${pts[i - 1][0].toFixed(0)},${pts[i - 1][1].toFixed(0)}) near=${nearestGroup(pts[i - 1])}`,
+          );
+        }
       }
     }
   }
-  console.error(`[zigs] ${count} perpendicular micro-steps (len<${spacing.toFixed(1)})`);
+  console.error(`[zigs] ${count} perpendicular steps or steep ramps (window ${W.toFixed(1)})`);
 }
 
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks

@@ -79,7 +79,7 @@ test('grouping: bundle corner is one group with slot-ordered members; out-and-ba
   };
   const args = makeArgs(f);
   (args.lineIds as Set<string>).add('lx');
-  const groups = collectFanGroups(args.lineTraversals, args.lineIds, args.edgeById, args.orderOf);
+  const groups = collectFanGroups(args.lineTraversals, args.lineIds, args.edgeById, args.orderOf, args.segPath, args.suppressed);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].node, 'N');
   assert.deepEqual(groups[0].members.map((m) => m.lineId), ['l1', 'l2', 'l3']);
@@ -106,7 +106,7 @@ test('grouping: a closed ring contributes its seam corner', () => {
     traversals: new Map([['r', [fwd('e1'), fwd('e2'), fwd('e3')]]]),
   };
   const args = makeArgs(f);
-  const groups = collectFanGroups(args.lineTraversals, args.lineIds, args.edgeById, args.orderOf);
+  const groups = collectFanGroups(args.lineTraversals, args.lineIds, args.edgeById, args.orderOf, args.segPath, args.suppressed);
   // corners at B and C from the linear scan, plus the seam corner at A
   assert.equal(groups.length, 3);
   assert.ok(groups.some((g) => g.node === 'A'));

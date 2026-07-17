@@ -128,59 +128,78 @@ const lineMeet = (pa: Pixel, da: Pixel, pb: Pixel, db: Pixel): Pixel | null => {
 };
 
 /**
- * Enumerate every continuation pair of every rendered line (consecutive
- * traversal steps meeting at a node, plus the seam pair of a closed ring
- * course) and group them by (node, unordered edge pair). Groups come back in
- * sorted (node, pairKey) order; members in stable slot order on edgeA.
- * Exported for tests.
+ * Enumerate every continuation pair of every rendered line and group them
+ * by (near node, unordered edge pair). A pair is two consecutive DRAWN
+ * steps: a span of suppressed-only lanes between them still pairs, since
+ * the course bridges it in one stroke and its seat change is this pair's
+ * to construct (left to the emission bridge, it paints a maximally steep
+ * ramp). A closed ring course contributes its seam pair; an out-and-back's
+ * same-edge seam does not. Groups come back in sorted (node, pairKey)
+ * order; members in stable slot order on edgeA. Exported for tests.
  */
 export function collectFanGroups(
   lineTraversals: Map<string, TraversalStep[]>,
   lineIds: Set<string>,
   edgeById: Map<string, FanEdgeRef>,
   orderOf: Map<string, string[]>,
+  segPath: Map<string, Pixel[]>,
+  suppressed: Set<string>,
 ): Group[] {
   const byKey = new Map<string, Group>();
   const sortedLines = [...lineTraversals.keys()].sort();
   for (const lineId of sortedLines) {
     if (!lineIds.has(lineId)) continue;
     const traversal = lineTraversals.get(lineId)!;
-    // A closed circular course meets itself at its seam node; append the wrap
-    // pair. An out-and-back course also ends where it starts but its seam
-    // retraces ONE edge, which the same-edge skip below drops.
-    let wrap = 0;
-    if (traversal.length > 1) {
-      const f = traversal[0];
-      const l = traversal[traversal.length - 1];
+    const drawn: number[] = [];
+    for (let i = 0; i < traversal.length; i++) {
+      if (segPath.has(traversal[i].edgeId + '|' + lineId)) drawn.push(i);
+    }
+    if (drawn.length < 2) continue;
+    const bridgeable = (from: number, to: number): boolean => {
+      for (let k = from + 1; k < to; k++) {
+        if (!suppressed.has(traversal[k].edgeId + '|' + lineId)) return false;
+      }
+      return true;
+    };
+    // Pairs of consecutive drawn steps (suppressed-only gaps allowed), plus
+    // the seam pair of a closed course.
+    const pairs: Array<[number, number]> = [];
+    for (let j = 1; j < drawn.length; j++) {
+      if (bridgeable(drawn[j - 1], drawn[j])) pairs.push([j - 1, j]);
+    }
+    {
+      const f = traversal[drawn[0]];
+      const l = traversal[drawn[drawn.length - 1]];
       const ef = edgeById.get(f.edgeId);
       const el = edgeById.get(l.edgeId);
       const firstStart = f.reversed ? ef?.to : ef?.from;
       const lastEnd = l.reversed ? el?.from : el?.to;
-      if (firstStart !== undefined && firstStart === lastEnd) wrap = 1;
+      if (firstStart !== undefined && firstStart === lastEnd) pairs.push([drawn.length - 1, 0]);
     }
-    for (let i = 1; i < traversal.length + wrap; i++) {
-      const a = traversal[i - 1];
-      const b = traversal[i % traversal.length];
+    for (const [ja, jb] of pairs) {
+      const a = traversal[drawn[ja]];
+      const b = traversal[drawn[jb]];
       if (a.edgeId === b.edgeId) continue;
       const ea = edgeById.get(a.edgeId);
       const eb = edgeById.get(b.edgeId);
       if (!ea || !eb) continue;
       const endA = a.reversed ? ea.from : ea.to;
       const startB = b.reversed ? eb.to : eb.from;
-      if (endA !== startB) continue;
+      // Adjacent steps must genuinely meet; a bridged pair's contiguity is
+      // carried by the suppressed chain between them.
+      if (drawn[jb] === drawn[ja] + 1 && endA !== startB) continue;
       const [eA, eB] = a.edgeId < b.edgeId ? [a.edgeId, b.edgeId] : [b.edgeId, a.edgeId];
       const key = endA + '|' + eA + '|' + eB;
       let g = byKey.get(key);
       if (!g) byKey.set(key, (g = { node: endA, edgeA: eA, edgeB: eB, members: [] }));
-      const wrapped = i >= traversal.length;
-      const prevStep = wrapped ? traversal[traversal.length - 2] : traversal[i - 2];
-      const nextStep = wrapped ? traversal[1] : traversal[i + 1];
+      const prevStep = ja >= 1 ? traversal[drawn[ja - 1]] : (jb === 0 ? traversal[drawn[drawn.length - 2]] : undefined);
+      const nextStep = jb + 1 < drawn.length ? traversal[drawn[jb + 1]] : (jb === 0 ? traversal[drawn[1]] : undefined);
       g.members.push({
         lineId,
         edgeIn: a.edgeId,
         edgeOut: b.edgeId,
         inAtStart: ea.from === endA,
-        outAtStart: eb.from === endA,
+        outAtStart: eb.from === startB,
         prevEdge: prevStep && prevStep.edgeId !== a.edgeId ? prevStep.edgeId : undefined,
         nextEdge: nextStep && nextStep.edgeId !== b.edgeId ? nextStep.edgeId : undefined,
       });
@@ -497,7 +516,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
     return true;
   };
 
-  for (const g of collectFanGroups(args.lineTraversals, args.lineIds, edgeById, orderOf)) {
+  for (const g of collectFanGroups(args.lineTraversals, args.lineIds, edgeById, orderOf, segPath, suppressed)) {
     const flog = makeFanLog(trace, g.members.map((m) => m.lineId));
     // Members whose ends an earlier group already moved sit this group out.
     const live: Array<{ m: Member; e: Ends }> = [];
