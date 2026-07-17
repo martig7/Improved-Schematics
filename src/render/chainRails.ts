@@ -1,13 +1,17 @@
 // Chain rails (invariant I3, chains spec sections 2.2 and 2.3): over a
 // chain's interior, every line rides a rail derived from ONE shared seat
-// ladder plus the anchor frames it enters and leaves with, so all lines
+// ladder plus the frames it enters and leaves with, so all lines
 // touching the interior hold mutual pitch by construction and seat seams
 // resolve as placed transitions instead of per-node jogs. Interior lane
 // polylines are replaced in place; downstream machinery sees ordinary
-// lanes. Per-line independent seats were tried first and falsified:
-// lines entering through different feeders carry disagreeing frames, and
-// independently-seated rails collide exactly like the frame mixes the
-// sibling guard blocks elsewhere.
+// lanes. Two constructions were falsified on the way here: per-line
+// independent seats (lines entering through different feeders carry
+// disagreeing frames and their rails collide), and NOMINAL end seats
+// (slot+bias scalars): the neighbouring lane's ACTUAL endpoint drifts
+// from nominal wherever earlier passes moved it or the corridor bends at
+// the boundary node, and an unpinned rail end painted perpendicular
+// steps there. End scalars now derive from the actual endpoints and the
+// rail ends pin to them exactly.
 
 import type { Pixel } from './layout/types';
 import { offsetPolylineVar } from './layout/offsets';
@@ -18,7 +22,8 @@ export interface RailArgs {
   edgeById: Map<string, { id: string; from: string; to: string }>;
   basePoly: (edgeId: string) => Pixel[] | undefined;
   /** slot+bias lateral offset of a line's lane on an edge, in the edge's
-   *  from->to frame; undefined when the line has no lane there. */
+   *  from->to frame; undefined when the line has no lane there. Fallback
+   *  for end seats whose neighbouring lane polyline is unavailable. */
   laneOffsetOf: (edgeId: string, lineId: string) => number | undefined;
   lineTraversals: Map<string, Array<{ edgeId: string; reversed: boolean }>>;
   /** edge.id|lineId lane polylines, interior entries REPLACED in place. */
@@ -32,12 +37,16 @@ const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 interface Run {
   lineId: string;
   steps: Array<{ edgeId: string; reversed: boolean }>;
-  first: number; // traversal index of the first step
-  /** Travel frame agrees with the chain's edge orientation. */
   aligned: boolean;
-  /** CHAIN-frame end seats; undefined = no collinear bounding frame. */
-  entrySeat: number | undefined;
-  exitSeat: number | undefined;
+  center: Pixel[];
+  arcs: number[];
+  stepRange: Array<[number, number]>;
+  /** Travel-frame end seats (undefined = no collinear bounding frame). */
+  entryTravel: number | undefined;
+  exitTravel: number | undefined;
+  /** Actual neighbour endpoints the rail ends must land on exactly. */
+  entryPin: Pixel | undefined;
+  exitPin: Pixel | undefined;
   /** CHAIN-frame ladder seat, assigned after ordering. */
   ladderSeat: number;
 }
@@ -48,11 +57,6 @@ export function buildChainRails(args: RailArgs): number {
   void suppressed;
   let built = 0;
   const lineIds = [...lineTraversals.keys()].sort();
-
-  const seatTravel = (edgeId: string, reversed: boolean, lineId: string): number | undefined => {
-    const o = laneOffsetOf(edgeId, lineId);
-    return o === undefined ? undefined : (reversed ? -o : o);
-  };
 
   const endDirInto = (edgeId: string, node: string): Pixel | null => {
     const e = edgeById.get(edgeId);
@@ -94,7 +98,8 @@ export function buildChainRails(args: RailArgs): number {
       }
     }
 
-    // Participants: maximal contiguous interior runs per line.
+    // Participants: maximal contiguous interior runs per line, each with
+    // its travel-oriented centerline and actual-endpoint end seats.
     const runs: Run[] = [];
     for (const lineId of lineIds) {
       const trav = lineTraversals.get(lineId)!;
@@ -108,10 +113,43 @@ export function buildChainRails(args: RailArgs): number {
           segPath.has(trav[j + 1].edgeId + '|' + lineId)
         ) j++;
         const steps = trav.slice(i, j + 1);
+        const center: Pixel[] = [];
+        const stepRange: Array<[number, number]> = [];
+        let ok = true;
+        for (const step of steps) {
+          const base = basePoly(step.edgeId);
+          if (!base || base.length < 2) { ok = false; break; }
+          const pts = step.reversed ? [...base].reverse() : base;
+          const start = center.length > 0 ? center.length - 1 : 0;
+          for (const p of pts) {
+            const last = center[center.length - 1];
+            if (!last || hyp(p[0] - last[0], p[1] - last[1]) > 1e-9) center.push([p[0], p[1]]);
+          }
+          stepRange.push([start, center.length - 1]);
+        }
+        if (!ok || center.length < 2) { i = j + 1; continue; }
+        const arcs: number[] = [0];
+        for (let k = 1; k < center.length; k++) {
+          arcs.push(arcs[k - 1] + hyp(center[k][0] - center[k - 1][0], center[k][1] - center[k - 1][1]));
+        }
         const aligned = !steps[0].reversed === (orientedForward.get(steps[0].edgeId) ?? true);
-        const toChain = (travelSeat: number | undefined): number | undefined =>
-          travelSeat === undefined ? undefined : (aligned ? travelSeat : -travelSeat);
-        const bound = (step: { edgeId: string; reversed: boolean } | undefined, refDir: Pixel, into: boolean): number | undefined => {
+        // end frames: same perp convention as offsetPolylineVar
+        const segDir = (a: Pixel, b: Pixel): Pixel => {
+          const l = hyp(b[0] - a[0], b[1] - a[1]) || 1;
+          return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+        };
+        const d0 = segDir(center[0], center[1]);
+        const dE = segDir(center[center.length - 2], center[center.length - 1]);
+        const n0: Pixel = [-d0[1], d0[0]];
+        const nE: Pixel = [-dE[1], dE[0]];
+        // Collinear bounding step -> ACTUAL endpoint (fallback nominal)
+        const endSeat = (
+          step: { edgeId: string; reversed: boolean } | undefined,
+          refDir: Pixel,
+          into: boolean,
+          origin: Pixel,
+          normal: Pixel,
+        ): { seat: number; pin: Pixel | undefined } | undefined => {
           if (!step) return undefined;
           const e = edgeById.get(step.edgeId);
           if (!e) return undefined;
@@ -121,26 +159,32 @@ export function buildChainRails(args: RailArgs): number {
           const travelDir: Pixel = into ? [-d[0], -d[1]] : d;
           const dot = travelDir[0] * refDir[0] + travelDir[1] * refDir[1];
           if (dot < 0.7) return undefined;
-          return toChain(seatTravel(step.edgeId, step.reversed, lineId));
+          const lane = segPath.get(step.edgeId + '|' + lineId);
+          if (lane && lane.length >= 2) {
+            // the lane endpoint at the shared node, by travel orientation
+            const pin = into
+              ? (step.reversed ? lane[0] : lane[lane.length - 1])
+              : (step.reversed ? lane[lane.length - 1] : lane[0]);
+            const seat = (pin[0] - origin[0]) * normal[0] + (pin[1] - origin[1]) * normal[1];
+            return { seat, pin };
+          }
+          const o = laneOffsetOf(step.edgeId, lineId);
+          if (o === undefined) return undefined;
+          return { seat: step.reversed ? -o : o, pin: undefined };
         };
-        const dirAt = (step: { edgeId: string; reversed: boolean }, atEnd: boolean): Pixel | null => {
-          const base = basePoly(step.edgeId);
-          if (!base || base.length < 2) return null;
-          const pts = step.reversed ? [...base].reverse() : base;
-          const p = atEnd ? pts[pts.length - 2] : pts[0];
-          const q = atEnd ? pts[pts.length - 1] : pts[1];
-          const l = hyp(q[0] - p[0], q[1] - p[1]) || 1;
-          return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
-        };
-        const startDir = dirAt(steps[0], false);
-        const endDir = dirAt(steps[steps.length - 1], true);
+        const ent = endSeat(i > 0 ? trav[i - 1] : undefined, d0, true, center[0], n0);
+        const ext = endSeat(j + 1 < trav.length ? trav[j + 1] : undefined, dE, false, center[center.length - 1], nE);
         runs.push({
           lineId,
           steps,
-          first: i,
           aligned,
-          entrySeat: startDir ? bound(i > 0 ? trav[i - 1] : undefined, startDir, true) : undefined,
-          exitSeat: endDir ? bound(j + 1 < trav.length ? trav[j + 1] : undefined, endDir, false) : undefined,
+          center,
+          arcs,
+          stepRange,
+          entryTravel: ent?.seat,
+          exitTravel: ext?.seat,
+          entryPin: ent?.pin,
+          exitPin: ext?.pin,
           ladderSeat: 0,
         });
         i = j + 1;
@@ -148,15 +192,17 @@ export function buildChainRails(args: RailArgs): number {
     }
 
     // The shared ladder (spec 2.3): order every framed participant by its
-    // desired mean seat, assign pitch slots, and center the ladder where
-    // it disturbs the desired seats least (lower median offset, which is
-    // deterministic). Unframed runs keep their original lanes.
-    const framed = runs.filter((r) => r.entrySeat !== undefined || r.exitSeat !== undefined);
+    // desired mean CHAIN-frame seat, assign pitch slots, and center the
+    // ladder where it disturbs the desired seats least (lower median
+    // offset, deterministic). Unframed runs keep their original lanes.
+    const framed = runs.filter((r) => r.entryTravel !== undefined || r.exitTravel !== undefined);
     if (framed.length === 0) continue;
-    const desired = (r: Run): number =>
-      r.entrySeat !== undefined && r.exitSeat !== undefined
-        ? (r.entrySeat + r.exitSeat) / 2
-        : (r.entrySeat ?? r.exitSeat!);
+    const toChain = (r: Run, travelSeat: number): number => (r.aligned ? travelSeat : -travelSeat);
+    const desired = (r: Run): number => {
+      const e = r.entryTravel !== undefined ? toChain(r, r.entryTravel) : undefined;
+      const x = r.exitTravel !== undefined ? toChain(r, r.exitTravel) : undefined;
+      return e !== undefined && x !== undefined ? (e + x) / 2 : (e ?? x!);
+    };
     framed.sort((a, b) => (desired(a) - desired(b)) || (a.lineId < b.lineId ? -1 : 1));
     const centerK = (framed.length - 1) / 2;
     const offsets = framed
@@ -170,35 +216,15 @@ export function buildChainRails(args: RailArgs): number {
     }
 
     function buildRun(run: Run): boolean {
-      // travel-oriented centerline with per-step vertex index ranges
-      const center: Pixel[] = [];
-      const stepRange: Array<[number, number]> = [];
-      for (const step of run.steps) {
-        const base = basePoly(step.edgeId);
-        if (!base || base.length < 2) return false;
-        const pts = step.reversed ? [...base].reverse() : base;
-        const start = center.length > 0 ? center.length - 1 : 0;
-        for (const p of pts) {
-          const last = center[center.length - 1];
-          if (!last || hyp(p[0] - last[0], p[1] - last[1]) > 1e-9) center.push([p[0], p[1]]);
-        }
-        stepRange.push([start, center.length - 1]);
-      }
-      if (center.length < 2) return false;
-      const arcs: number[] = [0];
-      for (let k = 1; k < center.length; k++) {
-        arcs.push(arcs[k - 1] + hyp(center[k][0] - center[k - 1][0], center[k][1] - center[k - 1][1]));
-      }
+      const { center, arcs, stepRange } = run;
       const total = arcs[arcs.length - 1];
-
       // travel-frame seats: the ladder mid is authoritative (snapping it
-      // toward an end seat steals up to the snap threshold from adjacent
-      // pitch and voids the ladder's guarantee); end seats bind only the
-      // rail ENDS, for anchor continuity
+      // toward an end seat steals adjacent pitch and voids the ladder's
+      // guarantee); end seats bind only the rail ENDS for continuity
       const sign = run.aligned ? 1 : -1;
       const mid = run.ladderSeat * sign;
-      const entry = (run.entrySeat !== undefined ? run.entrySeat * sign : mid);
-      const exit = (run.exitSeat !== undefined ? run.exitSeat * sign : mid);
+      const entry = run.entryTravel !== undefined ? run.entryTravel : mid;
+      const exit = run.exitTravel !== undefined ? run.exitTravel : mid;
 
       // interior junction balls inside the run
       const balls: Array<{ at: number; reach: number }> = [];
@@ -223,24 +249,23 @@ export function buildChainRails(args: RailArgs): number {
         }
         intervals = next;
       }
-
-      // Two ramps: entry->mid in the FIRST room, mid->exit in the LAST
-      // room (one room serves both by splitting); with no room at all the
-      // whole change rides across the lowest-reach junction as one ramp.
-      interface Ramp { t0: number; t1: number; from: number; to: number }
-      const ramps: Ramp[] = [];
-      const wantA = Math.abs(mid - entry) > 1e-9 ? Math.max(Math.abs(mid - entry), spacing) : 0;
-      const wantB = Math.abs(exit - mid) > 1e-9 ? Math.max(Math.abs(exit - mid), spacing) : 0;
       if (intervals.length === 0) {
         // every junction ball covers the run: split at the lowest-reach
         // junction so the ladder still holds through the middle, with the
-        // two ramps riding across the turns' sweeps (the seat changes
-        // hide inside them)
+        // two ramps riding across the turns' sweeps
         let at = total / 2;
         let lowest = Infinity;
         for (const b of balls) if (b.reach < lowest) { lowest = b.reach; at = b.at; }
         intervals = [[0, at], [at, total]].filter(([s, t]) => t - s > 1e-6) as Array<[number, number]>;
+        if (intervals.length === 0) intervals = [[0, total]];
       }
+
+      // Two ramps: entry->mid in the FIRST room, mid->exit in the LAST
+      // room (one room serves both by splitting).
+      interface Ramp { t0: number; t1: number; from: number; to: number }
+      const ramps: Ramp[] = [];
+      const wantA = Math.abs(mid - entry) > 1e-9 ? Math.max(Math.abs(mid - entry), spacing) : 0;
+      const wantB = Math.abs(exit - mid) > 1e-9 ? Math.max(Math.abs(exit - mid), spacing) : 0;
       {
         let firstIv = intervals[0];
         let lastIv = intervals[intervals.length - 1];
@@ -261,7 +286,6 @@ export function buildChainRails(args: RailArgs): number {
           ramps.push({ t0: Math.max(lastIv[0], m - len / 2), t1: Math.min(lastIv[1], m + len / 2), from: mid, to: exit });
         }
       }
-      // degenerate rooms can produce zero-length ramps: widen minimally
       for (const rp of ramps) {
         if (rp.t1 - rp.t0 < 1e-6) {
           rp.t0 = Math.max(0, rp.t0 - spacing / 2);
@@ -280,7 +304,6 @@ export function buildChainRails(args: RailArgs): number {
         return s;
       };
 
-      // insert ramp boundary vertices, then per-vertex offsets
       const boundaries = ramps.flatMap((rp) => [rp.t0, rp.t1]).filter((t) => t > 0.01 && t < total - 0.01);
       const withBounds: Pixel[] = [];
       const wArcs: number[] = [];
@@ -307,8 +330,13 @@ export function buildChainRails(args: RailArgs): number {
       }
       const offs = wArcs.map((a) => seatAt(a));
       const rail = offsetPolylineVar(withBounds, offs);
+      // Exact continuity: the rail ends land ON the neighbouring lanes'
+      // actual endpoints (the scalar seat reproduces them only up to the
+      // end-normal approximation; earlier passes and boundary bends put
+      // real endpoints off the nominal frame).
+      if (run.entryPin) rail[0] = [run.entryPin[0], run.entryPin[1]];
+      if (run.exitPin) rail[rail.length - 1] = [run.exitPin[0], run.exitPin[1]];
 
-      // slice back per edge, restoring each edge's from->to orientation
       for (let k = 0; k < stepRange.length; k++) {
         const loArc = arcs[stepRange[k][0]];
         const hiArc = arcs[stepRange[k][1]];

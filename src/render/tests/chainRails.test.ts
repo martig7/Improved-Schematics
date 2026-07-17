@@ -130,6 +130,35 @@ test('rails: the shared ladder holds every pair at pitch through the middle', ()
   }
 });
 
+test('rails: a reversed traversal seats identically to its forward twin', () => {
+  // l5 rides the same corridor as l1 but traverses it BACKWARD; its lane
+  // offsets are mirrored (same world geometry). The rail must land on the
+  // same world seats as l1's, one pitch away from l2 everywhere.
+  const { segPath, args } = setup();
+  const revStep = (edgeId: string): { edgeId: string; reversed: boolean } => ({ edgeId, reversed: true });
+  (args.lineTraversals as Map<string, Array<{ edgeId: string; reversed: boolean }>>).set(
+    'l5', [revStep('b'), revStep('m2'), revStep('m1'), revStep('a')]);
+  // world seat -18 everywhere: edge-frame offset -18 forward = +18 in the
+  // reversed travel frame; laneOffsetOf stays edge-frame
+  const OFF = { a: -18, m1: -18, m2: -18, b: -20 };
+  const orig = args.laneOffsetOf;
+  args.laneOffsetOf = (edgeId: string, lineId: string) =>
+    lineId === 'l5' ? (OFF as Record<string, number>)[edgeId] : orig(edgeId, lineId);
+  for (const [e, o] of Object.entries(OFF)) {
+    segPath.set(e + '|l5', offsetLane(BASES[e], o));
+  }
+  buildChainRails(args);
+  const m1l5 = segPath.get('m1|l5')!;
+  const m2l5 = segPath.get('m2|l5')!;
+  // lanes stored in edge from->to orientation regardless of travel
+  assert.ok(Math.abs(m1l5[0][1] - -18) < 0.05, 'entry-side seat at B: ' + m1l5[0][1]);
+  assert.ok(Math.abs(m2l5[m2l5.length - 1][1] - -20) < 0.05, 'exit-side seat at D: ' + m2l5[m2l5.length - 1][1]);
+  // never crosses bl (world seat around -12..-17): l5 must stay below
+  for (const p of [...m1l5, ...m2l5]) {
+    assert.ok(p[1] <= -17.5, 'stays outermost: ' + p[1]);
+  }
+});
+
 test('rails: anchor lanes are untouched', () => {
   const { segPath, args } = setup();
   const beforeA = JSON.stringify(segPath.get('a|l1'));
