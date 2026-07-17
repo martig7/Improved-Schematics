@@ -8,13 +8,13 @@ const SP = 6;
 test('separation: near-parallel sub-clearance edges pair with signed offset', () => {
   const polys = new Map<string, Pixel[]>([
     ['a', [[0, 0], [100, 0]]],
-    ['b', [[0, 4], [100, 8]]], // ~2.3 deg divergence, 4-8px away
+    ['b', [[0, 3], [100, 5]]], // ~1 deg divergence, 3-5px away for the whole run
   ]);
   const pairs = findParallelPairs(['a', 'b'], (id) => polys.get(id), () => 0, SP);
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0].eA, 'a');
   assert.equal(pairs[0].sign, 1);
-  assert.ok(pairs[0].d0 > 3 && pairs[0].d0 < 9, 'offset ~4-8: ' + pairs[0].d0);
+  assert.ok(pairs[0].d0 > 2.5 && pairs[0].d0 < 5, 'offset ~3-4.5: ' + pairs[0].d0);
   assert.equal(pairs[0].needed, SP);
 });
 

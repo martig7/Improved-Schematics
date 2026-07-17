@@ -29,6 +29,10 @@ back other modes.
 - **Verify first.** Instrument before fixing. Run a falsifying before/after experiment
   against a pinned ruler. Change one invariant at a time and revert falsified work. After
   three failed fixes, stop and question the architecture instead of trying a fourth.
+- **Analyze geometry on skeletons, not full renders.** For RCA and geometry inspection,
+  extract the relevant per-line paths (by `data-line-id`) and render them as thin skeleton
+  overlays, or read the path commands directly; full-styling crops bury the geometry under
+  stroke width, casings, and markers. Full rendered crops are for FINAL presentation only.
 
 ## Code organization
 
