@@ -57,6 +57,27 @@ export function reportFanZones(d: {
   console.warn(`[fanzone] ${count} taper intrusions across ${d.zones.length} zones`);
 }
 
+/** OCTI_FANZONE: chain report (chains spec C1). Prints each detected
+ *  chain; the C1 gate (every taper-intrusion edge inside a chain, no
+ *  runaway chains) is read off this plus the taper report. */
+export function reportChains(d: {
+  chains: Array<{ edgeIds: string[]; anchorA: string | null; anchorB: string | null; arc: number }>;
+  nodePx: Map<string, Pixel>;
+  edgeById: Map<string, { id: string; from: string; to: string }>;
+}): void {
+  if (envStr('OCTI_FANZONE') !== '1') return;
+  for (const c of d.chains) {
+    const first = d.edgeById.get(c.edgeIds[0]);
+    const p = first ? d.nodePx.get(first.from) : undefined;
+    console.warn(
+      '[chains] ' + c.edgeIds.join('>') + ' arc=' + c.arc.toFixed(0) +
+      ' anchors=' + (c.anchorA ?? 'terminus') + '..' + (c.anchorB ?? 'terminus') +
+      (p ? ' at=(' + p[0].toFixed(0) + ',' + p[1].toFixed(0) + ')' : ''),
+    );
+  }
+  console.warn('[chains] ' + d.chains.length + ' chains');
+}
+
 /** OCTI_FANZONE: stop-mark half of the fan-zone census (invariant I3).
  *  A station's drawn mark seated inside ANOTHER junction's zone sits in
  *  ink the corner construction owns. Marks whose stop the fan itself

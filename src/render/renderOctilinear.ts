@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -24,6 +24,7 @@ import { buildFanJoins } from './fanJoin';
 import { assembleDByLine } from './assemblePath';
 import { computePaintGroups } from './paintLayers';
 import { findParallelPairs, applyJointSeating } from './layout/corridorSep';
+import { detectChains } from './chains';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -1219,6 +1220,16 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // docs/draw-geometry-invariants.md). OCTI_FAN=0 runs the legacy per-line
   // join ladder below instead, kept for A/B until the rebuild is signed off.
   const useFanJoins = envStr('OCTI_FAN') !== '0';
+  const chains = detectChains({
+    edges: layout.edges,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    laneCount: (id) => orderOf.get(id)?.length ?? 0,
+    spacing,
+  });
+  reportChains({ chains, nodePx, edgeById });
   let fanZones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }> = [];
   if (useFanJoins) {
     const fan = buildFanJoins({
