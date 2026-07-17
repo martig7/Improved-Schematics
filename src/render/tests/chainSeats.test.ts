@@ -268,6 +268,55 @@ test('seats: a chain beside a sub-clearance parallel NON-chain edge shifts clear
     'ladder shifted clear of the fixed lane: ' + sp3);
 });
 
+test('seats: a mid-span obstacle splits the ladder into bands, not a decline', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  const edges: ChainEdgeRef[] = [
+    { id: 'a1', from: 'A1', to: 'B1' }, { id: 'm1', from: 'B1', to: 'C1' }, { id: 'b1', from: 'C1', to: 'D1' },
+    { id: 'm2', from: 'B2', to: 'C2' },
+  ];
+  const bases: Record<string, Pixel[]> = {
+    a1: [[0, 0], [60, 0]], m1: [[60, 0], [120, 0]], b1: [[120, 0], [180, 0]],
+    m2: [[60, 4], [120, 4]],
+  };
+  const chains = [
+    { edgeIds: ['m1'], anchorA: 'a1', anchorB: 'b1', arc: 60, interiorNodes: [] },
+  ];
+  const want: Record<string, number> = { p1: -12, p2: -6, p3: 0, p4: 6, p5: 12 };
+  // q's fixed lane on m2 projects to -4 + 4 = ... obstacle sits at 0 in
+  // p-frame (q offset -4 on an edge 4px above); a rigid ladder shift
+  // cannot clear it without colliding a neighbour, so the pack must skip
+  // the forbidden band.
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(edges.map((e) => [e.id, e])),
+    basePoly: (id) => bases[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId in want ? (edgeId === 'a1' || edgeId === 'm1' || edgeId === 'b1' ? want[lineId] : undefined)
+        : lineId === 'q' ? (edgeId === 'm2' ? -4 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['p1', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['p2', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['p3', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['p4', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['p5', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['q', [fwd('m2')]],
+    ]),
+    spacing: SP,
+    halfWidthOf: () => 0,
+    drawnEdgeIds: ['a1', 'm1', 'b1', 'm2'],
+  }).seats;
+  const got = ['p1', 'p2', 'p3', 'p4', 'p5'].map((l) => seats.get('m1|' + l));
+  for (const s of got) assert.ok(s !== undefined, 'all runs seated: ' + got);
+  const sorted = [...(got as number[])].sort((a, b) => a - b);
+  for (let i = 1; i < sorted.length; i++) {
+    assert.ok(sorted[i] - sorted[i - 1] >= SP - 1e-6, 'pitch kept: ' + sorted);
+  }
+  for (const s of got as number[]) {
+    assert.ok(Math.abs(s - 0) >= SP * 0.8 - 1e-6, 'clears the fixed lane at 0: ' + s);
+  }
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });

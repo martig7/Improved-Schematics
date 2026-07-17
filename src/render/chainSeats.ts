@@ -500,12 +500,16 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       .sort((a, b) => a - b);
     let c = offsets[Math.floor((offsets.length - 1) / 2)];
     // Obstacle clearance: every ladder seat must keep most of a pitch
-    // from every fixed outside lane. The whole ladder shifts by the
-    // smallest offset that clears (internal pitch preserved); a ladder
-    // that cannot clear within a bounded shift declines to seat.
+    // from every fixed outside lane. First the whole ladder tries to
+    // shift by the smallest offset that clears (internal pitch kept);
+    // when an obstacle sits INSIDE the span, the pack instead skips its
+    // forbidden band, leaving the gap where the outside corridor rides.
+    // A pack whose worst run strays too far declines to seat.
+    let packed: number[] | null = null;
     if (obstacles.length > 0) {
       const CLEAR = spacing * 0.8;
       const MAX_SHIFT = spacing * 1.5;
+      const MAX_STRAY = spacing * 3;
       const seatAt = (k: number, dc: number): number => (k - centerK) * spacing + c + dc;
       const clears = (dc: number): boolean => {
         for (let k = 0; k < parts.length; k++) {
@@ -528,14 +532,58 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
         if (Math.abs(dc) > MAX_SHIFT) continue;
         if (clears(dc)) { found = dc; break; }
       }
-      if (found === null) continue;
-      c += found;
+      if (found !== null) {
+        c += found;
+      } else {
+        // band-skipping pack: merged forbidden intervals, seats placed
+        // in ladder order at >= pitch, bumped past any band they land in
+        const bands: Array<[number, number]> = [...obstacles]
+          .sort((a, b) => a - b)
+          .map((ob) => [ob - CLEAR, ob + CLEAR] as [number, number])
+          .reduce<Array<[number, number]>>((acc, b) => {
+            const last = acc[acc.length - 1];
+            if (last && b[0] <= last[1]) last[1] = Math.max(last[1], b[1]);
+            else acc.push(b);
+            return acc;
+          }, []);
+        const bumpUp = (x: number): number => {
+          for (const [lo, hi] of bands) if (x > lo && x < hi) return hi;
+          return x;
+        };
+        const bumpDown = (x: number): number => {
+          for (let bi = bands.length - 1; bi >= 0; bi--) {
+            const [lo, hi] = bands[bi];
+            if (x > lo && x < hi) return lo;
+          }
+          return x;
+        };
+        const asc: number[] = [];
+        for (let k = 0; k < parts.length; k++) {
+          const ideal = seatAt(k, 0);
+          asc.push(bumpUp(k === 0 ? ideal : Math.max(ideal, asc[k - 1] + spacing)));
+        }
+        const desc: number[] = new Array(parts.length);
+        for (let k = parts.length - 1; k >= 0; k--) {
+          const ideal = seatAt(k, 0);
+          desc[k] = bumpDown(k === parts.length - 1 ? ideal : Math.min(ideal, desc[k + 1] - spacing));
+        }
+        const stray = (t: number[]): number => {
+          let sum = 0;
+          for (let k = 0; k < parts.length; k++) sum += Math.abs(t[k] - parts[k].d);
+          return sum;
+        };
+        const pick = stray(asc) <= stray(desc) ? asc : desc;
+        let worst = 0;
+        for (let k = 0; k < parts.length; k++) worst = Math.max(worst, Math.abs(pick[k] - parts[k].d));
+        if (worst > MAX_STRAY) continue;
+        packed = pick;
+      }
     }
     const conflicts: ChainSeatConflict[] = [];
     const groupRuns: ChainSeatRun[] = [];
     for (let k = 0; k < parts.length; k++) {
       const p = parts[k];
-      const rootSeat = (k - centerK) * spacing + c;
+      const rootSeat = packed ? packed[k] : (k - centerK) * spacing + c;
       const r = allRuns[p.i].run;
       r.ladderSeat = p.s * (rootSeat - p.t);
       groupRuns.push(r);
