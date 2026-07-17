@@ -42,69 +42,81 @@ interface EdgeGeom {
   midDir: Pixel;
 }
 
-const edgeGeom = (id: string, pts: Pixel[]): EdgeGeom => {
-  let arc = 0;
-  for (let k = 1; k < pts.length; k++) arc += hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+const pointAt = (pts: Pixel[], arc: number, frac: number): { p: Pixel; dir: Pixel } => {
+  const target = arc * frac;
   let acc = 0;
-  let mid: Pixel = pts[0];
-  let midDir: Pixel = [1, 0];
   for (let k = 1; k < pts.length; k++) {
     const segLen = hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
-    if (acc + segLen >= arc / 2 && segLen > 0) {
-      const t = (arc / 2 - acc) / segLen;
-      mid = [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t];
-      midDir = [(pts[k][0] - pts[k - 1][0]) / segLen, (pts[k][1] - pts[k - 1][1]) / segLen];
-      break;
+    if (acc + segLen >= target && segLen > 0) {
+      const t = (target - acc) / segLen;
+      return {
+        p: [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t],
+        dir: [(pts[k][0] - pts[k - 1][0]) / segLen, (pts[k][1] - pts[k - 1][1]) / segLen],
+      };
     }
     acc += segLen;
   }
-  return { id, pts, arc, mid, midDir };
+  return { p: pts[0], dir: [1, 0] };
 };
 
-/** Interior, parallel, sub-clearance projection of the SHORTER edge's
- *  midpoint onto the LONGER edge's polyline. Returns the signed lateral
- *  offset of S relative to L along L's local perp and the chord
- *  alignment sign; null when the edges do not overlap side by side
- *  (end-to-end continuations clamp or spill past L's ends). */
+const edgeGeom = (id: string, pts: Pixel[]): EdgeGeom => {
+  let arc = 0;
+  for (let k = 1; k < pts.length; k++) arc += hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+  const m = pointAt(pts, arc, 0.5);
+  return { id, pts, arc, mid: m.p, midDir: m.dir };
+};
+
+/** Interior, parallel, sub-clearance projection of sample points of the
+ *  SHORTER edge onto the LONGER edge's polyline. Samples the midpoint
+ *  and both quarter points, so a longitudinally staggered side-by-side
+ *  pair (whose midpoint lands near the other edge's end) still
+ *  qualifies. Returns the signed lateral offset of S relative to L
+ *  along L's local perp and the chord alignment sign; null when the
+ *  edges do not overlap side by side (end-to-end continuations clamp or
+ *  spill past L's ends at EVERY sample). */
 const projectParallel = (
   L: EdgeGeom,
   S: EdgeGeom,
   thresh: number,
 ): { d0: number; sign: number } | null => {
-  let best = Infinity;
-  let bq: Pixel = L.pts[0];
-  let bdir: Pixel = [1, 0];
-  let bClamped = true;
-  for (let k = 1; k < L.pts.length; k++) {
-    const p0 = L.pts[k - 1];
-    const p1 = L.pts[k];
-    const vx = p1[0] - p0[0], vy = p1[1] - p0[1];
-    const len2 = vx * vx + vy * vy;
-    if (len2 === 0) continue;
-    let t = ((S.mid[0] - p0[0]) * vx + (S.mid[1] - p0[1]) * vy) / len2;
-    const clamped = t <= 0 || t >= 1;
-    t = Math.min(1, Math.max(0, t));
-    const q: Pixel = [p0[0] + vx * t, p0[1] + vy * t];
-    const dist = hyp(S.mid[0] - q[0], S.mid[1] - q[1]);
-    if (dist < best) {
-      best = dist;
-      bq = q;
-      const l = Math.sqrt(len2);
-      bdir = [vx / l, vy / l];
-      bClamped = clamped && ((k === 1 && t <= 0) || (k === L.pts.length - 1 && t >= 1));
+  for (const frac of [0.5, 0.25, 0.75]) {
+    const sm = frac === 0.5 ? { p: S.mid, dir: S.midDir } : pointAt(S.pts, S.arc, frac);
+    let best = Infinity;
+    let bq: Pixel = L.pts[0];
+    let bdir: Pixel = [1, 0];
+    let bClamped = true;
+    for (let k = 1; k < L.pts.length; k++) {
+      const p0 = L.pts[k - 1];
+      const p1 = L.pts[k];
+      const vx = p1[0] - p0[0], vy = p1[1] - p0[1];
+      const len2 = vx * vx + vy * vy;
+      if (len2 === 0) continue;
+      let t = ((sm.p[0] - p0[0]) * vx + (sm.p[1] - p0[1]) * vy) / len2;
+      const clamped = t <= 0 || t >= 1;
+      t = Math.min(1, Math.max(0, t));
+      const q: Pixel = [p0[0] + vx * t, p0[1] + vy * t];
+      const dist = hyp(sm.p[0] - q[0], sm.p[1] - q[1]);
+      if (dist < best) {
+        best = dist;
+        bq = q;
+        const l = Math.sqrt(len2);
+        bdir = [vx / l, vy / l];
+        bClamped = clamped && ((k === 1 && t <= 0) || (k === L.pts.length - 1 && t >= 1));
+      }
     }
+    const endGap = Math.min(
+      hyp(bq[0] - L.pts[0][0], bq[1] - L.pts[0][1]),
+      hyp(bq[0] - L.pts[L.pts.length - 1][0], bq[1] - L.pts[L.pts.length - 1][1]),
+    );
+    if (bClamped || endGap < 2) continue;
+    const dot = sm.dir[0] * bdir[0] + sm.dir[1] * bdir[1];
+    if (Math.abs(dot) < 0.9) continue;
+    if (best >= thresh) continue;
+    const perpL: Pixel = [-bdir[1], bdir[0]];
+    const d0 = (sm.p[0] - bq[0]) * perpL[0] + (sm.p[1] - bq[1]) * perpL[1];
+    return { d0, sign: dot >= 0 ? 1 : -1 };
   }
-  const endGap = Math.min(
-    hyp(bq[0] - L.pts[0][0], bq[1] - L.pts[0][1]),
-    hyp(bq[0] - L.pts[L.pts.length - 1][0], bq[1] - L.pts[L.pts.length - 1][1]),
-  );
-  if (bClamped || endGap < 2) return null;
-  const dot = S.midDir[0] * bdir[0] + S.midDir[1] * bdir[1];
-  if (Math.abs(dot) < 0.9) return null;
-  if (best >= thresh) return null;
-  const perpL: Pixel = [-bdir[1], bdir[0]];
-  const d0 = (S.mid[0] - bq[0]) * perpL[0] + (S.mid[1] - bq[1]) * perpL[1];
-  return { d0, sign: dot >= 0 ? 1 : -1 };
+  return null;
 };
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);

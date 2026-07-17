@@ -191,6 +191,45 @@ test('seats: two overlapping parallel chains merge into one pitched ladder', () 
   assert.ok(Math.abs(gap - SP) < 1e-6, 'physical gap at pitch: ' + gap);
 });
 
+test('seats: half-length-staggered parallel chains still merge', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  // Corridor 2 runs parallel 4px away but shifted by half an edge length:
+  // the midpoints project near the other edge's END, which a midpoint-only
+  // detector mistakes for an end-to-end continuation.
+  const edges: ChainEdgeRef[] = [
+    { id: 'a1', from: 'A1', to: 'B1' }, { id: 'm1', from: 'B1', to: 'C1' }, { id: 'b1', from: 'C1', to: 'D1' },
+    { id: 'a2', from: 'A2', to: 'B2' }, { id: 'm2', from: 'B2', to: 'C2' }, { id: 'b2', from: 'C2', to: 'D2' },
+  ];
+  const bases: Record<string, Pixel[]> = {
+    a1: [[0, 0], [60, 0]], m1: [[60, 0], [120, 0]], b1: [[120, 0], [180, 0]],
+    a2: [[30, 4], [90, 4]], m2: [[90, 4], [150, 4]], b2: [[150, 4], [210, 4]],
+  };
+  const chains = [
+    { edgeIds: ['m1'], anchorA: 'a1', anchorB: 'b1', arc: 60, interiorNodes: [] },
+    { edgeIds: ['m2'], anchorA: 'a2', anchorB: 'b2', arc: 60, interiorNodes: [] },
+  ];
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(edges.map((e) => [e.id, e])),
+    basePoly: (id) => bases[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId === 'p' ? (edgeId.endsWith('1') ? 0 : undefined)
+        : lineId === 'q' ? (edgeId.endsWith('2') ? 0 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['p', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['q', [fwd('a2'), fwd('m2'), fwd('b2')]],
+    ]),
+    spacing: SP,
+    halfWidthOf: () => 0,
+  }).seats;
+  const sp2 = seats.get('m1|p');
+  const sq2 = seats.get('m2|q');
+  assert.ok(sp2 !== undefined && sq2 !== undefined, 'both seated: ' + sp2 + ', ' + sq2);
+  const gap = Math.abs((0 + sp2!) - (4 + sq2!));
+  assert.ok(Math.abs(gap - SP) < 1e-6, 'physical gap at pitch: ' + gap);
+});
+
 test('seats: a chain beside a sub-clearance parallel NON-chain edge does not seat', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   // Same two parallel corridors, but corridor 2 is NOT a chain: its lane
