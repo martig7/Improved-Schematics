@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 21; // bump to invalidate every cached entry on a format change
+const VERSION = 22; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -58,6 +58,10 @@ const VERSION = 21; // bump to invalidate every cached entry on a format change
 // pins), lines emit as continuous assembled paths, and the geometry carries
 // bundle-coherent paint groups. Purge so cached geometry redraws with fan
 // corners and layered bundles.
+// v22: joint seating over overlapped parallel corridors rides shared rails
+// (one centerline frame per pair, corner bends inserted into the lanes) and
+// holds through mid-span corners instead of transiently releasing. Purge so
+// cached geometry redraws the compressed-pair spans.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

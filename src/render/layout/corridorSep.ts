@@ -7,25 +7,30 @@
 // absorb the end seats. See docs/draw-geometry-invariants.md invariant I4.
 
 import type { Pixel } from './types';
+import { offsetPolyline } from './offsets';
+import { debugJointRelease } from './debug/corridorSep.debug';
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
 
-/** Nearest point on polyline to p, plus the local segment direction. */
-const nearestOn = (pts: Pixel[], p: Pixel): { q: Pixel; dir: Pixel; d: number } => {
-  let best: { q: Pixel; dir: Pixel; d: number } = { q: pts[0], dir: [1, 0], d: Infinity };
+/** Nearest point on polyline to p, plus the local segment direction and the
+ *  arclength of the projection along the polyline. */
+const nearestOn = (pts: Pixel[], p: Pixel): { q: Pixel; dir: Pixel; d: number; s: number } => {
+  let best: { q: Pixel; dir: Pixel; d: number; s: number } = { q: pts[0], dir: [1, 0], d: Infinity, s: 0 };
+  let arc = 0;
   for (let i = 1; i < pts.length; i++) {
     const ax = pts[i - 1][0], ay = pts[i - 1][1];
     const vx = pts[i][0] - ax, vy = pts[i][1] - ay;
     const len2 = vx * vx + vy * vy;
     if (len2 < 1e-12) continue;
+    const l = Math.sqrt(len2);
     let t = ((p[0] - ax) * vx + (p[1] - ay) * vy) / len2;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     const qx = ax + vx * t, qy = ay + vy * t;
     const d = hyp(p[0] - qx, p[1] - qy);
     if (d < best.d) {
-      const l = Math.sqrt(len2);
-      best = { q: [qx, qy], dir: [vx / l, vy / l], d };
+      best = { q: [qx, qy], dir: [vx / l, vy / l], d, s: arc + t * l };
     }
+    arc += l;
   }
   return best;
 };
@@ -189,8 +194,8 @@ export function applyJointSeating(args: JointSeatArgs): number {
     ];
     const tNear = pair.needed * 0.75;
     const tFar = pair.needed * 1.5;
-    interface Sample { p: Pixel; n: Pixel; q: number; w: number }
-    interface LaneRef { edge: string; line: string; samples: Sample[]; meanQ: number }
+    interface Sample { p: Pixel; q: number; w: number }
+    interface LaneRef { edge: string; line: string; pts: Pixel[]; samples: Sample[]; meanQ: number }
     // Measure pass: each lane's lateral position q relative to the local
     // pair centerline, with the divergence fade weight.
     const measure = (edge: string, line: string): LaneRef | null => {
@@ -206,18 +211,36 @@ export function applyJointSeating(args: JointSeatArgs): number {
         const nt = nearestOn(other, p);
         const gap = hyp(nt.q[0] - no.q[0], nt.q[1] - no.q[1]);
         let w = gap <= tNear ? 1 : gap >= tFar ? 0 : 1 - (gap - tNear) / (tFar - tNear);
-        if (w <= 0) continue;
         w = w * w * (3 - 2 * w);
         let n: Pixel = [-no.dir[1], no.dir[0]];
         if (n[0] * perpRef[0] + n[1] * perpRef[1] < 0) n = [-n[0], -n[1]];
         const c: Pixel = [(no.q[0] + nt.q[0]) / 2, (no.q[1] + nt.q[1]) / 2];
         const q = (p[0] - c[0]) * n[0] + (p[1] - c[1]) * n[1];
-        samples.push({ p, n, q, w });
-        qSum += q * w;
-        wSum += w;
+        samples.push({ p, q, w });
+      }
+      // Transient-dip fill: where both bases turn a corner together, the
+      // nearest-point gap spikes across the turn even though the corridors
+      // resume side by side right after, and the momentary release snaps
+      // every lane back toward its own overlapping frame (a weave of
+      // sub-clearance crossings at the corner). A fade that RECOVERS later
+      // in the span is that projection artifact, not a genuine parting, so
+      // each weight rises to the smaller of its running maxima from either
+      // side; a genuine end-of-span release never recovers and keeps its
+      // decay. Zero-weight samples stay in the list so an apex vertex past
+      // the far threshold is filled too.
+      const pre: number[] = new Array(samples.length);
+      const suf: number[] = new Array(samples.length);
+      let m = 0;
+      for (let i = 0; i < samples.length; i++) { m = Math.max(m, samples[i].w); pre[i] = m; }
+      m = 0;
+      for (let i = samples.length - 1; i >= 0; i--) { m = Math.max(m, samples[i].w); suf[i] = m; }
+      for (let i = 0; i < samples.length; i++) {
+        samples[i].w = Math.min(pre[i], suf[i]);
+        qSum += samples[i].q * samples[i].w;
+        wSum += samples[i].w;
       }
       if (samples.length === 0 || wSum <= 0) return null;
-      return { edge, line, samples, meanQ: qSum / wSum };
+      return { edge, line, pts: lane, samples, meanQ: qSum / wSum };
     };
     const lanesA = ordA.map((line) => measure(pair.eA, line)).filter((l): l is LaneRef => l !== null);
     const lanesB = ordB.map((line) => measure(pair.eB, line)).filter((l): l is LaneRef => l !== null);
@@ -233,11 +256,85 @@ export function applyJointSeating(args: JointSeatArgs): number {
     const meanOf = (ls: LaneRef[]): number => ls.reduce((s, l) => s + l.meanQ, 0) / ls.length;
     const joint = meanOf(lanesA) <= meanOf(lanesB) ? [...lanesA, ...lanesB] : [...lanesB, ...lanesA];
     const center = (joint.length - 1) / 2;
+    debugJointRelease(pair.eA + 'x' + pair.eB, joint, center, spacing);
+    // Shared rails: one centerline polyline for the pair (base A's vertices
+    // paired with their nearest points on base B), offset per seat with the
+    // miter-bisector corner handling of offsetPolyline, so every lane's
+    // target through a shared corner comes from ONE frame. Per-sample local
+    // frames disagree at a corner (each lane's projection reaches the turn
+    // at a different phase) and seat two lanes onto colliding positions.
+    // Both bases contribute their bend vertices (each paired with its
+    // projection on the other, merged by arclength along base A): a corner
+    // one base has and the other lacks must appear in the centerline, or
+    // the lanes of the cornerless base chord across the rail bend and
+    // pinch the pitch.
+    interface CPt { t: number; p: Pixel }
+    const cpts: CPt[] = [];
+    let arcA = 0;
+    for (let i = 0; i < baseA.length; i++) {
+      if (i > 0) arcA += hyp(baseA[i][0] - baseA[i - 1][0], baseA[i][1] - baseA[i - 1][1]);
+      const nb = nearestOn(baseB, baseA[i]);
+      cpts.push({ t: arcA, p: [(baseA[i][0] + nb.q[0]) / 2, (baseA[i][1] + nb.q[1]) / 2] });
+    }
+    for (const v of baseB) {
+      const na = nearestOn(baseA, v);
+      cpts.push({ t: na.s, p: [(na.q[0] + v[0]) / 2, (na.q[1] + v[1]) / 2] });
+    }
+    cpts.sort((a, b) => (a.t - b.t) || (a.p[0] - b.p[0]) || (a.p[1] - b.p[1]));
+    const centerPts: Pixel[] = [];
+    for (const c of cpts) {
+      const last = centerPts[centerPts.length - 1];
+      if (last && hyp(c.p[0] - last[0], c.p[1] - last[1]) < 0.5) continue;
+      centerPts.push(c.p);
+    }
+    if (centerPts.length < 2) continue;
+    const probe = offsetPolyline(centerPts, spacing);
+    const oSign =
+      (probe[0][0] - centerPts[0][0]) * perpRef[0] + (probe[0][1] - centerPts[0][1]) * perpRef[1] >= 0 ? 1 : -1;
     for (let k = 0; k < joint.length; k++) {
-      for (const s of joint[k].samples) {
-        const d = ((k - center) * spacing - s.q) * s.w;
-        s.p[0] += s.n[0] * d;
-        s.p[1] += s.n[1] * d;
+      const rail = offsetPolyline(centerPts, (k - center) * spacing * oSign);
+      const railS: number[] = [0];
+      for (let r = 1; r < rail.length; r++) {
+        railS.push(railS[r - 1] + hyp(rail[r][0] - rail[r - 1][0], rail[r][1] - rail[r - 1][1]));
+      }
+      const lane = joint[k].pts;
+      const samples = joint[k].samples;
+      const proj: number[] = [];
+      for (const s of samples) {
+        const t = nearestOn(rail, s.p);
+        proj.push(t.s);
+        if (s.w <= 0) continue;
+        s.p[0] += (t.q[0] - s.p[0]) * s.w;
+        s.p[1] += (t.q[1] - s.p[1]) * s.w;
+      }
+      // Lane vertices are sparse; where two consecutive vertices straddle a
+      // rail bend, the straight chord between them cuts the corner, and
+      // neighbouring lanes whose vertices straddle differently pinch below
+      // pitch. Insert the straddled rail vertices (blended by the local
+      // fade) so every lane follows the bend of its own rail.
+      const out: Pixel[] = [];
+      for (let i = 0; i < lane.length; i++) {
+        out.push(lane[i]);
+        if (i + 1 >= lane.length) break;
+        const wMid = (samples[i].w + samples[i + 1].w) / 2;
+        const sA = proj[i], sB = proj[i + 1];
+        if (wMid <= 0.01 || sA === sB) continue;
+        const between: Array<{ s: number; v: Pixel }> = [];
+        const lo = Math.min(sA, sB), hi = Math.max(sA, sB);
+        for (let r = 1; r < rail.length - 1; r++) {
+          if (railS[r] > lo + 0.01 && railS[r] < hi - 0.01) between.push({ s: railS[r], v: rail[r] });
+        }
+        if (sB < sA) between.reverse();
+        for (const b of between) {
+          const f = (b.s - sA) / (sB - sA);
+          const cx = lane[i][0] + (lane[i + 1][0] - lane[i][0]) * f;
+          const cy = lane[i][1] + (lane[i + 1][1] - lane[i][1]) * f;
+          out.push([cx + (b.v[0] - cx) * wMid, cy + (b.v[1] - cy) * wMid]);
+        }
+      }
+      if (out.length !== lane.length) {
+        lane.length = 0;
+        for (const p of out) lane.push(p);
       }
     }
     seated++;
