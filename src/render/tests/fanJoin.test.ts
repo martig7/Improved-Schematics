@@ -237,6 +237,57 @@ test('absorption: a corner overrunning a micro lane consumes it and spans to the
   assert.ok(r.joinStopPos.has('N|m1') && r.joinStopPos.has('F|m1'), 'stops at both spanned nodes sit on the curve');
 });
 
+test('absorption: through reference rides the base corridor, not a tapered micro end segment', () => {
+  // m1 turns at N onto a 40px near edge whose through continuation is an
+  // 8px micro. The micro's lane is pre-slanted (as a prior jog taper leaves
+  // it); the corner's corridor reference must extend the BASE direction
+  // from the lane anchor, not the slanted end segment, or the slope
+  // amplifies across the absorbed span and the corner lands off-corridor.
+  const f: Fixture = {
+    edges: [
+      { id: 'e1', from: 'A', to: 'N' },
+      { id: 'eM', from: 'N', to: 'Z' },
+      { id: 'e2', from: 'Z', to: 'B' },
+    ],
+    bases: new Map([
+      ['e1', [[0, 100], [100, 100]] as Pixel[]],
+      ['eM', [[100, 100], [100, 88]] as Pixel[]],
+      ['e2', [[100, 88], [100, 80]] as Pixel[]],
+    ]),
+    orders: new Map([
+      ['e1', ['m1', 'x', 'y']],
+      ['eM', ['m1']],
+      ['e2', ['m1']],
+    ]),
+    traversals: new Map([['m1', [fwd('e1'), fwd('eM'), fwd('e2')]]]),
+  };
+  const args = makeArgs(f);
+  args.segPath.set('e2|m1', [[101, 88], [104, 80]]);
+  args.baseEndDir = (edgeId, node) => {
+    const base = f.bases.get(edgeId);
+    const e = f.edges.find((x) => x.id === edgeId);
+    if (!base || !e) return null;
+    const atStart = e.from === node;
+    const a = atStart ? base[0] : base[base.length - 1];
+    const b = atStart ? base[1] : base[base.length - 2];
+    const l = Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+    return l > 1e-6 ? [(b[0] - a[0]) / l, (b[1] - a[1]) / l] : null;
+  };
+  const r = buildFanJoins(args);
+  const abs = r.joinCurves.find((c) => c.lineId === 'm1' && c.edgeA === 'e1');
+  assert.ok(abs, 'absorbed corner curve exists');
+  // the outbound leg stays on the corridor-parallel ray through the anchor
+  // (x=104); the slanted end segment extended to the corner would land it
+  // several px west of the base line
+  for (const p of args.segPath.get('e2|m1') ?? []) {
+    assert.ok(p[0] >= 100.9, 'through lane stays on its corridor side: x=' + p[0]);
+  }
+  // the anchor end sits at x=101, so the corridor-parallel reference puts
+  // the apex there; the slanted end segment extended to the corner would
+  // land it at x=98.75
+  assert.ok(Math.abs(abs!.apex[0] - 101) < 0.5, 'apex on the corridor-parallel ray: x=' + abs!.apex[0]);
+});
+
 test('sharp fan: hairpin turn pins both lane ends to the shared meet', () => {
   const f: Fixture = {
     edges: [

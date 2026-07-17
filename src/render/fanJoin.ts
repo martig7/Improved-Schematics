@@ -53,6 +53,12 @@ export interface FanArgs {
   smoothR: number;
   /** Jog-branch gap cap, in slot widths. */
   bigGapMult: number;
+  /** Base corridor direction at `node`, pointing away from the node into
+   *  the edge. Corridor references anchored at a lane end extend along
+   *  THIS direction: a lane's own end segment may already carry another
+   *  group's jog taper, and extending that slant across an absorbed span
+   *  amplifies it into a large lateral error. */
+  baseEndDir?: (edgeId: string, node: string) => Pixel | null;
 }
 
 export interface FanResult {
@@ -224,7 +230,7 @@ export function collectFanGroups(
  * sorted group iteration, sqrt-only math.
  */
 export function buildFanJoins(args: FanArgs): FanResult {
-  const { segPath, suppressed, edgeById, orderOf, biasOf, nodePx, spacing, smoothR, bigGapMult } = args;
+  const { segPath, suppressed, edgeById, orderOf, biasOf, nodePx, spacing, smoothR, bigGapMult, baseEndDir } = args;
   // OCTI_ABSORB=0 disables multi-edge corner absorption (A/B).
   const absorbOn = envStr('OCTI_ABSORB') !== '0';
   const joinCurves: JoinCurve[] = [];
@@ -344,9 +350,22 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const atStart = ed.from === node;
     if (!atStart && ed.to !== node) return null;
     const q = atStart ? poly[0] : poly[poly.length - 1];
-    const q1 = atStart ? poly[1] : poly[poly.length - 2];
-    const len = hyp(q[0] - q1[0], q[1] - q1[1]);
+    let q1 = atStart ? poly[1] : poly[poly.length - 2];
+    let len = hyp(q[0] - q1[0], q[1] - q1[1]);
     if (len < 1e-6) return null;
+    // Reference frame from the BASE corridor when available: the lane's own
+    // end segment may carry another group's jog taper, and a reference line
+    // extended along that slant across an absorbed span amplifies a
+    // sub-pixel-per-pixel taper into a many-pixel lateral error at the
+    // corner (a micro lane's whole polyline IS its end segment). The inner
+    // point is re-synthesized on the corridor-parallel ray through the
+    // lane's anchor end, so every consumer of (q, q1) sees the base
+    // direction.
+    const bd = baseEndDir?.(edgeId, node);
+    if (bd) {
+      q1 = [q[0] + bd[0] * len, q[1] + bd[1] * len];
+      len = hyp(q[0] - q1[0], q[1] - q1[1]);
+    }
     return {
       q, q1,
       dir: into ? [(q[0] - q1[0]) / len, (q[1] - q1[1]) / len] : [(q1[0] - q[0]) / len, (q1[1] - q[1]) / len],
@@ -690,10 +709,40 @@ export function buildFanJoins(args: FanArgs): FanResult {
         const far = atNodeStart ? poly[poly.length - 1] : poly[0];
         return hyp(far[0] - q[0], far[1] - q[1]);
       };
+      // Seat-mode absorption takes MICRO lanes (a couple of pitches: sliver
+      // geometry off its through seat is part of the corner) and ANGLED
+      // pieces (their bend is corner geometry). A longer piece COLLINEAR
+      // with its through corridor is absorbed only when no OTHER line keeps
+      // a rub-length lane in the piece's own frame: chained edges' biases
+      // can disagree by a pixel or two, and a leg re-referenced to the next
+      // edge's frame runs sub-pitch beside a neighbour that stayed (the
+      // bias seam repainted as a pitch violation). Lines turning this same
+      // corner absorb together and sub-pitch stubs cannot rub, so neither
+      // blocks. Overrun mode keeps the reach gate alone (the apex provably
+      // engulfs the lane).
+      const chordOf = (poly: Pixel[]): Pixel => {
+        const dx = poly[poly.length - 1][0] - poly[0][0];
+        const dy = poly[poly.length - 1][1] - poly[0][1];
+        const l = hyp(dx, dy) || 1;
+        return [dx / l, dy / l];
+      };
+      const seatTakes = (edgeX: string, poly: Pixel[], thrDir: Pixel): boolean => {
+        if (polyLenOf(poly) <= spacing * 2) return true;
+        const ch = chordOf(poly);
+        if (Math.abs(ch[0] * thrDir[0] + ch[1] * thrDir[1]) < 0.99) return true;
+        for (const L of orderOf.get(edgeX) ?? []) {
+          if (L === m.lineId) continue;
+          if (g.members.some((m2) => m2.lineId === L && (m2.edgeIn === edgeX || m2.edgeOut === edgeX))) continue;
+          const lp = segPath.get(edgeX + '|' + L);
+          if (lp && polyLenOf(lp) > spacing * 2) return false;
+        }
+        return true;
+      };
       if (m.nextEdge && m.nextEdge !== m.edgeIn && polyLenOf(e.pOut) < fanReach) {
         const farNode = farNodeOf(m.edgeOut, m.outAtStart);
         const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.nextEdge, farNode, false) : null;
-        if (thr && (mode === 'overrun' || farGap(e.pOut, m.outAtStart, thr.q) >= 0.5)) {
+        if (thr && (mode === 'overrun' ||
+          (seatTakes(m.edgeOut, e.pOut, thr.dir) && farGap(e.pOut, m.outAtStart, thr.q) >= 0.5))) {
           const p = planCorner(m, e, limit, rIn, thr);
           if (p && (mode === 'seat' || overruns(e.pOut, m.outAtStart, p.apex))) {
             p.consumeKeys.push(m.edgeOut + '|' + m.lineId);
@@ -713,7 +762,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
       if (m.prevEdge && m.prevEdge !== m.edgeOut && polyLenOf(e.pIn) < fanReach) {
         const farNode = farNodeOf(m.edgeIn, m.inAtStart);
         const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.prevEdge, farNode, true) : null;
-        if (thr && (mode === 'overrun' || farGap(e.pIn, m.inAtStart, thr.q) >= 0.5)) {
+        if (thr && (mode === 'overrun' ||
+          (seatTakes(m.edgeIn, e.pIn, thr.dir) && farGap(e.pIn, m.inAtStart, thr.q) >= 0.5))) {
           const p = planCorner(m, e, limit, thr, rOut);
           if (p && (mode === 'seat' || overruns(e.pIn, m.inAtStart, p.apex))) {
             p.consumeKeys.push(m.edgeIn + '|' + m.lineId);

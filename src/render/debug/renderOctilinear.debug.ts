@@ -17,6 +17,34 @@ export function joinTraceTarget(): string | undefined {
   return typeof process !== 'undefined' ? envStr('OCTI_JOIN_TRACE') : undefined;
 }
 
+/** OCTI_LANES=<edgeId,edgeId,...>: print each listed edge's lane seating
+ *  right after lane construction: the drawn order and, per line, its slot,
+ *  the edge bias, and the lane polyline's end points. */
+export function reportLaneSeats(d: {
+  orderOf: Map<string, string[]>;
+  slotOf: Map<string, number>;
+  biasOf: Map<string, number>;
+  segPath: Map<string, Pixel[]>;
+}): void {
+  const want = envStr('OCTI_LANES');
+  if (!want) return;
+  for (const edgeId of want.split(',').filter(Boolean)) {
+    const order = d.orderOf.get(edgeId);
+    if (!order) { console.error(`[lanes] ${edgeId}: no order`); continue; }
+    const bias = d.biasOf.get(edgeId) ?? 0;
+    for (const lineId of order) {
+      const slot = d.slotOf.get(edgeId + '|' + lineId);
+      const poly = d.segPath.get(edgeId + '|' + lineId);
+      const a = poly?.[0];
+      const b = poly?.[poly.length - 1];
+      console.error(
+        `[lanes] ${edgeId} ${lineId.slice(0, 4)} slot=${slot?.toFixed(2)} bias=${bias.toFixed(2)}` +
+        ` a=(${a?.[0].toFixed(1)},${a?.[1].toFixed(1)}) b=(${b?.[0].toFixed(1)},${b?.[1].toFixed(1)})`,
+      );
+    }
+  }
+}
+
 /** OCTI_JOIN_TRACE: per-line join-pass trace closure. `traceTarget` is the
  *  value of joinTraceTarget(); the returned `jlog(m)` prints '[join] '+m only
  *  when tracing this line. */

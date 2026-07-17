@@ -147,6 +147,30 @@ export function taperLaneEnd(
   const dx = target[0] - end[0];
   const dy = target[1] - end[1];
   if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;
+  // The taper boundary must exist as a vertex: a sparse straight lane has
+  // no interior points inside the influence zone, so only the end would
+  // move and the drawn ramp would run to the next vertex however far away,
+  // flattening the intended slope into a long shallow crossing of any
+  // parallel neighbour.
+  {
+    let walked = 0;
+    const n0 = poly.length;
+    for (let k = 1; k < n0; k++) {
+      const a = atStart ? poly[k - 1] : poly[n0 - k];
+      const b = atStart ? poly[k] : poly[n0 - 1 - k];
+      const seg = hyp(b[0] - a[0], b[1] - a[1]);
+      if (walked + seg >= taperLen) {
+        const rem = taperLen - walked;
+        if (rem > 0.5 && seg - rem > 0.5) {
+          const t = rem / seg;
+          const v: Pixel = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+          poly.splice(atStart ? k : n0 - k, 0, v);
+        }
+        break;
+      }
+      walked += seg;
+    }
+  }
   let acc = 0;
   let prev = end;
   const n = poly.length;

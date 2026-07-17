@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -975,6 +975,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       segPath.set(edge.id + '|' + lineId, poly);
     }
   }
+  reportLaneSeats({ orderOf, slotOf, biasOf, segPath });
 
   // Jog-dominated sliver suppression: merge can leave a line a tiny edge
   // (one grid sliver) sandwiched between two corridors — the 9's 9px hop
@@ -1224,6 +1225,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       lineIds: new Set(lineById.keys()),
       edgeById, segPath, suppressed, orderOf, biasOf, nodePx,
       spacing, smoothR: SMOOTH_R, bigGapMult,
+      baseEndDir: (edgeId, node) => {
+        const e = edgeById.get(edgeId);
+        if (!e) return null;
+        const base = edgePolyline(e);
+        if (base.length < 2) return null;
+        const atStart = e.from === node;
+        if (!atStart && e.to !== node) return null;
+        const a = atStart ? base[0] : base[base.length - 1];
+        const b = atStart ? base[1] : base[base.length - 2];
+        const l = Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+        return l > 1e-6 ? [(b[0] - a[0]) / l, (b[1] - a[1]) / l] : null;
+      },
     });
     for (const c of fan.joinCurves) joinCurves.push(c);
     for (const [k, v] of fan.joinStopPos) joinStopPos.set(k, v);
