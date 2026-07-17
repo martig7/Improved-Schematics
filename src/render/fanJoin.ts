@@ -574,7 +574,10 @@ export function buildFanJoins(args: FanArgs): FanResult {
    *  one-sided away from an engulfing corner instead of spreading a ramp
    *  through its sweeps. */
   const jogTaper = (g: Group, m: Member, e: Ends, flog: (s: string) => void): void => {
-    if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) return;
+    if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) {
+      flog(`${m.lineId} JOG-CLAIMED ${m.edgeIn}>${m.edgeOut} @${g.node}`);
+      return;
+    }
     const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
     if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
     const drift = Math.max(spacing * 1.5, gap * 1.2);
@@ -582,12 +585,22 @@ export function buildFanJoins(args: FanArgs): FanResult {
     const arcOut = polyLenOf(e.pOut);
     const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
     const taperB = Math.min(drift, spacing * 8, arcOut * 0.45);
-    // Zone room per side: the ramp may only use the arc before the far
-    // node's constructed zone.
+    // Zone room per side: the ramp may only use the corridor span before
+    // the far node's constructed zone. Both the zone and the room live in
+    // NODE space (the span between the junction and the far node), not in
+    // lane-arc space: an absorbed lane extends past its nodes, and a
+    // lane-length measure credits that extension as room and seats the
+    // ramp inside the neighbouring corner's zone.
+    const spanOf = (edgeId: string, poly: Pixel[]): number => {
+      const ed = edgeById.get(edgeId);
+      const a = ed ? nodePx.get(ed.from) : undefined;
+      const b = ed ? nodePx.get(ed.to) : undefined;
+      return a && b ? hyp(b[0] - a[0], b[1] - a[1]) : polyLenOf(poly);
+    };
     const farIn = farNodeOf(m.edgeIn, m.inAtStart);
     const farOut = farNodeOf(m.edgeOut, m.outAtStart);
-    const roomIn = Math.max(0, arcIn - (farIn !== undefined ? extentAt.get(farIn + '|' + m.edgeIn) ?? 0 : 0));
-    const roomOut = Math.max(0, arcOut - (farOut !== undefined ? extentAt.get(farOut + '|' + m.edgeOut) ?? 0 : 0));
+    const roomIn = Math.max(0, spanOf(m.edgeIn, e.pIn) - (farIn !== undefined ? extentAt.get(farIn + '|' + m.edgeIn) ?? 0 : 0));
+    const roomOut = Math.max(0, spanOf(m.edgeOut, e.pOut) - (farOut !== undefined ? extentAt.get(farOut + '|' + m.edgeOut) ?? 0 : 0));
     const capA = Math.min(taperA, roomIn);
     const capB = Math.min(taperB, roomOut);
     // Ride until the node, recenter past it (invariant I4): a seat change
@@ -681,7 +694,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
     tapers.push({ node: g.node, edgeId: m.edgeIn, lineId: m.lineId, len: tA });
     tapers.push({ node: g.node, edgeId: m.edgeOut, lineId: m.lineId, len: tB });
     markDone(g, m);
-    flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)} caps=${capA.toFixed(1)}/${capB.toFixed(1)} rooms=${roomIn.toFixed(1)}/${roomOut.toFixed(1)} n=${nIn}/${nOut}`);
+    flog(`${m.lineId} JOG gap=${gap.toFixed(1)} taperA=${tA.toFixed(1)} taperB=${tB.toFixed(1)} caps=${capA.toFixed(1)}/${capB.toFixed(1)} rooms=${roomIn.toFixed(1)}/${roomOut.toFixed(1)} n=${nIn}/${nOut} in=${m.edgeIn}@${farIn ?? '?'} out=${m.edgeOut}@${farOut ?? '?'} arcs=${arcIn.toFixed(1)}/${arcOut.toFixed(1)}`);
   };
   const deferredJogs: Array<{ g: Group; m: Member; flog: (s: string) => void }> = [];
 
