@@ -576,7 +576,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
     // no apex within reach fall back by band: near-parallel ones jog-taper,
     // corner ones pin sharp.
     interface SideRef { q: Pixel; q1: Pixel; poly: Pixel[]; atStart: boolean; edgeId: string }
-    interface PlanSide { poly: Pixel[]; atStart: boolean; cut: number | null }
+    interface PlanSide { poly: Pixel[]; atStart: boolean; cut: number | null; edgeId: string; q: Pixel }
     interface Plan {
       m: Member; e: Ends; apex: Pixel; la: number; lb: number;
       sIn: PlanSide; sOut: PlanSide;
@@ -622,8 +622,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
       const pair: [string, string] = rIn.edgeId < rOut.edgeId ? [rIn.edgeId, rOut.edgeId] : [rOut.edgeId, rIn.edgeId];
       return {
         m, e, apex: [x, y], la, lb,
-        sIn: { poly: rIn.poly, atStart: rIn.atStart, cut: cutIn },
-        sOut: { poly: rOut.poly, atStart: rOut.atStart, cut: cutOut },
+        sIn: { poly: rIn.poly, atStart: rIn.atStart, cut: cutIn, edgeId: rIn.edgeId, q: rIn.q },
+        sOut: { poly: rOut.poly, atStart: rOut.atStart, cut: cutOut, edgeId: rOut.edgeId, q: rOut.q },
         moveKeys: [endKeyAt(rIn.edgeId, rIn.atStart, m.lineId), endKeyAt(rOut.edgeId, rOut.atStart, m.lineId)],
         miterKeys: [m.lineId + '|' + g.node + '|' + pair[0] + '|' + pair[1]],
         stopNodes: [g.node],
@@ -729,6 +729,34 @@ export function buildFanJoins(args: FanArgs): FanResult {
         fOf.set(p.m, cap);
       }
     }
+    // Steep landing (invariant I4): a corner sweep landing tangentially on
+    // its seat rides any lane one pitch INSIDE the turn at sub-pitch
+    // distance for a run that grows with the trim. From the quadratic's
+    // tail (lateral deviation from the seat at arc s before the endpoint
+    // is about s*s*sin(turn)/(4*trim)), the run spent within the clip
+    // census's band [pitch - distMax, pitch + distMax] of that neighbour is
+    // sqrt(4*trim/sin) * (sqrt(pitch + distMax) - sqrt(pitch - distMax)).
+    // Bounding it at 0.8 of the census's run threshold (runMin = 3*pitch,
+    // distMax = 0.75*pitch) gives trim <= 2.13 * pitch * sin(turn). Only a
+    // leg with an inside bundle-mate is capped; genuine near-straight bends
+    // (small sine) barely deviate toward a neighbour, so the cap applies to
+    // real corners only (sine >= 0.5).
+    const steepCap = den >= 0.5 ? 2.13 * spacing * den : Infinity;
+    const insideNeighbour = (edgeId: string, atStart: boolean, endPt: Pixel, lineId: string): boolean => {
+      const order = orderOf.get(edgeId);
+      if (!order) return false;
+      const idx = order.indexOf(lineId);
+      if (idx < 0) return false;
+      for (const nIdx of [idx - 1, idx + 1]) {
+        const nId = order[nIdx];
+        if (!nId) continue;
+        const npoly = segPath.get(edgeId + '|' + nId);
+        if (!npoly || npoly.length < 2) continue;
+        const nEnd = atStart ? npoly[0] : npoly[npoly.length - 1];
+        if ((nEnd[0] - endPt[0]) * outw[0] + (nEnd[1] - endPt[1]) * outw[1] < 0) return true;
+      }
+      return false;
+    };
     for (const p of planned) {
       const { m, e, apex } = p;
       const f = fOf.get(m) ?? 0;
@@ -753,8 +781,13 @@ export function buildFanJoins(args: FanArgs): FanResult {
       if (la < 1e-6 || lb < 1e-6) { fallback.push({ m, e }); continue; }
       const ua: Pixel = [(apex[0] - ra1[0]) / la, (apex[1] - ra1[1]) / la];
       const ub: Pixel = [(apex[0] - rb1[0]) / lb, (apex[1] - rb1[1]) / lb];
-      const a: Pixel = [apex[0] - ua[0] * f, apex[1] - ua[1] * f];
-      const b: Pixel = [apex[0] - ub[0] * f, apex[1] - ub[1] * f];
+      // A leg with an inside bundle-mate lands steeply (I4); the other keeps
+      // the full sweep. Shrinking a leg keeps the curve inside its mates, so
+      // the nesting clamp is undisturbed.
+      const fIn = insideNeighbour(p.sIn.edgeId, p.sIn.atStart, p.sIn.q, m.lineId) ? Math.min(f, steepCap) : f;
+      const fOut = insideNeighbour(p.sOut.edgeId, p.sOut.atStart, p.sOut.q, m.lineId) ? Math.min(f, steepCap) : f;
+      const a: Pixel = [apex[0] - ua[0] * fIn, apex[1] - ua[1] * fIn];
+      const b: Pixel = [apex[0] - ub[0] * fOut, apex[1] - ub[1] * fOut];
       // Pin via setEnd, not a bare overwrite: the trim can land past residual
       // sub-pixel vertices near the node (the leg is measured to the first
       // MATERIAL vertex), and a passed vertex must pop or the lane folds
