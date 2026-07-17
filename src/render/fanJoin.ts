@@ -219,14 +219,28 @@ export function buildFanJoins(args: FanArgs): FanResult {
     return ((n - 1) / 2) * spacing + Math.abs(biasOf.get(edgeId) ?? 0);
   };
 
+  /** Inner reference vertex for a lane end: the first vertex a material
+   *  distance from the end (sub-pixel junk segments at lane ends, left by
+   *  offset mitering at sharp base vertices, would otherwise poison the end
+   *  DIRECTION and misclassify the whole group). */
+  const innerVertex = (poly: Pixel[], atStart: boolean): Pixel => {
+    const end = atStart ? poly[0] : poly[poly.length - 1];
+    const depth = Math.min(4, poly.length - 1);
+    for (let s = 1; s <= depth; s++) {
+      const v = atStart ? poly[s] : poly[poly.length - 1 - s];
+      if (hyp(v[0] - end[0], v[1] - end[1]) >= 0.25) return v;
+    }
+    return atStart ? poly[1] : poly[poly.length - 2];
+  };
+
   const endsOf = (m: Member): Ends | null => {
     const pIn = segPath.get(m.edgeIn + '|' + m.lineId);
     const pOut = segPath.get(m.edgeOut + '|' + m.lineId);
     if (!pIn || !pOut || pIn.length < 2 || pOut.length < 2) return null;
     const qa = m.inAtStart ? pIn[0] : pIn[pIn.length - 1];
-    const qa1 = m.inAtStart ? pIn[1] : pIn[pIn.length - 2];
+    const qa1 = innerVertex(pIn, m.inAtStart);
     const qb = m.outAtStart ? pOut[0] : pOut[pOut.length - 1];
-    const qb1 = m.outAtStart ? pOut[1] : pOut[pOut.length - 2];
+    const qb1 = innerVertex(pOut, m.outAtStart);
     const lenA = hyp(qa[0] - qa1[0], qa[1] - qa1[1]);
     const lenB = hyp(qb[0] - qb1[0], qb[1] - qb1[1]);
     if (lenA < 1e-6 || lenB < 1e-6) return null;
@@ -484,18 +498,29 @@ export function buildFanJoins(args: FanArgs): FanResult {
   };
 
   for (const g of collectFanGroups(args.lineTraversals, args.lineIds, edgeById, orderOf)) {
+    const flog = makeFanLog(trace, g.members.map((m) => m.lineId));
     // Members whose ends an earlier group already moved sit this group out.
     const live: Array<{ m: Member; e: Ends }> = [];
     for (const m of g.members) {
-      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) continue;
+      if (endMoved.has(keyIn(m)) || endMoved.has(keyOut(m))) {
+        flog(`${m.lineId} OUT moved ${endMoved.has(keyIn(m)) ? keyIn(m) : keyOut(m)} @${g.node}`);
+        continue;
+      }
       const e = endsOf(m);
       if (e) live.push({ m, e });
+      else flog(`${m.lineId} OUT no-ends @${g.node}`);
     }
     if (live.length === 0) continue;
-    const flog = makeFanLog(trace, live.map(({ m }) => m.lineId));
-    // One classification for the whole group, from its first member's end
-    // directions (parallel offset lanes of the same two edges share them).
-    const f0 = live[0].e;
+    // One classification for the whole group. Parallel offset lanes of the
+    // same two edges share their end directions, so any member could frame
+    // the group; take the one with the LONGEST end segments, whose
+    // directions are least contaminated by residual end junk.
+    let f0 = live[0].e;
+    let f0len = Math.min(f0.lenA, f0.lenB);
+    for (const { e } of live) {
+      const l = Math.min(e.lenA, e.lenB);
+      if (l > f0len) { f0 = e; f0len = l; }
+    }
     const dot = f0.dirIn[0] * f0.dirOut[0] + f0.dirIn[1] * f0.dirOut[1];
     const den = Math.abs(f0.dirIn[0] * f0.dirOut[1] - f0.dirIn[1] * f0.dirOut[0]);
     const fanReach = (halfWidthOf(g.edgeA) + halfWidthOf(g.edgeB) + 2 * spacing) / Math.max(den, 0.5);
@@ -513,9 +538,24 @@ export function buildFanJoins(args: FanArgs): FanResult {
       const gap = hyp(e.qb[0] - e.qa[0], e.qb[1] - e.qa[1]);
       if (gap < 0.5 || gap > spacing * bigGapMult) { flog(`${m.lineId} JOG-SKIP gap=${gap.toFixed(1)}`); return; }
       const drift = Math.max(spacing * 1.5, gap * 1.2);
-      const taperA = Math.min(drift, spacing * 8, polyLenOf(e.pIn) * 0.45);
-      const taperB = Math.min(drift, spacing * 8, polyLenOf(e.pOut) * 0.45);
+      const arcIn = polyLenOf(e.pIn);
+      const arcOut = polyLenOf(e.pOut);
+      const taperA = Math.min(drift, spacing * 8, arcIn * 0.45);
+      const taperB = Math.min(drift, spacing * 8, arcOut * 0.45);
       if ((taperA < gap || taperB < gap) && (taperA < spacing * 1.5 || taperB < spacing * 1.5)) {
+        // A lane too short for the standard drift SLANTS over its whole arc
+        // instead of leaving a perpendicular step at its end (invariant I9):
+        // the far end stays fixed (the fade reaches zero exactly there) and
+        // the jog spreads across every pixel the lane has. Only a jog larger
+        // than a side's whole arc (a bend past 45 degrees) still declines.
+        if (arcIn >= gap && arcOut >= gap) {
+          const mid: Pixel = [(e.qa[0] + e.qb[0]) / 2, (e.qa[1] + e.qb[1]) / 2];
+          taperLaneEnd(e.pIn, m.inAtStart, mid, Math.min(spacing * 8, arcIn));
+          taperLaneEnd(e.pOut, m.outAtStart, mid, Math.min(spacing * 8, arcOut));
+          markDone(g, m);
+          flog(`${m.lineId} JOG-SLANT gap=${gap.toFixed(1)} arcIn=${arcIn.toFixed(1)} arcOut=${arcOut.toFixed(1)}`);
+          return;
+        }
         flog(`${m.lineId} JOG-SHORT taperA=${taperA.toFixed(1)} taperB=${taperB.toFixed(1)}`);
         return;
       }
@@ -591,16 +631,26 @@ export function buildFanJoins(args: FanArgs): FanResult {
         pair,
       };
     };
-    const tryAbsorb = (m: Member, e: Ends, limit: number): Plan | null => {
+    // Absorption fires in two modes. 'seat': tried BEFORE the normal plan
+    // when a micro near-lane's far end does not SEAT on the through corridor
+    // (any residual jog there would step perpendicular, invariant I9); the
+    // corner then turns directly onto the corrected seat. 'overrun': tried
+    // after the normal plan fails, when the apex provably lies past the
+    // micro lane's far end (invariant I2).
+    const tryAbsorb = (m: Member, e: Ends, limit: number, mode: 'seat' | 'overrun'): Plan | null => {
       if (!absorbOn) return null;
       const rIn: SideRef = { q: e.qa, q1: e.qa1, poly: e.pIn, atStart: m.inAtStart, edgeId: m.edgeIn };
       const rOut: SideRef = { q: e.qb, q1: e.qb1, poly: e.pOut, atStart: m.outAtStart, edgeId: m.edgeOut };
+      const farGap = (poly: Pixel[], atNodeStart: boolean, q: Pixel): number => {
+        const far = atNodeStart ? poly[poly.length - 1] : poly[0];
+        return hyp(far[0] - q[0], far[1] - q[1]);
+      };
       if (m.nextEdge && m.nextEdge !== m.edgeIn && polyLenOf(e.pOut) < fanReach) {
         const farNode = farNodeOf(m.edgeOut, m.outAtStart);
         const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.nextEdge, farNode, false) : null;
-        if (thr) {
+        if (thr && (mode === 'overrun' || farGap(e.pOut, m.outAtStart, thr.q) >= 0.5)) {
           const p = planCorner(m, e, limit, rIn, thr);
-          if (p && overruns(e.pOut, m.outAtStart, p.apex)) {
+          if (p && (mode === 'seat' || overruns(e.pOut, m.outAtStart, p.apex))) {
             p.consumeKeys.push(m.edgeOut + '|' + m.lineId);
             p.moveKeys.push(keyOut(m), endKeyAt(m.edgeOut, !m.outAtStart, m.lineId));
             p.miterKeys.push(
@@ -608,16 +658,19 @@ export function buildFanJoins(args: FanArgs): FanResult {
               m.lineId + '|' + farNode + '|' + pairOf(m.edgeOut, thr.edgeId),
             );
             p.stopNodes.push(farNode!);
-            return p;
+            // An absorption whose keys an earlier construction already
+            // claimed can never apply; returning it would only rob the
+            // member of its plain-taper fallback.
+            if (!p.moveKeys.some((k) => endMoved.has(k))) return p;
           }
         }
       }
       if (m.prevEdge && m.prevEdge !== m.edgeOut && polyLenOf(e.pIn) < fanReach) {
         const farNode = farNodeOf(m.edgeIn, m.inAtStart);
         const thr = farNode !== undefined && farNode !== g.node ? throughRef(m.lineId, m.prevEdge, farNode, true) : null;
-        if (thr) {
+        if (thr && (mode === 'overrun' || farGap(e.pIn, m.inAtStart, thr.q) >= 0.5)) {
           const p = planCorner(m, e, limit, thr, rOut);
-          if (p && overruns(e.pIn, m.inAtStart, p.apex)) {
+          if (p && (mode === 'seat' || overruns(e.pIn, m.inAtStart, p.apex))) {
             p.consumeKeys.push(m.edgeIn + '|' + m.lineId);
             p.moveKeys.push(keyIn(m), endKeyAt(m.edgeIn, !m.inAtStart, m.lineId));
             p.miterKeys.push(
@@ -625,7 +678,7 @@ export function buildFanJoins(args: FanArgs): FanResult {
               m.lineId + '|' + farNode + '|' + pairOf(m.edgeIn, thr.edgeId),
             );
             p.stopNodes.push(farNode!);
-            return p;
+            if (!p.moveKeys.some((k) => endMoved.has(k))) return p;
           }
         }
       }
@@ -641,7 +694,10 @@ export function buildFanJoins(args: FanArgs): FanResult {
       for (const { m, e } of live) {
         const rIn: SideRef = { q: e.qa, q1: e.qa1, poly: e.pIn, atStart: m.inAtStart, edgeId: m.edgeIn };
         const rOut: SideRef = { q: e.qb, q1: e.qb1, poly: e.pOut, atStart: m.outAtStart, edgeId: m.edgeOut };
-        const plan = planCorner(m, e, limit, rIn, rOut) ?? tryAbsorb(m, e, limit);
+        const plan =
+          tryAbsorb(m, e, limit, 'seat') ??
+          planCorner(m, e, limit, rIn, rOut) ??
+          tryAbsorb(m, e, limit, 'overrun');
         if (plan) planned.push(plan);
         else fallback.push({ m, e });
       }
@@ -690,10 +746,8 @@ export function buildFanJoins(args: FanArgs): FanResult {
       // apex by this member's nested trim and bridge with a quadratic
       // through the apex.
       if (p.sIn.poly.length < 2 || p.sOut.poly.length < 2) continue;
-      const ra = p.sIn.atStart ? p.sIn.poly[0] : p.sIn.poly[p.sIn.poly.length - 1];
-      const ra1 = p.sIn.atStart ? p.sIn.poly[1] : p.sIn.poly[p.sIn.poly.length - 2];
-      const rb = p.sOut.atStart ? p.sOut.poly[0] : p.sOut.poly[p.sOut.poly.length - 1];
-      const rb1 = p.sOut.atStart ? p.sOut.poly[1] : p.sOut.poly[p.sOut.poly.length - 2];
+      const ra1 = innerVertex(p.sIn.poly, p.sIn.atStart);
+      const rb1 = innerVertex(p.sOut.poly, p.sOut.atStart);
       const la = hyp(apex[0] - ra1[0], apex[1] - ra1[1]);
       const lb = hyp(apex[0] - rb1[0], apex[1] - rb1[1]);
       if (la < 1e-6 || lb < 1e-6) { fallback.push({ m, e }); continue; }
@@ -701,8 +755,12 @@ export function buildFanJoins(args: FanArgs): FanResult {
       const ub: Pixel = [(apex[0] - rb1[0]) / lb, (apex[1] - rb1[1]) / lb];
       const a: Pixel = [apex[0] - ua[0] * f, apex[1] - ua[1] * f];
       const b: Pixel = [apex[0] - ub[0] * f, apex[1] - ub[1] * f];
-      ra[0] = a[0]; ra[1] = a[1];
-      rb[0] = b[0]; rb[1] = b[1];
+      // Pin via setEnd, not a bare overwrite: the trim can land past residual
+      // sub-pixel vertices near the node (the leg is measured to the first
+      // MATERIAL vertex), and a passed vertex must pop or the lane folds
+      // back through the corner as a painted lobe.
+      setEnd(p.sIn.poly, p.sIn.atStart, ua, a);
+      setEnd(p.sOut.poly, p.sOut.atStart, ub, b);
       joinCurves.push({ lineId: m.lineId, node: g.node, a, apex: [apex[0], apex[1]], b, edgeA: p.pair[0], edgeB: p.pair[1] });
       // A stop at any node the corner spans (the shared node, plus the far
       // node of an absorbed micro lane) draws ON the curve.

@@ -121,6 +121,15 @@ casing-then-stroke split across ALL lines lets no crossing separate at
 all. Grouping derives from co-run share (the fraction of a line's drawn
 length spent beside another), not from any hand-kept list.
 
+**I9. No perpendicular micro-steps.** A drawn course never contains a
+sub-pitch segment near-perpendicular to the travel direction around it (a
+right-angle zigzag). A lateral seat correction resolves either AT the
+nearest corner (the turn happens earlier or later, on the corrected seat)
+or as a bounded-angle taper spread over available arc; a lane too short to
+taper slants as a whole instead of stepping at its end. The degenerate
+perpendicular connector chord is axis-aligned, so the octilinearity budget
+(I6) never catches it; it is a defect in its own right.
+
 ## 4. Direction for the rebuild
 
 Replace the join-ladder-plus-connector architecture with two cooperating

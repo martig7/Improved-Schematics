@@ -59,11 +59,15 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
   const emittedLane = new Set<string>(); // edgeId|lineId drawn (once each)
   const consumedCurve = new Set<JoinCurve>();
 
-  // curve lookup per (lineId|node|edgeA|edgeB)
+  // Curve lookup per (lineId|edgeA|edgeB). Deliberately NOT keyed by node:
+  // an absorbed multi-edge corner is planned from whichever flanking group
+  // sorts first, so its recorded node can be either end of the consumed
+  // span; the endpoint-proximity check at splice time disambiguates
+  // instances of a pair that repeats along a course.
   const curveAt = new Map<string, JoinCurve[]>();
   for (const jc of joinCurves) {
     if (jc.edgeA === undefined || jc.edgeB === undefined) continue;
-    const k = jc.lineId + '|' + jc.node + '|' + jc.edgeA + '|' + jc.edgeB;
+    const k = jc.lineId + '|' + jc.edgeA + '|' + jc.edgeB;
     let arr = curveAt.get(k);
     if (!arr) curveAt.set(k, (arr = []));
     arr.push(jc);
@@ -124,7 +128,7 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
     const jointKey = lineId + '|' + node + '|' + pairKey;
     const start = to.pts[0];
     if (!drawnJoints.has(jointKey)) {
-      const curves = curveAt.get(jointKey);
+      const curves = curveAt.get(lineId + '|' + pairKey);
       if (curves) {
         for (const jc of curves) {
           if (consumedCurve.has(jc)) continue;

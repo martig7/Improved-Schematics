@@ -139,6 +139,73 @@ export function reportBundleClips(d: {
   console.error(`[clips] ${rows.length} ink clips (dist<${distMax.toFixed(1)} run>=${runMin.toFixed(1)})`);
 }
 
+/** OCTI_ZIGS: census of perpendicular micro-steps in the FINAL ink
+ *  (invariant I9): a sub-pitch segment near-perpendicular to near-parallel
+ *  travel on both sides of it (the right-angle zigzag a degenerate lateral
+ *  jog paints). Curve samples never qualify: a sampled arc turns far less
+ *  than the 60-degree bend the test demands per sample. */
+export function reportZigzags(d: {
+  layout: Layout;
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  spacing: number;
+  stations?: Array<{ nodeId: string }>;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (!envStr('OCTI_ZIGS')) return;
+  const { layout, lineById, dByLine, parseInk, spacing, stations, nodePx } = d;
+  const segsByLine = parseInk(dByLine);
+  const groups: Array<{ pos: Pixel; label: string }> = [];
+  for (const st of stations ?? []) {
+    const pos = nodePx.get(st.nodeId);
+    if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+  }
+  const nearestGroup = (p: Pixel): string => {
+    let best = '?';
+    let bd = Infinity;
+    for (const g of groups) {
+      const dd = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+      if (dd < bd) { bd = dd; best = g.label; }
+    }
+    return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+  };
+  const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  const dir = (a: Pixel, b: Pixel): Pixel | null => {
+    const l = len(a, b);
+    return l < 1e-6 ? null : [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+  };
+  let count = 0;
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!lineById.has(lineId)) continue;
+    const segs = segsByLine.get(lineId)!;
+    for (let i = 1; i + 1 < segs.length; i++) {
+      const [pa, pb] = segs[i - 1];
+      const [da, db] = segs[i];
+      const [na, nb] = segs[i + 1];
+      // contiguous chain only (an M boundary breaks adjacency)
+      if (len(pb, da) > 1e-6 || len(db, na) > 1e-6) continue;
+      const step = len(da, db);
+      if (step < 0.5 || step >= spacing) continue; // material sub-pitch steps only
+      const dp = dir(pa, pb);
+      const dd = dir(da, db);
+      const dn = dir(na, nb);
+      if (!dp || !dd || !dn) continue;
+      if (dp[0] * dn[0] + dp[1] * dn[1] < 0.85) continue; // travel continues straight
+      if (Math.abs(dd[0] * dp[0] + dd[1] * dp[1]) > 0.5) continue; // step not steep
+      count++;
+      if (count <= 40) {
+        const ln = lineById.get(lineId);
+        console.error(
+          `[zigs] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) step=${len(da, db).toFixed(1)}px ` +
+          `at=(${da[0].toFixed(0)},${da[1].toFixed(0)}) near=${nearestGroup(da)}`,
+        );
+      }
+    }
+  }
+  console.error(`[zigs] ${count} perpendicular micro-steps (len<${spacing.toFixed(1)})`);
+}
+
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
  *  all fail to resolve renders nothing while its edges still draw). */
 export function reportVanishedStations(d: {

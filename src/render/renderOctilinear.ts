@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary,
+  reportConnTrace, reportRibbonSummary, reportZigzags,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -3772,6 +3772,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // Final-ink clip census (dByLine is complete here: fillets, joins and node
   // connectors all applied).
   reportBundleClips({
+    layout, lineById, dByLine, parseInk: drawnSegsByLine, spacing,
+    stations: args.stations, nodePx,
+  });
+  // Perpendicular micro-step census (invariant I9), same final ink.
+  reportZigzags({
     layout, lineById, dByLine, parseInk: drawnSegsByLine, spacing,
     stations: args.stations, nodePx,
   });
