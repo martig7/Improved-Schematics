@@ -106,6 +106,17 @@ line's construction re-framing ink beside another's.
 
 ### 2.4 What the chain subsumes (and what it does not)
 
+- **Cross-chain merge (approved 2026-07-17).** Two chains whose interior
+  edges geometrically overlap (share an edge, or sustain the parallel
+  sub-clearance test of the joint-seating pair detector WITHOUT its
+  shared-hub gate, scoped to chain interiors only) seat as ONE merged
+  ladder in a shared lateral frame. The pair detector's (d0, sign)
+  output is the frame transform between the chains. Rationale: under a
+  tight warp, two compressed parallel corridors otherwise each seat in
+  their own frame and ride sub-pitch beside each other; the shared-hub
+  gate that protects unrelated close streets stays in force for the
+  cross-corridor joint seating pass, while chain interiors (short
+  dominated micro-corridors) coordinate structurally.
 - Single-flank and both-flank seat absorption become the 1-edge chain
   special case; they remain for genuinely isolated micro lanes whose
   neighbourhood is not a chain.

@@ -992,10 +992,22 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       },
       lineTraversals: layout.lineTraversals,
       spacing,
+      halfWidthOf: (id) => Math.max(0, (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing),
     })
     : null;
   const chainSeatOf = chainSeatRes?.seats ?? new Map<string, number>();
-  reportChainSeats({ report: chainSeatRes?.report ?? [], nodePx, edgeById });
+  reportChainSeats({
+    report: chainSeatRes?.report ?? [],
+    nodePx,
+    edgeById,
+    pairs: chainSeatRes?.pairs,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    halfWidthOf: (id) => Math.max(0, (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing),
+    spacing,
+  });
 
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);

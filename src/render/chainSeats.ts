@@ -23,6 +23,10 @@ export interface ChainSeatArgs {
   laneOffsetOf: (edgeId: string, lineId: string) => number | undefined;
   lineTraversals: Map<string, Array<{ edgeId: string; reversed: boolean }>>;
   spacing: number;
+  /** Painted half width per edge (bias-free). Enables the cross-chain
+   *  merge of overlapping-parallel interiors; absent = same-edge merges
+   *  only. */
+  halfWidthOf?: (edgeId: string) => number;
 }
 
 const hyp = (a: number, b: number): number => Math.sqrt(a * a + b * b);
@@ -63,14 +67,22 @@ export interface ChainSeatResult {
   /** One row per seated overlap component (a chain can hold several);
    *  recording-only. */
   report: ChainSeatReport[];
+  /** Cross-chain parallel pairs found among covered interior edges;
+   *  recording-only. */
+  pairs: Array<{ eA: string; eB: string; d0: number; sign: number; needed: number }>;
 }
 
 export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
-  const { chains, edgeById, basePoly, laneOffsetOf, lineTraversals, spacing } = args;
+  const { chains, edgeById, basePoly, laneOffsetOf, lineTraversals, spacing, halfWidthOf } = args;
   const out = new Map<string, number>();
   const keyOwner = new Map<string, number>();
   const report: ChainSeatReport[] = [];
   const lineIds = [...lineTraversals.keys()].sort();
+
+  // Collected across chains for the cross-chain merge phase.
+  interface RunRec { run: ChainSeatRun; chain: number }
+  const allRuns: RunRec[] = [];
+  const fwdOfChain: Array<Map<string, boolean>> = [];
 
   const endDirInto = (edgeId: string, node: string): Pixel | null => {
     const e = edgeById.get(edgeId);
@@ -202,113 +214,255 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       }
     }
 
-    // Ladders form per OVERLAP COMPONENT, not per chain: runs that never
-    // share an edge occupy independent lateral space, and a global ladder
-    // would let one covered stretch inflate the span of another. Runs are
-    // grouped by connected overlap (shared interior edges); each group
-    // gets its own ladder (spec 2.3 ordering, pitch slots, deterministic
-    // lower-median centering).
-    const compOf = new Map<ChainSeatRun, number>();
-    {
-      const byEdge = new Map<string, ChainSeatRun[]>();
-      for (const r of runs) {
-        for (const edgeId of r.edgeIds) {
-          const list = byEdge.get(edgeId);
-          if (list) list.push(r); else byEdge.set(edgeId, [r]);
-        }
-      }
-      let nextComp = 0;
-      for (const seed of runs) {
-        if (compOf.has(seed)) continue;
-        const comp = nextComp++;
-        const queue = [seed];
-        compOf.set(seed, comp);
-        while (queue.length) {
-          const r = queue.pop()!;
-          for (const edgeId of r.edgeIds) {
-            for (const other of byEdge.get(edgeId)!) {
-              if (!compOf.has(other)) {
-                compOf.set(other, comp);
-                queue.push(other);
-              }
-            }
-          }
-        }
-      }
-    }
-    const components = new Map<number, ChainSeatRun[]>();
-    for (const r of runs) {
-      const comp = compOf.get(r)!;
-      const list = components.get(comp);
-      if (list) list.push(r); else components.set(comp, [r]);
-    }
+    fwdOfChain[chainIndex] = orientedForward;
+    for (const r of runs) allRuns.push({ run: r, chain: chainIndex });
+  }
+  const crossPairs: ChainSeatResult['pairs'] = [];
+  if (allRuns.length === 0) return { seats: out, report, pairs: crossPairs };
 
-    for (const group of components.values()) {
-      // Cohabitant gate: every lane on a covered edge must belong to a
-      // ladder participant. A line without a qualifying frame bound keeps
-      // slot+bias, and re-seating its neighbours around an unmoved lane
-      // lands them sub-pitch beside it. Such a component stays unseated.
-      {
-        const linesOn = new Map<string, Set<string>>();
-        for (const r of group) {
-          for (const edgeId of r.edgeIds) {
-            let set = linesOn.get(edgeId);
-            if (!set) { set = new Set(); linesOn.set(edgeId, set); }
-            set.add(r.lineId);
-          }
-        }
-        let unsafe = false;
-        for (const [edgeId, participants] of linesOn) {
-          for (const lineId of lineIds) {
-            if (!participants.has(lineId) && laneOffsetOf(edgeId, lineId) !== undefined) {
-              unsafe = true;
-              break;
-            }
-          }
-          if (unsafe) break;
-        }
-        if (unsafe) continue;
-      }
+  // Union-find with 1D affine potentials over the +/-1 group: pot(i)
+  // maps run i's chain-frame seat into its root's frame,
+  // seatRoot = s*seat + t. Links come from shared edges (within or
+  // across chains) and from overlapping-parallel interior edge pairs
+  // across chains; merged groups ladder once in the shared frame, so
+  // sub-clearance corridors come out at pitch instead of each chain
+  // seating blind beside the other.
+  const parent = allRuns.map((_, i) => i);
+  const ps = allRuns.map(() => 1);
+  const pt = allRuns.map(() => 0);
+  const find = (i: number): { root: number; s: number; t: number } => {
+    if (parent[i] === i) return { root: i, s: ps[i], t: pt[i] };
+    const up = find(parent[i]);
+    // compose: seatRoot = up.s*(seatParentFrame) + up.t with
+    // seatParentFrame = ps[i]*seat + pt[i]
+    parent[i] = up.root;
+    ps[i] = up.s * ps[i];
+    pt[i] = up.s * pt[i] + up.t;
+    return { root: parent[i], s: ps[i], t: pt[i] };
+  };
+  /** Link with constraint: seat_i-frame equivalent of j's seat is
+   *  ls*seat_j + lt (both in their own chain frames). */
+  const union = (i: number, j: number, ls: number, lt: number): void => {
+    const ri = find(i);
+    const rj = find(j);
+    if (ri.root === rj.root) return;
+    // seatRoot_i = ri.s*seat_i + ri.t; seat_i == ls*seat_j + lt;
+    // seat_j = rj.s^-1*(seatRoot_j - rj.t) = rj.s*(seatRoot_j - rj.t)
+    // => seatRoot_i = ri.s*ls*rj.s*seatRoot_j + ri.s*(lt - ls*rj.s*rj.t) + ri.t
+    const S = ri.s * ls * rj.s;
+    const T = ri.s * lt - S * rj.t + ri.t;
+    parent[rj.root] = ri.root;
+    ps[rj.root] = S;
+    pt[rj.root] = T;
+  };
 
-      group.sort((a, b) => (a.desired - b.desired) || (a.lineId < b.lineId ? -1 : 1));
-      const centerK = (group.length - 1) / 2;
-      const offsets = group
-        .map((r, k) => r.desired - (k - centerK) * spacing)
-        .sort((a, b) => a - b);
-      const c = offsets[Math.floor((offsets.length - 1) / 2)];
-      group.forEach((r, k) => { r.ladderSeat = (k - centerK) * spacing + c; });
-
-      const conflicts: ChainSeatConflict[] = [];
-      for (const r of group) {
-        for (const edgeId of r.edgeIds) {
-          const key = edgeId + '|' + r.lineId;
-          const fwd = orientedForward.get(edgeId) ?? true;
-          const seat = fwd ? r.ladderSeat : -r.ladderSeat;
-          if (out.has(key)) {
-            conflicts.push({
-              key,
-              kept: out.get(key)!,
-              keptChain: keyOwner.get(key) ?? -1,
-              discarded: seat,
-            });
-            continue;
-          }
-          out.set(key, seat);
-          keyOwner.set(key, chainIndex);
-        }
-      }
-      const covered = new Set<string>();
-      for (const r of group) for (const edgeId of r.edgeIds) covered.add(edgeId);
-      report.push({
-        chainIndex,
-        anchorA: chain.anchorA,
-        anchorB: chain.anchorB,
-        edgeIds: chain.edgeIds.filter((id) => covered.has(id)),
-        c,
-        runs: group,
-        conflicts,
-      });
+  const runsOnEdge = new Map<string, number[]>();
+  const chainsOnEdge = new Map<string, Set<number>>();
+  for (let i = 0; i < allRuns.length; i++) {
+    for (const edgeId of allRuns[i].run.edgeIds) {
+      const list = runsOnEdge.get(edgeId);
+      if (list) list.push(i); else runsOnEdge.set(edgeId, [i]);
+      let set = chainsOnEdge.get(edgeId);
+      if (!set) { set = new Set(); chainsOnEdge.set(edgeId, set); }
+      set.add(allRuns[i].chain);
     }
   }
-  return { seats: out, report };
+  // Shared-edge links: runs on one edge share lateral space. Same chain
+  // shares the frame directly; across chains the edge frame mediates.
+  const sgn = (chain: number, edgeId: string): number =>
+    (fwdOfChain[chain].get(edgeId) ?? true) ? 1 : -1;
+  for (const edgeId of [...runsOnEdge.keys()].sort()) {
+    const idxs = runsOnEdge.get(edgeId)!;
+    for (let k = 1; k < idxs.length; k++) {
+      const i = idxs[0];
+      const j = idxs[k];
+      const ls = sgn(allRuns[i].chain, edgeId) * sgn(allRuns[j].chain, edgeId);
+      union(i, j, ls, 0);
+    }
+  }
+  // Overlapping-parallel links across chains: the joint-seating idea
+  // scoped to chain interiors, WITHOUT the shared-hub gate (chain
+  // interiors are short dominated micro-corridors, not unrelated close
+  // streets). The sampled corridor detector cannot see these: micro
+  // edges are shorter than its sustained-run floor and staggered
+  // long-vs-short pairs defeat midpoint symmetry. Instead the SHORTER
+  // edge's midpoint projects onto the LONGER edge's polyline; an
+  // interior, parallel, sub-clearance projection is a pair, and its
+  // signed offset is the frame transform.
+  if (halfWidthOf) {
+    interface EdgeInfo { id: string; pts: Pixel[]; arc: number; mid: Pixel; midDir: Pixel }
+    const infos: EdgeInfo[] = [];
+    for (const id of [...runsOnEdge.keys()].sort()) {
+      const pts = basePoly(id);
+      if (!pts || pts.length < 2) continue;
+      let arc = 0;
+      for (let k = 1; k < pts.length; k++) arc += hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+      // midpoint by arclength, with the local segment direction
+      let acc = 0;
+      let mid: Pixel = pts[0];
+      let midDir: Pixel = [1, 0];
+      for (let k = 1; k < pts.length; k++) {
+        const segLen = hyp(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+        if (acc + segLen >= arc / 2 && segLen > 0) {
+          const t = (arc / 2 - acc) / segLen;
+          mid = [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t];
+          midDir = [(pts[k][0] - pts[k - 1][0]) / segLen, (pts[k][1] - pts[k - 1][1]) / segLen];
+          break;
+        }
+        acc += segLen;
+      }
+      infos.push({ id, pts, arc, mid, midDir });
+    }
+    for (let a = 0; a < infos.length; a++) {
+      for (let b = a + 1; b < infos.length; b++) {
+        const chainsA = chainsOnEdge.get(infos[a].id)!;
+        const chainsB = chainsOnEdge.get(infos[b].id)!;
+        let cross = false;
+        for (const c of chainsA) if (!chainsB.has(c)) { cross = true; break; }
+        if (!cross) continue;
+        // longer edge hosts the projection; tie broken by the sort order
+        const [L, S] = infos[a].arc >= infos[b].arc ? [infos[a], infos[b]] : [infos[b], infos[a]];
+        const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
+        // nearest point on L for S's midpoint, tracking the local direction
+        let best = Infinity;
+        let bq: Pixel = L.pts[0];
+        let bdir: Pixel = [1, 0];
+        let bClamped = true;
+        for (let k = 1; k < L.pts.length; k++) {
+          const p0 = L.pts[k - 1];
+          const p1 = L.pts[k];
+          const vx = p1[0] - p0[0], vy = p1[1] - p0[1];
+          const len2 = vx * vx + vy * vy;
+          if (len2 === 0) continue;
+          let t = ((S.mid[0] - p0[0]) * vx + (S.mid[1] - p0[1]) * vy) / len2;
+          const clamped = t <= 0 || t >= 1;
+          t = Math.min(1, Math.max(0, t));
+          const q: Pixel = [p0[0] + vx * t, p0[1] + vy * t];
+          const dist = hyp(S.mid[0] - q[0], S.mid[1] - q[1]);
+          if (dist < best) {
+            best = dist;
+            bq = q;
+            const l = Math.sqrt(len2);
+            bdir = [vx / l, vy / l];
+            bClamped = clamped && (k === 1 && t <= 0 || k === L.pts.length - 1 && t >= 1);
+          }
+        }
+        // interior of L (not spilling past its ends), parallel, in the
+        // sub-clearance band
+        const endGap = Math.min(
+          hyp(bq[0] - L.pts[0][0], bq[1] - L.pts[0][1]),
+          hyp(bq[0] - L.pts[L.pts.length - 1][0], bq[1] - L.pts[L.pts.length - 1][1]),
+        );
+        if (bClamped || endGap < 2) continue;
+        const dot = S.midDir[0] * bdir[0] + S.midDir[1] * bdir[1];
+        if (Math.abs(dot) < 0.9) continue;
+        if (best >= thresh) continue;
+        const perpL: Pixel = [-bdir[1], bdir[0]];
+        const d0 = (S.mid[0] - bq[0]) * perpL[0] + (S.mid[1] - bq[1]) * perpL[1];
+        const sign = dot >= 0 ? 1 : -1;
+        // frame transform with eA = L, eB = S
+        const i = runsOnEdge.get(L.id)![0];
+        const j = runsOnEdge.get(S.id)![0];
+        if (allRuns[i].chain === allRuns[j].chain) continue;
+        crossPairs.push({ eA: L.id, eB: S.id, d0, sign, needed: thresh });
+        const sa = sgn(allRuns[i].chain, L.id);
+        const sb = sgn(allRuns[j].chain, S.id);
+        // edge frame of L: pos = sa*seat_i; S's lane pos = d0 + sign*sb*seat_j
+        // seat_i equivalent = sa*(d0 + sign*sb*seat_j)
+        union(i, j, sa * sign * sb, sa * d0);
+      }
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < allRuns.length; i++) {
+    const root = find(i).root;
+    const list = groups.get(root);
+    if (list) list.push(i); else groups.set(root, [i]);
+  }
+
+  for (const idxs of [...groups.values()]) {
+    // Cohabitant gate: every lane on a covered edge must belong to a
+    // ladder participant. A line without a qualifying frame bound keeps
+    // slot+bias, and re-seating its neighbours around an unmoved lane
+    // lands them sub-pitch beside it. Such a group stays unseated.
+    {
+      const linesOn = new Map<string, Set<string>>();
+      for (const i of idxs) {
+        for (const edgeId of allRuns[i].run.edgeIds) {
+          let set = linesOn.get(edgeId);
+          if (!set) { set = new Set(); linesOn.set(edgeId, set); }
+          set.add(allRuns[i].run.lineId);
+        }
+      }
+      let unsafe = false;
+      for (const [edgeId, participants] of linesOn) {
+        for (const lineId of lineIds) {
+          if (!participants.has(lineId) && laneOffsetOf(edgeId, lineId) !== undefined) {
+            unsafe = true;
+            break;
+          }
+        }
+        if (unsafe) break;
+      }
+      if (unsafe) continue;
+    }
+
+    // Ladder in the shared root frame (spec 2.3 ordering, pitch slots,
+    // deterministic lower-median centering), then map each seat back to
+    // its run's own chain frame.
+    interface Part { i: number; d: number; s: number; t: number }
+    const parts: Part[] = idxs.map((i) => {
+      const p = find(i);
+      return { i, d: p.s * allRuns[i].run.desired + p.t, s: p.s, t: p.t };
+    });
+    parts.sort((a, b) => (a.d - b.d) ||
+      (allRuns[a.i].run.lineId < allRuns[b.i].run.lineId ? -1 :
+        allRuns[a.i].run.lineId > allRuns[b.i].run.lineId ? 1 :
+          a.i - b.i));
+    const centerK = (parts.length - 1) / 2;
+    const offsets = parts
+      .map((p, k) => p.d - (k - centerK) * spacing)
+      .sort((a, b) => a - b);
+    const c = offsets[Math.floor((offsets.length - 1) / 2)];
+    const conflicts: ChainSeatConflict[] = [];
+    const groupRuns: ChainSeatRun[] = [];
+    for (let k = 0; k < parts.length; k++) {
+      const p = parts[k];
+      const rootSeat = (k - centerK) * spacing + c;
+      const r = allRuns[p.i].run;
+      r.ladderSeat = p.s * (rootSeat - p.t);
+      groupRuns.push(r);
+      const chain = allRuns[p.i].chain;
+      for (const edgeId of r.edgeIds) {
+        const key = edgeId + '|' + r.lineId;
+        const fwd = fwdOfChain[chain].get(edgeId) ?? true;
+        const seat = fwd ? r.ladderSeat : -r.ladderSeat;
+        if (out.has(key)) {
+          conflicts.push({
+            key,
+            kept: out.get(key)!,
+            keptChain: keyOwner.get(key) ?? -1,
+            discarded: seat,
+          });
+          continue;
+        }
+        out.set(key, seat);
+        keyOwner.set(key, chain);
+      }
+    }
+    const covered = new Set<string>();
+    for (const r of groupRuns) for (const edgeId of r.edgeIds) covered.add(edgeId);
+    const firstChain = allRuns[parts[0].i].chain;
+    report.push({
+      chainIndex: firstChain,
+      anchorA: chains[firstChain].anchorA,
+      anchorB: chains[firstChain].anchorB,
+      edgeIds: [...covered].sort(),
+      c,
+      runs: groupRuns,
+      conflicts,
+    });
+  }
+  return { seats: out, report, pairs: crossPairs };
 }

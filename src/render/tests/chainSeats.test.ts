@@ -152,6 +152,45 @@ test('seats: a component with an unseated cohabitant lane does not seat', () => 
   assert.equal(seats.get('m2|x'), undefined, 'x not seated beside unmoved u');
 });
 
+test('seats: two overlapping parallel chains merge into one pitched ladder', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  // Two sub-clearance parallel corridors 4px apart, one single-lane chain
+  // each. Seated independently their lanes ride 4px apart; the merged
+  // ladder must put them at pitch.
+  const edges: ChainEdgeRef[] = [
+    { id: 'a1', from: 'A1', to: 'B1' }, { id: 'm1', from: 'B1', to: 'C1' }, { id: 'b1', from: 'C1', to: 'D1' },
+    { id: 'a2', from: 'A2', to: 'B2' }, { id: 'm2', from: 'B2', to: 'C2' }, { id: 'b2', from: 'C2', to: 'D2' },
+  ];
+  const bases: Record<string, Pixel[]> = {
+    a1: [[0, 0], [60, 0]], m1: [[60, 0], [120, 0]], b1: [[120, 0], [180, 0]],
+    a2: [[0, 4], [60, 4]], m2: [[60, 4], [120, 4]], b2: [[120, 4], [180, 4]],
+  };
+  const chains = [
+    { edgeIds: ['m1'], anchorA: 'a1', anchorB: 'b1', arc: 60, interiorNodes: [] },
+    { edgeIds: ['m2'], anchorA: 'a2', anchorB: 'b2', arc: 60, interiorNodes: [] },
+  ];
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(edges.map((e) => [e.id, e])),
+    basePoly: (id) => bases[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId === 'p' ? (edgeId.endsWith('1') ? 0 : undefined)
+        : lineId === 'q' ? (edgeId.endsWith('2') ? 0 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['p', [fwd('a1'), fwd('m1'), fwd('b1')]],
+      ['q', [fwd('a2'), fwd('m2'), fwd('b2')]],
+    ]),
+    spacing: SP,
+    halfWidthOf: () => 0,
+  }).seats;
+  const sp = seats.get('m1|p');
+  const sq = seats.get('m2|q');
+  assert.ok(sp !== undefined && sq !== undefined, 'both seated: ' + sp + ', ' + sq);
+  const gap = Math.abs((0 + sp!) - (4 + sq!));
+  assert.ok(Math.abs(gap - SP) < 1e-6, 'physical gap at pitch: ' + gap);
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });
