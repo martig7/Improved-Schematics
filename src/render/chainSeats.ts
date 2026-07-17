@@ -244,6 +244,32 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
     }
 
     for (const group of components.values()) {
+      // Cohabitant gate: every lane on a covered edge must belong to a
+      // ladder participant. A line without a qualifying frame bound keeps
+      // slot+bias, and re-seating its neighbours around an unmoved lane
+      // lands them sub-pitch beside it. Such a component stays unseated.
+      {
+        const linesOn = new Map<string, Set<string>>();
+        for (const r of group) {
+          for (const edgeId of r.edgeIds) {
+            let set = linesOn.get(edgeId);
+            if (!set) { set = new Set(); linesOn.set(edgeId, set); }
+            set.add(r.lineId);
+          }
+        }
+        let unsafe = false;
+        for (const [edgeId, participants] of linesOn) {
+          for (const lineId of lineIds) {
+            if (!participants.has(lineId) && laneOffsetOf(edgeId, lineId) !== undefined) {
+              unsafe = true;
+              break;
+            }
+          }
+          if (unsafe) break;
+        }
+        if (unsafe) continue;
+      }
+
       group.sort((a, b) => (a.desired - b.desired) || (a.lineId < b.lineId ? -1 : 1));
       const centerK = (group.length - 1) / 2;
       const offsets = group

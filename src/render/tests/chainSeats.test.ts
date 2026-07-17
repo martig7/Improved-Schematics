@@ -123,6 +123,35 @@ test('seats: runs on disjoint interior spans ladder independently', () => {
   assert.ok(Math.abs((seats.get('m2|y') ?? NaN) - 0) < 1e-9, 'y keeps its desired seat: ' + seats.get('m2|y'));
 });
 
+test('seats: a component with an unseated cohabitant lane does not seat', () => {
+  const fwd = (edgeId: string) => ({ edgeId, reversed: false });
+  const chains = detectChains({
+    edges: EDGES,
+    basePoly: (id) => BASES[id],
+    laneCount: (id) => Object.keys(OFFSETS[id] ?? {}).length,
+    spacing: SP,
+  });
+  // u holds lanes on the interior but earns no frame bound (its whole
+  // traversal is interior), so it stays on slot+bias; re-seating x around
+  // an unmoved cohabitant would land them sub-pitch.
+  const seats = computeChainSeats({
+    chains,
+    edgeById: new Map(EDGES.map((e) => [e.id, e])),
+    basePoly: (id) => BASES[id],
+    laneOffsetOf: (edgeId, lineId) =>
+      lineId === 'x' ? ({ a: -3, m1: -3, m2: -3, b: -3 } as Record<string, number>)[edgeId]
+        : lineId === 'u' ? (edgeId === 'm1' || edgeId === 'm2' ? 3 : undefined)
+          : undefined,
+    lineTraversals: new Map([
+      ['x', [fwd('a'), fwd('m1'), fwd('m2'), fwd('b')]],
+      ['u', [fwd('m1'), fwd('m2')]],
+    ]),
+    spacing: SP,
+  }).seats;
+  assert.equal(seats.get('m1|x'), undefined, 'x not seated beside unmoved u');
+  assert.equal(seats.get('m2|x'), undefined, 'x not seated beside unmoved u');
+});
+
 test('seats: output is per-edge and identical for a reversed traversal', () => {
   const fwd = (edgeId: string) => ({ edgeId, reversed: false });
   const rev = (edgeId: string) => ({ edgeId, reversed: true });
