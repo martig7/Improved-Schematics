@@ -22,14 +22,16 @@ const BASES: Record<string, Pixel[]> = {
   br: [[70, 0], [70, 40]],
 };
 
-// entry frame (edge a): l1 -6, l2 0, l3 +6, bl -12; exit frame (edge b)
-// shifted +2 for every line: the chain must carry each line from its
-// entry seat to its exit seat.
+// entry frame (edge a): l1 -6, l2 0, l3 +6, bl -12, and l4 at -8 (a
+// foreign-feeder seat NOT at pitch with its neighbours); exit frame
+// (edge b) shifted +2 for every through line: the chain must carry each
+// line from its entry seat to its exit seat, and the shared ladder must
+// hold every pair at pitch through the middle.
 const OFFSETS: Record<string, Record<string, number>> = {
-  a: { l1: -6, l2: 0, l3: 6, bl: -12 },
-  b: { l1: -4, l2: 2, l3: 8 },
-  m1: { l1: -6, l2: 0, l3: 6, bl: -12 },
-  m2: { l1: -6, l2: 0, l3: 6 },
+  a: { l1: -6, l2: 0, l3: 6, bl: -12, l4: -8 },
+  b: { l1: -4, l2: 2, l3: 8, l4: -10 },
+  m1: { l1: -6, l2: 0, l3: 6, bl: -12, l4: -8 },
+  m2: { l1: -6, l2: 0, l3: 6, l4: -8 },
   br: { bl: 0 },
 };
 
@@ -64,6 +66,7 @@ function setup() {
       ['l2', [{ edgeId: 'a', reversed: false }, { edgeId: 'm1', reversed: false }, { edgeId: 'm2', reversed: false }, { edgeId: 'b', reversed: false }]],
       ['l3', [{ edgeId: 'a', reversed: false }, { edgeId: 'm1', reversed: false }, { edgeId: 'm2', reversed: false }, { edgeId: 'b', reversed: false }]],
       ['bl', [{ edgeId: 'a', reversed: false }, { edgeId: 'm1', reversed: false }, { edgeId: 'br', reversed: false }]],
+      ['l4', [{ edgeId: 'a', reversed: false }, { edgeId: 'm1', reversed: false }, { edgeId: 'm2', reversed: false }, { edgeId: 'b', reversed: false }]],
     ]),
     segPath,
     suppressed: new Set<string>(),
@@ -96,12 +99,34 @@ test('rails: pass-through pitch is preserved along the whole interior', () => {
   }
 });
 
-test('rails: a branch line without a collinear exit frame rides its entry seat to the turn', () => {
+test('rails: a branch line keeps anchor continuity and takes its ladder seat by the turn', () => {
+  // bl has no collinear exit frame: it enters on its anchor seat and its
+  // departure end takes the shared ladder's seat, moving AWAY from the
+  // pack (the ladder orders it outermost), never into it.
   const { segPath, args } = setup();
   buildChainRails(args);
   const rail = segPath.get('m1|bl')!;
-  for (const p of rail) {
-    assert.ok(Math.abs(p[1] - -12) < 0.05, 'constant entry seat: ' + p[1]);
+  assert.ok(Math.abs(rail[0][1] - -12) < 0.05, 'anchor continuity at entry: ' + rail[0][1]);
+  assert.ok(rail[rail.length - 1][1] <= -12 + 0.05, 'departure seat not into the pack: ' + rail[rail.length - 1][1]);
+});
+
+test('rails: the shared ladder holds every pair at pitch through the middle', () => {
+  // l4 enters 2px from l1 (a foreign frame); mid-chain the ladder must
+  // separate every pair to at least one pitch.
+  const { segPath, args } = setup();
+  buildChainRails(args);
+  const midOf = (lineId: string): Pixel => {
+    const r = segPath.get('m1|' + lineId)!;
+    return r[r.length - 1]; // the m1/m2 joint sits mid-chain
+  };
+  const lines = ['bl', 'l4', 'l1', 'l2', 'l3'];
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const a = midOf(lines[i]);
+      const b = midOf(lines[j]);
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      assert.ok(d >= SP - 0.25, 'pitch ' + lines[i] + '/' + lines[j] + ': ' + d);
+    }
   }
 });
 
