@@ -195,7 +195,10 @@ export function reportZigzags(d: {
       // contiguous chain only (an M boundary breaks adjacency)
       if (len(pb, da) > 1e-6 || len(db, na) > 1e-6) continue;
       const step = len(da, db);
-      if (step < 0.5 || step >= spacing) continue; // material sub-pitch steps only
+      // material steps up to two pitches (a full-slot staircase notch is
+      // still a zigzag; curve samples never qualify because a sampled arc
+      // turns far less than the 60 degree bend the direction tests demand)
+      if (step < 0.5 || step >= spacing * 2) continue;
       const dp = dir(pa, pb);
       const dd = dir(da, db);
       const dn = dir(na, nb);
