@@ -121,6 +121,117 @@ export function reportStopSeating(d: {
   console.warn(`[fanzone] ${count} stop-mark intrusions`);
 }
 
+/** OCTI_FANZONE: foreign-crossing half of the fan-zone census (invariant
+ *  I3). A transversal crossing between two lines' FINAL ink inside a
+ *  junction's zone, where either line does not even traverse that
+ *  junction, is foreign machinery interleaving with the corner sweeps
+ *  (the fan's own nested corners always belong to lines turning there). */
+export function reportZoneCrossings(d: {
+  zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  lineById: Map<string, { id: string }>;
+  lineTraversals: Map<string, Array<{ edgeId: string }>>;
+  edgeById: Map<string, { id: string; from: string; to: string }>;
+  basePoly: (edgeId: string) => Pixel[] | undefined;
+  halfWidthOf: (edgeId: string) => number;
+  spacing: number;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (envStr('OCTI_FANZONE') !== '1') return;
+  const nodesOfLine = new Map<string, Set<string>>();
+  for (const [lineId, trav] of d.lineTraversals) {
+    if (!d.lineById.has(lineId)) continue;
+    const set = new Set<string>();
+    for (const step of trav) {
+      const e = d.edgeById.get(step.edgeId);
+      if (e) { set.add(e.from); set.add(e.to); }
+    }
+    nodesOfLine.set(lineId, set);
+  }
+  const segsByLine = d.parseInk(d.dByLine);
+  // uniform grid over all segments for pair candidates
+  const CELL = 48;
+  const grid = new Map<string, Array<{ lineId: string; a: Pixel; b: Pixel }>>();
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!d.lineById.has(lineId)) continue;
+    for (const [a, b] of segsByLine.get(lineId)!) {
+      const x0 = Math.floor(Math.min(a[0], b[0]) / CELL), x1 = Math.floor(Math.max(a[0], b[0]) / CELL);
+      const y0 = Math.floor(Math.min(a[1], b[1]) / CELL), y1 = Math.floor(Math.max(a[1], b[1]) / CELL);
+      for (let gx = x0; gx <= x1; gx++) for (let gy = y0; gy <= y1; gy++) {
+        const k = gx + ',' + gy;
+        let arr = grid.get(k);
+        if (!arr) { arr = []; grid.set(k, arr); }
+        arr.push({ lineId, a, b });
+      }
+    }
+  }
+  const cross = (o: Pixel, p: Pixel, q: Pixel): number =>
+    (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+  const seen = new Set<string>();
+  const hits: Array<{ a: string; b: string; p: Pixel }> = [];
+  for (const cell of [...grid.keys()].sort()) {
+    const arr = grid.get(cell)!;
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        const S = arr[i], T = arr[j];
+        if (S.lineId === T.lineId) continue;
+        const d1 = cross(S.a, S.b, T.a), d2 = cross(S.a, S.b, T.b);
+        const d3 = cross(T.a, T.b, S.a), d4 = cross(T.a, T.b, S.b);
+        if (!((d1 > 0) !== (d2 > 0) && (d3 > 0) !== (d4 > 0))) continue;
+        // transversal only: near-parallel grazing pairs are the clip
+        // census's subject, not a crossing
+        const ux = S.b[0] - S.a[0], uy = S.b[1] - S.a[1];
+        const vx = T.b[0] - T.a[0], vy = T.b[1] - T.a[1];
+        const det = ux * vy - uy * vx;
+        const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+        if (lu < 1e-9 || lv < 1e-9 || Math.abs(det) / (lu * lv) < 0.17) continue;
+        const t = ((T.a[0] - S.a[0]) * vy - (T.a[1] - S.a[1]) * vx) / det;
+        const p: Pixel = [S.a[0] + ux * t, S.a[1] + uy * t];
+        const [A, B] = S.lineId < T.lineId ? [S.lineId, T.lineId] : [T.lineId, S.lineId];
+        const key = A + '|' + B + '|' + Math.round(p[0] / 8) + ',' + Math.round(p[1] / 8);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push({ a: A, b: B, p });
+      }
+    }
+  }
+  let count = 0;
+  for (const h of hits) {
+    for (const z of d.zones) {
+      const e = d.edgeById.get(z.edgeA);
+      const base = d.basePoly(z.edgeA);
+      const zp = d.nodePx.get(z.node);
+      if (!e || !base || base.length < 2 || !zp) continue;
+      let bestD = Infinity;
+      let bestQ: Pixel = base[0];
+      for (let i = 1; i < base.length; i++) {
+        const ax = base[i - 1][0], ay = base[i - 1][1];
+        const vx = base[i][0] - ax, vy = base[i][1] - ay;
+        const len2 = vx * vx + vy * vy;
+        if (len2 < 1e-12) continue;
+        let t = ((h.p[0] - ax) * vx + (h.p[1] - ay) * vy) / len2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const qx = ax + vx * t, qy = ay + vy * t;
+        const dd = Math.hypot(h.p[0] - qx, h.p[1] - qy);
+        if (dd < bestD) { bestD = dd; bestQ = [qx, qy]; }
+      }
+      if (bestD > d.halfWidthOf(z.edgeA) + d.spacing) continue;
+      if (Math.hypot(bestQ[0] - zp[0], bestQ[1] - zp[1]) >= z.reach) continue;
+      const aAt = nodesOfLine.get(h.a)?.has(z.node) ?? false;
+      const bAt = nodesOfLine.get(h.b)?.has(z.node) ?? false;
+      if (aAt && bAt) continue;
+      count++;
+      console.warn(
+        `[fanzone] crossing ${h.a.slice(0, 4)}x${h.b.slice(0, 4)} at=(${h.p[0].toFixed(0)},${h.p[1].toFixed(0)})` +
+        ` inside ${z.node} zone on ${z.edgeA} (foreign: ${aAt ? h.b.slice(0, 4) : h.a.slice(0, 4)})`,
+      );
+      break;
+    }
+  }
+  console.warn(`[fanzone] ${count} foreign crossings in zones (${hits.length} transversal crossings total)`);
+}
+
 /** OCTI_LANES=<edgeId,edgeId,...>: print each listed edge's lane seating
  *  right after lane construction: the drawn order and, per line, its slot,
  *  the edge bias, and the lane polyline's end points. */

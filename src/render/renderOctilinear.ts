@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -3901,6 +3901,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   }
   const paintGroups = computePaintGroups(orderOf, arcOfEdge, [...lineById.keys()]);
 
+  reportZoneCrossings({
+    zones: fanZones,
+    dByLine: censusInk,
+    parseInk: drawnSegsByLine,
+    lineById,
+    lineTraversals: layout.lineTraversals,
+    edgeById,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    halfWidthOf: (id) => (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing,
+    spacing,
+    nodePx,
+  });
   reportStopSeating({
     zones: fanZones,
     stopsByNode,
