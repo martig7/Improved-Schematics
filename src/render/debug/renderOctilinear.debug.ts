@@ -57,6 +57,70 @@ export function reportFanZones(d: {
   console.warn(`[fanzone] ${count} taper intrusions across ${d.zones.length} zones`);
 }
 
+/** OCTI_FANZONE: stop-mark half of the fan-zone census (invariant I3).
+ *  A station's drawn mark seated inside ANOTHER junction's zone sits in
+ *  ink the corner construction owns. Marks whose stop the fan itself
+ *  seated (its join-curve stop positions, including absorbed far nodes)
+ *  are the fan's own and exempt. */
+export function reportStopSeating(d: {
+  zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
+  stopsByNode: Map<string, Array<{ lineId: string; pos: Pixel }>>;
+  joinStopPos: Map<string, Pixel>;
+  edgeById: Map<string, { id: string; from: string; to: string }>;
+  basePoly: (edgeId: string) => Pixel[] | undefined;
+  halfWidthOf: (edgeId: string) => number;
+  spacing: number;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (envStr('OCTI_FANZONE') !== '1') return;
+  let count = 0;
+  for (const z of d.zones) {
+    const e = d.edgeById.get(z.edgeA);
+    const base = d.basePoly(z.edgeA);
+    const zp = d.nodePx.get(z.node);
+    if (!e || !base || base.length < 2 || !zp) continue;
+    const lat = d.halfWidthOf(z.edgeA) + d.spacing;
+    let arc = 0;
+    for (let i = 1; i < base.length; i++) arc += Math.hypot(base[i][0] - base[i - 1][0], base[i][1] - base[i - 1][1]);
+    for (const [nodeId, marks] of d.stopsByNode) {
+      const homeNode = nodeId.split('::')[0];
+      if (homeNode === z.node) continue;
+      // A station whose OWN node lives closer to the junction than the
+      // zone's reach has no legal seat on this edge at all; that is the
+      // layout's spacing, not a seating choice, and not this census's
+      // finding. Marks with room that strayed inside anyway, and marks
+      // from FOREIGN corridors, are the violations.
+      if ((e.from === homeNode || e.to === homeNode) && arc < z.reach + d.spacing) continue;
+      for (const m of marks) {
+        if (d.joinStopPos.has(homeNode + '|' + m.lineId)) continue;
+        // nearest point on the base + its distance from the zone node
+        let bestD = Infinity;
+        let bestQ: Pixel = base[0];
+        for (let i = 1; i < base.length; i++) {
+          const ax = base[i - 1][0], ay = base[i - 1][1];
+          const vx = base[i][0] - ax, vy = base[i][1] - ay;
+          const len2 = vx * vx + vy * vy;
+          if (len2 < 1e-12) continue;
+          let t = ((m.pos[0] - ax) * vx + (m.pos[1] - ay) * vy) / len2;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const qx = ax + vx * t, qy = ay + vy * t;
+          const dd = Math.hypot(m.pos[0] - qx, m.pos[1] - qy);
+          if (dd < bestD) { bestD = dd; bestQ = [qx, qy]; }
+        }
+        if (bestD > lat) continue;
+        const along = Math.hypot(bestQ[0] - zp[0], bestQ[1] - zp[1]);
+        if (along >= z.reach - 0.5) continue;
+        count++;
+        console.warn(
+          `[fanzone] stop ${m.lineId.slice(0, 4)}@${homeNode} pos=(${m.pos[0].toFixed(0)},${m.pos[1].toFixed(0)})` +
+          ` inside ${z.node} zone on ${z.edgeA} (along=${along.toFixed(1)} < reach=${z.reach.toFixed(1)})`,
+        );
+      }
+    }
+  }
+  console.warn(`[fanzone] ${count} stop-mark intrusions`);
+}
+
 /** OCTI_LANES=<edgeId,edgeId,...>: print each listed edge's lane seating
  *  right after lane construction: the drawn order and, per line, its slot,
  *  the edge bias, and the lane polyline's end points. */

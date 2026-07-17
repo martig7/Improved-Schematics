@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportLaneSeats, reportFanZones, reportStopSeating,
 } from './debug/renderOctilinear.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
@@ -1219,6 +1219,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // docs/draw-geometry-invariants.md). OCTI_FAN=0 runs the legacy per-line
   // join ladder below instead, kept for A/B until the rebuild is signed off.
   const useFanJoins = envStr('OCTI_FAN') !== '0';
+  let fanZones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }> = [];
   if (useFanJoins) {
     const fan = buildFanJoins({
       lineTraversals: layout.lineTraversals,
@@ -1242,6 +1243,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     for (const [k, v] of fan.joinStopPos) joinStopPos.set(k, v);
     for (const k of fan.endMoved) endMoved.add(k);
     for (const k of fan.mitered) mitered.add(k);
+    fanZones = fan.zones;
     reportFanZones({
       zones: fan.zones,
       tapers: fan.tapers,
@@ -3898,6 +3900,20 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     arcOfEdge.set(edge.id, arc);
   }
   const paintGroups = computePaintGroups(orderOf, arcOfEdge, [...lineById.keys()]);
+
+  reportStopSeating({
+    zones: fanZones,
+    stopsByNode,
+    joinStopPos,
+    edgeById,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    halfWidthOf: (id) => (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing,
+    spacing,
+    nodePx,
+  });
 
   return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, paintGroups };
 }
