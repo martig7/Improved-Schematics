@@ -128,15 +128,24 @@ export function reportBundleClips(d: {
     return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
   };
   const rows = [...clips].sort((a, b) => b.run - a.run);
+  let sameColor = 0;
+  for (const r of rows) {
+    if ((lineById.get(r.idA)?.color ?? '').toLowerCase() === (lineById.get(r.idB)?.color ?? '#?').toLowerCase()) sameColor++;
+  }
   for (const r of rows.slice(0, 60)) {
     const la = lineById.get(r.idA);
     const lb = lineById.get(r.idB);
+    const invisible = (la?.color ?? '').toLowerCase() === (lb?.color ?? '#?').toLowerCase();
     console.error(
       `[clips] ${la?.label ?? r.idA} (${la?.color ?? '?'}) x ${lb?.label ?? r.idB} (${lb?.color ?? '?'}) ` +
-      `run=${r.run.toFixed(0)}px at=(${r.at[0].toFixed(0)},${r.at[1].toFixed(0)}) near=${nearestGroup(r.at)}`,
+      `run=${r.run.toFixed(0)}px at=(${r.at[0].toFixed(0)},${r.at[1].toFixed(0)}) near=${nearestGroup(r.at)}` +
+      (invisible ? ' [same-color]' : ''),
     );
   }
-  console.error(`[clips] ${rows.length} ink clips (dist<${distMax.toFixed(1)} run>=${runMin.toFixed(1)})`);
+  console.error(
+    `[clips] ${rows.length} ink clips, ${rows.length - sameColor} visible + ${sameColor} same-color ` +
+    `(dist<${distMax.toFixed(1)} run>=${runMin.toFixed(1)})`,
+  );
 }
 
 /** OCTI_ZIGS: census of perpendicular micro-steps in the FINAL ink

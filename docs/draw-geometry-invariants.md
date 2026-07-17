@@ -130,6 +130,16 @@ taper slants as a whole instead of stepping at its end. The degenerate
 perpendicular connector chord is axis-aligned, so the octilinearity budget
 (I6) never catches it; it is a defect in its own right.
 
+**I10. Capsules seat on clean lines.** When the interchange capsule
+machinery chooses the lane its row line crosses or its boxes anchor to, it
+prefers lines whose ink is NOT overlapped (no sub-pitch coincident or
+overlapping strand from another line at the seat). An overlapped line may
+be chosen only as a last resort, ranked above (tried before) the
+non-octilinear fallback: clean octilinear seats first, overlapped
+octilinear seats second, non-octilinear constructions last. Scheduled as
+the FINAL rebuild milestone (a capsule-code rewrite), after the drawn-lane
+invariants above hold.
+
 ## 4. Direction for the rebuild
 
 Replace the join-ladder-plus-connector architecture with two cooperating
@@ -155,6 +165,11 @@ disappears entirely.
   (I8), emitted group by group (casings, then strokes). Pure paint-order
   work over the finished geometry; computed once with the geometry so
   repaints stay cheap.
+- **Capsule seat rewrite (last).** Rework the capsule seat search to rank
+  candidate lines by ink cleanliness (I10): clean octilinear seats, then
+  overlapped octilinear seats, then the non-octilinear fallback. Runs after
+  the lane invariants hold, so cleanliness is a property the seat search
+  can actually rely on.
 
 Rulers that gate the rebuild, all existing: painted-loop census
 (`OCTI_LOOPS`), ink-clip census (`OCTI_CLIPS`), same-section twist census,
