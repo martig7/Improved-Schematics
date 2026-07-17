@@ -25,7 +25,7 @@ import { assembleDByLine } from './assemblePath';
 import { computePaintGroups } from './paintLayers';
 import { findParallelPairs, applyJointSeating } from './layout/corridorSep';
 import { detectChains } from './chains';
-import { buildChainRails } from './chainRails';
+import { computeChainSeats } from './chainSeats';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -962,6 +962,38 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
   }
 
+  const chains = detectChains({
+    edges: layout.edges,
+    basePoly: (id) => {
+      const e = edgeById.get(id);
+      return e ? edgePolyline(e) : undefined;
+    },
+    laneCount: (id) => orderOf.get(id)?.length ?? 0,
+    spacing,
+  });
+  reportChains({ chains, nodePx, edgeById });
+  // Chain seat policy (invariant I3, chains spec, OCTI_CHAIN=1): interior
+  // edges of a chain take their lane offsets from the chain's shared seat
+  // ladder instead of slot+bias, so interior bias seams vanish and the
+  // seams at the chain ends are ordinary jogs the fan already closes.
+  const chainSeatOf = envStr('OCTI_CHAIN') === '1'
+    ? computeChainSeats({
+      chains,
+      edgeById,
+      basePoly: (id) => {
+        const e = edgeById.get(id);
+        return e ? edgePolyline(e) : undefined;
+      },
+      laneOffsetOf: (edgeId, lineId) => {
+        const slot = slotOf.get(edgeId + '|' + lineId);
+        if (slot === undefined) return undefined;
+        return slot + (biasOf.get(edgeId) ?? 0);
+      },
+      lineTraversals: layout.lineTraversals,
+      spacing,
+    })
+    : new Map<string, number>();
+
   for (const edge of layout.edges) {
     const base = edgePolyline(edge);
     if (base.length < 2) continue;
@@ -969,7 +1001,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     const bias = biasOf.get(edge.id) ?? 0;
     for (let i = 0; i < order.length; i++) {
       const lineId = order[i];
-      const o = (slotOf.get(edge.id + '|' + lineId) ?? 0) + bias;
+      const o = chainSeatOf.get(edge.id + '|' + lineId) ?? ((slotOf.get(edge.id + '|' + lineId) ?? 0) + bias);
       const poly =
         Math.abs(o) < 1e-9
           ? base.map((p) => p.slice() as Pixel)
@@ -1104,41 +1136,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       console.error(`[joint] ${sepPairs.length} pairs`, sepPairs.map((p) => `${p.eA}x${p.eB} d0=${p.d0.toFixed(1)} need=${p.needed.toFixed(1)}`).join('; '));
     }
     applyJointSeating({ pairs: sepPairs, polyOf: polyOfEdge, orderOf, segPath, spacing });
-  }
-
-  const chains = detectChains({
-    edges: layout.edges,
-    basePoly: (id) => {
-      const e = edgeById.get(id);
-      return e ? edgePolyline(e) : undefined;
-    },
-    laneCount: (id) => orderOf.get(id)?.length ?? 0,
-    spacing,
-  });
-  reportChains({ chains, nodePx, edgeById });
-
-  // Chain rails (invariant I3, chains spec C2, OCTI_CHAIN=1 to enable):
-  // over each chain's interior, lines ride rails derived from the anchor
-  // frames they enter and leave with, replacing interior lanes in place so
-  // seat seams resolve as placed transitions instead of per-node jogs.
-  if (envStr('OCTI_CHAIN') === '1') {
-    buildChainRails({
-      chains,
-      edgeById,
-      basePoly: (id) => {
-        const e = edgeById.get(id);
-        return e ? edgePolyline(e) : undefined;
-      },
-      laneOffsetOf: (edgeId, lineId) => {
-        const slot = slotOf.get(edgeId + '|' + lineId);
-        if (slot === undefined) return undefined;
-        return slot + (biasOf.get(edgeId) ?? 0);
-      },
-      lineTraversals: layout.lineTraversals,
-      segPath,
-      suppressed,
-      spacing,
-    });
   }
 
   // Join pass: where a line continues across a node, trim the two lane ends
