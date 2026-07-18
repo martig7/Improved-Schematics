@@ -918,6 +918,12 @@ export function separateFusedStations(
           acc += segLen;
         }
         if (dist(sP, nodePos) < nodeFloor) continue;
+        // A split point at either terminal vertex leaves a zero-length piece
+        // (a one-point path posing as an edge, which downstream corridor
+        // walkers dereference). Happens when the edge is short enough that
+        // the node floor overrides the far-end clamp. Not a split: reject
+        // the candidate and let the next one (or none) serve.
+        if (dist(sP, pts[0]) < 1e-6 || dist(sP, pts[pts.length - 1]) < 1e-6) continue;
         best = cand;
         segIdx = sIdx;
         splitP = sP;

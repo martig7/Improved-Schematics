@@ -621,3 +621,73 @@ test('mergeCoincidentPaths fuses an edge overlapping a chain with a sub-lattice 
   assert.notEqual(t1[0].reversed, t1[3].reversed);
   assert.notEqual(t1[1].reversed, t1[2].reversed);
 });
+
+test('separateFusedStations rejects a split landing on a terminal vertex (no one-point paths)', () => {
+  // A hopped-to candidate edge SHORTER than the node floor clamps the split
+  // arc to its far terminal vertex: the "split" would leave a zero-length
+  // tail (a one-point path posing as an edge), which downstream corridor
+  // walkers dereference. Such a candidate must be rejected; with no other
+  // valid candidate the pair stays fused. Geometry: 4 lines make the fan
+  // floor ~22.7px; e2 (10px) is hopped over (< 2*MIN_SPLIT_ARC), e3 (16px)
+  // is a candidate but shorter than the floor, and g2's projection sits
+  // near e3's far end B.
+  const L = ['L1', 'L2', 'L3', 'L4'];
+  const nodes = new Map([
+    ['A', { id: 'A', pos: [0, 0] as Pixel }],
+    ['N', { id: 'N', pos: [100, 0] as Pixel }],
+    ['C', { id: 'C', pos: [110, 0] as Pixel }],
+    ['B', { id: 'B', pos: [126, 0] as Pixel }],
+  ]);
+  const mkEdge = (id: string, from: string, to: string, pts: Pixel[]) =>
+    [id, { id, from, to, points: pts, lineIds: new Set(L) }] as const;
+  const edges = new Map([
+    mkEdge('e1', 'A', 'N', [[0, 0], [100, 0]]),
+    mkEdge('e2', 'N', 'C', [[100, 0], [110, 0]]),
+    mkEdge('e3', 'C', 'B', [[110, 0], [126, 0]]),
+  ]);
+  const h: SupportGraph = {
+    nodes,
+    edges,
+    adj: new Map([
+      ['A', ['e1']],
+      ['N', ['e1', 'e2']],
+      ['C', ['e2', 'e3']],
+      ['B', ['e3']],
+    ]),
+    lineRefs: new Map(),
+    lineTraversals: new Map(L.map((l) => [l, [
+      { edgeId: 'e1', reversed: false },
+      { edgeId: 'e2', reversed: false },
+      { edgeId: 'e3', reversed: false },
+    ]])),
+    stations: new Map([
+      ['g1', { id: 'g1', label: 'Keeper', lngLat: [0, 0], nodeId: 'N', truePos: [99, 1] as Pixel, stopLines: new Set(L) }],
+      ['g2', { id: 'g2', label: 'Far', lngLat: [0, 0], nodeId: 'N', truePos: [125, 2] as Pixel, stopLines: new Set(L) }],
+    ]),
+    stopAt: new Set(L.map((l) => l + '|N')),
+  };
+  const img: Image = {
+    placement: new Map([
+      ['A', [0, 0] as Pixel],
+      ['N', [100, 0] as Pixel],
+      ['C', [110, 0] as Pixel],
+      ['B', [126, 0] as Pixel],
+    ]),
+    paths: new Map([
+      ['e1', [[0, 0], [100, 0]] as Pixel[]],
+      ['e2', [[100, 0], [110, 0]] as Pixel[]],
+      ['e3', [[110, 0], [126, 0]] as Pixel[]],
+    ]),
+    cellSize: 16,
+  };
+  separateFusedStations(h, img, 16);
+  // no edge may end up with a degenerate path
+  for (const [id, pts] of img.paths) {
+    assert.ok(pts.length >= 2, `path of ${id} has >= 2 points (got ${pts.length})`);
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    assert.ok(len > 1e-6, `edge ${id} has positive length`);
+  }
+  // with no valid candidate the pair stays fused rather than degenerating
+  assert.equal(h.stations.get('g2')!.nodeId, 'N');
+});
