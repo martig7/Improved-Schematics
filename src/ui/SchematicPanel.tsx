@@ -109,7 +109,12 @@ const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p)
 // bands at the canvas edges — up to 5x at the right; canvas-preserving 1 at
 // the far left). [-1, +1].
 const boxExpandFromPos = (p: number) => Math.max(0.25, Math.pow(4, p));
-const boxGrowthFromPos = (p: number) => Math.max(1, 2.5 * Math.pow(2, p));
+// Growth budget: right half keeps the exponential (2.5x at center, 5x at the
+// far right); the LEFT half now runs down to 1.0 — canvas-preserving, which
+// the exact throttle turns into the identity warp — so "lowered all the way"
+// genuinely means NO box warp instead of a floor of 1.25x.
+const boxGrowthFromPos = (p: number) =>
+  p <= 0 ? 1 + 3 * Math.max(0, Math.pow(2, p) - 0.5) : 2.5 * Math.pow(2, p);
 // Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
 // smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
 // boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It

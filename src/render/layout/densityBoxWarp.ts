@@ -101,16 +101,29 @@ function nodeGaps(g: BoxGraph): number[] {
  *  bound each cluster of >= 2 nodes, padded by threshold/2 per side so the
  *  expansion push has extent even for collinear pairs. Catches small pinned
  *  clusters (JFK's 8px terminals) that are invisible to fraction-of-peak
- *  density. Deterministic: plain array iteration + arithmetic. */
-export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[] {
+ *  density.
+ *
+ *  LOCALITY BOUND: a component whose bbox exceeds `maxSpan` (default
+ *  6 × threshold, derived, I7) is not one pinned cluster: transitive
+ *  chaining over consecutive short edges can span a whole borough, and a
+ *  borough-scale box's demand statistic is then dominated by its tightest
+ *  pairs, pricing a giant expansion for a local problem. Oversized
+ *  components decompose into one padded box PER SHORT EDGE; the clip-apart
+ *  merge de-overlaps them (and its heavy-overlap rule re-unions genuinely
+ *  shared spots), so survival demand stays local and honest.
+ *  Deterministic: plain array iteration + arithmetic. */
+export function findContractionBoxes(g: BoxGraph, threshold: number, maxSpan?: number): DenseBox[] {
+  const span = maxSpan ?? threshold * 6;
   const parent = g.nodes.map((_, i) => i);
   const find = (i: number): number => {
     while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
     return i;
   };
   const touched = new Uint8Array(g.nodes.length);
+  const shortEdges: [number, number][] = [];
   for (const [a, b] of g.edges) {
     if (edgeLen(g, a, b) >= threshold) continue;
+    shortEdges.push([a, b]);
     touched[a] = 1;
     touched[b] = 1;
     const ra = find(a), rb = find(b);
@@ -133,9 +146,21 @@ export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[]
   }
   const pad = threshold / 2;
   const boxes: DenseBox[] = [];
-  for (const b of byRoot.values()) {
+  const oversized = new Set<number>();
+  for (const [root, b] of byRoot) {
     if (b.n < 2) continue;
+    if (b.x1 - b.x0 > span || b.y1 - b.y0 > span) { oversized.add(root); continue; }
     boxes.push({ x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad });
+  }
+  if (oversized.size) {
+    for (const [a, b] of shortEdges) {
+      if (!oversized.has(find(a))) continue;
+      const pa = g.nodes[a], pb = g.nodes[b];
+      boxes.push({
+        x0: Math.min(pa[0], pb[0]) - pad, y0: Math.min(pa[1], pb[1]) - pad,
+        x1: Math.max(pa[0], pb[0]) + pad, y1: Math.max(pa[1], pb[1]) + pad,
+      });
+    }
   }
   return boxes;
 }
@@ -272,9 +297,27 @@ export function findCapsuleBoxes(
     }
     e.pairs.push(t);
   }
+  // LOCALITY BOUND (mirrors findContractionBoxes): transitive pair chaining
+  // can span a borough; a borough-scale capsule box then prices its whole
+  // region by its tightest pair. Components wider than a few pair thresholds
+  // decompose into one padded box PER VIOLATING PAIR; the clip-apart merge
+  // de-overlaps them and re-unions the genuinely shared spots.
+  const maxSpan = 4 * cell;
   const out: DemandBox[] = [];
   for (const e of byRoot.values()) {
-    out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+    if (e.x1 - e.x0 <= maxSpan && e.y1 - e.y0 <= maxSpan) {
+      out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+      continue;
+    }
+    for (const t of e.pairs) {
+      const pa = g.nodes[t.a], pb = g.nodes[t.b];
+      const pad = Math.max(need(t.a), need(t.b));
+      out.push({
+        x0: Math.min(pa[0], pb[0]) - pad, y0: Math.min(pa[1], pb[1]) - pad,
+        x1: Math.max(pa[0], pb[0]) + pad, y1: Math.max(pa[1], pb[1]) + pad,
+        kind: 'capsule', pairs: [t],
+      });
+    }
   }
   return out;
 }
@@ -575,7 +618,16 @@ export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
         const bInA = b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
         if (a.kind !== b.kind && (aInB || bInA)) continue; // nest
         const small = area(a) <= area(b) ? a : b;
-        if (a.kind === b.kind && (aInB || bInA || ox * oy >= 0.5 * area(small))) {
+        // Same-region union: heavy overlap AND a union bbox no bigger than
+        // the pair's combined footprint. The area bound stops 2D chaining
+        // (a big box strip-overlapping a boxlet unions with corner waste and
+        // is rejected into a clip), while collinear corridor runs — whose
+        // union is waste-free — still coalesce into one coherent box.
+        const ux0 = Math.min(a.x0, b.x0), uy0 = Math.min(a.y0, b.y0);
+        const ux1 = Math.max(a.x1, b.x1), uy1 = Math.max(a.y1, b.y1);
+        const unionArea = (ux1 - ux0) * (uy1 - uy0);
+        if (a.kind === b.kind && (aInB || bInA ||
+            (ox * oy >= 0.5 * area(small) && unionArea <= area(a) + area(b)))) {
           const aes = Math.max(a.aes ?? 0, b.aes ?? 0);
           out[i] = {
             ...a,
@@ -1231,7 +1283,10 @@ export function buildDemandBoxWarp(
     // Previous secant point per box: the UNWARPED state (expand 1, input-space box).
     let prev = boxes.map((b, i) => evalBox(i, b, g.nodes, need));
     let ePrev = boxes.map(() => 1);
-    for (let pass = 0; pass < 4; pass++) {
+    // 6 passes (was 4): the per-pass raise is now bounded 1.5x, so a genuine
+    // deficit converges from below in a couple more steps instead of being
+    // cleared by a single overshooting jump.
+    for (let pass = 0; pass < 6; pass++) {
       const advected = g.nodes.map((p) => result.warp([p[0], p[1]]) as Pixel);
       const needAfter = (opts.cellFromMedLen(medianEdgeLenPx({ nodes: advected, edges: g.edges })) / 2) * slack;
       const now = boxes.map((_, i) => evalBox(i, oref.boxes![i], advected, needAfter));
@@ -1242,20 +1297,26 @@ export function buildDemandBoxWarp(
         // (the two 1e-9 guards below are just "<= 0 with an fp cushion";
         // scale-independent, since the guarded deltas are far above 1e-9
         // whenever a real step happened.)
+        // EVERY refinement raise is bounded to 1.5x per pass, and a raise is
+        // granted only on measured PROGRESS. The first-pass demand already
+        // encodes the measured need/gap ratios directly (pinned pairs seed at
+        // their true lift), so refinement only polishes against the post-warp
+        // state. The old behavior escalated on stalls; a box whose gap does
+        // not respond to its own expansion (a large cluster whose median
+        // inside edge lies along its weak axis) then ratcheted to the ceiling
+        // and the growth throttle renormalized the whole map onto the cap.
+        // Deficits that expansion provably cannot clear are ACCEPTED, not
+        // chased.
+        const step = (t: number): number => Math.min(expandMax, Math.min(e * 1.5, Math.max(e, t)));
         const de = e - ePrev[i];
-        if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
+        if (de <= 1e-9) return step((e * (needV + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - prev[i].gap) - (needV - prev[i].need);
-        // denom <= 0: the secant's LOCAL affine model says the need rises at
-        // least as fast as this box's gap. The push saturates as e rises
-        // (straddling/outside edges stop stretching and the gap catches up),
-        // but that is a license for a BOUNDED step, not a jump to the
-        // ceiling: the ceiling jump manufactured unbounded demand that the
-        // growth throttle then renormalized into always-at-cap growth. Step
-        // geometrically and re-measure; a residual stall converges within
-        // the pass budget or stops mattering when the cap binds.
-        if (denom <= 1e-9) return Math.min(expandMax, e * 1.5);
-        const target = e + ((needV + margin - gap) * de) / denom;
-        return Math.min(expandMax, Math.max(e, target));
+        // denom <= 0: the need moved at least as fast as this box's gap. The
+        // push saturates as e rises (straddling edges stop stretching, the
+        // median stops climbing, the gap catches up), so a BOUNDED step
+        // toward that regime is warranted; the jump to the ceiling is not.
+        if (denom <= 1e-9) return step(expandMax);
+        return step(e + ((needV + margin - gap) * de) / denom);
       });
       // No progress: every box either cleared or sits saturated at the
       // ceiling, so another pass would rebuild bit-identically. Stop.
