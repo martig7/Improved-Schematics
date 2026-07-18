@@ -456,10 +456,37 @@ test('findCapsuleBoxes: deterministic', () => {
 const DB = (x0: number, y0: number, x1: number, y1: number, kind: BoxKind, pairs: PairTarget[] = []): DemandBox =>
   ({ x0, y0, x1, y1, kind, pairs });
 
-test('mergeDemandBoxes: same-kind overlap unions (old behavior); pairs concatenate', () => {
+const totalArea = (bs: { x0: number; y0: number; x1: number; y1: number }[]): number =>
+  bs.reduce((a, b) => a + Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0), 0);
+const disjointPairwise = (bs: DemandBox[]): boolean => {
+  for (let i = 0; i < bs.length; i++)
+    for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i], b = bs[j];
+      const aInB = a.x0 >= b.x0 - 1e-6 && a.x1 <= b.x1 + 1e-6 && a.y0 >= b.y0 - 1e-6 && a.y1 <= b.y1 + 1e-6;
+      const bInA = b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
+      if (a.kind !== b.kind && (aInB || bInA)) continue; // nests are sanctioned
+      const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+      const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      if (ox > 1e-6 && oy > 1e-6) return false;
+    }
+  return true;
+};
+
+test('mergeDemandBoxes: same-kind LIGHT overlap clips apart (no union growth)', () => {
   const m = mergeDemandBoxes([
     DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
     DB(8, 8, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]),
+  ]);
+  assert.equal(m.length, 2, 'a 4% overlap is not the same region');
+  assert.ok(disjointPairwise(m), 'clipped disjoint');
+  assert.ok(totalArea(m) <= 100 + 144 + 1e-6, 'no area growth');
+  assert.equal(m.reduce((n, b) => n + b.pairs.length, 0), 2, 'both pairs survive');
+});
+
+test('mergeDemandBoxes: same-kind HEAVY overlap (>= half the smaller box) unions; pairs concatenate', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
+    DB(2, 2, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]), // overlap 64 of 100
   ]);
   assert.equal(m.length, 1);
   assert.deepEqual({ x0: m[0].x0, y0: m[0].y0, x1: m[0].x1, y1: m[0].y1 }, { x0: 0, y0: 0, x1: 20, y1: 20 });
@@ -474,20 +501,60 @@ test('mergeDemandBoxes: cross-kind CONTAINMENT nests — both boxes survive', ()
   assert.equal(m.length, 2);
 });
 
-test('mergeDemandBoxes: cross-kind PARTIAL overlap unions; capsule kind and pairs win', () => {
+test('mergeDemandBoxes: cross-kind PARTIAL overlap clips the lower rank; higher rank keeps its extent', () => {
   const m = mergeDemandBoxes([
     DB(0, 0, 50, 50, 'contraction'),
     DB(40, 40, 90, 90, 'capsule', [{ a: 0, b: 1, required: 25 }]),
   ]);
-  assert.equal(m.length, 1);
-  assert.equal(m[0].kind, 'capsule');
-  assert.equal(m[0].pairs.length, 1);
-  assert.deepEqual({ x0: m[0].x0, x1: m[0].x1 }, { x0: 0, x1: 90 });
+  assert.equal(m.length, 2, 'clip, not union');
+  const caps = m.find((b) => b.kind === 'capsule')!;
+  const cont = m.find((b) => b.kind === 'contraction')!;
+  assert.deepEqual({ x0: caps.x0, y0: caps.y0, x1: caps.x1, y1: caps.y1 }, { x0: 40, y0: 40, x1: 90, y1: 90 }, 'winner untouched');
+  assert.ok(disjointPairwise(m));
+  // least-loss clip: losing a 10px strip on one axis, not both
+  assert.ok(totalArea([cont]) >= 50 * 40 - 1e-6, `loser keeps its least-loss remainder (got ${totalArea([cont])})`);
+  assert.equal(caps.pairs.length, 1);
 });
 
-test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through', () => {
+test('mergeDemandBoxes: a chain of small overlapping boxes cannot union into a mega box', () => {
+  // six contraction boxlets each straddling the next, plus one density box
+  // overlapping the first: under bbox-union fixpoint these chained into one
+  // giant box; clip-apart must keep every output within its input extent.
+  const chain: DemandBox[] = [];
+  for (let i = 0; i < 6; i++) chain.push(DB(10 + i * 8, 10, 22 + i * 8, 22, 'contraction'));
+  chain.push(DB(0, 0, 30, 30, 'density'));
+  const m = mergeDemandBoxes(chain);
+  assert.ok(disjointPairwise(m), 'outputs disjoint (nests aside)');
+  assert.ok(totalArea(m) <= totalArea(chain) + 1e-6, 'total area never grows');
+  const maxW = Math.max(...m.map((b) => b.x1 - b.x0));
+  const maxH = Math.max(...m.map((b) => b.y1 - b.y0));
+  assert.ok(maxW <= 30 + 1e-6 && maxH <= 30 + 1e-6, `no output exceeds the largest input (${maxW}x${maxH})`);
+});
+
+test('mergeDemandBoxes: a clip that consumes a box drops it and migrates its pairs', () => {
+  // the loser pokes out of the winner by a sub-1px fringe on its only free
+  // side: every clip remainder is a sliver -> drop, pairs migrate
+  const m = mergeDemandBoxes([
+    DB(10, 19.8, 30, 20.5, 'contraction', [{ a: 4, b: 5, required: 9 }]),
+    DB(0, 20, 40, 60, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 1, 'sliver remainder dropped');
+  assert.equal(m[0].kind, 'capsule');
+  assert.equal(m[0].pairs.length, 2, 'orphaned pair migrated to the winner');
+});
+
+test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through; input-order invariant', () => {
   assert.equal(mergeDemandBoxes([DB(0, 0, 10, 10, 'density'), DB(50, 50, 60, 60, 'contraction')]).length, 2);
   assert.deepEqual(mergeDemandBoxes([]), []);
+  const boxes = [
+    DB(0, 0, 50, 50, 'contraction'),
+    DB(40, 40, 90, 90, 'capsule'),
+    DB(45, 0, 70, 30, 'density'),
+  ];
+  const key = (b: DemandBox) => `${b.kind}:${b.x0.toFixed(3)},${b.y0.toFixed(3)},${b.x1.toFixed(3)},${b.y1.toFixed(3)}`;
+  const a = mergeDemandBoxes(boxes).map(key).sort();
+  const b = mergeDemandBoxes([boxes[2], boxes[0], boxes[1]]).map(key).sort();
+  assert.deepEqual(a, b, 'result independent of input order');
 });
 
 test('buildDemandBoxWarp: capsule oracle lifts a close interchange pair to its required separation', () => {

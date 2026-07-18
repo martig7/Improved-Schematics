@@ -532,35 +532,82 @@ function nnDirWeights(idx: readonly number[], g: BoxGraph, ctx: DirContext): { w
   return { wx, wy };
 }
 
-/** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox. A box
- *  fully CONTAINED in a different-kind box NESTS: both survive. The summed
- *  per-axis pushes stay monotone, so compounding is fold-free, and the inner
- *  push only adds a rigid translation to the outer far field. Cross-kind
- *  PARTIAL overlap unions conservatively (kind precedence capsule > contraction
- *  > density; pairs concatenate) so partial pushes never double-stack.
- *  Deterministic fixpoint scan. */
+/** Overlap resolution WITHOUT union growth (spec 2026-07-18): a box never
+ *  grows by merging, so the chain reactions that used to build map-core mega
+ *  boxes (dozens of padded boxlets bbox-unioning into one) are structurally
+ *  impossible. Rules, in order:
+ *  - CONTAINMENT across kinds NESTS: both survive (the inner push adds a
+ *    rigid translation to the outer far field; summed pushes stay monotone).
+ *  - Same-kind overlap covering at least HALF the smaller box unions as
+ *    genuinely-the-same-region (bounded growth: no chaining, since the union
+ *    of a >=50%-overlapping pair stays comparable to the larger box).
+ *  - Every other overlap CLIPS the lower-precedence box out of the overlap
+ *    along its axis of least area loss (kind precedence capsule > contraction
+ *    > density; equal precedence: the smaller box yields). Boxes end
+ *    DISJOINT, so partial pushes never double-stack. A clip whose remainder
+ *    is a sub-pixel sliver drops the box and migrates its pair targets to
+ *    the box that clipped it.
+ *  Input is canonically pre-sorted, so the fixpoint result is independent of
+ *  the callers' assembly order. Deterministic scan; arithmetic only. */
 export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
-  const out = boxes.map((b) => ({ ...b, pairs: [...b.pairs] }));
-  const contains = (a: DemandBox, b: DemandBox): boolean =>
-    b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
   const rank: Record<BoxKind, number> = { density: 0, contraction: 1, capsule: 2, corridor: 3 };
-  let merged = true;
-  while (merged) {
-    merged = false;
+  const area = (b: DemandBox): number => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);
+  const out = boxes
+    .map((b) => ({ ...b, pairs: [...b.pairs] }))
+    .sort((a, b) =>
+      (rank[b.kind] - rank[a.kind]) || (area(b) - area(a)) ||
+      (a.x0 - b.x0) || (a.y0 - b.y0) || (a.x1 - b.x1) || (a.y1 - b.y1));
+  const MIN_EXTENT = 1; // px: a thinner clip remainder is a sliver, not a box
+  let changed = true;
+  while (changed) {
+    changed = false;
     outer: for (let i = 0; i < out.length; i++)
       for (let j = i + 1; j < out.length; j++) {
         const a = out[i], b = out[j];
-        const overlap = a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
-        if (!overlap) continue;
-        if (a.kind !== b.kind && (contains(a, b) || contains(b, a))) continue; // nest
-        out[i] = {
-          x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
-          x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
-          kind: rank[a.kind] >= rank[b.kind] ? a.kind : b.kind,
-          pairs: [...a.pairs, ...b.pairs],
+        const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+        const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+        if (ox <= 1e-6 || oy <= 1e-6) continue; // disjoint (touching edges are fine)
+        const aInB = a.x0 >= b.x0 - 1e-6 && a.x1 <= b.x1 + 1e-6 && a.y0 >= b.y0 - 1e-6 && a.y1 <= b.y1 + 1e-6;
+        const bInA = b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
+        if (a.kind !== b.kind && (aInB || bInA)) continue; // nest
+        const small = area(a) <= area(b) ? a : b;
+        if (a.kind === b.kind && (aInB || bInA || ox * oy >= 0.5 * area(small))) {
+          out[i] = {
+            ...a,
+            x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+            x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+            pairs: [...a.pairs, ...b.pairs],
+          };
+          out.splice(j, 1);
+          changed = true;
+          break outer;
+        }
+        // clip the loser out of the overlap
+        const loserIsA =
+          rank[a.kind] !== rank[b.kind] ? rank[a.kind] < rank[b.kind]
+          : area(a) !== area(b) ? area(a) < area(b)
+          : false; // tie: the later scan position (j) yields
+        const loser = loserIsA ? a : b;
+        const winner = loserIsA ? b : a;
+        // candidate clips: slide one loser edge to the winner's boundary;
+        // keep the remainder with the most area
+        let bx0 = loser.x0, by0 = loser.y0, bx1 = loser.x1, by1 = loser.y1;
+        let bestA = -1;
+        const consider = (x0: number, y0: number, x1: number, y1: number) => {
+          const ca = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+          if (ca > bestA) { bestA = ca; bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; }
         };
-        out.splice(j, 1);
-        merged = true;
+        if (loser.x0 < winner.x0) consider(loser.x0, loser.y0, winner.x0, loser.y1);
+        if (loser.x1 > winner.x1) consider(winner.x1, loser.y0, loser.x1, loser.y1);
+        if (loser.y0 < winner.y0) consider(loser.x0, loser.y0, loser.x1, winner.y0);
+        if (loser.y1 > winner.y1) consider(loser.x0, winner.y1, loser.x1, loser.y1);
+        if (bestA < 0 || bx1 - bx0 < MIN_EXTENT || by1 - by0 < MIN_EXTENT) {
+          winner.pairs.push(...loser.pairs);
+          out.splice(out.indexOf(loser), 1);
+        } else {
+          loser.x0 = bx0; loser.y0 = by0; loser.x1 = bx1; loser.y1 = by1;
+        }
+        changed = true;
         break outer;
       }
   }
