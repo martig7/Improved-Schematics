@@ -80,7 +80,10 @@ corner fan and a row that seats on clean mid-corridor lanes cost the same.
   as much as any foreign line would.
 - **All ladder tiers inherit.** The penalty composes into the station's
   `proximity` closure in `renderOctilinear`, which every tier already spreads
-  (primary, far-attach, best-effort, relaxed). `rowPlace.ts` is untouched.
+  (primary, far-attach, best-effort, relaxed). `rowPlace.ts` changes only in
+  one detail: the `proximity` callback gains an optional member-index
+  argument (occlusion is per-line, so the closure must know whose dot it is
+  pricing); its single call site passes the index through.
   The relaxed seat therefore also prefers clean ink among its free-angle
   states — cleanliness ranks above (is applied before) non-octilinearity, and
   within the relaxed tier it still discriminates.
