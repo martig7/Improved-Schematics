@@ -3914,7 +3914,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   });
   reportContiguity({
     layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine,
-    stations: args.stations, nodePx,
+    stations: args.stations, nodePx, stopsByNode,
   });
 
   // Toronto crossings, from the FINAL drawn ribbons (dByLine is complete here:

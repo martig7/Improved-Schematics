@@ -769,10 +769,15 @@ export function reportContiguity(d: {
   parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
   stations?: Array<{ nodeId: string }>;
   nodePx: Map<string, Pixel>;
+  /** Drawn stop-mark positions; a break whose endpoints sit under one of
+   *  the line's own marks is an intentional opaque-design crop window,
+   *  not a crack. */
+  stopsByNode?: Map<string, Array<{ lineId: string; pos: Pixel }>>;
 }): void {
   if (!envStr('OCTI_CONTIG')) return;
-  const { layout, lineById, dByLine, parseInk, stations, nodePx } = d;
+  const { layout, lineById, dByLine, parseInk, stations, nodePx, stopsByNode } = d;
   const EPS = 0.6;
+  const MARK_R = 14;
   const segsByLine = parseInk(dByLine);
   const groups: Array<{ pos: Pixel; label: string }> = [];
   for (const st of stations ?? []) {
@@ -789,8 +794,16 @@ export function reportContiguity(d: {
     return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
   };
   const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  const stopsOf = new Map<string, Pixel[]>();
+  for (const entries of stopsByNode?.values() ?? []) {
+    for (const e of entries) {
+      const list = stopsOf.get(e.lineId);
+      if (list) list.push(e.pos); else stopsOf.set(e.lineId, [e.pos]);
+    }
+  }
   let brokenLines = 0;
   let breaks = 0;
+  let exempt = 0;
   let printed = 0;
   for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
@@ -810,6 +823,24 @@ export function reportContiguity(d: {
           if (touch) break;
         }
         if (touch) comp[findC(i)] = findC(j);
+      }
+    }
+    // opaque-design crop windows: a small gap whose BOTH sides sit under
+    // one of this line's own drawn marks is an intentional cut, and its
+    // components count as joined
+    const marks = stopsOf.get(lineId) ?? [];
+    const underMark = (p: Pixel): boolean => marks.some((m) => len(m, p) <= MARK_R);
+    for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        if (findC(i) === findC(j)) continue;
+        for (const a of ends[i]) {
+          for (const b of ends[j]) {
+            if (len(a, b) <= 2 * MARK_R && underMark(a) && underMark(b)) {
+              comp[findC(i)] = findC(j);
+              exempt++;
+            }
+          }
+        }
       }
     }
     const roots = new Set(chains.map((_, i) => findC(i)));
@@ -838,7 +869,7 @@ export function reportContiguity(d: {
       );
     }
   }
-  console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (seam eps ${EPS})`);
+  console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (${exempt} crop windows exempt, seam eps ${EPS})`);
 }
 
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
