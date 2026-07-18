@@ -913,3 +913,40 @@ test('buildDemandBoxWarp: a graph whose gaps clear the need yields identity grow
   assert.equal(r.growthX, 1);
   assert.equal(r.growthY, 1);
 });
+
+test('findDenseBoxes: components carry a normalized density d, linear cutoff->peak', () => {
+  // one strong cluster + one weaker cluster: the strong core's d must exceed
+  // the weak one's, both within [0,1]
+  const samples = [...clusterAt(25, 25, 240), ...clusterAt(75, 75, 90)];
+  const boxes = findDenseBoxes(samples, BOX, { bins: 32, frac: 0.2 });
+  const at = (x: number, y: number) => boxes.find((b) => b.x0 <= x && x <= b.x1 && b.y0 <= y && y <= b.y1);
+  const strong = at(25, 25);
+  const weak = at(75, 75);
+  assert.ok(strong && weak, 'both clusters boxed');
+  assert.ok(strong!.d >= 0 && strong!.d <= 1 && weak!.d >= 0 && weak!.d <= 1, 'd in [0,1]');
+  assert.ok(strong!.d > weak!.d, `denser core has higher d (${strong!.d.toFixed(2)} vs ${weak!.d.toFixed(2)})`);
+});
+
+test('demand pricing: survival ignores userMult; aesthetics scale linearly with d', () => {
+  // pinned pair (gap 6 << need ~10.1): survival demand identical across sliders
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const grow = (userMult: number): number => {
+    const r = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, userMult, cellFromMedLen: () => 12 });
+    return r.growthX * r.growthY;
+  };
+  const lo = grow(0.25);
+  const mid = grow(1);
+  const hi = grow(4);
+  assert.ok(Math.abs(lo - mid) < 1e-9, `survival identical at 0.25 and 1 (${lo} vs ${mid})`);
+  assert.ok(Math.abs(hi - mid) < 1e-9, `no density samples -> no aesthetic term even at 4 (${hi} vs ${mid})`);
+  // aesthetics: a dense cluster with cleared survival grows only when the
+  // slider goes right, proportionally to its d
+  const s = clusterAt(50, 50, 200);
+  const aLo = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 1 });
+  const aHi = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 4 });
+  assert.equal(aLo.growthX, 1, 'userMult 1 -> no aesthetic demand');
+  assert.ok(aHi.growthX > 1, 'userMult 4 magnifies the dense core');
+});

@@ -97,12 +97,12 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // Geographic-course affinity: realistic (left) = stronger course-keeping (up to
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
-// Box-warp strength → the demand MULTIPLIER (densityBoxWarp userMult). 0 (center)
-// = 1: every dense box expands by exactly what its edges need to survive octi
-// contraction, no more. Right (stylized) adds aesthetic magnification on top
-// (up to 4x the demand); left (realistic) eases the granted room back toward
-// bare survival and below (the demand formula clamps at >= 1 internally, so the
-// far left softens aesthetics only — survival room is never fully revoked).
+// Box-warp strength → the AESTHETIC multiplier ceiling (densityBoxWarp
+// userMult). Survival demand (octi-contraction and capsule-pair needs) is
+// granted at 1x at EVERY position; the slider scales only the aesthetic term,
+// which is linear in each dense box's normalized density (map min..max), so a
+// shallow-density map barely warps at any position. Center and the whole left
+// half = survival only; right (stylized) magnifies the densest cores up to 4x.
 // boxGrowth → the MAX per-axis canvas growth that absorbs the demand (2.5x at
 // center — the direction-split per-borough boxes sum to more demand than the
 // old single-box 2x budget, and the shortfall crushes the far field into

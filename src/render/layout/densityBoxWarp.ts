@@ -176,6 +176,10 @@ export interface PairTarget { a: number; b: number; required: number }
 export interface DemandBox extends DenseBox {
   kind: BoxKind;
   pairs: PairTarget[];
+  /** Normalized density (density boxes only): linear in the map's own range
+   *  between the discovery cutoff (0) and the peak (1). The aesthetic demand
+   *  term is `1 + (userMult - 1) * aes`; survival demand ignores it. */
+  aes?: number;
 }
 
 export interface CapsuleOracleOptions {
@@ -572,11 +576,13 @@ export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
         if (a.kind !== b.kind && (aInB || bInA)) continue; // nest
         const small = area(a) <= area(b) ? a : b;
         if (a.kind === b.kind && (aInB || bInA || ox * oy >= 0.5 * area(small))) {
+          const aes = Math.max(a.aes ?? 0, b.aes ?? 0);
           out[i] = {
             ...a,
             x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
             x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
             pairs: [...a.pairs, ...b.pairs],
+            ...(aes > 0 ? { aes } : {}),
           };
           out.splice(j, 1);
           changed = true;
@@ -769,7 +775,7 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
           // over the halo. Expansion regrows cores over each other, and
           // recursion then re-decomposes the overlap into a pile of
           // double-stacked near-copies.
-          const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [] }));
+          const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [], ...(b.aes !== undefined ? { aes: b.aes } : {}) }));
           const orphans: DemandBox[] = [];
           for (const t of b.pairs) {
             const pa = g.nodes[t.a], pb = g.nodes[t.b];
@@ -816,13 +822,17 @@ type FindDenseBoxesOptions = DensityWarp2DOptionsLike & {
 };
 
 /** Find the densest regions as axis-aligned bounding boxes (pixel coords):
- *  threshold the smoothed excess-density grid at the pct-th percentile, then
- *  bound each 4-connected component of above-cutoff cells. */
+ *  threshold the smoothed excess-density grid at the cutoff (frac of peak),
+ *  then bound each 4-connected component of above-cutoff cells. Each box
+ *  carries `d`, its mean excess normalized LINEARLY between the cutoff and
+ *  the map's peak (0 = at the cutoff, 1 = the densest core): the aesthetic
+ *  demand scales with d, so a shallow-range map warps barely at all while
+ *  the true core of a dense map earns the full user multiplier. */
 export function findDenseBoxes(
   samples: readonly Pixel[],
   box: WarpBox,
   opts: FindDenseBoxesOptions = {},
-): DenseBox[] {
+): Array<DenseBox & { d: number }> {
   if (samples.length === 0) return [];
   // maxScale 1e9 = NO clip: the density's wide dynamic range is exactly the
   // signal we threshold on. densityGrid2D's default clip (8) would flatten a
@@ -844,13 +854,15 @@ export function findDenseBoxes(
   for (let i = 0; i < B * B; i++) dense[i] = e[i] >= cutoff && e[i] > 0 ? 1 : 0;
 
   const seen = new Uint8Array(B * B);
-  const boxes: DenseBox[] = [];
+  const boxes: Array<DenseBox & { d: number }> = [];
   for (let start = 0; start < B * B; start++) {
     if (!dense[start] || seen[start]) continue;
     let minx = B;
     let miny = B;
     let maxx = -1;
     let maxy = -1;
+    let esum = 0;
+    let ecnt = 0;
     const stack: number[] = [start];
     seen[start] = 1;
     while (stack.length) {
@@ -861,12 +873,18 @@ export function findDenseBoxes(
       if (cx > maxx) maxx = cx;
       if (cy < miny) miny = cy;
       if (cy > maxy) maxy = cy;
+      esum += e[c];
+      ecnt++;
       if (cx > 0 && dense[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; stack.push(c - 1); }
       if (cx < B - 1 && dense[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; stack.push(c + 1); }
       if (cy > 0 && dense[c - B] && !seen[c - B]) { seen[c - B] = 1; stack.push(c - B); }
       if (cy < B - 1 && dense[c + B] && !seen[c + B]) { seen[c + B] = 1; stack.push(c + B); }
     }
-    boxes.push({ x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch });
+    // normalized density: mean component excess, linear between the cutoff
+    // (d=0) and the peak (d=1); a flat map (emax ~ cutoff) yields d=0.
+    const span = emax - cutoff;
+    const d = span > 1e-9 ? Math.min(1, Math.max(0, (esum / ecnt - cutoff) / span)) : 0;
+    boxes.push({ x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch, d });
   }
   return boxes;
 }
@@ -918,15 +936,16 @@ export interface DemandWarpResult {
   growthY: number;
 }
 
-/** Per-box demand: the expansion that lifts the box's median node gap to the
- *  demand target `need` (= ĉ/2 · slack), times the user's aesthetic multiplier.
- *  A box whose gaps already clear the target gets ~userMult (aesthetics only). */
+/** Per-box SURVIVAL demand: the expansion that lifts the box's median node
+ *  gap to the demand target `need` (= ĉ/2 · slack). Absolute and
+ *  slider-independent: the user multiplier no longer scales survival (the
+ *  caller composes the aesthetic term separately, from the box's normalized
+ *  density). A box whose gaps already clear the target gets 1 (no demand). */
 function boxDemand(
   b: DenseBox,
   nodes: readonly Pixel[],
   gaps: readonly number[],
   need: number,
-  userMult: number,
   expandMax: number,
 ): number {
   const inside: number[] = [];
@@ -935,10 +954,10 @@ function boxDemand(
     if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 && Number.isFinite(gaps[i]) && gaps[i] > 0)
       inside.push(gaps[i]);
   }
-  if (inside.length === 0) return Math.min(expandMax, Math.max(1, userMult));
+  if (inside.length === 0) return 1;
   inside.sort((x, y) => x - y);
   const gMed = inside[inside.length >> 1];
-  return Math.min(expandMax, Math.max(1, userMult * Math.max(1, need / gMed)));
+  return Math.min(expandMax, Math.max(1, need / gMed));
 }
 
 /** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths.
@@ -1083,7 +1102,7 @@ export function buildDemandBoxWarp(
       })
     : [];
   const merged = mergeDemandBoxes([
-    ...density.map((b) => ({ ...b, kind: 'density' as const, pairs: [] })),
+    ...density.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, kind: 'density' as const, pairs: [], aes: b.d })),
     ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
     ...capsule,
     ...corridor,
@@ -1100,15 +1119,24 @@ export function buildDemandBoxWarp(
   }
 
   const gaps = nodeGaps(g);
-  let expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
-  // Capsule pair targets seed on top of the contraction-floor demand: the
-  // expansion that lifts each pair to its required separation (× userMult).
+  // Demand = max(survival, aesthetics). Survival (need/gap, pair lifts) is
+  // absolute and granted at 1x at every slider position; the user multiplier
+  // scales ONLY the aesthetic term, linear in the box's normalized density
+  // (density boxes carry aes in [0,1]; oracle boxes carry none). A shallow
+  // density range or a slider at/below center leaves aesthetics at 1.
+  let expands = boxes.map((b) => {
+    const survival = boxDemand(b, g.nodes, gaps, need, expandMax);
+    const aesthetic = 1 + Math.max(0, userMult - 1) * (b.aes ?? 0);
+    return Math.min(expandMax, Math.max(survival, aesthetic));
+  });
+  // Capsule pair targets seed on top: the expansion that lifts each pair to
+  // its required separation (absolute, slider-independent).
   expands = expands.map((e, i) => {
     let seed = e; // (not `out`, which is the output-sink parameter used below)
     for (const t of boxes[i].pairs) {
       const pa = g.nodes[t.a], pb = g.nodes[t.b];
       const d = Math.sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]));
-      if (d > 0) seed = Math.max(seed, Math.min(expandMax, Math.max(1, userMult * Math.max(1, t.required / d))));
+      if (d > 0) seed = Math.max(seed, Math.min(expandMax, Math.max(1, t.required / d)));
     }
     return seed;
   });
