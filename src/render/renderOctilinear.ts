@@ -2807,9 +2807,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           let incident = 0;
           for (const e of layout.edges) {
             if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
-            if (!segPath.has(e.id + '|' + mk.lineId)) continue;
-            if (!drawsOn(mk.lineId, e.id)) continue;
-            incident++;
+            const k = e.id + '|' + mk.lineId;
+            // A suppressed incident lane (jog-sliver or corner absorption)
+            // still carries the line onward across this node, so the line
+            // does NOT terminate here. Counting only drawn lanes misreads a
+            // through corner as a terminus and cuts the lane end its join
+            // curve bridges to, leaving a hole in the route ink.
+            if (segPath.has(k)) { if (drawsOn(mk.lineId, e.id)) incident++; }
+            else if (suppressed.has(k)) incident++;
           }
           // Shared-anchor guard (Burke Court): if ANOTHER station's mark also
           // anchors this exact (lineId, flagNode) lane end, trimming it back to
