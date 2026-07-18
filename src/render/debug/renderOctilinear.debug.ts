@@ -755,6 +755,92 @@ export function reportStairs(d: {
   console.error(`[stairs] ${flights} staircases (${steps} steps, treads <= ${MAX_TREAD.toFixed(0)}px)`);
 }
 
+/** OCTI_CONTIG: census of drawn-route non-contiguities. A route's ink
+ *  is contiguous iff its sub-paths form ONE connected component;
+ *  endpoints within a sub-pixel seam epsilon count as joined (the
+ *  renderer treats consecutive lane ends under half a pixel as already
+ *  joined and emits no bridge). Every extra component is a break; the
+ *  reported gap is the closest endpoint pair between components, so a
+ *  1px crack and an intentional long cut are distinguishable. */
+export function reportContiguity(d: {
+  layout: Layout;
+  lineById: Map<string, { id: string; label?: string; color: string }>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
+  stations?: Array<{ nodeId: string }>;
+  nodePx: Map<string, Pixel>;
+}): void {
+  if (!envStr('OCTI_CONTIG')) return;
+  const { layout, lineById, dByLine, parseInk, stations, nodePx } = d;
+  const EPS = 0.6;
+  const segsByLine = parseInk(dByLine);
+  const groups: Array<{ pos: Pixel; label: string }> = [];
+  for (const st of stations ?? []) {
+    const pos = nodePx.get(st.nodeId);
+    if (pos) groups.push({ pos, label: layout.nodes.get(st.nodeId)?.label ?? st.nodeId });
+  }
+  const nearestGroup = (p: Pixel): string => {
+    let best = '?';
+    let bd = Infinity;
+    for (const g of groups) {
+      const dd = (g.pos[0] - p[0]) ** 2 + (g.pos[1] - p[1]) ** 2;
+      if (dd < bd) { bd = dd; best = g.label; }
+    }
+    return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
+  };
+  const len = (a: Pixel, b: Pixel): number => Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+  let brokenLines = 0;
+  let breaks = 0;
+  let printed = 0;
+  for (const lineId of [...segsByLine.keys()].sort()) {
+    if (!lineById.has(lineId)) continue;
+    const chains = inkChains(segsByLine.get(lineId)!);
+    if (chains.length <= 1) continue;
+    // connected components over chains via endpoint coincidence
+    const ends = chains.map((c) => [c[0], c[c.length - 1]] as [Pixel, Pixel]);
+    const comp = chains.map((_, i) => i);
+    const findC = (i: number): number => (comp[i] === i ? i : (comp[i] = findC(comp[i])));
+    for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        let touch = false;
+        for (const a of ends[i]) {
+          for (const b of ends[j]) {
+            if (len(a, b) <= EPS) { touch = true; break; }
+          }
+          if (touch) break;
+        }
+        if (touch) comp[findC(i)] = findC(j);
+      }
+    }
+    const roots = new Set(chains.map((_, i) => findC(i)));
+    if (roots.size <= 1) continue;
+    brokenLines++;
+    breaks += roots.size - 1;
+    // closest endpoint pair across DIFFERENT components = the crack
+    let gap = Infinity;
+    let at: Pixel = ends[0][0];
+    for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        if (findC(i) === findC(j)) continue;
+        for (const a of ends[i]) {
+          for (const b of ends[j]) {
+            const g = len(a, b);
+            if (g < gap) { gap = g; at = a; }
+          }
+        }
+      }
+    }
+    if (printed++ < 40) {
+      const ln = lineById.get(lineId);
+      console.error(
+        `[contig] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) components=${roots.size} ` +
+        `minGap=${gap.toFixed(1)}px at=(${at[0].toFixed(0)},${at[1].toFixed(0)}) near=${nearestGroup(at)}`,
+      );
+    }
+  }
+  console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (seam eps ${EPS})`);
+}
+
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
  *  all fail to resolve renders nothing while its edges still draw). */
 export function reportVanishedStations(d: {

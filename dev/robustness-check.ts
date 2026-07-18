@@ -20,6 +20,7 @@ process.env.OCTI_ZIGS = '1';
 process.env.OCTI_FANZONE = '1';
 process.env.OCTI_SPIKES = '1';
 process.env.OCTI_STAIRS = '1';
+process.env.OCTI_CONTIG = '1';
 
 const dir = process.argv[2];
 if (!dir) {
@@ -36,6 +37,7 @@ interface Summary {
   tapers: string;
   spikes: string;
   stairs: string;
+  contig: string;
   ms: number;
 }
 const rows: Summary[] = [];
@@ -77,11 +79,12 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith('.json')).sort()) {
     tapers: pick(/(\d+) taper intrusions/),
     spikes: pick(/(\d+) sub-octilinear angles/),
     stairs: pick(/(\d+) staircases/),
+    contig: pick(/(\d+) non-contiguities/),
     ms,
   });
 }
 
-console.log('variant     clips  loops  zigs  tapers  spikes  stairs  draw-ms');
+console.log('variant     clips  loops  zigs  tapers  spikes  stairs  contig  draw-ms');
 for (const r of rows) {
   console.log(
     r.name.padEnd(11) +
@@ -91,6 +94,7 @@ for (const r of rows) {
     r.tapers.padStart(8) +
     r.spikes.padStart(8) +
     r.stairs.padStart(8) +
+    r.contig.padStart(8) +
     String(r.ms).padStart(9),
   );
 }

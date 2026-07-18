@@ -11,7 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations,
-  reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
+  reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { reportChainSeats } from './debug/chainSeats.debug';
 import { envStr, envNum } from '../env';
@@ -3910,6 +3910,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   });
   reportStairs({
     layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine, spacing,
+    stations: args.stations, nodePx,
+  });
+  reportContiguity({
+    layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine,
     stations: args.stations, nodePx,
   });
 
