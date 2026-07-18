@@ -522,7 +522,7 @@ export function reportZigzags(d: {
         if (Math.abs(dd[0] * dBefore[0] + dd[1] * dBefore[1]) > 0.7) continue;
         count++;
         skipUntil = arc[i] + W;
-        if (count <= 40) {
+        if (count <= (Number.isFinite(envNum("OCTI_CENSUS_PRINT")) ? envNum("OCTI_CENSUS_PRINT") : 40)) {
           const ln = lineById.get(lineId);
           console.error(
             `[zigs] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) step=${step.toFixed(1)}px ` +
@@ -665,7 +665,7 @@ export function reportSpikes(d: {
         // dense marks the spike as data-shaped rather than construction.
         const dense = a.segs / a.arcLen > 1 / 6 || b.segs / b.arcLen > 1 / 6;
         if (dense) denseCount++;
-        if (count <= 40) {
+        if (count <= (Number.isFinite(envNum("OCTI_CENSUS_PRINT")) ? envNum("OCTI_CENSUS_PRINT") : 40)) {
           const ln = lineById.get(lineId);
           console.error(
             `[spikes] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) angle=${theta.toFixed(0)}deg ` +
