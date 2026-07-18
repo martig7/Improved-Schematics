@@ -130,6 +130,12 @@ export interface StopMark {
   /** The line ends at this stop (a single drawn lane is incident). A loop has
    *  two lanes at every stop, so none are termini. Tick markers cap it fully. */
   terminus?: boolean;
+  /** Seat-ink occlusion depth (px) the seat solve recorded at commit: how
+   *  deeply a higher-painted foreign strand covered this line at the chosen
+   *  dot (0 = the mark sat on visible own ink). Consumed by the fanzone
+   *  census to split intrusions into avoidable vs solver-certified. OPTIONAL:
+   *  geometry serialized before it existed deserializes without it. */
+  seatDirt?: number;
   /** Unit vector from the bundle's drawn centerline toward this line's lane, so
    *  a one-sided tick marker strikes toward the bundle's outer edge (away from
    *  the co-running lanes). Absent for a lane centered on its bundle (no side)

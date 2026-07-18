@@ -29,6 +29,7 @@ import { detectChains } from './chains';
 import { computeChainSeats } from './chainSeats';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
+import { buildSeatInkOracle, type SeatInkOracle } from './layout/seatInk';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
 import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
@@ -741,6 +742,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   const { layout, nodePx, edgePolyline } = args;
 
   const stopsByNode = new Map<string, StopMark[]>();
+  // Seat-ink oracle (I10), built inside the stations block from pre-marker
+  // ink; held at function scope so the fanzone census can re-query final
+  // mark positions at the end.
+  let seatInkOracle: SeatInkOracle | undefined;
   // Platform-split groups: base nodeId -> its placement-unit nodeIds (the
   // shrunken primary keeps s.nodeId itself; each spun-off bundle carries
   // `s.nodeId + '::plat' + N`). Populated below, AFTER every slide/eviction
@@ -1684,6 +1689,27 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     return null;
   };
 
+  // Bundle-coherent paint layers (invariant I8), computed BEFORE marker
+  // placement: the seat-ink oracle prices occlusion with the SAME stroke
+  // order the paint emits, so the seat solve can never disagree with what
+  // the viewer sees. All drawn-order mutations (slot synthesis, sliver
+  // suppression, fan absorption re-filter) sit above this point.
+  const arcOfEdge = new Map<string, number>();
+  for (const edge of layout.edges) {
+    const base = edgePolyline(edge);
+    let arc = 0;
+    for (let i = 1; i < base.length; i++) arc += hyp(base[i][0] - base[i - 1][0], base[i][1] - base[i - 1][1]);
+    arcOfEdge.set(edge.id, arc);
+  }
+  const paintGroups = computePaintGroups(orderOf, arcOfEdge, [...lineById.keys()]);
+  // Global stroke rank = paint position (group index major, in-group index
+  // minor). A higher-ranked line's stroke paints later, i.e. on top.
+  const strokeRank = new Map<string, number>();
+  {
+    let r = 0;
+    for (const g of paintGroups) for (const id of g) strokeRank.set(id, r++);
+  }
+
   // Stops come straight from edge.stops — no traversal dependency, so lines
   // whose traversal reconstruction failed still get their station marks. The
   // POSITION resolves from any DRAWN edge of the line at that node: the flag
@@ -1712,13 +1738,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     dir?: Pixel,
     terminus?: boolean,
     outward?: Pixel,
+    seatDirt?: number,
   ) => {
     const key = nodeId + '|' + lineId;
     if (stopSeen.has(key)) return;
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, home, axis, dir, terminus, outward,
+      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, home, axis, dir, terminus, outward, seatDirt,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
@@ -1789,6 +1816,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         axis?: number;
         dir?: Pixel;
         terminus?: boolean;
+        /** Seat-ink occlusion depth at the committed dot (I10). */
+        seatDirt?: number;
       }>;
     }
     const gathered: StMarks[] = [];
@@ -1969,6 +1998,29 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // of the row line with their own lane curves (rowPlace.ts). Shape holds
     // by construction (R1/R2) — the only fallback is the relaxed seat, never a
     // partially-degraded chain.
+    // Seat-ink oracle (I10): snapshots the post-fan lane pieces and join
+    // curves BEFORE any marker pass mutates them, with the hoisted stroke
+    // ranks, so the seat solve prices occlusion by the same paint order the
+    // emission uses. Seat costs and the census classification both read it.
+    const seatInk = buildSeatInkOracle({
+      segments: [...segPath.keys()].sort().map((k) => ({
+        lineId: k.slice(k.indexOf('|') + 1),
+        pts: segPath.get(k)!,
+      })),
+      joinCurves,
+      strokeRank,
+      colorOf: new Map([...lineById].map(([id, l]) => [id, l.color])),
+      spacing,
+    });
+    seatInkOracle = seatInk;
+    // Occlusion weight (px of dirt -> cost): above the comfort scale (~40),
+    // below the hull-penetration (1000/px) and gap-deficit (5000/px) scales,
+    // so a capsule pays slide/extension for visible ink but never trades
+    // marker overlap or capsule collision for it. 0 disables (A/B).
+    const seatInkW = (() => {
+      const v = envNum('OCTI_SEATINK_W');
+      return Number.isFinite(v) && v >= 0 ? v : 300;
+    })();
     const placedDots: Pixel[] = []; // spec §6: earlier stations mask later DPs
     // Capsule overlap enforcement (spec 2026-07-02) — ON BY DEFAULT.
     // Seat-time: a solution whose spine hull crosses a placed capsule gets ONE
@@ -2211,7 +2263,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
             return hullClearance(p) < 0; // ring inside a placed capsule hull
           },
-          proximity: (p: Pixel) => {
+          proximity: (p: Pixel, memberIdx?: number) => {
             let pen = 0;
             for (const q of placedDots) {
               const d = hyp(p[0] - q[0], p[1] - q[1]);
@@ -2219,6 +2271,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
             const hd = hullClearance(p);
             if (hd >= 0 && hd < xMaskComfort) pen += xMaskWeight * (xMaskComfort - hd) / xMaskComfort;
+            // seat-ink occlusion (I10): dominant over comfort, soft under the
+            // gap floor and hull scales; per-line, so only priced where the
+            // solve tells us whose dot this is (buildStates does; corner-
+            // clearance style calls omit the index and skip the term).
+            if (memberIdx !== undefined && seatInkW > 0) {
+              pen += seatInkW * seatInk.dirtAt(p, s.marks[memberIdx].lineId);
+            }
             return pen;
           },
         };
@@ -2291,8 +2350,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               }
               return false; // hull veto lifted — priced below instead
             },
-            proximity: (p: Pixel) => {
-              let pen = ropts.proximity(p);
+            proximity: (p: Pixel, memberIdx?: number) => {
+              let pen = ropts.proximity(p, memberIdx);
               const hd = hullClearance(p);
               if (hd < 0) pen += 1000 * -hd; // inside a placed hull: heavy, not fatal
               return pen;
@@ -2403,8 +2462,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             ...ropts,
             relaxed: true,
             blocked: undefined,
-            proximity: (p: Pixel) => {
-              let pen = ropts.proximity(p);
+            proximity: (p: Pixel, memberIdx?: number) => {
+              let pen = ropts.proximity(p, memberIdx);
               const hd = hullClearance(p);
               if (hd < 0) pen += 1000 * -hd;
               for (const q of placedDots) {
@@ -2435,7 +2494,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           placedHulls.push({ nodeId: s.nodeId, hull: rvHull });
         }
       }
-      for (const mk of s.marks) placedDots.push(mk.pos);
+      for (const mk of s.marks) {
+        // Record the seat-time occlusion depth (I10): with the dominant
+        // weight, a dirty committed dot certifies that no clean feasible
+        // seat existed in the searched space. The census reads this to
+        // split intrusions into certified vs avoidable.
+        mk.seatDirt = seatInk.dirtAt(mk.pos, mk.lineId);
+        placedDots.push(mk.pos);
+      }
     }
     reportCapsOvlStats({ capPlaceDebug, stats: capOvlStats, guardOn: capGuardOn, noOvlOn: capNoOvlOn });
     // Shared-anchor guard (Burke Court): a terminus sliver SHARED by two split
@@ -3517,7 +3583,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     capsAudit('post-eviction');
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.home, m.axis, m.dir, m.terminus, m.outward);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.home, m.axis, m.dir, m.terminus, m.outward, m.seatDirt);
     }
 
     for (const s of gathered) {
@@ -3970,17 +4036,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // once here instead of on every repaint that lacks a geography frame.
   const frameRect = contentFrame(nodePx, layout.edges, edgePolyline, args.width, args.height);
 
-  // Bundle-coherent paint layers (invariant I8): computed once with the
-  // geometry so every repaint just walks the groups.
-  const arcOfEdge = new Map<string, number>();
-  for (const edge of layout.edges) {
-    const base = edgePolyline(edge);
-    let arc = 0;
-    for (let i = 1; i < base.length; i++) arc += hyp(base[i][0] - base[i - 1][0], base[i][1] - base[i - 1][1]);
-    arcOfEdge.set(edge.id, arc);
-  }
-  const paintGroups = computePaintGroups(orderOf, arcOfEdge, [...lineById.keys()]);
-
   reportZoneCrossings({
     zones: fanZones,
     dByLine: censusInk,
@@ -4008,6 +4063,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     halfWidthOf: (id) => (((orderOf.get(id)?.length ?? 1) - 1) / 2) * spacing,
     spacing,
     nodePx,
+    dirtAt: seatInkOracle ? (p, lid) => seatInkOracle!.dirtAt(p, lid) : undefined,
   });
 
   return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, paintGroups };

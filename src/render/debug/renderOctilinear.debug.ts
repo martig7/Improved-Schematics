@@ -85,16 +85,20 @@ export function reportChains(d: {
  *  are the fan's own and exempt. */
 export function reportStopSeating(d: {
   zones: Array<{ node: string; edgeA: string; edgeB: string; reach: number }>;
-  stopsByNode: Map<string, Array<{ lineId: string; pos: Pixel }>>;
+  stopsByNode: Map<string, Array<{ lineId: string; pos: Pixel; seatDirt?: number }>>;
   joinStopPos: Map<string, Pixel>;
   edgeById: Map<string, { id: string; from: string; to: string }>;
   basePoly: (edgeId: string) => Pixel[] | undefined;
   halfWidthOf: (edgeId: string) => number;
   spacing: number;
   nodePx: Map<string, Pixel>;
+  /** Seat-ink oracle re-query at FINAL mark positions (I10): classifies each
+   *  intrusion by occlusion. Absent on callers without station machinery. */
+  dirtAt?: (p: Pixel, lineId: string) => number;
 }): void {
   if (envStr('OCTI_FANZONE') !== '1') return;
   let count = 0;
+  const classCount = { visible: 0, 'occluded-avoidable': 0, 'occluded-certified': 0, 'lone-stop': 0 };
   for (const z of d.zones) {
     const e = d.edgeById.get(z.edgeA);
     const base = d.basePoly(z.edgeA);
@@ -132,14 +136,49 @@ export function reportStopSeating(d: {
         const along = Math.hypot(bestQ[0] - zp[0], bestQ[1] - zp[1]);
         if (along >= z.reach - 0.5) continue;
         count++;
+        // Occlusion class (I10): an intruding mark whose line is the TOP ink
+        // at its seat is the learned capsule-group exemption; occluded marks
+        // split by whether the seat solve certified the dirt (recorded
+        // seatDirt > 0 means no clean feasible seat existed) or believed the
+        // seat clean (avoidable: oracle blind spot or post-seat movement).
+        // Single-mark units have no seat search at all.
+        let cls = '';
+        if (d.dirtAt) {
+          const finalDirt = d.dirtAt(m.pos, m.lineId);
+          cls =
+            finalDirt <= 0 ? 'visible'
+            : marks.length === 1 ? 'lone-stop'
+            : (m.seatDirt ?? 0) > 0 ? 'occluded-certified'
+            : 'occluded-avoidable';
+          classCount[cls as keyof typeof classCount]++;
+        }
         console.warn(
           `[fanzone] stop ${m.lineId.slice(0, 4)}@${homeNode} pos=(${m.pos[0].toFixed(0)},${m.pos[1].toFixed(0)})` +
-          ` inside ${z.node} zone on ${z.edgeA} (along=${along.toFixed(1)} < reach=${z.reach.toFixed(1)})`,
+          ` inside ${z.node} zone on ${z.edgeA} (along=${along.toFixed(1)} < reach=${z.reach.toFixed(1)})` +
+          (cls ? ` class=${cls}` : ''),
         );
       }
     }
   }
   console.warn(`[fanzone] ${count} stop-mark intrusions`);
+  if (d.dirtAt) {
+    console.warn(
+      `[fanzone] classes: ${classCount.visible} visible, ${classCount['occluded-avoidable']} occluded-avoidable, ` +
+      `${classCount['occluded-certified']} occluded-certified, ${classCount['lone-stop']} lone-stop`,
+    );
+    // Corpus-wide I10 ruler, zone-independent: how many drawn marks sit on
+    // occluded own ink at their FINAL position (what the viewer sees). The
+    // in-zone classes above are the fan-zone slice of this.
+    let dirty = 0;
+    let total = 0;
+    for (const marks of d.stopsByNode.values()) {
+      for (const m of marks) {
+        total++;
+        if (d.dirtAt(m.pos, m.lineId) > 0) dirty++;
+      }
+    }
+    console.warn(`[fanzone] seat-ink: ${dirty}/${total} marks on occluded ink`);
+  }
 }
 
 /** OCTI_FANZONE: foreign-crossing half of the fan-zone census (invariant

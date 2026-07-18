@@ -24,10 +24,15 @@ export interface RowOpts {
   rotW?: number;         // W_ROT, default 20 (px per 45-degree step)
   blocked?: (p: Pixel) => boolean; // spec §6 mask: a row state is infeasible
                                    // if ANY of its dots is blocked (never dropped)
-  proximity?: (p: Pixel) => number; // SOFT §6 mask: per-dot proximity penalty
-                                     // (≥0) added to the state cost; biases the
-                                     // search toward spacing without vetoing a
-                                     // crowded-but-feasible seat
+  proximity?: (p: Pixel, memberIdx?: number) => number; // SOFT §6 mask: per-dot
+                                     // proximity penalty (≥0) added to the state
+                                     // cost; biases the search toward spacing
+                                     // without vetoing a crowded-but-feasible
+                                     // seat. memberIdx = the dot's mark index
+                                     // (the groups[] value), passed where known
+                                     // so per-line costs (seat-ink occlusion)
+                                     // can price the right line; corner-
+                                     // clearance style calls omit it.
   dbgLabel?: string; // OCTI_PLACE_DEBUG: station id, for the per-box diagnosis log
   /** Per-bundle asymmetric slide bounds [minS, maxS] along the carrier curve
    *  (indexed like `groups`), overriding ±arcLimit for that bundle. The far
@@ -275,7 +280,7 @@ export function solveRows(
         // clear of already-placed neighbours but STILL seats a crowded hub
         // rather than mega-boxing it.
         let proxPen = 0;
-        if (proximity) for (const p of dots) proxPen += proximity(p);
+        if (proximity) for (let gi = 0; gi < dots.length; gi++) proxPen += proximity(dots[gi], group[gi]);
         const asc = dots.map((_, gi) => gi).sort((x, y) => (pr[x] - pr[y]) || (x - y)); // total tie-break: index unique (cross-V8 stable)
         states.push({
           s,
