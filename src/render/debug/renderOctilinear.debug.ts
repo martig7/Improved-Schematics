@@ -540,6 +540,9 @@ interface StraightRun {
   arcLen: number;
   start: Pixel;
   end: Pixel;
+  /** Polyline segments merged into the run: a clean constructed lane is
+   *  a few long segments; harvested surface-track data is dense. */
+  segs: number;
 }
 
 /** Maximal straight runs of a drawn polyline: direction stable within
@@ -556,10 +559,11 @@ const straightRunsOf = (pts: Pixel[], minRun: number, coneDeg: number): Straight
   let runStart = 0;
   let runDir: Pixel | null = null;
   let runArc = 0;
+  let runSegs = 0;
   const closeRun = (endIdx: number): void => {
     if (runDir && runArc >= minRun) {
       const d0 = dir(pts[runStart], pts[endIdx]);
-      if (d0) runs.push({ dir: d0, arcLen: runArc, start: pts[runStart], end: pts[endIdx] });
+      if (d0) runs.push({ dir: d0, arcLen: runArc, start: pts[runStart], end: pts[endIdx], segs: runSegs });
     }
   };
   for (let i = 1; i < pts.length; i++) {
@@ -568,12 +572,14 @@ const straightRunsOf = (pts: Pixel[], minRun: number, coneDeg: number): Straight
     if (!d0) continue;
     if (runDir && deg(runDir[0] * d0[0] + runDir[1] * d0[1]) <= coneDeg) {
       runArc += step;
+      runSegs++;
       continue;
     }
     closeRun(i - 1);
     runStart = i - 1;
     runDir = d0;
     runArc = step;
+    runSegs = 1;
   }
   closeRun(pts.length - 1);
   return runs;
@@ -641,6 +647,7 @@ export function reportSpikes(d: {
   const STRAIGHT_DEG = 6;
   const OFF_GRID_DEG = 10;
   let count = 0;
+  let denseCount = 0;
   for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
     const segs = segsByLine.get(lineId)!;
@@ -653,17 +660,23 @@ export function reportSpikes(d: {
         const offGrid = Math.abs(theta - Math.round(theta / 45) * 45);
         if (theta < OFF_GRID_DEG || offGrid <= OFF_GRID_DEG) continue;
         count++;
+        // A run of harvested surface-track data merges many short
+        // segments; a constructed lane is a few long ones. Either flank
+        // dense marks the spike as data-shaped rather than construction.
+        const dense = a.segs / a.arcLen > 1 / 6 || b.segs / b.arcLen > 1 / 6;
+        if (dense) denseCount++;
         if (count <= 40) {
           const ln = lineById.get(lineId);
           console.error(
             `[spikes] ${ln?.label ?? lineId} (${ln?.color ?? '?'}) angle=${theta.toFixed(0)}deg ` +
-            `runs=${a.arcLen.toFixed(0)}/${b.arcLen.toFixed(0)}px at=(${a.end[0].toFixed(0)},${a.end[1].toFixed(0)}) near=${nearestGroup(a.end)}`,
+            `runs=${a.arcLen.toFixed(0)}/${b.arcLen.toFixed(0)}px ${dense ? 'DENSE' : 'clean'} ` +
+            `at=(${a.end[0].toFixed(0)},${a.end[1].toFixed(0)}) near=${nearestGroup(a.end)}`,
           );
         }
       }
     }
   }
-  console.error(`[spikes] ${count} sub-octilinear angles between straight runs (>=${MIN_RUN.toFixed(0)}px runs, off-grid > ${OFF_GRID_DEG}deg)`);
+  console.error(`[spikes] ${count} sub-octilinear angles between straight runs (${denseCount} data-shaped, >=${MIN_RUN.toFixed(0)}px runs, off-grid > ${OFF_GRID_DEG}deg)`);
 }
 
 /** OCTI_STAIRS: census of staircasing in the FINAL ink. A single
