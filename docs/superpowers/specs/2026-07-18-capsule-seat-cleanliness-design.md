@@ -3,10 +3,17 @@
 Final junction-fan-rebuild milestone. The interchange capsule machinery ranks
 its seat candidates by ink cleanliness (invariant I10,
 `docs/draw-geometry-invariants.md`): clean octilinear seats first, overlapped
-octilinear seats second, non-octilinear constructions last. Companion
-deliverable: the fanzone stop-mark census learns to classify its intrusions
-(avoidable defect vs solver-certified least-bad vs lone-stop), so it becomes a
-gateable ruler instead of a raw count.
+octilinear seats second, non-octilinear constructions last.
+
+**Cleanliness is occlusion, not proximity.** A marker sits ON its line; that
+is normal everywhere. The defect is a marker placed where its own line is
+HIDDEN: a foreign line painted above it covers the strand at the seat, so the
+dot appears to float on someone else's ink, disconnected from its visible
+line. A seat where the mark's line is the top layer is clean no matter what
+runs underneath it. Companion deliverable: the fanzone stop-mark census
+learns the same distinction (occluded seat = defect, visible-ink seat =
+exemption, lone stops = separate class), so it becomes a gateable ruler
+instead of a raw count.
 
 ## The defect record (corpus census, full recompute, current code)
 
@@ -51,23 +58,26 @@ corner fan and a row that seats on clean mid-corridor lanes cost the same.
   bounded slide/extension to reach it. Extension is priced in raw px, so the
   worst cleanliness-driven stretch is bounded by the existing extCap safety
   bound; the exact weight is tuned on the corpus at execute time.
-- **Two oracle terms, both derived (I7), no fixed constants:**
-  1. **Fan-zone penetration** — mirrors the census's own test exactly (same
-     zones list from the fan builder, same lateral bound
-     `halfWidth(edgeA) + spacing`, same along-vs-reach rule, same exemptions),
-     so the search and the ruler cannot disagree about what a zone is.
-     Graded by penetration depth toward the node.
-  2. **Foreign-strand overlap** — distance from the dot to the nearest strand
-     of a non-member line below the clip census's sub-pitch threshold
-     (0.75 · spacing), graded by deficit. Catches overlapped ink outside
-     zones (transition rubs, coincident strands) per I10's letter.
-- **Exclusions mirror the census.** Not counted as dirt: the mark's own line;
-  lines that are members of the station being seated (their lanes are what
-  the row must cross — crowded-but-normal interchange geometry is I4's
-  territory, not a seat choice); zones whose node is the station's own node or
-  split base; zones on the station's own corridor when the corridor is shorter
-  than the zone reach (the census's no-legal-seat rule — penalizing an
-  inescapable zone would only distort the other cost terms).
+- **One oracle term: occluded own ink.** A candidate dot `p` for a mark of
+  line L is dirty iff some line M ≠ L has a strand within the clip census's
+  sub-pitch threshold (0.75 · spacing, derived, I7) of `p` AND M paints ABOVE
+  L. Graded by the proximity deficit, so a sustained parallel strand riding
+  over the seat charges a full-depth penalty while a steep crossing charges
+  only its small overlap disc. If every nearby foreign strand paints BELOW L,
+  the seat is clean: the mark's line is the visible ink there.
+- **"Above" comes from the real paint order.** The paint layer builder
+  (`computePaintGroups`) already defines the stroke sequence: groups in
+  order, lines in group order (casings then strokes per group). A global
+  stroke rank (group index, index within group) is computed once and shared:
+  the SAME ranks feed the oracle and the final paint, so the oracle can never
+  disagree with what the viewer sees. `computePaintGroups` depends only on
+  `orderOf` and edge arcs, both stable before marker placement, so the call
+  is hoisted above the placement queue and its result reused at emission.
+- **Exclusions:** the mark's own line (folds and retraces are its own ink),
+  and foreign strands whose line color equals L's color (occlusion by
+  identical color is invisible, the clip census's same-color class). No
+  member-line exclusion: a co-member painted over L at the dot hides it just
+  as much as any foreign line would.
 - **All ladder tiers inherit.** The penalty composes into the station's
   `proximity` closure in `renderOctilinear`, which every tier already spreads
   (primary, far-attach, best-effort, relaxed). `rowPlace.ts` is untouched.
@@ -81,48 +91,57 @@ corner fan and a row that seats on clean mid-corridor lanes cost the same.
 
 ## Census evolution
 
-`reportStopSeating` keeps its geometric test and existing exemptions
-(own-node, joinStopPos fan seats, own-corridor no-room) and splits its count
-into three reported classes:
+`reportStopSeating` keeps its geometric zone test and existing exemptions
+(own-node, joinStopPos fan seats, own-corridor no-room) but classifies each
+intrusion by occlusion at the FINAL mark position (same oracle, same ranks):
 
-- **`capsule-avoidable`** — intrusion by a multi-mark station whose recorded
-  seat dirt is ZERO (the solve thought the seat was clean; the census says it
-  is not). Only oracle blind spots and post-seat movement (slides, trims,
-  split connectors) produce these. **Hard gate: 0 corpus-wide.**
-- **`capsule-certified`** — intrusion whose recorded dirt is positive: the
-  solver searched and no clean seat existed within its freedom (the
-  WTC/Rector class). Watch count with new pinned baselines; driving it down
-  is layout-spacing / I3 escalation work, not seat-search work.
-- **`lone-stop`** — single-mark units, which have no seat search. Watch
-  count; a lone-stop slide is a possible follow-up, out of scope here.
+- **`visible`** — the mark's line is the top ink at its seat. This is the
+  capsule-group exemption the census learns: a capsule legitimately spanning
+  its junction complex with its marks on visible own ink is not a defect.
+  Printed as an info count, not a violation.
+- **`occluded-avoidable`** — multi-mark station, occluded seat, recorded
+  seat-time dirt ZERO (the solve thought it was clean; the finished map says
+  it is not). Only oracle blind spots and post-seat movement (slides, trims,
+  lane crops) produce these. **Hard gate: 0 corpus-wide.**
+- **`occluded-certified`** — occluded seat whose recorded dirt is positive:
+  the solver searched and no un-occluded seat existed within its freedom
+  (the WTC/Rector class). Watch count with new pinned baselines; driving it
+  down is layout-spacing / I3 work, not seat-search work.
+- **`lone-stop`** — single-mark units, which have no seat search; classified
+  visible/occluded for information. Watch count; a lone-stop slide is a
+  possible follow-up, out of scope here.
 
-Total intrusions are expected to drop materially (the solver now avoids every
-zone it can); the new per-class counts become the pinned corpus baselines.
+Occluded totals are expected to drop materially (the solver now slides off
+hidden ink wherever it has room); the per-class counts become the pinned
+corpus baselines.
 
 ## Architecture
 
 - **New `src/render/layout/seatInk.ts`** — the cleanliness oracle.
-  `buildSeatInkOracle({ segments, joinCurves, zones, basePoly, halfWidthOf,
-  nodePx, spacing })` snapshots the post-fan lane ink (all `segPath` pieces
-  plus sampled join curves) into a uniform spatial hash and returns
-  `dirtAt(p, excl)` where `excl` carries the per-station exclusions (member
-  line ids, own node ids). Deterministic: sorted-key insertion, squared
-  distances, `Math.sqrt` only, no trig.
-- **`renderOctilinear.ts`** — build the oracle once after the fan builder,
-  before the placement queue (zones and post-fan segPath are both live
-  there). Per station, wrap it with the exclusion set and add it to the
-  `ropts.proximity` closure; record per-mark dirt at commit into the
-  `StopMark`s pushed to `stopsByNode`.
-- **`reportStopSeating`** (debug module) — read the per-mark dirt to print
-  the three classes and the per-class summary counts.
+  `buildSeatInkOracle({ segments, joinCurves, strokeRank, colorOf, spacing })`
+  snapshots the post-fan lane ink (all `segPath` pieces plus sampled join
+  curves) into a uniform spatial hash and returns `dirtAt(p, lineId)`: the
+  graded occlusion depth from strands of higher-ranked, different-colored
+  lines within the sub-pitch threshold. Deterministic: sorted-key insertion,
+  squared distances, `Math.sqrt` only, no trig.
+- **`renderOctilinear.ts`** — hoist the `computePaintGroups` call above the
+  placement queue and derive the global stroke rank from it (the emission at
+  the end of `computeRibbonGeometry` reuses the hoisted result, keeping one
+  source of truth). Build the oracle once after the fan builder. Per
+  station, add `dirtAt(p, mk.lineId)` to the `ropts.proximity` closure;
+  record per-mark dirt at commit into the `StopMark`s pushed to
+  `stopsByNode`.
+- **`reportStopSeating`** (debug module) — re-query the oracle at final mark
+  positions and read the per-mark seat-time dirt to print the four classes
+  and the per-class summary counts.
 - **Diagnostics** — extend the `OCTI_PLACE_DEBUG` per-box diagnosis with
   clean/dirty state counts per bundle (how much clean freedom each station
   had), in the existing `rowPlace.debug` module.
 
 Oracle staleness is accepted and monitored: the snapshot is taken before
-marker machinery mutates lanes (slides, trims), so a mark slid into a zone
-after seating surfaces as `capsule-avoidable` — that is the defect class the
-gate exists to catch.
+marker machinery mutates lanes (slides, trims, crops), so a mark that ends up
+on occluded ink through post-seat movement surfaces as `occluded-avoidable` —
+that is the defect class the gate exists to catch.
 
 ## Out of scope
 
@@ -148,15 +167,16 @@ gate exists to catch.
 Behaviour-changing: the gate is the census battery plus tests plus visual
 scrutiny, NOT byte identity.
 
-- `npm test` green (new seatInk unit tests: hash correctness, exclusion
-  rules, zone-term parity with the census test on synthetic fixtures).
+- `npm test` green (new seatInk unit tests: hash correctness, rank/occlusion
+  direction, same-color and own-line exclusions, grading on synthetic
+  fixtures).
 - `dev/robustness-check.ts dev/_robustness`: all 8 columns at or below the
   current row values; contiguity 0 is a hard gate.
 - Pinned corpus: clips/loops/zigs/non-contig 0 everywhere; tapers ≤ 2 (HOR);
   spikes ≤ NYC 50 / SF 37 / SEA 13 / HOR 32 / DEN 5 / LON 7; stairs ≤ SF 1;
   twist census stays 0.
-- Fanzone stop-mark census: `capsule-avoidable` = 0 (hard); total intrusions
-  materially below 64; new per-class baselines recorded.
+- Fanzone stop-mark census: `occluded-avoidable` = 0 (hard); occluded totals
+  materially below today's; per-class baselines recorded.
 - Before/after crops of the hot sites: WTC/Rector cluster, Court Sq, Times
   Sq, Montgomery, Bar Ilan, Neve Sha'anan; plus full-map diffs per city to
   bound seat churn.
@@ -164,15 +184,17 @@ scrutiny, NOT byte identity.
 ## Risks
 
 - **Seat churn**: a dominant new cost term reshuffles capsules corpus-wide.
-  Mitigated by the exclusion rules (member lanes and inescapable zones do not
-  perturb costs) and by reviewing full-map visual diffs, not just crops.
+  The occlusion predicate bounds it naturally (most seats have no foreign
+  strand above them at all, so most costs are untouched); reviewed with
+  full-map visual diffs, not just crops.
 - **Extension trades**: a capsule may stretch its elbow toward the extCap
-  bound to escape a zone. Bounded by construction; weight tuning on the
-  corpus decides how much stretch a px of dirt is worth.
-- **Oracle-census drift**: the two share the zone test by construction, but
-  the strand term and post-seat movement can disagree; the
-  `capsule-avoidable` gate makes any drift loud instead of silent.
-- **Crowded complexes**: WTC/Rector-class sites have no clean seat; the
-  certified count stays positive by design. Do not chase it to zero with
+  bound to escape occluded ink. Bounded by construction; weight tuning on
+  the corpus decides how much stretch a px of occlusion is worth.
+- **Rank stability**: the oracle's stroke ranks are computed before marker
+  machinery, the paint runs after it. Hoisting makes both read the same
+  value, but if a future pass mutates `orderOf` between the two points the
+  ranks silently drift; the `occluded-avoidable` gate makes that loud.
+- **Crowded complexes**: WTC/Rector-class sites may have no un-occluded seat;
+  the certified count stays positive by design. Do not chase it to zero with
   seat-search tweaks (three prior falsified fix families in this area were
   all attempts to fix placement problems downstream of layout spacing).
