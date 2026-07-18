@@ -230,30 +230,36 @@ export function computeLaneCrops(
   // filleted interior join separates the raw lane ends by several px, with the
   // arc living outside segPath, so the bridge points stand in for continuity).
   // Built once from the INPUT segPath so in-loop cropping cannot change the gate.
+  // Plain lane endpoints use a tight tolerance (a fold terminus keeps its two
+  // pass ends a pitch apart and both must stay croppable); join-curve bridge
+  // points use a wide one, because a jog may move the lane end most of a pitch
+  // away from the splice it still continues into (an absorbed-corner retreat
+  // amputated by the crop looked like a free end under one tight tolerance).
   const FREE_TOL2 = 3 * 3;
-  const endsByLine = new Map<string, Pixel[]>();
-  const pushEnd = (lineId: string, p: Pixel) => {
+  const BRIDGE_TOL2 = 7 * 7;
+  const endsByLine = new Map<string, Array<{ p: Pixel; tol2: number }>>();
+  const pushEnd = (lineId: string, p: Pixel, tol2: number) => {
     let arr = endsByLine.get(lineId);
     if (!arr) endsByLine.set(lineId, (arr = []));
-    arr.push(p);
+    arr.push({ p, tol2 });
   };
   for (const [key, poly] of segPath) {
     if (poly.length < 2) continue;
     const lineId = key.slice(key.indexOf('|') + 1);
-    pushEnd(lineId, poly[0]);
-    pushEnd(lineId, poly[poly.length - 1]);
+    pushEnd(lineId, poly[0], FREE_TOL2);
+    pushEnd(lineId, poly[poly.length - 1], FREE_TOL2);
   }
   for (const jc of joinCurves) {
-    pushEnd(jc.lineId, jc.a);
-    pushEnd(jc.lineId, jc.b);
+    pushEnd(jc.lineId, jc.a, BRIDGE_TOL2);
+    pushEnd(jc.lineId, jc.b, BRIDGE_TOL2);
   }
   const isFreeEnd = (lineId: string, p: Pixel): boolean => {
     const arr = endsByLine.get(lineId);
     if (!arr) return false;
     let hits = 0;
     for (const q of arr) {
-      const dx = p[0] - q[0], dy = p[1] - q[1];
-      if (dx * dx + dy * dy <= FREE_TOL2) { hits++; if (hits > 1) return false; }
+      const dx = p[0] - q.p[0], dy = p[1] - q.p[1];
+      if (dx * dx + dy * dy <= q.tol2) { hits++; if (hits > 1) return false; }
     }
     return hits === 1; // only itself
   };
@@ -3889,7 +3895,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // the painted truth and the uncropped ends under the markers must not
   // count. Fall back to dByLine when no crop exists.
   const censusInk = (() => {
-    const rect = cropDPartsByRegime.get('rectRows');
+    const rect = envStr("OCTI_CONTIG_RAW") === "1" ? undefined : cropDPartsByRegime.get("rectRows");
     if (!rect || rect.size === 0) return dByLine;
     const m = new Map(dByLine);
     for (const [lineId, parts] of rect) m.set(lineId, parts);

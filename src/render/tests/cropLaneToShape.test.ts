@@ -75,3 +75,31 @@ test('cropLaneToShape disc: deterministic on repeat', () => {
   const poly: P[] = [[3, -2], [25, 13]];
   assert.deepEqual(cropLaneToShape(poly, disc), cropLaneToShape(poly, disc));
 });
+
+test('computeLaneCrops: an absorbed-corner retreat is not amputated', async () => {
+  const { computeLaneCrops } = await import('../renderOctilinear');
+  const disc = { kind: 'disc', cx: 0, cy: 0, r: 10 } as CropShape;
+  // Through line L1 at node N: the near-side lane was absorbed (absent
+  // from segPath), the far-side lane's node end was retracted outside
+  // the capsule by the corner and then moved ~5px by a jog, so it no
+  // longer coincides with the splice bridge point within the plain
+  // endpoint tolerance. The crop must leave it alone: the approach
+  // piece is what the spliced curve lands on.
+  const edges = [
+    { id: 'e1', from: 'A', to: 'N' },
+    { id: 'e2', from: 'N', to: 'B' },
+  ];
+  const lane: P[] = [[19, 0], [-50, 0]];
+  const segPath = new Map<string, P[]>([['e2|L1', lane]]);
+  const joinCurves = [{ lineId: 'L1', node: 'N', a: [30, 6] as P, apex: [26, 2] as P, b: [24, 0] as P }];
+  const targets = [{ lineId: 'L1', flagNode: 'N', shape: disc, shared: false }];
+  const out = computeLaneCrops(targets as never, segPath as never, edges, joinCurves as never, 10, 0,
+    (seg: Map<string, P[]>) => new Map([...seg].map(([k, v]) => [k.slice(k.indexOf('|') + 1), [v.map((p) => p.join(',')).join(' ')]])));
+  assert.ok((out.get('L1') ?? [''])[0].startsWith('19,0'), 'retreat preserved: ' + out.get('L1'));
+
+  // control: with no splice bridging away, the same end is a genuine
+  // terminus and the crop applies
+  const out2 = computeLaneCrops(targets as never, segPath as never, edges, [] as never, 10, 0,
+    (seg: Map<string, P[]>) => new Map([...seg].map(([k, v]) => [k.slice(k.indexOf('|') + 1), [v.map((p) => p.join(',')).join(' ')]])));
+  assert.ok((out2.get('L1') ?? [''])[0].startsWith('10,0'), 'terminus still cropped: ' + out2.get('L1'));
+});
