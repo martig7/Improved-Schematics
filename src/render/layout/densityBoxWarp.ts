@@ -1218,12 +1218,14 @@ export function buildDemandBoxWarp(
         if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - prev[i].gap) - (needV - prev[i].need);
         // denom <= 0: the secant's LOCAL affine model says the need rises at
-        // least as fast as this box's gap, but the push saturates: as e
-        // rises, straddling/outside edges stop stretching, the median stops
-        // climbing, and the gap catches up. Jump to the ceiling to exploit
-        // that saturation; keeping e instead leaves pinned clusters
-        // under-need while the raw-growth saving is negligible.
-        if (denom <= 1e-9) return expandMax;
+        // least as fast as this box's gap. The push saturates as e rises
+        // (straddling/outside edges stop stretching and the gap catches up),
+        // but that is a license for a BOUNDED step, not a jump to the
+        // ceiling: the ceiling jump manufactured unbounded demand that the
+        // growth throttle then renormalized into always-at-cap growth. Step
+        // geometrically and re-measure; a residual stall converges within
+        // the pass budget or stops mattering when the cap binds.
+        if (denom <= 1e-9) return Math.min(expandMax, e * 1.5);
         const target = e + ((needV + margin - gap) * de) / denom;
         return Math.min(expandMax, Math.max(e, target));
       });

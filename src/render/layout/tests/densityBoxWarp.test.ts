@@ -884,3 +884,32 @@ test('buildDemandBoxWarp: under the cap, growth equals the raw warp growth (spac
   // far field at unit scale here too
   assert.ok(Math.abs(jacDet(loose.warp, [520, 520]) - 1) < 0.02);
 });
+
+test('buildDemandBoxWarp: refinement never teleports a box to the ceiling', () => {
+  // a pinned pair (gap 6 << need 7.8) inside a sparse frame: the secant may
+  // stall (need moves with the median), but each stall step is bounded 1.5x,
+  // so 4 passes from the first-pass demand can reach at most first*1.5^4 —
+  // far below a straight expandMax jump for a mild deficit.
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12 }, o);
+  // first-pass demand for the pinned box is ~need/gap ≈ 1.3*1.3*12/2/6 ≈ 1.7;
+  // the bound admits at most ~1.7*1.5^4 ≈ 8.6, but a genuine converge lands
+  // far lower. The regression asserts the ceiling itself is never hit.
+  for (const e of o.expands ?? []) {
+    assert.ok(e < 10 - 1e-9, `no expand pinned at expandMax (got ${e})`);
+  }
+});
+
+test('buildDemandBoxWarp: a graph whose gaps clear the need yields identity growth at userMult 1', () => {
+  const g: BoxGraph = {
+    nodes: [[100, 100], [200, 100], [300, 100], [400, 100]],
+    edges: [[0, 1], [1, 2], [2, 3]],
+  };
+  const r = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12 });
+  assert.equal(r.growthX, 1);
+  assert.equal(r.growthY, 1);
+});
