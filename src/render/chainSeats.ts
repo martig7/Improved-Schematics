@@ -317,9 +317,20 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
   // across chains; merged groups ladder once in the shared frame, so
   // sub-clearance corridors come out at pitch instead of each chain
   // seating blind beside the other.
-  const parent = allRuns.map((_, i) => i);
-  const ps = allRuns.map(() => 1);
-  const pt = allRuns.map(() => 0);
+  const parent: number[] = [];
+  const ps: number[] = [];
+  const pt: number[] = [];
+  const resetUF = (): void => {
+    parent.length = 0;
+    ps.length = 0;
+    pt.length = 0;
+    for (let i = 0; i < allRuns.length; i++) {
+      parent.push(i);
+      ps.push(1);
+      pt.push(0);
+    }
+  };
+  resetUF();
   const find = (i: number): { root: number; s: number; t: number } => {
     if (parent[i] === i) return { root: i, s: ps[i], t: pt[i] };
     const up = find(parent[i]);
@@ -353,62 +364,72 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       if (list) list.push(i); else runsOnEdge.set(edgeId, [i]);
     }
   }
-  // Shared-edge links: runs on one edge share lateral space. Same chain
-  // shares the frame directly; across chains the edge frame mediates.
   const sgn = (chain: number, edgeId: string): number =>
     (fwdOfChain[chain].get(edgeId) ?? true) ? 1 : -1;
-  for (const edgeId of [...runsOnEdge.keys()].sort()) {
-    const idxs = runsOnEdge.get(edgeId)!;
-    for (let k = 1; k < idxs.length; k++) {
-      const i = idxs[0];
-      const j = idxs[k];
-      const ls = sgn(allRuns[i].chain, edgeId) * sgn(allRuns[j].chain, edgeId);
-      union(i, j, ls, 0);
-    }
-  }
-  // Overlapping-parallel links: the joint-seating idea scoped to chain
-  // interiors, WITHOUT the shared-hub gate (chain interiors are short
-  // dominated micro-corridors, not unrelated close streets). The sampled
-  // corridor detector cannot see these: micro edges are shorter than its
-  // sustained-run floor and staggered long-vs-short pairs defeat
-  // midpoint symmetry. Any two covered edges whose lanes would overlap
-  // side by side link into one shared frame, across chains and across
-  // separated components of one chain alike.
   const geomOf = new Map<string, EdgeGeom>();
-  if (halfWidthOf) {
-    for (const id of [...runsOnEdge.keys()].sort()) {
-      const pts = basePoly(id);
-      if (pts && pts.length >= 2) geomOf.set(id, edgeGeom(id, pts));
-    }
-    const infos = [...geomOf.values()];
-    for (let a = 0; a < infos.length; a++) {
-      for (let b = a + 1; b < infos.length; b++) {
-        // longer edge hosts the projection; tie broken by the sort order
-        const [L, S] = infos[a].arc >= infos[b].arc ? [infos[a], infos[b]] : [infos[b], infos[a]];
-        const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
-        const hit = projectParallel(L, S, thresh);
-        if (!hit) continue;
-        const i = runsOnEdge.get(L.id)![0];
-        const j = runsOnEdge.get(S.id)![0];
-        crossPairs.push({ eA: L.id, eB: S.id, d0: hit.d0, sign: hit.sign, needed: thresh });
-        const sa = sgn(allRuns[i].chain, L.id);
-        const sb = sgn(allRuns[j].chain, S.id);
-        // edge frame of L: pos = sa*seat_i; S's lane pos = d0 + sign*sb*seat_j
-        // seat_i equivalent = sa*(d0 + sign*sb*seat_j)
-        union(i, j, sa * hit.sign * sb, sa * hit.d0);
+  for (const id of [...runsOnEdge.keys()].sort()) {
+    const pts = basePoly(id);
+    if (pts && pts.length >= 2) geomOf.set(id, edgeGeom(id, pts));
+  }
+  const buildLinks = (): void => {
+    crossPairs.length = 0;
+    // Shared-edge links: runs on one edge share lateral space. Same chain
+    // shares the frame directly; across chains the edge frame mediates.
+    for (const edgeId of [...runsOnEdge.keys()].sort()) {
+      const idxs = runsOnEdge.get(edgeId)!;
+      for (let k = 1; k < idxs.length; k++) {
+        const i = idxs[0];
+        const j = idxs[k];
+        const ls = sgn(allRuns[i].chain, edgeId) * sgn(allRuns[j].chain, edgeId);
+        union(i, j, ls, 0);
       }
     }
-  }
+    // Overlapping-parallel links: the joint-seating idea scoped to chain
+    // interiors, WITHOUT the shared-hub gate (chain interiors are short
+    // dominated micro-corridors, not unrelated close streets). The sampled
+    // corridor detector cannot see these: micro edges are shorter than its
+    // sustained-run floor and staggered long-vs-short pairs defeat
+    // midpoint symmetry. Any two covered edges whose lanes would overlap
+    // side by side link into one shared frame, across chains and across
+    // separated components of one chain alike.
+    if (halfWidthOf) {
+      const infos = [...geomOf.values()];
+      for (let a = 0; a < infos.length; a++) {
+        for (let b = a + 1; b < infos.length; b++) {
+          // longer edge hosts the projection; tie broken by the sort order
+          const [L, S] = infos[a].arc >= infos[b].arc ? [infos[a], infos[b]] : [infos[b], infos[a]];
+          const thresh = halfWidthOf(L.id) + halfWidthOf(S.id) + spacing * 0.75;
+          const hit = projectParallel(L, S, thresh);
+          if (!hit) continue;
+          const i = runsOnEdge.get(L.id)![0];
+          const j = runsOnEdge.get(S.id)![0];
+          crossPairs.push({ eA: L.id, eB: S.id, d0: hit.d0, sign: hit.sign, needed: thresh });
+          const sa = sgn(allRuns[i].chain, L.id);
+          const sb = sgn(allRuns[j].chain, S.id);
+          // edge frame of L: pos = sa*seat_i; S's lane pos = d0 + sign*sb*seat_j
+          // seat_i equivalent = sa*(d0 + sign*sb*seat_j)
+          union(i, j, sa * hit.sign * sb, sa * hit.d0);
+        }
+      }
+    }
+  };
 
-  const groups = new Map<number, number[]>();
-  for (let i = 0; i < allRuns.length; i++) {
-    const root = find(i).root;
-    const list = groups.get(root);
-    if (list) list.push(i); else groups.set(root, [i]);
-  }
+  const buildGroups = (): Map<number, number[]> => {
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < allRuns.length; i++) {
+      const root = find(i).root;
+      const list = groups.get(root);
+      if (list) list.push(i); else groups.set(root, [i]);
+    }
+    return groups;
+  };
   let drawnGeoms: EdgeGeom[] | null = null;
+  /** Root-frame positions of OTHER groups' written seats that a group
+   *  must clear on a fixpoint re-seat, keyed by the group's root run. */
+  const extraObstacles = new Map<number, number[]>();
 
-  for (const idxs of [...groups.values()]) {
+  const seatGroups = (groups: Map<number, number[]>): void => {
+  for (const [groupRoot, idxs] of [...groups.entries()]) {
     // Cohabitant gate: every lane on a covered edge must belong to a
     // ladder participant. A line without a qualifying frame bound keeps
     // slot+bias, and re-seating its neighbours around an unmoved lane
@@ -441,7 +462,7 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
     // ladder cannot move). Their positions, projected into the group's
     // root frame, constrain the ladder: the whole ladder may shift to
     // clear them, and a group that cannot clear declines to seat.
-    const obstacles: number[] = [];
+    const obstacles: number[] = [...(extraObstacles.get(groupRoot) ?? [])];
     if (halfWidthOf && drawnEdgeIds) {
       if (drawnGeoms === null) {
         drawnGeoms = [];
@@ -617,6 +638,95 @@ export function computeChainSeats(args: ChainSeatArgs): ChainSeatResult {
       runs: groupRuns,
       conflicts,
     });
+  }
+  };
+
+  buildLinks();
+  seatGroups(buildGroups());
+
+  // Seated-band fixpoint: two independently laddered groups can land
+  // sub-clearance beside each other on parallel edges the base-frame
+  // pair test could not couple (their SEATS moved the ink, not their
+  // bases). Merging the groups was falsified twice (joint mega-ladders
+  // fold); instead the SMALLER colliding group re-seats with the other
+  // group's written seats as fixed obstacles, so the proven shift and
+  // band-skip machinery makes room without widening any ladder.
+  {
+    const seatsOn = (row: ChainSeatReport, edgeId: string): number[] => {
+      const seats: number[] = [];
+      for (const r of row.runs) {
+        if (!r.edgeIds.includes(edgeId)) continue;
+        const s = out.get(edgeId + '|' + r.lineId);
+        if (s !== undefined) seats.push(s);
+      }
+      return seats;
+    };
+    let added = false;
+    for (let ra = 0; ra < report.length; ra++) {
+      for (let rb = ra + 1; rb < report.length; rb++) {
+        let linked = false;
+        for (const eA of report[ra].edgeIds) {
+          if (linked) break;
+          const gA = geomOf.get(eA);
+          if (!gA) continue;
+          for (const eB of report[rb].edgeIds) {
+            const gB = geomOf.get(eB);
+            if (!gB) continue;
+            const reach = (gA.arc + gB.arc) / 2 + spacing * 6;
+            const dx = gA.mid[0] - gB.mid[0];
+            const dy = gA.mid[1] - gB.mid[1];
+            if (dx * dx + dy * dy > reach * reach) continue;
+            const [L, S] = gA.arc >= gB.arc ? [gA, gB] : [gB, gA];
+            const hit = projectParallel(L, S, spacing * 6);
+            if (!hit) continue;
+            const aSeats = seatsOn(report[ra], eA);
+            const bSeats = seatsOn(report[rb], eB);
+            const posOf = (edge: EdgeGeom, seat: number): number =>
+              edge === L ? seat : hit.d0 + hit.sign * seat;
+            let collide = false;
+            for (const a of aSeats) {
+              for (const b of bSeats) {
+                if (Math.abs(posOf(gA, a) - posOf(gB, b)) < spacing * 0.75) {
+                  collide = true;
+                  break;
+                }
+              }
+              if (collide) break;
+            }
+            if (!collide) continue;
+            // the smaller group yields; ties yield the later row
+            const yieldA = report[ra].runs.length < report[rb].runs.length;
+            const [yr, ye, fixedRow, fixedEdge, fixedSeats] = yieldA
+              ? [ra, eA, report[rb], eB, bSeats]
+              : [rb, eB, report[ra], eA, aSeats];
+            void fixedRow;
+            const gY = geomOf.get(ye)!;
+            const iY = runsOnEdge.get(ye)![0];
+            const pY = find(iY);
+            const sY = sgn(allRuns[iY].chain, ye);
+            const gF = geomOf.get(fixedEdge)!;
+            const rootKey = pY.root;
+            let list = extraObstacles.get(rootKey);
+            if (!list) { list = []; extraObstacles.set(rootKey, list); }
+            for (const b of fixedSeats) {
+              const posL = posOf(gF, b);
+              const inEdgeY = gY === L ? posL : hit.sign * (posL - hit.d0);
+              list.push(pY.s * (sY * inEdgeY) + pY.t);
+            }
+            void yr;
+            added = true;
+            linked = true;
+            break;
+          }
+        }
+      }
+    }
+    if (added) {
+      out.clear();
+      keyOwner.clear();
+      report.length = 0;
+      seatGroups(buildGroups());
+    }
   }
   return { seats: out, report, pairs: crossPairs };
 }
