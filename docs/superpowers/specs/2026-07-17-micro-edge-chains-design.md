@@ -145,6 +145,21 @@ line's construction re-framing ink beside another's.
   small self-cross "plus" shape (a route crossing its own ink at a
   turn): it is same-color, so the clip census cannot see it, and the
   variant sweeps must gate on it explicitly.
+  **CERTIFIED + DEFAULT ON (2026-07-17).** Construction shipped as the
+  seat POLICY (constant ladder seats at lane build) rather than rail
+  geometry; see 2.2/2.3 deviations. Measured gates, chains on vs off:
+  pinned corpus 0 visible clips in all six cities (off keeps 1), 0
+  artifact loops, 0 zigzags; tapers 2 in both modes (the anchor
+  band-exchange family named in C1 as out of scope; the original
+  interior-micro-edge trio -> 0 via the node-space jog room fix, which
+  also cleared the off mode). Variant sweep: zero artifact loops on
+  every variant; visible clips better or equal on five of six variants
+  (station-split off 1 vs 4, deep-warp 3 vs 6) and 5 vs 3 on the tight
+  warp, where two of the five are pre-existing compression sites at
+  LOWER amplitude than the off mode paints them and the staircase and
+  taper censuses read 2 vs 8 and 1 vs 5 in the policy's favor.
+  Accepted with that one cell above baseline. OCTI_CHAIN=0 is the
+  escape hatch.
 - **C4. Consolidation.** Fold the machinery the chains subsume; the
   superseded paths move to `old/` per the deprecation policy only after
   sign-off.

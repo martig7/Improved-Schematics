@@ -973,11 +973,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     spacing,
   });
   reportChains({ chains, nodePx, edgeById });
-  // Chain seat policy (invariant I3, chains spec, OCTI_CHAIN=1): interior
+  // Chain seat policy (invariant I3, chains spec; default ON, OCTI_CHAIN=0
+  // is the escape hatch to the pre-chain slot+bias seating): interior
   // edges of a chain take their lane offsets from the chain's shared seat
   // ladder instead of slot+bias, so interior bias seams vanish and the
   // seams at the chain ends are ordinary jogs the fan already closes.
-  const chainSeatRes = envStr('OCTI_CHAIN') === '1'
+  const chainSeatRes = envStr('OCTI_CHAIN') !== '0'
     ? computeChainSeats({
       chains,
       edgeById,
