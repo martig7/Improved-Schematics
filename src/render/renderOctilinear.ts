@@ -3464,12 +3464,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       for (const s of gathered) {
         for (const mk of s.marks) {
           if (dotClear(mk.pos, s.nodeId)) continue; // not trapped
-          // terminus = exactly one drawn incident lane
+          // terminus = exactly one drawn incident lane. A suppressed incident
+          // lane (jog-sliver or corner absorption) still carries the line
+          // onward across the node, so it counts: re-stubbing a THROUGH lane
+          // here would replace its whole polyline with a short stub and cut
+          // the route where the corner curve lands.
           let incEdge: string | null = null;
           let nInc = 0;
           for (const e of layout.edges) {
             if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
-            if (segPath.has(e.id + '|' + mk.lineId)) { nInc++; incEdge = e.id; }
+            const k = e.id + '|' + mk.lineId;
+            if (segPath.has(k)) { nInc++; incEdge = e.id; }
+            else if (suppressed.has(k)) nInc++;
           }
           if (nInc !== 1 || !incEdge) continue; // only termini can be re-stubbed
           const edge = edgeById.get(incEdge);
