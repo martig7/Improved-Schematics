@@ -14,11 +14,17 @@ Growth vs cap, at the dump's live sliders ("default") and at the UI minimum
 | city | default growth (cap) | user-min growth (cap) |
 |------|----------------------|-----------------------|
 | NYC  | 3.30 (3.30) SAT      | 1.25 (1.25) SAT       |
-| SF   | 5.00 (5.00) SAT      | crash (bundleOrder, chipped separately) |
+| SF   | 5.00 (5.00) SAT      | 1.25 (1.25) SAT       |
 | SEA  | 1.68/1.33 (2.18)     | 1.25 (1.25) SAT       |
 | HOR  | 2.50 (2.50) SAT      | 1.25 (1.25) SAT       |
 | DEN  | 1.01 (2.5)           | 1.01 (1.25)           |
 | LON  | 1.52 (2.5)           | 1.25/1.20 (1.25) SAT  |
+
+(The SF user-min cell was originally blocked by a fused-station-split crash;
+fixed at the source before this spec was finalized — a split landing on a
+terminal vertex produced a one-point edge path — so the cell above is
+measured, and shows the same saturation signature: three boxes at the 10x
+ceiling throttled onto the cap.)
 
 Three composing causes, all confirmed in the probe output:
 
@@ -164,6 +170,3 @@ scrutiny, NOT byte identity.
 - **Clip-apart correctness.** Clipping must keep boxes valid (non-empty,
   pads intact enough to push). Degenerate slivers (clip consumes a box)
   drop the box; its pairs migrate as orphans. Unit-tested.
-- **The SF bundleOrder crash** (chipped separately) currently blocks
-  probing SF at user-min; the probe treats it as a missing cell until that
-  fix lands.
