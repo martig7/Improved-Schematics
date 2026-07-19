@@ -49,7 +49,7 @@
 // (local room), finding boxes and measuring demand in separable-warped space.
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
-import { envNum } from '../../env';
+import { envNum, envStr } from '../../env';
 import { probeDensity, probeBoxes, debugBoxWarp } from './debug/densityBoxWarp.debug';
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
@@ -1147,7 +1147,17 @@ export function buildDemandBoxWarp(
 
   const medLen = medianEdgeLenPx(g);
   const cell = opts.cellFromMedLen(medLen);
-  const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
+  // EXPERIMENT (station-demand-driven): OCTI_BOX_DENSITY=0 drops the
+  // region-histogram density oracle entirely, leaving only the
+  // station/junction survival oracles (contraction + capsule). The density
+  // box carried the aesthetic magnification, so with it off the Box warp
+  // slider's right half is inert (survival is granted at 1x regardless).
+  const useDensity = envStr('OCTI_BOX_DENSITY') !== '0';
+  // EXPERIMENT: OCTI_BOX_DROP_TINY=0 keeps the legacy behavior; default ON
+  // drops post-merge boxes that hold fewer than 2 stations (empty padding
+  // remnants and lone stops warp nothing a marker needs).
+  const dropTiny = envStr('OCTI_BOX_DROP_TINY') !== '0';
+  const density = (useDensity && samples.length) ? findDenseBoxes(samples, box, opts) : [];
   const contraction = findContractionBoxes(g, (cell / 2) * safety);
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
   // The corridor oracle ignores passes inside the contraction threshold (those
@@ -1160,12 +1170,27 @@ export function buildDemandBoxWarp(
         minReq: Math.max(opts.corridor.minReq ?? 0, cell * 1.25),
       })
     : [];
-  const merged = mergeDemandBoxes([
+  let merged = mergeDemandBoxes([
     ...density.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, kind: 'density' as const, pairs: [], aes: b.d })),
     ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
     ...capsule,
     ...corridor,
   ]);
+  if (dropTiny) {
+    // A box earns its push only if it actually holds stations to spread: count
+    // the graph nodes inside and drop any with fewer than 2 (empty clip
+    // remnants, lone stops). Density boxes are exempt — their job is to dilate
+    // a REGION, not to separate a specific pair, so they legitimately span
+    // sparse ground between the cells that made them dense.
+    const nodesInBox = (b: DemandBox): number => {
+      let n = 0;
+      for (const p of g.nodes) {
+        if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 && ++n >= 2) break;
+      }
+      return n;
+    };
+    merged = merged.filter((b) => b.kind === 'density' || nodesInBox(b) >= 2);
+  }
   const need = (cell / 2) * slack;
   // Direction intelligence step 1: break direction-mixed boxes into coherent
   // sub-boxes so each can take its room on its OWN crowded axis. anisoAmt 0
