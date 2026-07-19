@@ -1038,3 +1038,26 @@ test('findEmphasisBoxes: top-K caps the region count; determinism', () => {
   assert.deepEqual(k9, again, 'deterministic');
   for (const b of k9) assert.ok(b.d >= 0 && b.d <= 1, `d in [0,1]: ${b.d}`);
 });
+
+test('margin cap: large box band <= cap; small box proportional; still fold-safe', () => {
+  // A big density cluster (wide box) with the margin capped: the transition
+  // band must be <= cap, not marginFrac*halfExtent. Fold-safe: no point has
+  // negative local scale (jacDet > 0) everywhere.
+  const s = clusterAt(50, 50, 220);
+  const capped = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 48, frac: 0.4, marginFrac: 3, cellFromMedLen: () => 12, userMult: 4, emphasisSigma: 2.5, minCells: 1, floorFrac: 0.05, marginCap: 24, curvBound: Infinity });
+  const uncapped = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 48, frac: 0.4, marginFrac: 3, cellFromMedLen: () => 12, userMult: 4, emphasisSigma: 2.5, minCells: 1, floorFrac: 0.05 });
+  // the capped warp returns to ~unit scale closer to the box than the uncapped
+  // one: sample the local scale a fixed distance outside the core.
+  const sampleScale = (W: WarpFn, x: number): number => (W([x + 0.5, 50])[0] - W([x - 0.5, 50])[0]);
+  // far outside both boxes: both ~unit
+  assert.ok(Math.abs(sampleScale(capped.warp, 98) - 1) < 0.05, 'capped: faithful far out');
+  // at ~35px right of center: capped should be back near unit (band<=24),
+  // uncapped still stretched (band ~3*half)
+  const cappedMid = sampleScale(capped.warp, 85);
+  const uncappedMid = sampleScale(uncapped.warp, 85);
+  assert.ok(cappedMid <= uncappedMid + 1e-6, `capped contains distortion sooner: ${cappedMid.toFixed(3)} <= ${uncappedMid.toFixed(3)}`);
+  // fold-safe everywhere
+  for (let y = 4; y < 100; y += 8) for (let x = 4; x < 100; x += 8) {
+    assert.ok(jacDet(capped.warp, [x, y]) > 0, `fold-safe at (${x},${y})`);
+  }
+});

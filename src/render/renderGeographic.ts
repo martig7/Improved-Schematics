@@ -28,7 +28,7 @@ import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
-import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
+import { buildDemandBoxWarp, buildSepDemandBoxWarp, medianEdgeLenPx, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP, regimeDivisor } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
@@ -803,6 +803,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const emphasisK = (() => { const v = envNum('OCTI_BOX_K'); return Number.isFinite(v) && v >= 1 ? v : 6; })();
   const emphasisFloor = (() => { const v = envNum('OCTI_BOX_FLOOR'); return Number.isFinite(v) && v > 0 ? v : 0.02; })();
   const emphasisSigma = (() => { const v = envNum('OCTI_BOX_SIGMA'); return Number.isFinite(v) && v > 0 ? v : 1.2; })();
+  // Distortion containment: cap the push margin at an absolute width (default a
+  // few cells) so large emphasis boxes stop bleeding distortion proportionally
+  // across faithful geography; curvBound floors it so the C2 bend stays gentle.
+  const marginCap = (() => { const v = envNum('OCTI_BOX_MARGIN_CAP'); return Number.isFinite(v) && v > 0 ? v : cellFromMedLen(medianEdgeLenPx(boxGraph)) * 4; })();
+  const curvBound = (() => { const v = envNum('OCTI_BOX_CURV'); return Number.isFinite(v) && v > 0 ? v : 0.06; })();
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
@@ -811,6 +816,8 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     emphasisK,
     floorFrac: emphasisFloor,
     emphasisSigma,
+    marginCap,
+    curvBound,
     ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
     ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,

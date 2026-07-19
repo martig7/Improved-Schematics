@@ -1045,6 +1045,10 @@ export function findEmphasisBoxes(
 export interface DemandOptions extends DensityWarp2DOptionsLike {
   /** Density-oracle cutoff (fraction of peak), as findDenseBoxes. Default 0.4. */
   frac?: number;
+  /** Absolute margin cap (px) for distortion containment; Infinity = off. */
+  marginCap?: number;
+  /** Curvature bound for the margin floor (keeps the C2 bend gentle). */
+  curvBound?: number;
   /** Emphasis-box count (steepest-ascent watershed top-K). Default 6. */
   emphasisK?: number;
   /** Emphasis floor: ignore cells below this fraction of the global peak. */
@@ -1146,6 +1150,11 @@ function buildWarpFromBoxes(
   maxGrowth: number | [number, number], // scalar, or per-axis caps [capX, capY]
   out?: { boxes?: DenseBox[] },
   perAxisMargin = false, // aniso path: each axis's ramp scales with ITS half-extent
+  // Distortion containment: cap the margin at an absolute width so a large
+  // emphasis box stops bleeding its transition proportionally far into faithful
+  // geography, and FLOOR it so the (C2, corner-free) bend stays gentle — peak
+  // curvature 1.875*s/m under `curv`. cap=Infinity/curv=Infinity = off.
+  marginCapSpec: { cap: number; curv: number } = { cap: Infinity, curv: Infinity },
 ): DemandWarpResult {
   const [capGx, capGy] = Array.isArray(maxGrowth) ? maxGrowth : [maxGrowth, maxGrowth];
   const identity: WarpFn = (p) => [p[0], p[1]];
@@ -1163,10 +1172,20 @@ function buildWarpFromBoxes(
     // stretch far into the neighbouring sub-box and washing the directions
     // back out. Per-axis margins keep each axis's ramp proportional to that
     // axis's own extent.
-    const m = Math.max(1, marginFrac * Math.max(hx, hy));
-    const mx = perAxisMargin ? Math.max(1, marginFrac * hx) : m;
-    const my = perAxisMargin ? Math.max(1, marginFrac * hy) : m;
-    return { cx, cy, hx, hy, mx, my, sx: strengths[i][0], sy: strengths[i][1] };
+    const sx = strengths[i][0], sy = strengths[i][1];
+    // margin = the proportional width, CAPPED at marginCapSpec.cap (contain
+    // distortion), FLOORED so peak curvature 1.875*s/m stays under
+    // marginCapSpec.curv (keep the C2 bend gentle) and at 1px.
+    const cap = marginCapSpec.cap, curv = marginCapSpec.curv;
+    const capped = (prop: number, s: number): number => {
+      const curvFloor = Number.isFinite(curv) ? (1.875 * Math.abs(s)) / curv : 0;
+      return Math.max(1, curvFloor, Math.min(prop, cap));
+    };
+    const propShared = marginFrac * Math.max(hx, hy);
+    const m = capped(propShared, Math.max(Math.abs(sx), Math.abs(sy)));
+    const mx = perAxisMargin ? capped(marginFrac * hx, sx) : m;
+    const my = perAxisMargin ? capped(marginFrac * hy, sy) : m;
+    return { cx, cy, hx, hy, mx, my, sx, sy };
   });
   // Smooth saturating odd-symmetric push, per-box strength s. C2-CONTINUOUS
   // (no-coastline-kinks invariant): the margin ramps the SLOPE with a
@@ -1270,6 +1289,7 @@ export function buildDemandBoxWarp(
 
   const medLen = medianEdgeLenPx(g);
   const cell = opts.cellFromMedLen(medLen);
+  const marginCapSpec = { cap: opts.marginCap ?? Infinity, curv: opts.curvBound ?? Infinity };
   // The warp is an AESTHETIC feature: give crowded areas room to breathe and
   // emphasize important areas, with FEW meaningful boxes. Its two aesthetic
   // drivers are the DENSITY oracle (line-weighted station crowding — captures
@@ -1402,7 +1422,7 @@ export function buildDemandBoxWarp(
   // final build: demands = the warp we'd like, throttle = the warp we allow,
   // canvas = exactly the space the allowed warp produces.
   const oref: { boxes?: DenseBox[] } = out ?? {};
-  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
+  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0, marginCapSpec);
 
   // Refinement: expansion raises the global median edge length, so the real
   // post-warp contraction threshold is HIGHER than the pre-warp estimate the
@@ -1495,7 +1515,7 @@ export function buildDemandBoxWarp(
       if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; prev = now;
       expands = eNext;
-      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
+      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0, marginCapSpec);
     }
   }
   // The one and only capped build. Percentage mode: the granted GROWTH
@@ -1510,9 +1530,9 @@ export function buildDemandBoxWarp(
     const t = Math.min(1, Math.max(0, opts.growthPct));
     const capX = Math.max(1, t * result.growthX);
     const capY = Math.max(1, t * result.growthY);
-    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, [capX, capY], oref, anisoAmt > 0);
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, [capX, capY], oref, anisoAmt > 0, marginCapSpec);
   } else {
-    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0, marginCapSpec);
   }
   if (out) { out.expands = expands; out.aniso = rs; }
 
