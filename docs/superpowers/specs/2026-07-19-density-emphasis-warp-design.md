@@ -58,21 +58,44 @@ Replace the single global-cutoff flood with per-peak basins:
 Determinism: grid scan in fixed order, integer basin ids, sorted by height then
 index; `Math.sqrt` only; no trig, no random.
 
-### Margin = capped, not purely box-proportional
-Change the ramp width to `m = min(marginFrac · halfExtent, marginCap)`:
+### HARD INVARIANT: no coastline kinks — the warp is C2-continuous
+A kink is a CORNER: a discontinuity in the warp's curvature. The current push
+is only C1 (continuous slope) — its slope ramps LINEARLY from 1 to 0 across the
+margin, so the curvature jumps at the box edge (`a=h`) and the margin end
+(`a=h+m`). A straight coastline crossing those points bends abruptly. That is
+the kink, and a shorter margin makes it sharper.
 
-- Small boxes (capsule interchange boxes) keep their smooth proportional margin
-  — no visible box-edge kink there.
-- Large emphasis boxes are CAPPED at an absolute `marginCap` (a few cells,
-  tune ~3-4 cells by eye), so the dense core's transition is a fixed-width band
-  regardless of how big the core is. Distortion stays local to the boxes;
-  geography a few cells out is faithful.
-- Fold-free is preserved unchanged: the push slope stays in `[0,1]` for any
-  `m > 0`, so capping the margin cannot fold. Floor `marginCap` at ~1 cell so
-  the transition still hides the coastline kink.
+Fix, as a hard invariant the warp must always satisfy: **ramp the slope with a
+smootherstep instead of linearly**, so curvature is continuous everywhere and
+corners are IMPOSSIBLE at any margin width.
 
-`marginCap` is the primary new distortion knob; `marginFrac` stays for the
-small-box smoothness.
+- Slope profile over the margin `u = (a−h)/m ∈ [0,1]`:
+  `slope(u) = 1 − smootherstep(u)` with `smootherstep(x) = 6x⁵−15x⁴+10x³`.
+  Then `slope(0)=1`, `slope(1)=0`, and `slope'(0)=slope'(1)=0` — curvature
+  matches the flat regions on both sides, so no corner.
+- Fold-safe: `smootherstep ∈ [0,1]` ⇒ `slope ∈ [0,1]` ⇒ `1 + s·slope > 0` for
+  `s ≥ 0`, monotone per axis, same fold-free guarantee as today.
+- The push is the integral of this slope (closed form, deterministic); replaces
+  the current `a − (a−h)²/(2m)` quadratic segment.
+
+This makes coastline smoothness independent of the margin width — the transition
+is always a smooth bend, never a corner.
+
+### Margin = capped, for distortion containment (now corner-free)
+With C2 removing the corner, the margin width becomes a pure distortion-vs-bend
+tradeoff with no kink risk. Cap it: `m = min(marginFrac · halfExtent, marginCap)`.
+
+- Small boxes (capsule) keep their proportional margin.
+- Large emphasis boxes are capped at an absolute `marginCap` (tune by eye), so
+  the dense core's transition is a fixed-width band regardless of core size —
+  distortion stays local, geography a few cells out is faithful, and the bend
+  there is smooth (C2), never a corner.
+- Floor `marginCap` only so the smooth bend stays gentle (not a tight-radius
+  arc that reads corner-ish); the C2 profile means there is no hard floor
+  needed to avoid an actual kink.
+
+`marginCap` is the distortion knob; `marginFrac` the small-box smoothness; the
+C2 profile is the always-on no-kink guarantee.
 
 ### What stays unchanged
 - The **capsule oracle** (colliding-interchange emphasis) — the other half of
@@ -88,7 +111,9 @@ All in `src/render/layout/densityBoxWarp.ts` + `renderGeographic.ts` + tests:
 - `findDenseBoxes` → `findEmphasisBoxes` (watershed basins + optional hubs).
   Same return shape (`DenseBox & { d }[]`), so the merge/demand pipeline is
   untouched. Keep the old function behind a flag for A/B if useful.
-- `buildWarpFromBoxes`: margin becomes `min(marginFrac·h, marginCap)` per axis.
+- `buildWarpFromBoxes`: the `push` helper's margin segment becomes the
+  smootherstep-slope integral (C2, no-kink invariant), and the width becomes
+  `min(marginFrac·h, marginCap)` per axis (distortion cap).
 - `renderGeographic`: `K` (emphasis count), `N` (hub count), `marginCap` knobs,
   each with an `OCTI_BOX_*` env override; the panel Box-density-cutoff slider
   remaps to `K` (a count, not a fraction) or stays `frac` feeding the local
@@ -112,6 +137,11 @@ checks.
 Aesthetic + distortion, NOT draw censuses (draw robustness is the separate
 backlog task; log any draw issue there, do not gate on it):
 
+- **NO COASTLINE KINKS (hard gate)**: overlay the warped coastline where it
+  crosses every box boundary and confirm a smooth bend, never a corner, on
+  every corpus city at default AND maximum emphasis. The C2 profile must be
+  verified visually AND by checking the warp's numeric curvature is bounded
+  (no spike at box edges) in warp-preview. This gate blocks the whole change.
 - **Renders** (the primary judge): a few deliberate emphasis regions over the
   crowded cores/hubs; geography faithful outside the bands. Before/after full
   maps per city at default and high emphasis.
@@ -129,10 +159,12 @@ backlog task; log any draw issue there, do not gate on it):
 - **Watershed over-segmentation**: a noisy field splits into many tiny basins.
   Mitigate with the peak floor + K cap + a minimum basin size; the clip-apart
   merge de-overlaps whatever survives.
-- **Margin cap too sharp**: a large emphasis box with a thin capped margin shows
-  a visible kink where a straight coastline/line crosses the box edge. Floor
-  `marginCap`, tune by eye on warp-preview; the kink lands outside the network
-  if basins tightly bound the dense region.
+- **Margin cap too sharp**: NO LONGER a kink risk — the C2 profile guarantees a
+  smooth bend at any width. The residual risk is only a tight-radius (but still
+  smooth) bend if `marginCap` is very small; floor it and tune by eye. If even a
+  smooth bow of the coastline is unwanted, that is a deeper limit (no local
+  magnification can leave its surroundings perfectly rigid); the achievable
+  guarantee is corner-free + contained, which is what "no kinks" requires.
 - **Emphasis vs capsule overlap**: a hub emphasis box coincident with a capsule
   box is handled by the existing clip-apart merge (capsule outranks density);
   no double-stack.
