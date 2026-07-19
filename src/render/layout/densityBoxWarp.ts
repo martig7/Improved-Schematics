@@ -959,11 +959,11 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   expandMax?: number;
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2.5. */
   maxGrowth?: number;
-  /** Percentage-of-maximum mode (0–1): grant this linear fraction of the full
-   *  measured demand instead of throttling against maxGrowth. The throttle is
-   *  exactly affine in the strengths, so t% of the maximum warp IS every push
-   *  strength scaled by t: 0 = identity, 1 = the whole demanded warp
-   *  (expandMax per-box safety still applies). Overrides maxGrowth when set. */
+  /** Percentage-of-max-saturation mode (0–1): the granted growth FACTOR is
+   *  this fraction of the max-saturation growth (the full demand's growth),
+   *  floored at identity — t=0.5 on a map that saturates at 4.64 grows
+   *  exactly 2.32; positions below 1/saturation are the identity. Overrides
+   *  maxGrowth when set (expandMax per-box safety still applies). */
   growthPct?: number;
   /** Direction-intelligence amount, 0–1: how far each box's expansion is
    *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = isotropic
@@ -1029,10 +1029,11 @@ function buildWarpFromBoxes(
   strengths: readonly [number, number][], // per box: [sx, sy] = per-axis expand - 1
   box: WarpBox,
   marginFrac: number,
-  maxGrowth: number,
+  maxGrowth: number | [number, number], // scalar, or per-axis caps [capX, capY]
   out?: { boxes?: DenseBox[] },
   perAxisMargin = false, // aniso path: each axis's ramp scales with ITS half-extent
 ): DemandWarpResult {
+  const [capGx, capGy] = Array.isArray(maxGrowth) ? maxGrowth : [maxGrowth, maxGrowth];
   const identity: WarpFn = (p) => [p[0], p[1]];
   if (boxes.length === 0 || strengths.every(([sx, sy]) => sx === 0 && sy === 0)) {
     if (out) out.boxes = boxes.map((b) => ({ ...b }));
@@ -1095,15 +1096,15 @@ function buildWarpFromBoxes(
   let { xl, xr, yt, yb } = corners();
   const rawGx = (xr - xl) / W;
   const rawGy = (yb - yt) / H;
-  if (rawGx > maxGrowth && rawGx > 1) {
-    const lx = (maxGrowth - 1) / (rawGx - 1);
+  if (rawGx > capGx && rawGx > 1) {
+    const lx = (Math.max(1, capGx) - 1) / (rawGx - 1);
     for (const b of bs) b.sx *= lx;
   }
-  if (rawGy > maxGrowth && rawGy > 1) {
-    const ly = (maxGrowth - 1) / (rawGy - 1);
+  if (rawGy > capGy && rawGy > 1) {
+    const ly = (Math.max(1, capGy) - 1) / (rawGy - 1);
     for (const b of bs) b.sy *= ly;
   }
-  if (rawGx > maxGrowth || rawGy > maxGrowth) ({ xl, xr, yt, yb } = corners());
+  if (rawGx > capGx || rawGy > capGy) ({ xl, xr, yt, yb } = corners());
   const growthX = (xr - xl) / W;
   const growthY = (yb - yt) / H;
   const warp: WarpFn = (p) => {
@@ -1332,16 +1333,19 @@ export function buildDemandBoxWarp(
       result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
     }
   }
-  // The one and only capped build. Percentage mode grants a linear fraction
-  // of the full solved demand (strengths scale by t; the exact throttle and a
-  // t-scale are the same operation), so the slider reads as "t% of the
-  // maximum warp" on every map. Legacy mode throttles against the fixed
+  // The one and only capped build. Percentage mode: the granted GROWTH
+  // FACTOR is t x the max-saturation growth (the full solved demand's
+  // growth), floored at identity — 50% of a map whose saturation renders at
+  // 4.64 is exactly 2.32. `result` still holds the last unthrottled build,
+  // so its growth IS the max saturation; the exact per-axis throttle lands
+  // the strengths on the target. Legacy mode throttles against the fixed
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
   if (opts.growthPct !== undefined) {
     const t = Math.min(1, Math.max(0, opts.growthPct));
-    const scaled = axisStrengths(expands).map(([sx, sy]) => [sx * t, sy * t] as [number, number]);
-    result = buildWarpFromBoxes(boxes, scaled, box, marginFrac, Infinity, oref, anisoAmt > 0);
+    const capX = Math.max(1, t * result.growthX);
+    const capY = Math.max(1, t * result.growthY);
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, [capX, capY], oref, anisoAmt > 0);
   } else {
     result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
   }

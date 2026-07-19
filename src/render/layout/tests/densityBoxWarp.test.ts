@@ -951,7 +951,7 @@ test('demand pricing: survival ignores userMult; aesthetics scale linearly with 
   assert.ok(aHi.growthX > 1, 'userMult 4 magnifies the dense core');
 });
 
-test('buildDemandBoxWarp: percentage mode is linear between identity and the full demand', () => {
+test('buildDemandBoxWarp: percentage mode grows by t x the max-saturation growth', () => {
   const g: BoxGraph = {
     nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
     edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
@@ -963,8 +963,12 @@ test('buildDemandBoxWarp: percentage mode is linear between identity and the ful
   assert.equal(t0.growthX, 1);
   const t1 = at(1);
   const full = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: Infinity });
-  assert.ok(Math.abs(t1.growthX - full.growthX) < 1e-9, 't=1 equals the unthrottled maximum');
+  assert.ok(Math.abs(t1.growthX - full.growthX) < 1e-9, 't=1 equals the max saturation');
   const t5 = at(0.5);
-  assert.ok(Math.abs((t5.growthX - 1) - 0.5 * (t1.growthX - 1)) < 1e-9,
-    `growth linear in t: ${t5.growthX} vs midpoint of ${t1.growthX}`);
+  assert.ok(Math.abs(t5.growthX - Math.max(1, 0.5 * t1.growthX)) < 1e-9,
+    `growth(0.5) = half the saturation growth: ${t5.growthX} vs ${t1.growthX}`);
+  assert.ok(Math.abs(t5.growthY - Math.max(1, 0.5 * t1.growthY)) < 1e-9);
+  // below 1/saturation the target cap falls under 1 and the warp is identity
+  const tTiny = at(1 / (t1.growthX * 2));
+  assert.equal(tTiny.growthX, 1);
 });
