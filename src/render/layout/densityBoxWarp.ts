@@ -941,9 +941,107 @@ export function findDenseBoxes(
   return boxes;
 }
 
+/** Deliberate EMPHASIS boxes via steepest-ascent watershed (aesthetic warp):
+ *  a few meaningful regions over the density peaks, instead of findDenseBoxes'
+ *  single global-cutoff blob. Each above-floor grid cell is assigned to the
+ *  peak reached by steepest ascent (value, then index tie-break), which
+ *  partitions the field at its true ridge lines — no basin can contain another
+ *  peak (the downward-flood alternative leaks over saddles and rebuilds the map
+ *  box). Each basin is trimmed to its own high ground (>= frac x its OWN peak),
+ *  dropped if too small, and the top-K by peak height survive. `d` normalizes
+ *  against the basin's OWN peak so secondary cores get comparable emphasis.
+ *  Deterministic: fixed scan order, total-order tie-breaks, sqrt only. */
+export function findEmphasisBoxes(
+  samples: readonly Pixel[],
+  box: WarpBox,
+  opts: FindDenseBoxesOptions & { emphasisK?: number; floorFrac?: number; minCells?: number } = {},
+): Array<DenseBox & { d: number }> {
+  if (samples.length === 0) return [];
+  const grid = densityGrid2D(samples, box, { ...opts, maxScale: 1e9 });
+  const { e, bins: B, x0, y0, cw, ch } = grid;
+  const frac = opts.frac ?? 0.4;
+  const floorFrac = opts.floorFrac ?? 0.1;
+  const K = Math.max(1, opts.emphasisK ?? 6);
+  const minCells = Math.max(1, opts.minCells ?? 4);
+  const N = B * B;
+
+  let emax = 0;
+  for (let i = 0; i < N; i++) if (e[i] > emax) emax = e[i];
+  if (!(emax > 0)) return [];
+  const floor = floorFrac * emax;
+
+  // steepest-ascent "up" pointer per above-floor cell: its strictly-largest
+  // neighbour (value, then index), or self if it is the local max (a peak).
+  const up = new Int32Array(N).fill(-1);
+  const active = (i: number): boolean => e[i] >= floor && e[i] > 0;
+  for (let i = 0; i < N; i++) {
+    if (!active(i)) continue;
+    const cx = i % B, cy = (i / B) | 0;
+    let best = i, bestV = e[i];
+    for (let dy = -1; dy <= 1; dy++) {
+      const ny = cy + dy;
+      if (ny < 0 || ny >= B) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = cx + dx;
+        if ((dx === 0 && dy === 0) || nx < 0 || nx >= B) continue;
+        const j = ny * B + nx;
+        // strict lexicographic (value, then index) so a flat plateau resolves
+        // to its single lowest-index cell (deterministic, one peak per plateau).
+        if (e[j] > bestV || (e[j] === bestV && j < best)) { best = j; bestV = e[j]; }
+      }
+    }
+    up[i] = best;
+  }
+  // follow up-pointers to the peak (self-pointer), with path compression.
+  const peakOf = new Int32Array(N).fill(-1);
+  const findPeak = (i: number): number => {
+    let r = i;
+    while (up[r] !== r && up[r] !== -1) r = up[r];
+    let c = i;
+    while (c !== r && up[c] !== -1) { const n = up[c]; up[c] = r; c = n; }
+    return r;
+  };
+  const byPeak = new Map<number, number[]>();
+  for (let i = 0; i < N; i++) {
+    if (!active(i)) continue;
+    const p = findPeak(i);
+    peakOf[i] = p;
+    let arr = byPeak.get(p);
+    if (!arr) { arr = []; byPeak.set(p, arr); }
+    arr.push(i);
+  }
+
+  interface Basin { peak: number; peakV: number; x0: number; y0: number; x1: number; y1: number; d: number; n: number }
+  const basins: Basin[] = [];
+  for (const [peak, cells] of byPeak) {
+    const peakV = e[peak];
+    const cutoff = Math.max(1e-9, frac * peakV);
+    let minx = B, miny = B, maxx = -1, maxy = -1, esum = 0, n = 0;
+    for (const c of cells) {
+      if (e[c] < cutoff) continue; // trim to this basin's own high ground
+      const cx = c % B, cy = (c / B) | 0;
+      if (cx < minx) minx = cx;
+      if (cx > maxx) maxx = cx;
+      if (cy < miny) miny = cy;
+      if (cy > maxy) maxy = cy;
+      esum += e[c];
+      n++;
+    }
+    if (n < minCells) continue;
+    const span = peakV - cutoff;
+    const d = span > 1e-9 ? Math.min(1, Math.max(0, (esum / n - cutoff) / span)) : 0;
+    basins.push({ peak, peakV, x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch, d, n });
+  }
+  // top-K by peak height (then index) — the deliberate-count knob.
+  basins.sort((a, b) => (b.peakV - a.peakV) || (a.peak - b.peak));
+  return basins.slice(0, K).map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, d: b.d }));
+}
+
 export interface DemandOptions extends DensityWarp2DOptionsLike {
   /** Density-oracle cutoff (fraction of peak), as findDenseBoxes. Default 0.4. */
   frac?: number;
+  /** Emphasis-box count (steepest-ascent watershed top-K). Default 6. */
+  emphasisK?: number;
   /** Saturation margin as a fraction of box half-extent. Default 1. */
   marginFrac?: number;
   /** Derive the octi cellSize estimate ĉ from a median edge length. Supplied by
@@ -1180,7 +1278,10 @@ export function buildDemandBoxWarp(
   // surfaces are tracked as a draw-robustness backlog, not fixed here.
   const contractionEnv = envStr('OCTI_BOX_CONTRACTION');
   const useContraction = opts.contraction ?? (contractionEnv === '1' || contractionEnv === 'all');
-  const density = (useDensity && samples.length) ? findDenseBoxes(samples, box, opts) : [];
+  // The density driver is the steepest-ascent EMPHASIS watershed (few
+  // deliberate regions), not the single-blob findDenseBoxes. findDenseBoxes
+  // stays as the splitMixedBoxes decomposition primitive.
+  const density = (useDensity && samples.length) ? findEmphasisBoxes(samples, box, opts) : [];
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
   const contraction = useContraction ? findContractionBoxes(g, (cell / 2) * safety) : [];
   // The corridor oracle ignores passes inside the contraction threshold (those
@@ -1215,9 +1316,13 @@ export function buildDemandBoxWarp(
     merged = merged.filter((b) => b.kind === 'density' || nodesInBox(b) >= 2);
   }
   const need = (cell / 2) * slack;
-  // Direction intelligence step 1: break direction-mixed boxes into coherent
+  // Direction intelligence step 1: break direction-MIXED boxes into coherent
   // sub-boxes so each can take its room on its OWN crowded axis. anisoAmt 0
-  // leaves boxes unsplit.
+  // leaves boxes unsplit. Emphasis (density) boxes go through this too: the
+  // watershed already gives FEW deliberate basins, and splitMixedBoxes only
+  // splits a basin that is genuinely direction-mixed (a region with both N-S
+  // and E-W trunks), producing a couple of direction-coherent pieces — that is
+  // quality, not a swarm. A direction-coherent basin passes through whole.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
   probeBoxes(density, merged, boxes, g.nodes, (b) => boxCrowdAnisotropy(b, g));
   if (boxes.length === 0) {

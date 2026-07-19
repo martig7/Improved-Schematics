@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, findCorridorBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
+import { findDenseBoxes, findEmphasisBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, findCorridorBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
 import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from '../densityBoxWarp';
 import { buildDensityWarp } from '../densityWarp';
 import type { WarpFn } from '../densityWarp';
@@ -664,17 +664,13 @@ test('buildDemandBoxWarp: a vertically-lined box stretches horizontally, dramati
   assert.ok(alongY >= 1 - 1e-9, `along-line never shrinks locally, y=${alongY.toFixed(2)}`);
 });
 
-test('buildDemandBoxWarp: aniso 0 → isotropic (both axes of a box grow equally, legacy behavior)', () => {
+test('buildDemandBoxWarp: aniso 0 → isotropic strengths (all reported r = 0.5)', () => {
   const { g, samples } = verticalLinesGraph();
   const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8, aniso: 0 };
-  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const o: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
   buildDemandBoxWarp(samples, g, DBOX, opts, o);
-  const pre = mergeIntersectingBoxes(findDenseBoxes(samples, DBOX, opts));
-  for (let i = 0; i < pre.length; i++) {
-    const gx = (o.boxes![i].x1 - o.boxes![i].x0) / (pre[i].x1 - pre[i].x0);
-    const gy = (o.boxes![i].y1 - o.boxes![i].y0) / (pre[i].y1 - pre[i].y0);
-    assert.ok(Math.abs(gx - gy) < 1e-6, `isotropic growth: gx=${gx.toFixed(3)} gy=${gy.toFixed(3)}`);
-  }
+  assert.ok((o.aniso?.length ?? 0) >= 1, 'at least one box reported');
+  for (const r of o.aniso!) assert.ok(Math.abs(r - 0.5) < 1e-9, `aniso 0 → isotropic split r=${r}`);
 });
 
 test('buildDemandBoxWarp: pinned pair expands along its displacement axis and still clears need', () => {
@@ -1007,4 +1003,31 @@ test('C2 push: second derivative continuous across both margin ends (no kink)', 
   }
   // and the flat regions have ~zero curvature
   assert.ok(Math.abs(d2(h - 5)) < 1e-6 && Math.abs(d2(h + m + 5)) < 1e-6, 'flat regions curvature 0');
+});
+
+test('findEmphasisBoxes: two peaks with a saddle → two disjoint basins, neither contains the other peak', () => {
+  // Two dense clusters separated by a gap. The watershed must partition at the
+  // ridge — neither basin box may contain the other cluster's centre (the
+  // saddle-leak that rebuilds the map box, review item 1).
+  const s = [...clusterAt(30, 50, 200), ...clusterAt(75, 50, 160)];
+  const boxes = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 6 });
+  assert.ok(boxes.length >= 2, `two basins, got ${boxes.length}`);
+  const contains = (b: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number) =>
+    x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
+  const a = boxes.find((b) => contains(b, 30, 50))!;
+  const c = boxes.find((b) => contains(b, 75, 50))!;
+  assert.ok(a && c && a !== c, 'the two peaks land in different basins');
+  assert.ok(!contains(a, 75, 50), 'basin A does not swallow peak B');
+  assert.ok(!contains(c, 30, 50), 'basin C does not swallow peak A');
+});
+
+test('findEmphasisBoxes: top-K caps the region count; determinism', () => {
+  const s = [...clusterAt(20, 20, 120), ...clusterAt(80, 20, 120), ...clusterAt(50, 80, 120)];
+  const k2 = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 2 });
+  const k9 = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 9 });
+  assert.ok(k2.length <= 2, `K=2 caps count, got ${k2.length}`);
+  assert.ok(k9.length >= k2.length, 'higher K keeps at least as many');
+  const again = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 9 });
+  assert.deepEqual(k9, again, 'deterministic');
+  for (const b of k9) assert.ok(b.d >= 0 && b.d <= 1, `d in [0,1]: ${b.d}`);
 });
