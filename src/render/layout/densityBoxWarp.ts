@@ -1157,29 +1157,20 @@ export function buildDemandBoxWarp(
   // drops post-merge boxes that hold fewer than 2 stations (empty padding
   // remnants and lone stops warp nothing a marker needs).
   const dropTiny = envStr('OCTI_BOX_DROP_TINY') !== '0';
-  // Contraction oracle mode (harm-predicate, from the demand-population
-  // experiment). The falsifier showed removing it wholesale strands no marker
-  // (contiguity 0 corpus-wide) and is inert on half the corpus, but a MINORITY
-  // of its short edges genuinely prevent tapers/loops when pre-spread. So the
-  // default SUBSUMES: an interchange pinch (<=8px) sits inside its own capsule
-  // box's 40-65px separation radius, so the capsule oracle already spreads it;
-  // the contraction box there is pure redundancy. Keep only contraction boxes
-  // that DON'T overlap a capsule box (the sparse deg-2 stop pinches that no
-  // capsule covers). OCTI_BOX_CONTRACTION=0 removes it entirely; =all keeps
-  // every short edge (legacy).
-  const contractionMode = envStr('OCTI_BOX_CONTRACTION'); // '', '0', 'all'
+  // Contraction oracle (demand-population experiment result). The falsifier
+  // showed the oracle is mostly phantom — inert on half the corpus, no marker
+  // loss when removed (contiguity 0), and 45 of NYC's 60 boxes carry no growth
+  // — BUT the capsule-subsumption harm-predicate that tried to drop the
+  // redundant majority was FALSIFIED by HOR: HOR's pinches that overlap/nest
+  // capsule boxes are still load-bearing (the throttled capsule push doesn't
+  // fully separate them), so dropping them reintroduces tapers/loops and even
+  // breaks a route. No cheap capsule-geometry predicate distinguishes the two,
+  // so the safe reduction is the drop-tiny cleanup alone; the oracle stays
+  // whole. OCTI_BOX_CONTRACTION=0 removes it (experiment only — regresses SF/HOR).
+  const useContraction = envStr('OCTI_BOX_CONTRACTION') !== '0';
   const density = (useDensity && samples.length) ? findDenseBoxes(samples, box, opts) : [];
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
-  let contraction = contractionMode === '0' ? [] : findContractionBoxes(g, (cell / 2) * safety);
-  if (contractionMode !== '0' && contractionMode !== 'all' && capsule.length) {
-    const overlapsCapsule = (b: DenseBox): boolean => {
-      for (const c of capsule) {
-        if (b.x0 <= c.x1 && c.x0 <= b.x1 && b.y0 <= c.y1 && c.y0 <= b.y1) return true;
-      }
-      return false;
-    };
-    contraction = contraction.filter((b) => !overlapsCapsule(b));
-  }
+  const contraction = useContraction ? findContractionBoxes(g, (cell / 2) * safety) : [];
   // The corridor oracle ignores passes inside the contraction threshold (those
   // corridors get welded or contracted into ONE drawn corridor downstream) and
   // pairs whose paint a single grid cell already absorbs.
