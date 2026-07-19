@@ -35,28 +35,57 @@ on non-warped area" the user sees.
 
 ## Design decisions (settled)
 
-### Density = watershed basins + hub emphasis
-Replace the single global-cutoff flood with per-peak basins:
+### Density = steepest-ascent watershed basins
+Replace the single global-cutoff flood with a true watershed partition. NOT a
+downward flood from each peak — the review found that leaks: a secondary peak's
+lower local cutoff lets its flood climb over the saddle into the unclaimed
+annulus around the dominant core and re-encircle it, rebuilding the exact map
+box we are removing. Use steepest-ascent assignment instead:
 
-- **Local maxima** of the smoothed density field are the crowded regions. Scan
-  the grid for cells strictly greater than their 8 neighbours and above a floor
-  (fraction of the global peak, so noise peaks are ignored).
-- **Per-peak basin**: flood each maximum downward, claiming cells until they
-  drop below `frac × THAT peak's height` (a LOCAL cutoff, so a secondary peak
-  is not swallowed by the dominant one) or reach a cell a higher peak already
-  claimed (a watershed boundary). Bound each basin → one emphasis box, carrying
-  its normalized `d` as today.
-- **Count control**: keep the top-K basins by peak height. K is the "how many
-  areas to emphasize" knob (default small, ~4-6; tune by eye). This is what
-  turns one blob into a few deliberate regions.
-- **Hub emphasis (optional term)**: an isolated mega-hub (top line-count node)
-  in a sparse area makes no density PEAK, yet is an important area. Optionally
-  add the top-N nodes by line count as small dedicated emphasis boxes. Behind
-  its own count knob; start N=0 and enable only if renders show important lone
-  hubs going un-emphasized (avoid over-boxing).
+- **Peaks**: cells that are a strict lexicographic (value, then cell index)
+  maximum over their 8 neighbours AND above a floor (fraction of the GLOBAL
+  peak, so noise peaks are ignored). The lexicographic strictness gives exactly
+  one peak per flat plateau (equal-value FP ties from the clamped-border
+  smoothing), deterministically.
+- **Assignment**: every above-floor cell is assigned to the peak reached by
+  repeatedly stepping to its strictly-largest neighbour (value, then index
+  tie-break). This partitions the field at the true ridge lines — no basin can
+  contain another peak. Below-floor cells are unassigned.
+- **Local-cutoff filter**: within each basin, keep only cells `≥ frac × THAT
+  basin's peak` (clamped `> 0`, since the field is mean-zero). This trims each
+  basin to its own high ground without affecting the partition.
+- **Basins → boxes**: bound each surviving basin. Drop basins below a minimum
+  cell size (design value, not just a risk). Keep the top-K by (peak height,
+  index). K is the "how many areas to emphasize" knob. Order is fixed:
+  floor-filter peaks → assign → local-cutoff → drop-small → top-K → hand to
+  `mergeDemandBoxes`. Post-merge count may be < K.
+- **`d` normalization**: normalize each basin against its OWN peak,
+  `d = (basinMeanExcess − basinCutoff)/(basinPeak − basinCutoff)`, so secondary
+  cores get comparable emphasis (normalizing against the global peak would make
+  every non-dominant region barely warp, defeating multi-region emphasis).
+- **Hub emphasis: DEFERRED (N=0).** The review showed a line-count hub box as
+  drafted carries no demand (aesthetic 1, survival 1 → no push) and a 1-node
+  box is deleted by drop-tiny. The density watershed already emphasizes dense
+  hubs; isolated-mega-hub emphasis is a separate, later term with its own kind /
+  extent / `aes` definition. Not in this build.
 
-Determinism: grid scan in fixed order, integer basin ids, sorted by height then
-index; `Math.sqrt` only; no trig, no random.
+Determinism: fixed grid-scan order, integer basin ids, total-order sorts (value
+then index), `Math.sqrt` only, no trig, no random.
+
+### Interaction with splitMixedBoxes (must be pinned)
+`buildDemandBoxWarp` sends every merged box through `splitMixedBoxes` when
+`anisoAmt>0` (the default), which tightens and can split a box into up to 8
+sub-boxes AND density-decomposes via an INTERNAL `findDenseBoxes` call. So:
+- `findDenseBoxes` is NOT renamed or removed — it stays as the decomposition
+  primitive `splitMixedBoxes` calls. The watershed lands in a NEW
+  `findEmphasisBoxes`; the density oracle at the top of `buildDemandBoxWarp`
+  switches to it.
+- Emphasis (density-kind) boxes SKIP `splitMixedBoxes` subdivision — they are
+  already the deliberate regions, and re-splitting them into 20+ pieces defeats
+  the "few meaningful boxes" goal. They still receive per-axis anisotropic
+  STRENGTH (`axisStrengths`, a separate mechanism from box subdivision), so the
+  aniso look is kept without multiplying boxes. Only non-density boxes (none
+  today, since contraction is off and capsule boxes are small) would subdivide.
 
 ### HARD INVARIANT: no coastline kinks — the warp is C2-continuous
 A kink is a CORNER: a discontinuity in the warp's curvature. The current push
@@ -72,30 +101,71 @@ corners are IMPOSSIBLE at any margin width.
 - Slope profile over the margin `u = (a−h)/m ∈ [0,1]`:
   `slope(u) = 1 − smootherstep(u)` with `smootherstep(x) = 6x⁵−15x⁴+10x³`.
   Then `slope(0)=1`, `slope(1)=0`, and `slope'(0)=slope'(1)=0` — curvature
-  matches the flat regions on both sides, so no corner.
+  matches the flat regions on both sides, so no corner (verified C2, in fact
+  C3).
 - Fold-safe: `smootherstep ∈ [0,1]` ⇒ `slope ∈ [0,1]` ⇒ `1 + s·slope > 0` for
   `s ≥ 0`, monotone per axis, same fold-free guarantee as today.
-- The push is the integral of this slope (closed form, deterministic); replaces
-  the current `a − (a−h)²/(2m)` quadratic segment.
+- Closed-form push (integral of slope), for `h < a ≤ h+m`, `u=(a−h)/m`:
+  `p = h + m·(u − 2.5u⁴ + 3u⁵ − u⁶)` (Horner:
+  `h + m·u·(1 + u³·(−2.5 + u·(3 − u)))`). At `u=1`, `p = h + m/2` — the SAME
+  far-field gain as the current quadratic segment (verified: `∫₀¹ slope = ½`),
+  so saturation `s·(h+m/2)`, the growth `corners()`/`rawGx`, the affine
+  throttle, and the percentage-slider calibration are all preserved by the
+  profile change alone. Evaluate with explicit multiplies / Horner — NO
+  `Math.pow`/`**` (not correctly-rounded cross-V8, per repo discipline).
 
-This makes coastline smoothness independent of the margin width — the transition
-is always a smooth bend, never a corner.
+This removes the mathematical corner at any margin width. But C2 alone is NOT
+sufficient for the visual no-kink gate — two more requirements:
+
+- **Ring densification (required).** Geography is warped per vertex, so a
+  straight coastline SEGMENT longer than the margin band maps to a straight
+  chord with an angle at each endpoint — a real drawn corner no warp smoothness
+  can prevent. Ring segments that cross a margin band must be subdivided to a
+  step ≪ `marginCap` before warping. `subdivideRing` (geoSimplify.ts) already
+  exists (used for the backdrop); this build must ensure its step is fine
+  relative to the `marginCap` floor, per render mode.
+- **marginCap floor (load-bearing for the visual gate).** The smootherstep
+  CONCENTRATES curvature: `|slope'|` peaks at `1.875` at `u=½` (vs 1 for the
+  linear ramp), so peak curvature is `1.875·s/m` — a small `marginCap` yields a
+  tight-radius (still smooth) bend that reads as a kink at map scale. Floor
+  `marginCap` so peak curvature `1.875·s/m` stays under a pinned bound (tie the
+  floor to the displacement `s`, not a bare "tune by eye"). C2 removes the
+  corner; the floor keeps the smooth bend gentle enough to pass the visual gate.
 
 ### Margin = capped, for distortion containment (now corner-free)
 With C2 removing the corner, the margin width becomes a pure distortion-vs-bend
 tradeoff with no kink risk. Cap it: `m = min(marginFrac · halfExtent, marginCap)`.
 
-- Small boxes (capsule) keep their proportional margin.
-- Large emphasis boxes are capped at an absolute `marginCap` (tune by eye), so
-  the dense core's transition is a fixed-width band regardless of core size —
-  distortion stays local, geography a few cells out is faithful, and the bend
-  there is smooth (C2), never a corner.
-- Floor `marginCap` only so the smooth bend stays gentle (not a tight-radius
-  arc that reads corner-ish); the C2 profile means there is no hard floor
-  needed to avoid an actual kink.
+- Apply the cap in BOTH margin paths: the shared-margin path
+  (`m = marginFrac·max(hx,hy)`, used when `anisoAmt=0`) and the per-axis path.
+  Keep the existing 1px floor: `m = max(1, min(marginFrac·h, marginCap))`, then
+  the curvature floor from the C2 section on top.
+- `marginCap` units: absolute px in warp INPUT space (which in the default
+  'both' mode is separable-warped space). To stay scale-stable across maps, tie
+  the default to the cell estimate (`cell·k`) rather than a bare px constant.
+- Small boxes (capsule) keep their proportional margin; large emphasis boxes
+  get the cap, so the dense core's transition is a fixed-width smooth band.
+
+**Growth/slider semantics shift (intended, must be stated).** Capping the
+margin cuts a large box's far-field gain from `s·(h + marginFrac·h/2) ≈ s·2.5h`
+toward `s·(h + marginCap/2) ≈ s·h` — up to ~60% less growth per unit strength.
+The solved strengths are margin-insensitive (demand measures the slope-1
+in-box region), so:
+- **Percentage mode**: max saturation `rawG` shrinks, so at a given slider `t`
+  the map grows less AND (since the throttle `λ=(t·rawG−1)/(rawG−1)` increases
+  in `rawG`) magnifies its core less — except at `t=1`, where in-box scale is
+  preserved and only the canvas shrinks. Every saved map re-renders smaller and
+  less magnified at the same slider. This is intended: the growth budget stops
+  paying for a wide transition band.
+- **Legacy maxGrowth mode**: `rawG` falls toward the fixed cap → `λ→1` → dense
+  maps get MORE in-box magnification at the same cap.
+Both shifts go in the verification list (report before/after growth and in-core
+scale at fixed slider). Also: capped margins shrink the stretched band, lowering
+the post-warp global median and `needAfter`, so solved `expands` shift slightly
+(deterministic, but no byte-identity with margin-sensitive expectations).
 
 `marginCap` is the distortion knob; `marginFrac` the small-box smoothness; the
-C2 profile is the always-on no-kink guarantee.
+C2 profile + ring densification + curvature floor are the no-kink guarantee.
 
 ### What stays unchanged
 - The **capsule oracle** (colliding-interchange emphasis) — the other half of
@@ -114,10 +184,13 @@ All in `src/render/layout/densityBoxWarp.ts` + `renderGeographic.ts` + tests:
 - `buildWarpFromBoxes`: the `push` helper's margin segment becomes the
   smootherstep-slope integral (C2, no-kink invariant), and the width becomes
   `min(marginFrac·h, marginCap)` per axis (distortion cap).
-- `renderGeographic`: `K` (emphasis count), `N` (hub count), `marginCap` knobs,
-  each with an `OCTI_BOX_*` env override; the panel Box-density-cutoff slider
-  remaps to `K` (a count, not a fraction) or stays `frac` feeding the local
-  basin cutoff — decide by eye during execution.
+- `renderGeographic`: `K` (emphasis count), `marginCap` knobs, each with an
+  `OCTI_BOX_*` env override. **Panel slider shape (pinned now, not deferred):**
+  the existing "Box density cutoff" slider KEEPS its `frac` meaning (feeds the
+  per-basin local cutoff); `K` is a separate advanced knob (env for now). Do
+  NOT overload one slider with two meanings — the option type lands in saved
+  options and the fingerprint, so its shape can't be a by-eye execution
+  decision. Hub count `N` is not wired (deferred).
 - `cacheFingerprint` SCHEMA + `mapCache` VERSION already bumped on this branch;
   no additional bump within the branch.
 
@@ -149,10 +222,21 @@ backlog task; log any draw issue there, do not gate on it):
   (the warp-preview number), and the mesh visibly tighter around boxes.
 - **Box count / growth** reported (few emphasis boxes + capsule; growth from the
   percentage slider unchanged in meaning).
-- `npm test` green (watershed unit tests: peak detection, basin separation of
-  two peaks, K cap, determinism; margin-cap unit test: big box's band ≤
-  marginCap, small box unchanged, still fold-free).
-- Determinism preserved (cross-V8 discipline).
+- `npm test` green. Required new unit tests (from the review):
+  (a) **far-field gain**: a far point's warped displacement equals `s·(h+m/2)`
+      under the new C2 profile (locks the growth calibration);
+  (b) **curvature continuity**: finite-difference second derivative is
+      continuous across `a=h` and `a=h+m` (locks C2 numerically);
+  (c) **basin wrap-around regression**: two peaks with a saddle between the two
+      local cutoffs yield two disjoint basins, neither bbox containing the other
+      peak (item 1);
+  (d) **interlocking-bbox merge**: two disjoint basins with overlapping bboxes
+      merge/clip as intended, not re-fused into a mega box (item 6);
+  (e) **margin cap**: a big box's band ≤ marginCap, small box unchanged, still
+      fold-safe.
+- Determinism preserved (cross-V8: no `Math.pow`/`**`, total-order sorts).
+- Saddle/coverage tradeoff MEASURED not discovered: add a saddle-region gap
+  statistic and the faithfulness-coverage number to the warp-preview ruler.
 
 ## Risks
 
