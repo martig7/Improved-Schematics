@@ -976,3 +976,35 @@ test('buildDemandBoxWarp: percentage mode grows by t x the max-saturation growth
   const tTiny = at(1 / (t1.growthX * 2));
   assert.equal(tTiny.growthX, 1);
 });
+
+test('C2 push: far-field gain is exactly m/2 — growth gain preserved', () => {
+  // The saturated push (u>=1) must translate a far point by exactly h+m/2 on
+  // each axis, identical to the old quadratic segment, so the growth/throttle
+  // and percentage-slider calibration are unchanged by the C2 profile.
+  const m = 120;
+  const pushGain = (u: number) => m * u * (1 + u * u * u * (-2.5 + u * (3 - u)));
+  assert.ok(Math.abs(pushGain(1) - m / 2) < 1e-9, `gain at u=1 = ${pushGain(1)} vs m/2 ${m / 2}`);
+  assert.ok(Math.abs(pushGain(0)) < 1e-12, 'gain at u=0 is 0');
+  const mid = m * (0.5 - 2.5 / 16 + 3 / 32 - 1 / 64);
+  assert.ok(Math.abs(pushGain(0.5) - mid) < 1e-9, 'midpoint gain matches closed form');
+});
+
+test('C2 push: second derivative continuous across both margin ends (no kink)', () => {
+  // Reproduce push(a) for a single axis, h=40, m=120, and finite-difference the
+  // curvature across a=h and a=h+m. The old linear ramp jumped by ~s/m here.
+  const h = 40, m = 120;
+  const push = (a: number): number => {
+    if (a <= h) return a;
+    if (a <= h + m) { const u = (a - h) / m; return h + m * u * (1 + u * u * u * (-2.5 + u * (3 - u))); }
+    return h + m / 2;
+  };
+  const d2 = (a: number, e = 0.25): number => (push(a + e) - 2 * push(a) + push(a - e)) / (e * e);
+  // curvature just inside/outside each transition must nearly match (continuous)
+  for (const edge of [h, h + m]) {
+    const lo = d2(edge - 1.5);
+    const hi = d2(edge + 1.5);
+    assert.ok(Math.abs(lo - hi) < 0.02, `curvature continuous at a=${edge}: ${lo} vs ${hi}`);
+  }
+  // and the flat regions have ~zero curvature
+  assert.ok(Math.abs(d2(h - 5)) < 1e-6 && Math.abs(d2(h + m + 5)) < 1e-6, 'flat regions curvature 0');
+});

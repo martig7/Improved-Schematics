@@ -1058,15 +1058,24 @@ function buildWarpFromBoxes(
     const my = perAxisMargin ? Math.max(1, marginFrac * hy) : m;
     return { cx, cy, hx, hy, mx, my, sx: strengths[i][0], sy: strengths[i][1] };
   });
-  // Smooth saturating odd-symmetric push, per-box strength s (slope in [0,1]
-  // ⇒ each s·push term is monotone ⇒ the sum is monotone per axis ⇒
-  // fold-free, det >= 1).
+  // Smooth saturating odd-symmetric push, per-box strength s. C2-CONTINUOUS
+  // (no-coastline-kinks invariant): the margin ramps the SLOPE with a
+  // smootherstep, slope(u) = 1 - (6u^5 - 15u^4 + 10u^3), u = (a-h)/m. The push
+  // is its integral, p = h + m*(u - 2.5u^4 + 3u^5 - u^6), so slope'(0)=slope'(1)=0
+  // — curvature matches the flat regions on both sides and there is no corner at
+  // any margin width (the old a-(a-h)^2/(2m) had a LINEAR slope ramp: curvature
+  // jumped by s/m at both ends = the kink). slope in [0,1] keeps each s*push
+  // monotone (fold-free, det>=1), and the gain over the margin is still exactly
+  // m/2 (integral of a symmetric smootherstep is 1/2), so far-field displacement
+  // and the growth/throttle math are unchanged. Horner, no Math.pow (cross-V8).
   const push = (t: number, h: number, m: number): number => {
     const a = t < 0 ? -t : t;
     let p: number;
     if (a <= h) p = a;
-    else if (a <= h + m) { const u = a - h; p = a - (u * u) / (2 * m); }
-    else p = h + m / 2;
+    else if (a <= h + m) {
+      const u = (a - h) / m;
+      p = h + m * u * (1 + u * u * u * (-2.5 + u * (3 - u)));
+    } else p = h + m / 2;
     return t < 0 ? -p : p;
   };
   const raw = (px: number, py: number): Pixel => {
