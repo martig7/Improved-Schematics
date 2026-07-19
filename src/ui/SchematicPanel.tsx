@@ -97,24 +97,17 @@ const warpAlphaFromPos = (p: number) => Math.max(0, 0.8 * (1 + p));
 // Geographic-course affinity: realistic (left) = stronger course-keeping (up to
 // ~0.15); default 0.05; stylized (right) = freely octilinear (→ 0).
 const affinityFromPos = (p: number) => (p <= 0 ? 0.05 - 0.1 * p : 0.05 * (1 - p));
-// Box-warp strength → the AESTHETIC multiplier ceiling (densityBoxWarp
-// userMult). Survival demand (octi-contraction and capsule-pair needs) is
-// granted at 1x at EVERY position; the slider scales only the aesthetic term,
-// which is linear in each dense box's normalized density (map min..max), so a
-// shallow-density map barely warps at any position. Center and the whole left
-// half = survival only; right (stylized) magnifies the densest cores up to 4x.
-// boxGrowth → the MAX per-axis canvas growth that absorbs the demand (2.5x at
-// center — the direction-split per-borough boxes sum to more demand than the
-// old single-box 2x budget, and the shortfall crushes the far field into
-// bands at the canvas edges — up to 5x at the right; canvas-preserving 1 at
-// the far left). [-1, +1].
-const boxExpandFromPos = (p: number) => Math.max(0.25, Math.pow(4, p));
-// Growth budget: right half keeps the exponential (2.5x at center, 5x at the
-// far right); the LEFT half now runs down to 1.0 — canvas-preserving, which
-// the exact throttle turns into the identity warp — so "lowered all the way"
-// genuinely means NO box warp instead of a floor of 1.25x.
-const boxGrowthFromPos = (p: number) =>
-  p <= 0 ? 1 + 3 * Math.max(0, Math.pow(2, p) - 0.5) : 2.5 * Math.pow(2, p);
+// Box-warp strength → a PERCENTAGE of the map's maximum warp (boxPct): the
+// full measured demand is survival (octi-contraction and capsule-pair needs)
+// plus the aesthetic term (linear in each dense box's normalized density, at
+// the fixed BOX_AES ceiling), and the slider grants a linear fraction of it.
+// Far left = 0% (identity, genuinely off), center = 50%, far right = 100%
+// (the whole demanded warp). Sparse maps have a small maximum, so they barely
+// move at any position; dense maps get a predictable linear dial. [-1, +1].
+const boxPctFromPos = (p: number) => Math.min(1, Math.max(0, (p + 1) / 2));
+// Aesthetic multiplier ceiling inside the maximum-warp definition (the old
+// slider-max value; the slider now scales the granted fraction, not this).
+const BOX_AES = 4;
 // Box-warp density CUTOFF (densityBoxWarp `frac`): a cell joins a warp box when its
 // smoothed density ≥ this fraction of the peak. Lower = looser cutoff → more/larger
 // boxes (broader warping); higher = only the densest cores → fewer/smaller boxes. It
@@ -689,8 +682,8 @@ export function SchematicPanel() {
         padding: applied.mapMargin,
         warpAlpha: warpAlphaFromPos(applied.warpPos),
         geographicAffinity: affinityFromPos(applied.linePos),
-        boxExpand: boxExpandFromPos(applied.boxWarpPos),
-        boxGrowth: boxGrowthFromPos(applied.boxWarpPos),
+        boxExpand: BOX_AES,
+        boxPct: boxPctFromPos(applied.boxWarpPos),
         boxFrac: applied.boxFrac,
         stationSplit: applied.stationSplit,
         theme: {
@@ -1216,8 +1209,8 @@ export function SchematicPanel() {
             padding: ap.mapMargin,
             warpAlpha: warpAlphaFromPos(ap.warpPos),
             geographicAffinity: affinityFromPos(ap.linePos),
-            boxExpand: boxExpandFromPos(ap.boxWarpPos),
-            boxGrowth: boxGrowthFromPos(ap.boxWarpPos),
+            boxExpand: BOX_AES,
+            boxPct: boxPctFromPos(ap.boxWarpPos),
             boxFrac: ap.boxFrac,
             stationSplit: ap.stationSplit,
             dark,

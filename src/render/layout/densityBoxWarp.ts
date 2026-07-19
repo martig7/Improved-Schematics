@@ -959,6 +959,12 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   expandMax?: number;
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2.5. */
   maxGrowth?: number;
+  /** Percentage-of-maximum mode (0–1): grant this linear fraction of the full
+   *  measured demand instead of throttling against maxGrowth. The throttle is
+   *  exactly affine in the strengths, so t% of the maximum warp IS every push
+   *  strength scaled by t: 0 = identity, 1 = the whole demanded warp
+   *  (expandMax per-box safety still applies). Overrides maxGrowth when set. */
+  growthPct?: number;
   /** Direction-intelligence amount, 0–1: how far each box's expansion is
    *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = isotropic
    *  split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
@@ -1326,10 +1332,19 @@ export function buildDemandBoxWarp(
       result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
     }
   }
-  // The one and only capped build: throttle the solved demands to the allowed
+  // The one and only capped build. Percentage mode grants a linear fraction
+  // of the full solved demand (strengths scale by t; the exact throttle and a
+  // t-scale are the same operation), so the slider reads as "t% of the
+  // maximum warp" on every map. Legacy mode throttles against the fixed
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
-  result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+  if (opts.growthPct !== undefined) {
+    const t = Math.min(1, Math.max(0, opts.growthPct));
+    const scaled = axisStrengths(expands).map(([sx, sy]) => [sx * t, sy * t] as [number, number]);
+    result = buildWarpFromBoxes(boxes, scaled, box, marginFrac, Infinity, oref, anisoAmt > 0);
+  } else {
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+  }
   if (out) { out.expands = expands; out.aniso = rs; }
 
   debugBoxWarp({

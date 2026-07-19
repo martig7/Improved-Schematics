@@ -950,3 +950,21 @@ test('demand pricing: survival ignores userMult; aesthetics scale linearly with 
   assert.equal(aLo.growthX, 1, 'userMult 1 -> no aesthetic demand');
   assert.ok(aHi.growthX > 1, 'userMult 4 magnifies the dense core');
 });
+
+test('buildDemandBoxWarp: percentage mode is linear between identity and the full demand', () => {
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const at = (growthPct: number) =>
+    buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, growthPct });
+  const t0 = at(0);
+  assert.deepEqual(t0.warp([123, 456]), [123, 456], 't=0 is the identity');
+  assert.equal(t0.growthX, 1);
+  const t1 = at(1);
+  const full = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: Infinity });
+  assert.ok(Math.abs(t1.growthX - full.growthX) < 1e-9, 't=1 equals the unthrottled maximum');
+  const t5 = at(0.5);
+  assert.ok(Math.abs((t5.growthX - 1) - 0.5 * (t1.growthX - 1)) < 1e-9,
+    `growth linear in t: ${t5.growthX} vs midpoint of ${t1.growthX}`);
+});

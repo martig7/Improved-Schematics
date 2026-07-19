@@ -677,6 +677,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
     return 2.5;
   })();
+  // Percentage-of-maximum mode: the Box warp slider grants a linear fraction
+  // of the map's full measured demand (0 = identity, 1 = all of it),
+  // bypassing the fixed growth cap. Absent on legacy saved options, which
+  // keep the cap semantics and replay unchanged. OCTI_BOX_PCT overrides.
+  const boxPct = (() => {
+    const pv = envNum('OCTI_BOX_PCT');
+    if (Number.isFinite(pv) && pv >= 0) return Math.min(1, pv);
+    if (typeof opts.boxPct === 'number' && Number.isFinite(opts.boxPct) && opts.boxPct >= 0) return Math.min(1, opts.boxPct);
+    return undefined;
+  })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
   //    proportional to its line fan, not just its station count).
@@ -783,6 +793,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     marginFrac: boxMargin,
     userMult: boxUserMult,
     maxGrowth: boxMaxGrowth,
+    ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
     cellFromMedLen,
     capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
     ...(corrMargin >= 0
