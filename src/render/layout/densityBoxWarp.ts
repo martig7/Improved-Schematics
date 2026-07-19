@@ -1157,8 +1157,15 @@ export function buildDemandBoxWarp(
   // drops post-merge boxes that hold fewer than 2 stations (empty padding
   // remnants and lone stops warp nothing a marker needs).
   const dropTiny = envStr('OCTI_BOX_DROP_TINY') !== '0';
+  // EXPERIMENT: OCTI_BOX_CONTRACTION=0 removes the contraction oracle to test
+  // how many of its ~60 NYC boxes are PHANTOM — short edges octi would
+  // contract harmlessly (terminus welds, deg-2 stop pairs), whose real harms
+  // (terminus stubs, interchange marker stacking) are already covered by
+  // contractShortEdges' own guard and the capsule oracle. The census battery
+  // says which pinches were actually load-bearing.
+  const useContraction = envStr('OCTI_BOX_CONTRACTION') !== '0';
   const density = (useDensity && samples.length) ? findDenseBoxes(samples, box, opts) : [];
-  const contraction = findContractionBoxes(g, (cell / 2) * safety);
+  const contraction = useContraction ? findContractionBoxes(g, (cell / 2) * safety) : [];
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
   // The corridor oracle ignores passes inside the contraction threshold (those
   // corridors get welded or contracted into ONE drawn corridor downstream) and
