@@ -15,6 +15,10 @@ const DOPTS = {
   bins: 48, frac: 0.4, marginFrac: 1,
   cellFromMedLen: (m: number) => Math.max(12, m / 1.6),
   safety: 1.3, slack: 1.3, userMult: 1, expandMax: 10, maxGrowth: 8,
+  // The contraction (pinch-survival) oracle is default OFF in production (the
+  // warp is aesthetic; pinches are the draw's job). These demand-pipeline
+  // tests exercise it directly, so enable it explicitly.
+  contraction: true,
 };
 
 // numeric area magnification J = det(Jacobian) at p, via finite differences

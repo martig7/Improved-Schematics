@@ -970,6 +970,10 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
    *  split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
    *  overrides for dev sweeps. */
   aniso?: number;
+  /** Enable the contraction (pinch-survival) oracle. Default OFF: the warp is
+   *  aesthetic and pinches are the draw's job. Overrides the OCTI_BOX_CONTRACTION
+   *  env. Unit tests of the contraction pipeline set it true explicitly. */
+  contraction?: boolean;
   /** Capsule-demand oracle inputs. Optional: omitted by unit-level callers
    *  and dev tools that have no marker model, in which case the oracle
    *  doesn't run. */
@@ -1147,27 +1151,26 @@ export function buildDemandBoxWarp(
 
   const medLen = medianEdgeLenPx(g);
   const cell = opts.cellFromMedLen(medLen);
-  // EXPERIMENT (station-demand-driven): OCTI_BOX_DENSITY=0 drops the
-  // region-histogram density oracle entirely, leaving only the
-  // station/junction survival oracles (contraction + capsule). The density
-  // box carried the aesthetic magnification, so with it off the Box warp
-  // slider's right half is inert (survival is granted at 1x regardless).
+  // The warp is an AESTHETIC feature: give crowded areas room to breathe and
+  // emphasize important areas, with FEW meaningful boxes. Its two aesthetic
+  // drivers are the DENSITY oracle (line-weighted station crowding — captures
+  // both crowded regions and important hubs) and the CAPSULE oracle (spreading
+  // colliding interchanges — emphasis on the important interchange areas).
+  // OCTI_BOX_DENSITY=0 drops density (diagnostic).
   const useDensity = envStr('OCTI_BOX_DENSITY') !== '0';
-  // EXPERIMENT: OCTI_BOX_DROP_TINY=0 keeps the legacy behavior; default ON
-  // drops post-merge boxes that hold fewer than 2 stations (empty padding
-  // remnants and lone stops warp nothing a marker needs).
+  // Empty padding remnants and lone stops warp nothing a marker needs; drop
+  // post-merge boxes holding fewer than 2 stations. OCTI_BOX_DROP_TINY=0 keeps
+  // the legacy behavior.
   const dropTiny = envStr('OCTI_BOX_DROP_TINY') !== '0';
-  // Contraction oracle (demand-population experiment result). The falsifier
-  // showed the oracle is mostly phantom — inert on half the corpus, no marker
-  // loss when removed (contiguity 0), and 45 of NYC's 60 boxes carry no growth
-  // — BUT the capsule-subsumption harm-predicate that tried to drop the
-  // redundant majority was FALSIFIED by HOR: HOR's pinches that overlap/nest
-  // capsule boxes are still load-bearing (the throttled capsule push doesn't
-  // fully separate them), so dropping them reintroduces tapers/loops and even
-  // breaks a route. No cheap capsule-geometry predicate distinguishes the two,
-  // so the safe reduction is the drop-tiny cleanup alone; the oracle stays
-  // whole. OCTI_BOX_CONTRACTION=0 removes it (experiment only — regresses SF/HOR).
-  const useContraction = envStr('OCTI_BOX_CONTRACTION') !== '0';
+  // The CONTRACTION oracle is pure pinch-survival: it pre-spread every sub-8px
+  // edge so octi wouldn't contract it. That is the DRAW's job now (a draw must
+  // render any geometry cleanly; loops/broken-contiguity from a pinch are draw
+  // bugs, not warp concerns) — and its ~60 tiny per-pinch boxes were exactly
+  // the swarm that undermined the aesthetic goal. DEFAULT OFF. OCTI_BOX_CONTRACTION=1
+  // (or 'all') re-enables it for comparison; the draw issues its removal
+  // surfaces are tracked as a draw-robustness backlog, not fixed here.
+  const contractionEnv = envStr('OCTI_BOX_CONTRACTION');
+  const useContraction = opts.contraction ?? (contractionEnv === '1' || contractionEnv === 'all');
   const density = (useDensity && samples.length) ? findDenseBoxes(samples, box, opts) : [];
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
   const contraction = useContraction ? findContractionBoxes(g, (cell / 2) * safety) : [];
