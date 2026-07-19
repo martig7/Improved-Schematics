@@ -19,6 +19,13 @@ const DOPTS = {
   // warp is aesthetic; pinches are the draw's job). These demand-pipeline
   // tests exercise it directly, so enable it explicitly.
   contraction: true,
+  // Emphasis-watershed params suited to the SMALL synthetic fixtures (the
+  // production defaults — sharp sigma 1.2, minCells 4 — are tuned for
+  // full-map, line-weighted inputs and would drop these tiny clusters). A
+  // coarse sigma keeps a two-direction fixture as one splittable box.
+  emphasisSigma: 2.5,
+  minCells: 1,
+  floorFrac: 0.05,
 };
 
 // numeric area magnification J = det(Jacobian) at p, via finite differences

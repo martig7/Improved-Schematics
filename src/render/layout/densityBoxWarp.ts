@@ -954,10 +954,15 @@ export function findDenseBoxes(
 export function findEmphasisBoxes(
   samples: readonly Pixel[],
   box: WarpBox,
-  opts: FindDenseBoxesOptions & { emphasisK?: number; floorFrac?: number; minCells?: number } = {},
+  opts: FindDenseBoxesOptions & { emphasisK?: number; floorFrac?: number; minCells?: number; emphasisSigma?: number } = {},
 ): Array<DenseBox & { d: number }> {
   if (samples.length === 0) return [];
-  const grid = densityGrid2D(samples, box, { ...opts, maxScale: 1e9 });
+  // Sharper smoothing than the default 2.5 so distinct crowded sub-regions
+  // (boroughs, districts) survive as SEPARATE peaks for the watershed to
+  // partition; the broad default sigma merges them into one dominant peak
+  // (the single-blob failure). Tunable via emphasisSigma.
+  const sigmaBins = opts.emphasisSigma ?? 1.2;
+  const grid = densityGrid2D(samples, box, { ...opts, sigmaBins, maxScale: 1e9 });
   const { e, bins: B, x0, y0, cw, ch } = grid;
   const frac = opts.frac ?? 0.4;
   const floorFrac = opts.floorFrac ?? 0.1;
@@ -1042,6 +1047,13 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   frac?: number;
   /** Emphasis-box count (steepest-ascent watershed top-K). Default 6. */
   emphasisK?: number;
+  /** Emphasis floor: ignore cells below this fraction of the global peak. */
+  floorFrac?: number;
+  /** Emphasis smoothing (bins); sharper than the default so districts stay
+   *  separate peaks. */
+  emphasisSigma?: number;
+  /** Minimum basin size (cells) below which an emphasis region is dropped. */
+  minCells?: number;
   /** Saturation margin as a fraction of box half-extent. Default 1. */
   marginFrac?: number;
   /** Derive the octi cellSize estimate ĉ from a median edge length. Supplied by

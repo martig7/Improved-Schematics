@@ -795,11 +795,22 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     const v = envNum('OCTI_BOX_EXPANDMAX');
     return Number.isFinite(v) && v >= 1 ? v : undefined;
   })();
+  // Emphasis-watershed knobs (aesthetic warp): K = how many crowded regions to
+  // emphasize; floorFrac = drop cells below this fraction of the global peak
+  // (low so secondary boroughs survive the line-weighted peak towering over
+  // them); emphasisSigma = smoothing (sharper than the default so districts
+  // stay separate peaks). Env overrides for tuning.
+  const emphasisK = (() => { const v = envNum('OCTI_BOX_K'); return Number.isFinite(v) && v >= 1 ? v : 6; })();
+  const emphasisFloor = (() => { const v = envNum('OCTI_BOX_FLOOR'); return Number.isFinite(v) && v > 0 ? v : 0.02; })();
+  const emphasisSigma = (() => { const v = envNum('OCTI_BOX_SIGMA'); return Number.isFinite(v) && v > 0 ? v : 1.2; })();
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
     userMult: boxUserMult,
     maxGrowth: boxMaxGrowth,
+    emphasisK,
+    floorFrac: emphasisFloor,
+    emphasisSigma,
     ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
     ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,
