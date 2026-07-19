@@ -788,12 +788,20 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // enable for sweeps on maps with growth headroom.
   const corrMarginEnv = envNum('OCTI_CORR_MARGIN');
   const corrMargin = Number.isFinite(corrMarginEnv) ? corrMarginEnv : -1;
+  // Per-box expansion ceiling (densityBoxWarp expandMax, default 10). This is
+  // what defines the top of the percentage dial on dense maps: lower it to
+  // shrink what 100% saturation means. OCTI_BOX_EXPANDMAX overrides for sweeps.
+  const boxExpandMax = (() => {
+    const v = envNum('OCTI_BOX_EXPANDMAX');
+    return Number.isFinite(v) && v >= 1 ? v : undefined;
+  })();
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
     userMult: boxUserMult,
     maxGrowth: boxMaxGrowth,
     ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
+    ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,
     capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
     ...(corrMargin >= 0
