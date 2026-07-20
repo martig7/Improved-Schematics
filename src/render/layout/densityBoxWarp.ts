@@ -1088,6 +1088,19 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
    *  aesthetic and pinches are the draw's job. Overrides the OCTI_BOX_CONTRACTION
    *  env. Unit tests of the contraction pipeline set it true explicitly. */
   contraction?: boolean;
+  /** Enable the density-emphasis (aesthetic) oracle. When set, overrides the
+   *  OCTI_BOX_DENSITY env; the caller gates it on the Aesthetic control being on. */
+  aesthetic?: boolean;
+  /** Two-dial grant (Declutter + Aesthetic controls), each 0–1. When EITHER is
+   *  present the final push grants each box's strengths scaled by its kind's
+   *  fraction — survival kinds (contraction, capsule, corridor) × declutterPct,
+   *  aesthetic kind (density) × aestheticPct — instead of the single growthPct
+   *  throttle. 0 = that kind contributes no warp; 1 = its full refined demand.
+   *  The survival refinement still solves the full (unscaled) contraction/pair
+   *  fixed point; the fraction throttles the GRANTED result, so declutter is a
+   *  continuous "how much of the un-pinching to grant" dial. */
+  declutterPct?: number;
+  aestheticPct?: number;
   /** Capsule-demand oracle inputs. Optional: omitted by unit-level callers
    *  and dev tools that have no marker model, in which case the oracle
    *  doesn't run. */
@@ -1295,8 +1308,9 @@ export function buildDemandBoxWarp(
   // drivers are the DENSITY oracle (line-weighted station crowding — captures
   // both crowded regions and important hubs) and the CAPSULE oracle (spreading
   // colliding interchanges — emphasis on the important interchange areas).
-  // OCTI_BOX_DENSITY=0 drops density (diagnostic).
-  const useDensity = envStr('OCTI_BOX_DENSITY') !== '0';
+  // OCTI_BOX_DENSITY=0 drops density (diagnostic). opts.aesthetic (the Aesthetic
+  // control) gates it when the caller passes it; env '0' still force-disables.
+  const useDensity = (opts.aesthetic ?? true) && envStr('OCTI_BOX_DENSITY') !== '0';
   // Empty padding remnants and lone stops warp nothing a marker needs; drop
   // post-merge boxes holding fewer than 2 stations. OCTI_BOX_DROP_TINY=0 keeps
   // the legacy behavior.
@@ -1526,7 +1540,21 @@ export function buildDemandBoxWarp(
   // the strengths on the target. Legacy mode throttles against the fixed
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
-  if (opts.growthPct !== undefined) {
+  if (opts.declutterPct !== undefined || opts.aestheticPct !== undefined) {
+    // Two-dial grant: scale each box's final strengths by its kind's fraction
+    // (survival kinds × declutter, aesthetic/density × aesthetic). The full
+    // survival warp was already solved above; this throttles the GRANTED result
+    // per kind, so 0 = that kind off, 1 = its full demand. maxGrowth stays the
+    // safety ceiling. When both fractions are 0 the strengths vanish and
+    // buildWarpFromBoxes returns the identity.
+    const dPct = Math.min(1, Math.max(0, opts.declutterPct ?? 0));
+    const aPct = Math.min(1, Math.max(0, opts.aestheticPct ?? 0));
+    const granted = axisStrengths(expands).map((s, i) => {
+      const f = boxes[i].kind === 'density' ? aPct : dPct;
+      return [s[0] * f, s[1] * f] as [number, number];
+    });
+    result = buildWarpFromBoxes(boxes, granted, box, marginFrac, maxGrowth, oref, anisoAmt > 0, marginCapSpec);
+  } else if (opts.growthPct !== undefined) {
     const t = Math.min(1, Math.max(0, opts.growthPct));
     const capX = Math.max(1, t * result.growthX);
     const capY = Math.max(1, t * result.growthY);

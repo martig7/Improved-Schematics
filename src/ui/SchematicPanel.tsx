@@ -126,6 +126,13 @@ const BOX_FRAC_MAX = 0.8;
 const DEFAULT_LINE_SCALE = 1;
 const LINE_SCALE_MIN = 0.3;
 const LINE_SCALE_MAX = 1.5;
+// Two-dial box warp (SchematicOptions.declutterWarp / aestheticWarp), each a 0-1
+// grant fraction. Declutter (survival un-pinch) defaults to the minimum (0);
+// Aesthetic (density-emphasis) defaults OFF via a checkbox, with the slider
+// setting its strength when enabled. Both bake into the layout (Apply/Save).
+const DEFAULT_DECLUTTER = 0;
+const DEFAULT_AESTHETIC = 0.5; // slider strength used when the Aesthetic checkbox is on
+const DEFAULT_AESTHETIC_ON = false;
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -246,7 +253,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; stationSplit?: boolean; disabledRoutes?: string[] };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; stationSplit?: boolean; disabledRoutes?: string[] };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -380,6 +387,11 @@ export function SchematicPanel() {
   const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
   // Drawn line/marker chrome scale (layout-baking, same draft→Save flow).
   const [lineScale, setLineScale] = useState(rapp?.lineScale ?? DEFAULT_LINE_SCALE);
+  // Two-dial box warp (layout-baking): Declutter (survival) + Aesthetic
+  // (density-emphasis, gated by a checkbox). Same draft→Save flow.
+  const [declutterWarp, setDeclutterWarp] = useState(rapp?.declutterWarp ?? DEFAULT_DECLUTTER);
+  const [aestheticWarp, setAestheticWarp] = useState(rapp?.aestheticWarp ?? DEFAULT_AESTHETIC);
+  const [aestheticOn, setAestheticOn] = useState(rapp?.aestheticOn ?? DEFAULT_AESTHETIC_ON);
   // Per-station complex split (layout-baking toggle, same draft→Save flow).
   const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? DEFAULT_STATION_SPLIT);
   // The hidden-route set (route ids removed from the layout). A staged/draft value like
@@ -388,8 +400,8 @@ export function SchematicPanel() {
   const [disabledRoutes, setDisabledRoutes] = useState<string[]>(rapp?.disabledRoutes ?? []);
   const [applied, setApplied] = useState(
     rapp
-      ? // older files lack boxFrac/lineScale/stationSplit/disabledRoutes → default them
-        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
+      ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
+        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -399,6 +411,9 @@ export function SchematicPanel() {
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
           lineScale: DEFAULT_LINE_SCALE,
+          declutterWarp: DEFAULT_DECLUTTER,
+          aestheticWarp: DEFAULT_AESTHETIC,
+          aestheticOn: DEFAULT_AESTHETIC_ON,
           stationSplit: DEFAULT_STATION_SPLIT,
           disabledRoutes: [],
         },
@@ -412,6 +427,9 @@ export function SchematicPanel() {
     applied.boxWarpPos !== boxWarpPos ||
     applied.boxFrac !== boxFrac ||
     (applied.lineScale ?? DEFAULT_LINE_SCALE) !== lineScale ||
+    (applied.declutterWarp ?? DEFAULT_DECLUTTER) !== declutterWarp ||
+    (applied.aestheticWarp ?? DEFAULT_AESTHETIC) !== aestheticWarp ||
+    (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) !== aestheticOn ||
     applied.stationSplit !== stationSplit ||
     !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
   // True when both the draft sliders and the applied values are already at the
@@ -425,6 +443,9 @@ export function SchematicPanel() {
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
     lineScale === DEFAULT_LINE_SCALE &&
+    declutterWarp === DEFAULT_DECLUTTER &&
+    aestheticWarp === DEFAULT_AESTHETIC &&
+    aestheticOn === DEFAULT_AESTHETIC_ON &&
     stationSplit === DEFAULT_STATION_SPLIT &&
     disabledRoutes.length === 0 &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
@@ -435,6 +456,9 @@ export function SchematicPanel() {
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
     applied.boxFrac === DEFAULT_BOX_FRAC &&
     (applied.lineScale ?? DEFAULT_LINE_SCALE) === DEFAULT_LINE_SCALE &&
+    (applied.declutterWarp ?? DEFAULT_DECLUTTER) === DEFAULT_DECLUTTER &&
+    (applied.aestheticWarp ?? DEFAULT_AESTHETIC) === DEFAULT_AESTHETIC &&
+    (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) === DEFAULT_AESTHETIC_ON &&
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
     (applied.disabledRoutes?.length ?? 0) === 0;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
@@ -525,8 +549,8 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
     };
-    // older entries lack boxFrac/lineScale/stationSplit
-    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
+    // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
+    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -546,6 +570,9 @@ export function SchematicPanel() {
     setBoxWarpPos(ap.boxWarpPos);
     setBoxFrac(ap.boxFrac);
     setLineScale(ap.lineScale);
+    setDeclutterWarp(ap.declutterWarp);
+    setAestheticWarp(ap.aestheticWarp);
+    setAestheticOn(ap.aestheticOn);
     setStationSplit(ap.stationSplit);
     setDisabledRoutes(ap.disabledRoutes);
     setMode(target);
@@ -697,7 +724,8 @@ export function SchematicPanel() {
         warpAlpha: warpAlphaFromPos(applied.warpPos),
         geographicAffinity: affinityFromPos(applied.linePos),
         boxExpand: BOX_AES,
-        boxPct: boxPctFromPos(applied.boxWarpPos),
+        declutterWarp: applied.declutterWarp ?? DEFAULT_DECLUTTER,
+        aestheticWarp: (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) ? (applied.aestheticWarp ?? DEFAULT_AESTHETIC) : 0,
         boxFrac: applied.boxFrac,
         lineScale: applied.lineScale,
         stationSplit: applied.stationSplit,
@@ -1155,6 +1183,9 @@ export function SchematicPanel() {
       boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
       boxFrac: num(s.applied.boxFrac, BOX_FRAC_MIN, BOX_FRAC_MAX, DEFAULT_BOX_FRAC),
       lineScale: num(s.applied.lineScale, LINE_SCALE_MIN, LINE_SCALE_MAX, DEFAULT_LINE_SCALE),
+      declutterWarp: num(s.applied.declutterWarp, 0, 1, DEFAULT_DECLUTTER),
+      aestheticWarp: num(s.applied.aestheticWarp, 0, 1, DEFAULT_AESTHETIC),
+      aestheticOn: s.applied.aestheticOn === true,
       stationSplit: s.applied.stationSplit === true,
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
@@ -1179,6 +1210,9 @@ export function SchematicPanel() {
       setBoxWarpPos(clampedApplied.boxWarpPos);
       setBoxFrac(clampedApplied.boxFrac);
       setLineScale(clampedApplied.lineScale);
+      setDeclutterWarp(clampedApplied.declutterWarp);
+      setAestheticWarp(clampedApplied.aestheticWarp);
+      setAestheticOn(clampedApplied.aestheticOn);
       setStationSplit(clampedApplied.stationSplit);
     }
     // Queue the saved detail areas; the inject effect restores them after the new
@@ -1228,7 +1262,8 @@ export function SchematicPanel() {
             warpAlpha: warpAlphaFromPos(ap.warpPos),
             geographicAffinity: affinityFromPos(ap.linePos),
             boxExpand: BOX_AES,
-            boxPct: boxPctFromPos(ap.boxWarpPos),
+            declutterWarp: ap.declutterWarp ?? DEFAULT_DECLUTTER,
+            aestheticWarp: (ap.aestheticOn ?? DEFAULT_AESTHETIC_ON) ? (ap.aestheticWarp ?? DEFAULT_AESTHETIC) : 0,
             boxFrac: ap.boxFrac,
             lineScale: ap.lineScale,
             stationSplit: ap.stationSplit,
@@ -1505,7 +1540,7 @@ export function SchematicPanel() {
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, lineScale, stationSplit, disabledRoutes });
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, stationSplit, disabledRoutes });
     if (mode === 'smoothed' && smoothedReady) regenerate();
     // Commit dismisses whichever surface hosts the Save button (settings popover,
     // Algorithm page, or Routes overlay).
@@ -1523,6 +1558,9 @@ export function SchematicPanel() {
     setBoxWarpPos(DEFAULT_REALISM_POS);
     setBoxFrac(DEFAULT_BOX_FRAC);
     setLineScale(DEFAULT_LINE_SCALE);
+    setDeclutterWarp(DEFAULT_DECLUTTER);
+    setAestheticWarp(DEFAULT_AESTHETIC);
+    setAestheticOn(DEFAULT_AESTHETIC_ON);
     setStationSplit(DEFAULT_STATION_SPLIT);
     setLandmass('faithful');
     setLandmassDetail(0.5);
@@ -1536,6 +1574,9 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
       lineScale: DEFAULT_LINE_SCALE,
+      declutterWarp: DEFAULT_DECLUTTER,
+      aestheticWarp: DEFAULT_AESTHETIC,
+      aestheticOn: DEFAULT_AESTHETIC_ON,
       stationSplit: DEFAULT_STATION_SPLIT,
       disabledRoutes: [],
     });
@@ -2534,7 +2575,17 @@ export function SchematicPanel() {
             <>
               <Slider label="Geography warp" value={warpPos} min={-1} max={1} step={0.1} display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'} onChange={setWarpPos} />
               <Slider label="Line accuracy" value={linePos} min={-1} max={1} step={0.1} display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'} onChange={setLinePos} />
-              <Slider label="Box warp" value={boxWarpPos} min={-1} max={1} step={0.1} display={boxWarpPos === 0 ? 'Default' : boxWarpPos < 0 ? 'Realistic' : 'Stylized'} onChange={setBoxWarpPos} />
+              <Slider label="Declutter" value={declutterWarp} min={0} max={1} step={0.05} display={declutterWarp === 0 ? 'Off' : `${Math.round(declutterWarp * 100)}%`} onChange={setDeclutterWarp} />
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: 0.85 }}>
+                  <span>Aesthetic emphasis</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7 }}>{aestheticOn ? `${Math.round(aestheticWarp * 100)}%` : 'off'}</span>
+                    <input type="checkbox" checked={aestheticOn} onChange={(e) => setAestheticOn(e.target.checked)} style={{ cursor: 'pointer' }} />
+                  </span>
+                </span>
+                <input type="range" min={0} max={1} step={0.05} value={aestheticWarp} disabled={!aestheticOn} onChange={(e) => setAestheticWarp(parseFloat(e.target.value))} style={{ width: '100%', cursor: aestheticOn ? 'pointer' : 'default', accentColor: '#2563eb', opacity: aestheticOn ? 1 : 0.45 }} />
+              </label>
               <Slider label="Box density cutoff" value={boxFrac} min={BOX_FRAC_MIN} max={BOX_FRAC_MAX} step={0.05} display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`} onChange={setBoxFrac} />
               <Slider label="Line size" value={lineScale} min={LINE_SCALE_MIN} max={LINE_SCALE_MAX} step={0.05} display={lineScale === DEFAULT_LINE_SCALE ? 'Default' : `${lineScale.toFixed(2)}× · ${lineScale < DEFAULT_LINE_SCALE ? 'thinner' : 'thicker'}`} onChange={setLineScale} />
               <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>

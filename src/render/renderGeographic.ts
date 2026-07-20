@@ -690,6 +690,15 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (typeof opts.boxPct === 'number' && Number.isFinite(opts.boxPct) && opts.boxPct >= 0) return Math.min(1, opts.boxPct);
     return undefined;
   })();
+  // Two-dial warp (Declutter + Aesthetic controls), each a 0–1 grant fraction.
+  // Declutter grants the survival warp (contraction + capsule pinch-relief);
+  // Aesthetic grants the density-emphasis magnification. Each defaults OFF (0),
+  // so the out-of-box map is minimally warped and the draw handles pinches.
+  // When either is present it supersedes boxPct's single dial.
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  const declutterPct = typeof opts.declutterWarp === 'number' && Number.isFinite(opts.declutterWarp) ? clamp01(opts.declutterWarp) : undefined;
+  const aestheticPct = typeof opts.aestheticWarp === 'number' && Number.isFinite(opts.aestheticWarp) ? clamp01(opts.aestheticWarp) : undefined;
+  const twoDial = declutterPct !== undefined || aestheticPct !== undefined;
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
   //    proportional to its line fan, not just its station count).
@@ -821,7 +830,19 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     emphasisSigma,
     marginCap,
     curvBound,
-    ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
+    // Two-dial grant supersedes the single boxPct when either dial is set. It
+    // also gates the oracles: contraction (declutter's survival) and density
+    // (aesthetic's emphasis) each run only when their dial is > 0.
+    ...(twoDial
+      ? {
+          declutterPct: declutterPct ?? 0,
+          aestheticPct: aestheticPct ?? 0,
+          contraction: (declutterPct ?? 0) > 0,
+          aesthetic: (aestheticPct ?? 0) > 0,
+        }
+      : boxPct !== undefined
+        ? { growthPct: boxPct }
+        : {}),
     ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,
     capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },

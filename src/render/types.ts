@@ -135,6 +135,19 @@ export interface SchematicOptions {
    *  sets the aesthetic ceiling inside the maximum). Absent = legacy cap
    *  semantics, so saved maps replay unchanged. */
   boxPct?: number;
+  /** Smoothed mode only: DECLUTTER warp grant, 0–1 (default 0). Scales the
+   *  survival warp — the contraction (pinch-relief) and capsule-pair oracles
+   *  that un-pinch genuinely overlapping stations so a dense core is renderable.
+   *  0 = off (the draw handles pinches); 1 = the full solved un-pinching. Gates
+   *  the contraction oracle on > 0. Supersedes boxPct when set. Bakes into the
+   *  layout (fingerprint). */
+  declutterWarp?: number;
+  /** Smoothed mode only: AESTHETIC warp grant, 0–1 (default 0). Scales the
+   *  density-emphasis magnification (steepest-ascent watershed) that gives
+   *  crowded cores extra room for emphasis. 0 = off; 1 = full emphasis at the
+   *  BOX_AES ceiling. Gates the density oracle on > 0. Supersedes boxPct when
+   *  set. Bakes into the layout (fingerprint). */
+  aestheticWarp?: number;
   /** Smoothed mode only (BETA): build one graph node per member STATION of a
    *  multi-station complex (platforms at their real coordinates) instead of one
    *  node per station group. Parallel trunks through a complex stay
