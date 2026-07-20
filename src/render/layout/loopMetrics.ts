@@ -139,3 +139,128 @@ export function detectPaintedLoops(routes: ReadonlyArray<{ lineId: string; pts: 
   out.sort((a, b) => rank(a.kind) - rank(b.kind) || a.loopArc - b.loopArc);
   return out;
 }
+
+interface RawCross { at: Pixel; loopArc: number; diameter: number; segI: [Pixel, Pixel]; segJ: [Pixel, Pixel] }
+
+// A chain endpoint of one subpath sits ON another subpath within this many px
+// where a branching route's subpaths meet (the T-junction / ring-closure seam).
+const CONNECT_EPS = 3;
+
+/** Enclosed diameter of a crossing between two DIFFERENT chains of one line.
+ *  The two subpaths meet at a junction (they are the same line); the enclosed
+ *  loop is bounded by the crossing point and the NEAREST place the two chains
+ *  reconnect, so its size is twice that reach. A tiny junction nick (a fillet
+ *  overlapping the corner it rounds) reconnects a pixel away and measures near
+ *  zero; a hook laid across the corridor reconnects a stub length away and
+ *  measures the visible loop. When the two chains never reconnect (independent
+ *  pieces that merely cross) the span of the crossing segments is the fallback. */
+function crossChainDiameter(A: Pixel[], B: Pixel[], P: Pixel, seg: Pixel[]): number {
+  let jDist = Infinity;
+  for (const a of A) {
+    for (const b of B) {
+      if (dist(a, b) > CONNECT_EPS) continue; // only where the chains join
+      const dp = dist(a, P);
+      if (dp < 0.5) continue; // the crossing itself, not a reconnection
+      if (dp < jDist) jDist = dp;
+    }
+  }
+  if (Number.isFinite(jDist)) return 2 * jDist;
+  let span = 0;
+  for (let a = 0; a < seg.length; a++) for (let b = a + 1; b < seg.length; b++) {
+    const dd = dist(seg[a], seg[b]);
+    if (dd > span) span = dd;
+  }
+  return span;
+}
+
+/** Proper crossings between segments of DIFFERENT drawn chains of one line.
+ *  A route that branches (serves a spur, closes a terminal ring) is drawn as
+ *  several subpaths meeting at a junction; a subpath laid ACROSS another
+ *  subpath of the same line (a jog taper or ring-closure curve painted over
+ *  the corridor it joins) is a real self-crossing the reader sees, even though
+ *  each subpath alone is simple. properCross is strict-transversal, so a spur
+ *  that merely ENDS on the corridor (a T-junction touch, not an X) never fires;
+ *  only ink genuinely laid across ink does. The genuine map-scale ring is a
+ *  single self-crossing CHAIN, caught by crossingsOf, not here. */
+function crossChainCrossings(chains: Pixel[][]): RawCross[] {
+  interface Seg { a: Pixel; b: Pixel; ci: number }
+  const segs: Seg[] = [];
+  for (let ci = 0; ci < chains.length; ci++) {
+    const p = chains[ci];
+    for (let i = 0; i + 1 < p.length; i++) segs.push({ a: p[i], b: p[i + 1], ci });
+  }
+  if (segs.length < 2) return [];
+  const CELL = 48;
+  const grid = new Map<string, number[]>();
+  const cellsOf = (s: Seg): string[] => {
+    const x0 = Math.floor(Math.min(s.a[0], s.b[0]) / CELL), x1 = Math.floor(Math.max(s.a[0], s.b[0]) / CELL);
+    const y0 = Math.floor(Math.min(s.a[1], s.b[1]) / CELL), y1 = Math.floor(Math.max(s.a[1], s.b[1]) / CELL);
+    const ks: string[] = [];
+    for (let gx = x0; gx <= x1; gx++) for (let gy = y0; gy <= y1; gy++) ks.push(gx + ',' + gy);
+    return ks;
+  };
+  for (let i = 0; i < segs.length; i++) for (const k of cellsOf(segs[i])) {
+    let arr = grid.get(k); if (!arr) grid.set(k, (arr = [])); arr.push(i);
+  }
+  const out: RawCross[] = [];
+  const seen = new Set<string>();
+  for (const arr of grid.values()) {
+    for (let x = 0; x < arr.length; x++) {
+      for (let y = x + 1; y < arr.length; y++) {
+        const S = segs[arr[x]], T = segs[arr[y]];
+        if (S.ci === T.ci) continue; // same-chain adjacency handled by crossingsOf
+        if (!properCross(S.a, S.b, T.a, T.b)) continue;
+        const at: Pixel = [(S.a[0] + S.b[0] + T.a[0] + T.b[0]) / 4, (S.a[1] + S.b[1] + T.a[1] + T.b[1]) / 4];
+        const key = Math.round(at[0] / 4) + ',' + Math.round(at[1] / 4);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const diameter = crossChainDiameter(chains[S.ci], chains[T.ci], at, [S.a, S.b, T.a, T.b]);
+        out.push({ at, loopArc: diameter * 2, diameter, segI: [S.a, S.b], segJ: [T.a, T.b] });
+      }
+    }
+  }
+  return out;
+}
+
+/** Detect self-crossings in the FINAL DRAWN ink of each route. Pass each
+ *  line's drawn chains (maximal contiguous subpaths of the drawn 'd', e.g.
+ *  from inkChains over drawnSegsByLine). Unlike the traversal-concatenated
+ *  painted track, the drawn ink carries no phantom bridge across a course
+ *  discontinuity (a retrace or a non-adjacent traversal step), so a route that
+ *  legitimately jumps or retraces no longer reports a spurious loop where the
+ *  concatenation chord would have crossed its own ink. Self-crossings that ARE
+ *  drawn (balloon loops, terminal-ring hooks, jog tapers laid over a corridor)
+ *  are still caught: within one chain by crossingsOf, across two chains of the
+ *  same line by crossChainCrossings. */
+export function detectDrawnLoops(routes: ReadonlyArray<{ lineId: string; chains: Pixel[][] }>): PaintedLoop[] {
+  const out: PaintedLoop[] = [];
+  for (const { lineId, chains } of routes) {
+    const raws: RawCross[] = [];
+    for (const pts of chains) if (pts.length >= 4) raws.push(...crossingsOf(pts));
+    raws.push(...crossChainCrossings(chains));
+    // Merge crossings whose points are within MERGE px (one visual loop can
+    // clip several pairs); keep the tightest enclosed loop of the cluster.
+    const usedR = new Array(raws.length).fill(false);
+    for (let r = 0; r < raws.length; r++) {
+      if (usedR[r]) continue;
+      let best = raws[r];
+      usedR[r] = true;
+      for (let s = r + 1; s < raws.length; s++) {
+        if (usedR[s]) continue;
+        if (Math.abs(best.at[0] - raws[s].at[0]) < MERGE && Math.abs(best.at[1] - raws[s].at[1]) < MERGE) {
+          usedR[s] = true;
+          if (raws[s].loopArc < best.loopArc) best = raws[s];
+        }
+      }
+      out.push({
+        lineId,
+        kind: best.diameter >= ARTIFACT_DIAM ? 'bigloop' : 'artifact',
+        at: best.at, loopArc: best.loopArc, diameter: best.diameter,
+        segI: best.segI, segJ: best.segJ,
+      });
+    }
+  }
+  const rank = (k: LoopKind): number => (k === 'artifact' ? 0 : 1);
+  out.sort((a, b) => rank(a.kind) - rank(b.kind) || a.loopArc - b.loopArc);
+  return out;
+}

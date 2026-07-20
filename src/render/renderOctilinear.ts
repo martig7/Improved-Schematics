@@ -18,7 +18,7 @@ import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
-import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0 } from './constants';
+import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0, onDrawScale } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
@@ -540,8 +540,9 @@ const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
 // RCAP are defined exactly as the placement geometry defines them so the seated
 // box matches the marker sizing; S = 3*RCAP/MARKER_SCALE = the single-stop box.
-const RECT_R0 = MARK_R0;
-const RECT_RCAP = RECT_R0 * MARKER_SCALE;
+let RECT_R0 = MARK_R0;
+let RECT_RCAP = RECT_R0 * MARKER_SCALE;
+onDrawScale(() => { RECT_R0 = MARK_R0; RECT_RCAP = RECT_R0 * MARKER_SCALE; });
 const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
 // Above this member count a hub is seated by the LANE-AWARE path (matching
 // rectSeat's ENUM_MAX): each box slides along its own drawn lane instead of being
@@ -1644,18 +1645,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       mitered.add(lineId + '|' + endA + '|' + pairKey2);
     }
   }
-
-  // --- loop diagnostic (OCTI_LOOPS) ------------------------------------------
-  // Measure loops in the PAINTED track — where a route's drawn track crosses
-  // itself (a fused-station hook, balloon loop, terminal ring). Built on the
-  // offset LANES (segPath, now final), not the edge skeleton: an out-and-back
-  // route's skeleton is a perfect overlap, so a self-crossing loop at a station
-  // group (Chicago Blue A at Chestnut St) is invisible there but plain in the
-  // painted lanes. Each loop is anchored to its nearest station group.
-  reportPaintedLoops({
-    layout, lineById, lineTraversals: layout.lineTraversals, segPath,
-    stations: args.stations, nodePx,
-  });
 
   // NOTE: path emission (fillet builder + join curves) happens AFTER the station
   // marker pass below — sliding a terminus marker clear of a neighbour must
@@ -3998,6 +3987,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   reportContiguity({
     layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine,
     stations: args.stations, nodePx, stopsByNode,
+  });
+  // Loop diagnostic (OCTI_LOOPS): self-crossings of a route's FINAL DRAWN ink
+  // (a fused-station hook, balloon loop, terminal-ring closure, jog taper laid
+  // over a corridor). Measured on the drawn 'd' like the contiguity census, so
+  // a course that retraces or jumps between non-adjacent steps reports no
+  // phantom loop where a traversal-concatenation chord would have cut its ink.
+  reportPaintedLoops({
+    layout, lineById, dByLine: censusInk, parseInk: drawnSegsByLine,
+    stations: args.stations, nodePx,
   });
 
   // Toronto crossings, from the FINAL drawn ribbons (dByLine is complete here:

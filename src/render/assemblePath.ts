@@ -44,6 +44,8 @@ export interface AssembleArgs {
 interface Oriented {
   edgeId: string;
   pts: Pixel[];
+  /** node the course enters the piece at (its near node in travel order) */
+  startNode: string;
   /** node the course leaves the piece at (its far node in travel order) */
   endNode: string;
 }
@@ -121,7 +123,7 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
    *  gap is pathological (detach and restart). */
   const emitJoint = (
     lineId: string, d: string[], cur: Pixel, from: Oriented, to: Oriented, drawnJoints: Set<string>,
-    detached: boolean,
+    detached: boolean, forceBridge = false,
   ): Pixel | null => {
     const node = from.endNode;
     const pairKey = from.edgeId < to.edgeId ? from.edgeId + '|' + to.edgeId : to.edgeId + '|' + from.edgeId;
@@ -156,9 +158,23 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
       return cur;
     }
     if (drawnJoints.has(jointKey)) return null; // retrace joint already inked
-    const bundleSpan = ((orderOf.get(from.edgeId)?.length ?? 1) + (orderOf.get(to.edgeId)?.length ?? 1)) * spacing;
-    const maxGap = Number.isFinite(maxGapEnv) && maxGapEnv > 0 ? maxGapEnv : Math.max(spacing * 8, bundleSpan);
-    if (gap > maxGap) return null; // pathological jump: detach
+    // The maxGap decline guards against a pathological jump: a joint whose two
+    // pieces do NOT meet at a shared graph node (a traversal hole, or a
+    // non-walk traversal stitched from disjoint arcs), where bridging would
+    // paint a long spurious diagonal. When the two edges genuinely share the
+    // joint node, their lane ends are two offsets of the SAME node; a sharp
+    // turn on a wide bundle can spread those offsets well past a fixed pitch
+    // cap, but the node truly connects them, so the joint must always bridge.
+    // Declining there severs the route into two components at the node.
+    // A joint bridging a run of suppressed slivers (forceBridge) reaches across
+    // real course the merge dropped as noise; it must connect in one stroke
+    // whatever the span, exactly like a shared-node turn.
+    const sharedNode = from.endNode === to.startNode;
+    if (!sharedNode && !forceBridge) {
+      const bundleSpan = ((orderOf.get(from.edgeId)?.length ?? 1) + (orderOf.get(to.edgeId)?.length ?? 1)) * spacing;
+      const maxGap = Number.isFinite(maxGapEnv) && maxGapEnv > 0 ? maxGapEnv : Math.max(spacing * 8, bundleSpan);
+      if (gap > maxGap) return null; // pathological jump: detach
+    }
     const prevA = from.pts[from.pts.length - 2];
     const nextB = to.pts[1];
     const unitTo = (a: Pixel, b: Pixel): Pixel => {
@@ -207,6 +223,7 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
       return {
         edgeId: step.edgeId,
         pts: step.reversed ? [...lane].reverse() : lane,
+        startNode: step.reversed ? e.to : e.from,
         endNode: step.reversed ? e.from : e.to,
       };
     };
@@ -229,6 +246,9 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
     let cur: Pixel | null = null;
     let prev: Oriented | null = null; // the piece the pen sits on (or last walked)
     let firstDrawnIdx = -1;
+    // Set while the walk skips a run of suppressed slivers, so the next joint
+    // knows it is bridging that run and must not decline it as a long jump.
+    let spannedSuppressed = false;
     for (let i = 0; i < traversal.length + wrap; i++) {
       const wrapped = i >= traversal.length;
       const step = wrapped ? traversal[firstDrawnIdx] : traversal[i];
@@ -236,8 +256,11 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
       const o = orient(step);
       if (!o) {
         // undrawn: a suppressed sliver keeps the course bridgeable in one
-        // stroke; any other hole is a genuine discontinuity.
-        if (!suppressed.has(step.edgeId + '|' + lineId)) { cur = null; prev = null; }
+        // stroke; any other hole is a genuine discontinuity. A run of
+        // suppressed slivers can span several nodes, so the eventual bridge
+        // joint reaches across all of them: mark it to bridge unconditionally.
+        if (!suppressed.has(step.edgeId + '|' + lineId)) { cur = null; prev = null; spannedSuppressed = false; }
+        else spannedSuppressed = true;
         continue;
       }
       const already = emittedLane.has(step.edgeId + '|' + lineId);
@@ -253,15 +276,16 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
         // position is the retraced piece's end; joint from there, opening
         // a fresh subpath (detached). A null return leaves the piece below
         // to open with its own M.
-        cur = emitJoint(lineId, d, prev.pts[prev.pts.length - 1], prev, o, drawnJoints, true);
+        cur = emitJoint(lineId, d, prev.pts[prev.pts.length - 1], prev, o, drawnJoints, true, spannedSuppressed);
       } else if (prev && cur !== null) {
-        cur = emitJoint(lineId, d, cur, prev, o, drawnJoints, false);
+        cur = emitJoint(lineId, d, cur, prev, o, drawnJoints, false, spannedSuppressed);
       }
       if (wrapped) break; // seam joint only; the first piece is already inked
       cur = emitPiece(d, o.pts, cur);
       emittedLane.add(step.edgeId + '|' + lineId);
       if (firstDrawnIdx < 0) firstDrawnIdx = i;
       prev = o;
+      spannedSuppressed = false;
     }
   }
 

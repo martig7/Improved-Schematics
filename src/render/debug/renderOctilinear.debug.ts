@@ -8,7 +8,7 @@
 // stations, egregious ring overlaps, ribbon summary).
 import { envStr, envNum } from '../../env';
 import type { Layout, Pixel } from '../layout/types';
-import { detectPaintedLoops } from '../layout/loopMetrics';
+import { detectDrawnLoops } from '../layout/loopMetrics';
 import { findInkClips, type InkRef } from '../layout/clipMetrics';
 
 /** OCTI_JOIN_TRACE target line id (undefined outside Node / when unset). Kept
@@ -348,32 +348,28 @@ export function makeJoinLog(traceTarget: string | undefined, lineId: string): (m
   return (m: string) => { if (traceTarget === lineId) console.error('[join] ' + m); };
 }
 
-/** OCTI_LOOPS: measure self-crossings in the PAINTED track (offset lanes, not
- *  the edge skeleton) and anchor each to its nearest station group. */
+/** OCTI_LOOPS: measure self-crossings in the FINAL DRAWN ink of each route
+ *  (every fillet, join, connector, and closure curve, exactly what the reader
+ *  sees) and anchor each to its nearest station group. Operates on the drawn
+ *  'd' rather than the traversal-concatenated painted track, so a course that
+ *  retraces or jumps between non-adjacent steps reports no phantom crossing
+ *  where the concatenation chord would have cut across its own ink. */
 export function reportPaintedLoops(d: {
   layout: Layout;
   lineById: Map<string, { id: string; label?: string; color: string }>;
-  lineTraversals: Layout['lineTraversals'];
-  segPath: Map<string, Pixel[]>;
+  dByLine: Map<string, string[]>;
+  parseInk: (dByLine: Map<string, string[]>) => Map<string, Array<[Pixel, Pixel]>>;
   stations?: Array<{ nodeId: string }>;
   nodePx: Map<string, Pixel>;
 }): void {
   if (!envStr('OCTI_LOOPS')) return;
-  const { layout, lineById, lineTraversals, segPath, stations, nodePx } = d;
-  const routesPainted: Array<{ lineId: string; pts: Pixel[] }> = [];
-  for (const [lineId, traversal] of lineTraversals) {
+  const { layout, lineById, dByLine, parseInk, stations, nodePx } = d;
+  const segsByLine = parseInk(dByLine);
+  const routesDrawn: Array<{ lineId: string; chains: Pixel[][] }> = [];
+  for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
-    const pts: Pixel[] = [];
-    for (const step of traversal) {
-      const lane = segPath.get(step.edgeId + '|' + lineId);
-      if (!lane || lane.length < 2) continue;
-      const seq = step.reversed ? [...lane].reverse() : lane; // lanes run from→to
-      for (const p of seq) {
-        const last = pts[pts.length - 1];
-        if (!last || Math.abs(last[0] - p[0]) > 1e-6 || Math.abs(last[1] - p[1]) > 1e-6) pts.push(p);
-      }
-    }
-    if (pts.length >= 4) routesPainted.push({ lineId, pts });
+    const chains = inkChains(segsByLine.get(lineId)!);
+    if (chains.some((c) => c.length >= 2)) routesDrawn.push({ lineId, chains });
   }
   // station groups (nodes carrying ≥1 stop) with pixel positions + labels,
   // for anchoring each loop to the place a reader would name it.
@@ -391,7 +387,7 @@ export function reportPaintedLoops(d: {
     }
     return `${best} (${Math.sqrt(bd).toFixed(0)}px)`;
   };
-  const loops = detectPaintedLoops(routesPainted);
+  const loops = detectDrawnLoops(routesDrawn);
   for (const l of loops.slice(0, 40)) {
     const ln = lineById.get(l.lineId);
     console.error(
@@ -840,9 +836,38 @@ export function reportContiguity(d: {
       if (list) list.push(e.pos); else stopsOf.set(e.lineId, [e.pos]);
     }
   }
+  // Point-to-segment distance, for T-join detection (see below).
+  const TJOIN_EPS = 2;
+  const ptSeg = (p: Pixel, a: Pixel, b: Pixel): number => {
+    const vx = b[0] - a[0], vy = b[1] - a[1];
+    const len2 = vx * vx + vy * vy;
+    if (len2 < 1e-12) return len(p, a);
+    let t = ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return len(p, [a[0] + vx * t, a[1] + vy * t]);
+  };
+  // Whether an endpoint of chain `ci` lands on any segment of chain `cj`. A
+  // branching route (one whose own drawn ink has a degree-3 node, i.e. it
+  // serves a spur) is inherently drawn as several subpaths that meet at a
+  // T-junction: the spur subpath's M sits ON the corridor subpath's interior
+  // ink, not at its endpoint. Endpoint-coincidence alone reads that as a
+  // break. Only a CHAIN ENDPOINT landing on ink connects; a mid-segment
+  // self-crossing has no endpoint there, so genuine crossings and true gaps
+  // (whose dangling end lands on empty canvas) stay flagged.
+  const tjoined = (ci: number, cj: number, endsArr: Array<[Pixel, Pixel]>, chainsArr: Pixel[][]): boolean => {
+    const cjPts = chainsArr[cj];
+    for (const e of endsArr[ci]) {
+      for (let k = 1; k < cjPts.length; k++) {
+        if (ptSeg(e, cjPts[k - 1], cjPts[k]) <= TJOIN_EPS) return true;
+      }
+    }
+    return false;
+  };
+
   let brokenLines = 0;
   let breaks = 0;
   let exempt = 0;
+  let tjoins = 0;
   let printed = 0;
   for (const lineId of [...segsByLine.keys()].sort()) {
     if (!lineById.has(lineId)) continue;
@@ -862,6 +887,21 @@ export function reportContiguity(d: {
           if (touch) break;
         }
         if (touch) comp[findC(i)] = findC(j);
+      }
+    }
+    // T-junction joins: a chain endpoint lying on another chain's interior ink
+    // (a spur resuming on the corridor it branches from) is connected drawing.
+    for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        if (findC(i) === findC(j)) continue;
+        if (tjoined(i, j, ends, chains) || tjoined(j, i, ends, chains)) {
+          comp[findC(i)] = findC(j);
+          tjoins++;
+          if (envStr('OCTI_CONTIG_TJ') === '1') {
+            const ln = lineById.get(lineId);
+            console.error(`[contig-tj] ${ln?.label ?? lineId} chains ${i}<->${j} near=${nearestGroup(ends[i][0])}`);
+          }
+        }
       }
     }
     // opaque-design crop windows: a small gap whose BOTH sides sit under
@@ -908,7 +948,7 @@ export function reportContiguity(d: {
       );
     }
   }
-  console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (${exempt} crop windows exempt, seam eps ${EPS})`);
+  console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (${exempt} crop windows exempt, ${tjoins} T-joins, seam eps ${EPS})`);
 }
 
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
