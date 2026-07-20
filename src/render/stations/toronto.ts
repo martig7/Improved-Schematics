@@ -1,6 +1,6 @@
 import type { StationDesign, StopScene, PaintCtx, Glyph } from './types';
 import { circle, capsuleGlyphs, capsuleStrokeWidths, pillPath } from './primitives';
-import { LINE_WIDTH, MARK_R0, MARKER_SCALE } from '../constants';
+import { LINE_WIDTH, MARK_R0, MARKER_SCALE, onDrawScale } from '../constants';
 
 // Fixed paper-map palette: black ink on white paper in both themes.
 const INK = '#111111';
@@ -9,21 +9,30 @@ const PAPER = '#ffffff';
 // A plain stop is LINE-FIT: its outer diameter is the route line width, so the
 // black-ringed white circle sits within the line, which runs continuously
 // behind it.
-const STOP_OUTER = LINE_WIDTH / 2;
-const STOP_RING = LINE_WIDTH * 0.2;
+let STOP_OUTER = LINE_WIDTH / 2;
+let STOP_RING = LINE_WIDTH * 0.2;
 
 // A crossing dot is INTERCHANGE-SIZED: the same cross-section as a capsule end
 // (its outer/inner radii are the capsule's border/fill half-widths), so a
 // perfect intersection reads as a one-station interchange, not a plain stop.
-const CAP_W = capsuleStrokeWidths(MARK_R0 * MARKER_SCALE);
-const MARK_OUTER = CAP_W.border / 2;
-const MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
+let CAP_W = capsuleStrokeWidths(MARK_R0 * MARKER_SCALE);
+let MARK_OUTER = CAP_W.border / 2;
+let MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
 
 // The interchange motif is a solid black dot: a bundle chains one per station
 // inside a white capsule joined by a thin black spine along the capsule's own
 // centerline; a perfect crossing collapses to a single dot in a white circle.
-const DOT_R = LINE_WIDTH * 0.42;
-const CONNECTOR_W = LINE_WIDTH * 0.5;
+let DOT_R = LINE_WIDTH * 0.42;
+let CONNECTOR_W = LINE_WIDTH * 0.5;
+onDrawScale(() => {
+  STOP_OUTER = LINE_WIDTH / 2;
+  STOP_RING = LINE_WIDTH * 0.2;
+  CAP_W = capsuleStrokeWidths(MARK_R0 * MARKER_SCALE);
+  MARK_OUTER = CAP_W.border / 2;
+  MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
+  DOT_R = LINE_WIDTH * 0.42;
+  CONNECTOR_W = LINE_WIDTH * 0.5;
+});
 
 /** A black-ringed white disc via expand-and-overdraw (an ink disc, then a
  *  smaller paper disc), so the ring needs no stroke alignment. */

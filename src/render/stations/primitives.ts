@@ -1,7 +1,8 @@
-import { MARKER_SCALE, MARK_R0 } from '../constants';
+import { MARKER_SCALE, MARK_R0, onDrawScale } from '../constants';
 import type { Glyph, Capsule, Point } from './types';
 
-const R0 = MARK_R0; // base dot radius (matches the solver)
+let R0 = MARK_R0; // base dot radius (matches the solver)
+onDrawScale(() => { R0 = MARK_R0; });
 
 /** Readable bullet ink (near-black or white) for text on a solid fill. */
 export function contrastInk(hex: string): string {

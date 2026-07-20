@@ -4,7 +4,7 @@
 
 import { envStr } from '../env';
 import type { GraphNode, StopMark, Pixel } from './layout/types';
-import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, LABEL_WRAP_W, MARK_R0 } from './constants';
+import { LINE_WIDTH, LABEL_FONT_SIZE, LABEL_CHAR_WIDTH, LABEL_OFFSET, LABEL_WRAP_W, MARK_R0, onDrawScale } from './constants';
 import { escapeXml } from './escape';
 import type { Prim } from './sceneIR';
 import { obbFromLocalBox, obbAabb, obbOverlap, segmentIntersectsObb, tilt, type Obb } from './labelGeom';
@@ -197,7 +197,8 @@ export interface LabelNode {
  *  a normal capsule's half-dot-spacing (~LINE_WIDTH) so ordinary interchanges keep
  *  the centre anchor (and don't perturb the greedy label packer); only genuinely
  *  displaced capsules re-seat. */
-const ANCHOR_SLID_DIST = LINE_WIDTH * 3;
+let ANCHOR_SLID_DIST = LINE_WIDTH * 3;
+onDrawScale(() => { ANCHOR_SLID_DIST = LINE_WIDTH * 3; });
 
 /**
  * The pixel point a station's label should hang off. A SINGLE-dot stop hangs off

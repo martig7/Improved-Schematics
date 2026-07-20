@@ -18,16 +18,47 @@ export const CELL_PX = 36;
  *  The default is tuned so adjacent corridors sit at least the spec target of
  *  6 line-widths apart. */
 const LINE_WIDTH_DEFAULT = 3.5;
-export const LINE_WIDTH =
+const BASE_LINE_WIDTH =
   (typeof process !== 'undefined' &&
     envNum('IS_LINE_WIDTH')) ||
   LINE_WIDTH_DEFAULT;
-export const LINE_GAP = 2;
+const BASE_LINE_GAP = 2;
+
+/** Drawn line/marker chrome sizes. These are LIVE bindings (`let`, not `const`)
+ *  so the per-render Line-size control can scale every stroke, marker and
+ *  derived spacing together via setDrawScale below. ES module live bindings
+ *  mean importers that READ these at call time see the current value; a few
+ *  modules that aliased them at import were changed to read live too. */
+export let LINE_WIDTH = BASE_LINE_WIDTH;
+export let LINE_GAP = BASE_LINE_GAP;
 
 /** Base station-marker (dot) radius, shared by the octilinear renderer, the
  *  station placement/primitive geometry, and label collision boxes so every
  *  site sizes the marker identically. Derived from the line width. */
-export const MARK_R0 = LINE_WIDTH * 0.7;
+export let MARK_R0 = LINE_WIDTH * 0.7;
+
+/** Scale the drawn line/marker chrome by `s` (1 = base size, the shipped
+ *  values). Set at the start of a render from the Line-size option, so both the
+ *  precompute (seating/capsule geometry) and the draw (strokes/markers) size
+ *  themselves identically. Deterministic: callers pass the option value, never
+ *  wall-clock. `s <= 0` or non-finite is treated as 1. */
+const _drawScaleCbs: Array<() => void> = [];
+/** Register a callback that recomputes a module's LINE_WIDTH/MARK_R0-derived
+ *  values. Modules that alias these at import (so their value would otherwise be
+ *  frozen at the base scale) call this with a recompute closure; it also runs
+ *  the closure once immediately to initialize. Fired on every setDrawScale so
+ *  cascading derivations stay in sync with the current chrome scale. */
+export function onDrawScale(cb: () => void): void {
+  _drawScaleCbs.push(cb);
+  cb();
+}
+export function setDrawScale(s: number): void {
+  const k = Number.isFinite(s) && s > 0 ? s : 1;
+  LINE_WIDTH = BASE_LINE_WIDTH * k;
+  LINE_GAP = BASE_LINE_GAP * k;
+  MARK_R0 = LINE_WIDTH * 0.7;
+  for (const cb of _drawScaleCbs) cb();
+}
 
 /** Octilinear grid divisor selected by graph regime. Metro-scale graphs
  *  (<= 800 support edges) use a finer grid (1.6) so parallel corridors read as

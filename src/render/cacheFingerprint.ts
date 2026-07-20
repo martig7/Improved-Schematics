@@ -47,6 +47,7 @@ export interface FingerprintInput {
     boxGrowth?: number;
     boxFrac?: number;
     stationSplit?: boolean;
+    lineScale?: number;
     dark?: boolean;
     theme?: { lineWidth?: number };
   };
@@ -124,6 +125,7 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.boxGrowth ?? '',
     o.boxFrac ?? '',
     o.stationSplit ? 's' : '',
+    o.lineScale ?? '',
     o.dark ? 'd' : 'l',
     o.theme?.lineWidth ?? '',
   ].join('|');

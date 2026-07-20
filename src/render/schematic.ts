@@ -13,6 +13,7 @@ import type { GeographyData } from '../geography/types';
 import { DEFAULT_OPTIONS } from './types';
 import { renderGeographic, precomputeSmoothed, drawSmoothed, type SmoothedPrecomputed } from './renderGeographic';
 import { landmassParams } from './geoSimplify';
+import { setDrawScale } from './constants';
 import type { SceneOut } from './renderOctilinear';
 
 export interface SchematicInput {
@@ -43,6 +44,9 @@ function emptyStateSvg(width: number, height: number, land: string): string {
 export function generateSchematicSVG(input: SchematicInput): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const land = opts.dark ? '#18181b' : opts.theme.land;
+  // The draw scale is a process-global binding; assert it here too so a prior
+  // smoothed render's scale never bleeds into a one-shot geographic render.
+  setDrawScale(opts.lineScale ?? 1);
 
   // With no routes, still show the geography backdrop if we have it (renderGeographic
   // frames on the geography extent); only show the prompt when there's nothing to draw.
@@ -69,9 +73,16 @@ export function precomputeSmoothedSchematic(input: SchematicInput): SmoothedPrec
   if (input.routes.length === 0 && !input.geography) {
     return emptyStateSvg(opts.width, opts.height, opts.dark ? '#18181b' : opts.theme.land);
   }
+  // Chrome scale must be live for the whole precompute (seating/capsule geometry
+  // sizes off MARK_R0). Set it before layout and stash it on the result so the
+  // later draw sizes its strokes/markers identically.
+  const lineScale = opts.lineScale ?? 1;
+  setDrawScale(lineScale);
   // No routes but geography present: precomputeSmoothed sees an empty graph and
   // falls back to the geographic render (the geography backdrop) as a string.
-  return precomputeSmoothed({ ...input, smooth: true });
+  const res = precomputeSmoothed({ ...input, smooth: true });
+  if (typeof res !== 'string') res.lineScale = lineScale;
+  return res;
 }
 
 export function drawSmoothedSchematic(
@@ -80,6 +91,9 @@ export function drawSmoothedSchematic(
   sceneOut?: SceneOut,
 ): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...options };
+  // Re-assert the chrome scale the layout was baked with (the module binding is
+  // process-global and another render may have changed it since precompute).
+  setDrawScale(pre.lineScale ?? opts.lineScale ?? 1);
   return drawSmoothed(
     pre,
     {

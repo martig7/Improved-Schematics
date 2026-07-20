@@ -454,6 +454,9 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
+  /** Chrome scale the layout was baked with (Line-size option). The draw
+   *  re-asserts it so strokes/markers match the seated geometry. Default 1. */
+  lineScale?: number;
   /** input station id -> render position (px), for the magnifier's box hit-test. */
   stationPx: Map<string, Pixel>;
   stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;

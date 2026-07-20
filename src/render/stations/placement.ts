@@ -5,13 +5,14 @@
  */
 
 import type { Pixel, StopMark } from '../layout/types';
-import { MARKER_SCALE, MARK_R0 } from '../constants';
+import { MARKER_SCALE, MARK_R0, onDrawScale } from '../constants';
 import { type RectCapsule } from '../layout/rectSeat';
 import { type LondonCapsule } from '../layout/londonBubbles';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
-const R0 = MARK_R0;
-const RCAP = R0 * MARKER_SCALE;
+let R0 = MARK_R0;
+let RCAP = R0 * MARKER_SCALE;
+onDrawScale(() => { R0 = MARK_R0; RCAP = R0 * MARKER_SCALE; });
 
 export interface PlacementCtx {
   /** Interchange capsule regime the active design wants. 'rectRows' triggers the

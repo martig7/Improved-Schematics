@@ -1,8 +1,9 @@
 import type { StationDesign, StopScene, StopLine, Glyph, Point } from './types';
 import { line, circle } from './primitives';
-import { MARK_R0, LINE_WIDTH } from '../constants';
+import { MARK_R0, LINE_WIDTH, onDrawScale } from '../constants';
 
-const R0 = MARK_R0;
+let R0 = MARK_R0;
+onDrawScale(() => { R0 = MARK_R0; });
 const INK = '#111111';
 const PAPER = '#ffffff';
 

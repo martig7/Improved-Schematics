@@ -98,6 +98,14 @@ export interface SchematicOptions {
    *  geographic course (LOOM geographic-affinity / enfGeoPen). Higher gives more
    *  realistic courses; 0 is freely octilinear. Default 0.05. */
   geographicAffinity?: number;
+  /** Drawn line/marker chrome scale (the Line-size control), ≥0, default 1.
+   *  Multiplies LINE_WIDTH / LINE_GAP / MARK_R0 and everything derived (stroke
+   *  widths, station dots, casings, capsule geometry, marker seating), so the
+   *  whole schematic's ink thins or thickens together. Smaller = thinner lines
+   *  and smaller markers, which declutters a dense core at any zoom. Baked:
+   *  marker sizes feed the seating solver, so this is part of the layout and the
+   *  cache fingerprint. */
+  lineScale?: number;
   /** Smoothed mode only: box-warp strength, the demand MULTIPLIER on top of
    *  each dense box's survival need (densityBoxWarp `userMult`, ≥0). At 1 each
    *  box expands by exactly what its edges need to clear the octi contraction
