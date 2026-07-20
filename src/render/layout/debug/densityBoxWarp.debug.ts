@@ -42,9 +42,12 @@ export function probeBoxes(
     return n;
   };
   const fmt = (b: DenseBox): string => `[${b.x0.toFixed(0)},${b.y0.toFixed(0)}..${b.x1.toFixed(0)},${b.y1.toFixed(0)} ${(b.x1 - b.x0).toFixed(0)}x${(b.y1 - b.y0).toFixed(0)} n=${nIn(b)}]`;
+  // kind glyph: density/contraction/capsule/corridor collide on first letter
+  // (c/c), so map explicitly — D/C/K/R.
+  const glyph = (k: string): string => (k === 'density' ? 'D' : k === 'contraction' ? 'C' : k === 'capsule' ? 'K' : 'R');
   console.error(`[boxprobe] density boxes: ${density.map(fmt).join(' ')}`);
-  console.error(`[boxprobe] merged: ${merged.map((b) => b.kind[0] + fmt(b)).join(' ')}`);
-  console.error(`[boxprobe] split:  ${boxes.map((b) => `${b.kind[0]}${fmt(b)} r=${anisoOf(b).toFixed(2)}`).join(' ')}`);
+  console.error(`[boxprobe] merged: ${merged.map((b) => glyph((b as { kind: string }).kind) + fmt(b)).join(' ')}`);
+  console.error(`[boxprobe] split:  ${boxes.map((b) => `${glyph((b as { kind: string }).kind)}${fmt(b)} r=${anisoOf(b).toFixed(2)}`).join(' ')}`);
 }
 
 /** OCTI_WARP_DEBUG: one-line summary of the solved box warp. */

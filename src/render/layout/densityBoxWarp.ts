@@ -49,7 +49,7 @@
 // (local room), finding boxes and measuring demand in separable-warped space.
 // Determinism: + − × ÷ √ min max only → bit-identical cross-V8.
 
-import { envNum } from '../../env';
+import { envNum, envStr } from '../../env';
 import { probeDensity, probeBoxes, debugBoxWarp } from './debug/densityBoxWarp.debug';
 import type { Pixel } from './types';
 import type { WarpBox, WarpFn, DensityWarpOptions } from './densityWarp';
@@ -101,16 +101,29 @@ function nodeGaps(g: BoxGraph): number[] {
  *  bound each cluster of >= 2 nodes, padded by threshold/2 per side so the
  *  expansion push has extent even for collinear pairs. Catches small pinned
  *  clusters (JFK's 8px terminals) that are invisible to fraction-of-peak
- *  density. Deterministic: plain array iteration + arithmetic. */
-export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[] {
+ *  density.
+ *
+ *  LOCALITY BOUND: a component whose bbox exceeds `maxSpan` (default
+ *  6 × threshold, derived, I7) is not one pinned cluster: transitive
+ *  chaining over consecutive short edges can span a whole borough, and a
+ *  borough-scale box's demand statistic is then dominated by its tightest
+ *  pairs, pricing a giant expansion for a local problem. Oversized
+ *  components decompose into one padded box PER SHORT EDGE; the clip-apart
+ *  merge de-overlaps them (and its heavy-overlap rule re-unions genuinely
+ *  shared spots), so survival demand stays local and honest.
+ *  Deterministic: plain array iteration + arithmetic. */
+export function findContractionBoxes(g: BoxGraph, threshold: number, maxSpan?: number): DenseBox[] {
+  const span = maxSpan ?? threshold * 6;
   const parent = g.nodes.map((_, i) => i);
   const find = (i: number): number => {
     while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
     return i;
   };
   const touched = new Uint8Array(g.nodes.length);
+  const shortEdges: [number, number][] = [];
   for (const [a, b] of g.edges) {
     if (edgeLen(g, a, b) >= threshold) continue;
+    shortEdges.push([a, b]);
     touched[a] = 1;
     touched[b] = 1;
     const ra = find(a), rb = find(b);
@@ -133,9 +146,21 @@ export function findContractionBoxes(g: BoxGraph, threshold: number): DenseBox[]
   }
   const pad = threshold / 2;
   const boxes: DenseBox[] = [];
-  for (const b of byRoot.values()) {
+  const oversized = new Set<number>();
+  for (const [root, b] of byRoot) {
     if (b.n < 2) continue;
+    if (b.x1 - b.x0 > span || b.y1 - b.y0 > span) { oversized.add(root); continue; }
     boxes.push({ x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad });
+  }
+  if (oversized.size) {
+    for (const [a, b] of shortEdges) {
+      if (!oversized.has(find(a))) continue;
+      const pa = g.nodes[a], pb = g.nodes[b];
+      boxes.push({
+        x0: Math.min(pa[0], pb[0]) - pad, y0: Math.min(pa[1], pb[1]) - pad,
+        x1: Math.max(pa[0], pb[0]) + pad, y1: Math.max(pa[1], pb[1]) + pad,
+      });
+    }
   }
   return boxes;
 }
@@ -176,6 +201,10 @@ export interface PairTarget { a: number; b: number; required: number }
 export interface DemandBox extends DenseBox {
   kind: BoxKind;
   pairs: PairTarget[];
+  /** Normalized density (density boxes only): linear in the map's own range
+   *  between the discovery cutoff (0) and the peak (1). The aesthetic demand
+   *  term is `1 + (userMult - 1) * aes`; survival demand ignores it. */
+  aes?: number;
 }
 
 export interface CapsuleOracleOptions {
@@ -268,9 +297,27 @@ export function findCapsuleBoxes(
     }
     e.pairs.push(t);
   }
+  // LOCALITY BOUND (mirrors findContractionBoxes): transitive pair chaining
+  // can span a borough; a borough-scale capsule box then prices its whole
+  // region by its tightest pair. Components wider than a few pair thresholds
+  // decompose into one padded box PER VIOLATING PAIR; the clip-apart merge
+  // de-overlaps them and re-unions the genuinely shared spots.
+  const maxSpan = 4 * cell;
   const out: DemandBox[] = [];
   for (const e of byRoot.values()) {
-    out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+    if (e.x1 - e.x0 <= maxSpan && e.y1 - e.y0 <= maxSpan) {
+      out.push({ x0: e.x0 - e.pad, y0: e.y0 - e.pad, x1: e.x1 + e.pad, y1: e.y1 + e.pad, kind: 'capsule', pairs: e.pairs });
+      continue;
+    }
+    for (const t of e.pairs) {
+      const pa = g.nodes[t.a], pb = g.nodes[t.b];
+      const pad = Math.max(need(t.a), need(t.b));
+      out.push({
+        x0: Math.min(pa[0], pb[0]) - pad, y0: Math.min(pa[1], pb[1]) - pad,
+        x1: Math.max(pa[0], pb[0]) + pad, y1: Math.max(pa[1], pb[1]) + pad,
+        kind: 'capsule', pairs: [t],
+      });
+    }
   }
   return out;
 }
@@ -532,35 +579,93 @@ function nnDirWeights(idx: readonly number[], g: BoxGraph, ctx: DirContext): { w
   return { wx, wy };
 }
 
-/** Nesting-aware merge (spec §3). Same-kind overlaps union to their bbox. A box
- *  fully CONTAINED in a different-kind box NESTS: both survive. The summed
- *  per-axis pushes stay monotone, so compounding is fold-free, and the inner
- *  push only adds a rigid translation to the outer far field. Cross-kind
- *  PARTIAL overlap unions conservatively (kind precedence capsule > contraction
- *  > density; pairs concatenate) so partial pushes never double-stack.
- *  Deterministic fixpoint scan. */
+/** Overlap resolution WITHOUT union growth (spec 2026-07-18): a box never
+ *  grows by merging, so the chain reactions that used to build map-core mega
+ *  boxes (dozens of padded boxlets bbox-unioning into one) are structurally
+ *  impossible. Rules, in order:
+ *  - CONTAINMENT across kinds NESTS: both survive (the inner push adds a
+ *    rigid translation to the outer far field; summed pushes stay monotone).
+ *  - Same-kind overlap covering at least HALF the smaller box unions as
+ *    genuinely-the-same-region (bounded growth: no chaining, since the union
+ *    of a >=50%-overlapping pair stays comparable to the larger box).
+ *  - Every other overlap CLIPS the lower-precedence box out of the overlap
+ *    along its axis of least area loss (kind precedence capsule > contraction
+ *    > density; equal precedence: the smaller box yields). Boxes end
+ *    DISJOINT, so partial pushes never double-stack. A clip whose remainder
+ *    is a sub-pixel sliver drops the box and migrates its pair targets to
+ *    the box that clipped it.
+ *  Input is canonically pre-sorted, so the fixpoint result is independent of
+ *  the callers' assembly order. Deterministic scan; arithmetic only. */
 export function mergeDemandBoxes(boxes: DemandBox[]): DemandBox[] {
-  const out = boxes.map((b) => ({ ...b, pairs: [...b.pairs] }));
-  const contains = (a: DemandBox, b: DemandBox): boolean =>
-    b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
   const rank: Record<BoxKind, number> = { density: 0, contraction: 1, capsule: 2, corridor: 3 };
-  let merged = true;
-  while (merged) {
-    merged = false;
+  const area = (b: DemandBox): number => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);
+  const out = boxes
+    .map((b) => ({ ...b, pairs: [...b.pairs] }))
+    .sort((a, b) =>
+      (rank[b.kind] - rank[a.kind]) || (area(b) - area(a)) ||
+      (a.x0 - b.x0) || (a.y0 - b.y0) || (a.x1 - b.x1) || (a.y1 - b.y1));
+  const MIN_EXTENT = 1; // px: a thinner clip remainder is a sliver, not a box
+  let changed = true;
+  while (changed) {
+    changed = false;
     outer: for (let i = 0; i < out.length; i++)
       for (let j = i + 1; j < out.length; j++) {
         const a = out[i], b = out[j];
-        const overlap = a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
-        if (!overlap) continue;
-        if (a.kind !== b.kind && (contains(a, b) || contains(b, a))) continue; // nest
-        out[i] = {
-          x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
-          x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
-          kind: rank[a.kind] >= rank[b.kind] ? a.kind : b.kind,
-          pairs: [...a.pairs, ...b.pairs],
+        const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+        const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+        if (ox <= 1e-6 || oy <= 1e-6) continue; // disjoint (touching edges are fine)
+        const aInB = a.x0 >= b.x0 - 1e-6 && a.x1 <= b.x1 + 1e-6 && a.y0 >= b.y0 - 1e-6 && a.y1 <= b.y1 + 1e-6;
+        const bInA = b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
+        if (a.kind !== b.kind && (aInB || bInA)) continue; // nest
+        const small = area(a) <= area(b) ? a : b;
+        // Same-region union: heavy overlap AND a union bbox no bigger than
+        // the pair's combined footprint. The area bound stops 2D chaining
+        // (a big box strip-overlapping a boxlet unions with corner waste and
+        // is rejected into a clip), while collinear corridor runs — whose
+        // union is waste-free — still coalesce into one coherent box.
+        const ux0 = Math.min(a.x0, b.x0), uy0 = Math.min(a.y0, b.y0);
+        const ux1 = Math.max(a.x1, b.x1), uy1 = Math.max(a.y1, b.y1);
+        const unionArea = (ux1 - ux0) * (uy1 - uy0);
+        if (a.kind === b.kind && (aInB || bInA ||
+            (ox * oy >= 0.5 * area(small) && unionArea <= area(a) + area(b)))) {
+          const aes = Math.max(a.aes ?? 0, b.aes ?? 0);
+          out[i] = {
+            ...a,
+            x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+            x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+            pairs: [...a.pairs, ...b.pairs],
+            ...(aes > 0 ? { aes } : {}),
+          };
+          out.splice(j, 1);
+          changed = true;
+          break outer;
+        }
+        // clip the loser out of the overlap
+        const loserIsA =
+          rank[a.kind] !== rank[b.kind] ? rank[a.kind] < rank[b.kind]
+          : area(a) !== area(b) ? area(a) < area(b)
+          : false; // tie: the later scan position (j) yields
+        const loser = loserIsA ? a : b;
+        const winner = loserIsA ? b : a;
+        // candidate clips: slide one loser edge to the winner's boundary;
+        // keep the remainder with the most area
+        let bx0 = loser.x0, by0 = loser.y0, bx1 = loser.x1, by1 = loser.y1;
+        let bestA = -1;
+        const consider = (x0: number, y0: number, x1: number, y1: number) => {
+          const ca = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+          if (ca > bestA) { bestA = ca; bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; }
         };
-        out.splice(j, 1);
-        merged = true;
+        if (loser.x0 < winner.x0) consider(loser.x0, loser.y0, winner.x0, loser.y1);
+        if (loser.x1 > winner.x1) consider(winner.x1, loser.y0, loser.x1, loser.y1);
+        if (loser.y0 < winner.y0) consider(loser.x0, loser.y0, loser.x1, winner.y0);
+        if (loser.y1 > winner.y1) consider(loser.x0, winner.y1, loser.x1, loser.y1);
+        if (bestA < 0 || bx1 - bx0 < MIN_EXTENT || by1 - by0 < MIN_EXTENT) {
+          winner.pairs.push(...loser.pairs);
+          out.splice(out.indexOf(loser), 1);
+        } else {
+          loser.x0 = bx0; loser.y0 = by0; loser.x1 = bx1; loser.y1 = by1;
+        }
+        changed = true;
         break outer;
       }
   }
@@ -722,7 +827,7 @@ export function splitMixedBoxes(boxes: DemandBox[], g: BoxGraph, pad: number): D
           // over the halo. Expansion regrows cores over each other, and
           // recursion then re-decomposes the overlap into a pile of
           // double-stacked near-copies.
-          const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [] }));
+          const children: DemandBox[] = cores.map((cb) => ({ ...cb, kind: b.kind, pairs: [], ...(b.aes !== undefined ? { aes: b.aes } : {}) }));
           const orphans: DemandBox[] = [];
           for (const t of b.pairs) {
             const pa = g.nodes[t.a], pb = g.nodes[t.b];
@@ -769,13 +874,17 @@ type FindDenseBoxesOptions = DensityWarp2DOptionsLike & {
 };
 
 /** Find the densest regions as axis-aligned bounding boxes (pixel coords):
- *  threshold the smoothed excess-density grid at the pct-th percentile, then
- *  bound each 4-connected component of above-cutoff cells. */
+ *  threshold the smoothed excess-density grid at the cutoff (frac of peak),
+ *  then bound each 4-connected component of above-cutoff cells. Each box
+ *  carries `d`, its mean excess normalized LINEARLY between the cutoff and
+ *  the map's peak (0 = at the cutoff, 1 = the densest core): the aesthetic
+ *  demand scales with d, so a shallow-range map warps barely at all while
+ *  the true core of a dense map earns the full user multiplier. */
 export function findDenseBoxes(
   samples: readonly Pixel[],
   box: WarpBox,
   opts: FindDenseBoxesOptions = {},
-): DenseBox[] {
+): Array<DenseBox & { d: number }> {
   if (samples.length === 0) return [];
   // maxScale 1e9 = NO clip: the density's wide dynamic range is exactly the
   // signal we threshold on. densityGrid2D's default clip (8) would flatten a
@@ -797,13 +906,15 @@ export function findDenseBoxes(
   for (let i = 0; i < B * B; i++) dense[i] = e[i] >= cutoff && e[i] > 0 ? 1 : 0;
 
   const seen = new Uint8Array(B * B);
-  const boxes: DenseBox[] = [];
+  const boxes: Array<DenseBox & { d: number }> = [];
   for (let start = 0; start < B * B; start++) {
     if (!dense[start] || seen[start]) continue;
     let minx = B;
     let miny = B;
     let maxx = -1;
     let maxy = -1;
+    let esum = 0;
+    let ecnt = 0;
     const stack: number[] = [start];
     seen[start] = 1;
     while (stack.length) {
@@ -814,19 +925,139 @@ export function findDenseBoxes(
       if (cx > maxx) maxx = cx;
       if (cy < miny) miny = cy;
       if (cy > maxy) maxy = cy;
+      esum += e[c];
+      ecnt++;
       if (cx > 0 && dense[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; stack.push(c - 1); }
       if (cx < B - 1 && dense[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; stack.push(c + 1); }
       if (cy > 0 && dense[c - B] && !seen[c - B]) { seen[c - B] = 1; stack.push(c - B); }
       if (cy < B - 1 && dense[c + B] && !seen[c + B]) { seen[c + B] = 1; stack.push(c + B); }
     }
-    boxes.push({ x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch });
+    // normalized density: mean component excess, linear between the cutoff
+    // (d=0) and the peak (d=1); a flat map (emax ~ cutoff) yields d=0.
+    const span = emax - cutoff;
+    const d = span > 1e-9 ? Math.min(1, Math.max(0, (esum / ecnt - cutoff) / span)) : 0;
+    boxes.push({ x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch, d });
   }
   return boxes;
+}
+
+/** Deliberate EMPHASIS boxes via steepest-ascent watershed (aesthetic warp):
+ *  a few meaningful regions over the density peaks, instead of findDenseBoxes'
+ *  single global-cutoff blob. Each above-floor grid cell is assigned to the
+ *  peak reached by steepest ascent (value, then index tie-break), which
+ *  partitions the field at its true ridge lines — no basin can contain another
+ *  peak (the downward-flood alternative leaks over saddles and rebuilds the map
+ *  box). Each basin is trimmed to its own high ground (>= frac x its OWN peak),
+ *  dropped if too small, and the top-K by peak height survive. `d` normalizes
+ *  against the basin's OWN peak so secondary cores get comparable emphasis.
+ *  Deterministic: fixed scan order, total-order tie-breaks, sqrt only. */
+export function findEmphasisBoxes(
+  samples: readonly Pixel[],
+  box: WarpBox,
+  opts: FindDenseBoxesOptions & { emphasisK?: number; floorFrac?: number; minCells?: number; emphasisSigma?: number } = {},
+): Array<DenseBox & { d: number }> {
+  if (samples.length === 0) return [];
+  // Sharper smoothing than the default 2.5 so distinct crowded sub-regions
+  // (boroughs, districts) survive as SEPARATE peaks for the watershed to
+  // partition; the broad default sigma merges them into one dominant peak
+  // (the single-blob failure). Tunable via emphasisSigma.
+  const sigmaBins = opts.emphasisSigma ?? 1.2;
+  const grid = densityGrid2D(samples, box, { ...opts, sigmaBins, maxScale: 1e9 });
+  const { e, bins: B, x0, y0, cw, ch } = grid;
+  const frac = opts.frac ?? 0.4;
+  const floorFrac = opts.floorFrac ?? 0.1;
+  const K = Math.max(1, opts.emphasisK ?? 6);
+  const minCells = Math.max(1, opts.minCells ?? 4);
+  const N = B * B;
+
+  let emax = 0;
+  for (let i = 0; i < N; i++) if (e[i] > emax) emax = e[i];
+  if (!(emax > 0)) return [];
+  const floor = floorFrac * emax;
+
+  // steepest-ascent "up" pointer per above-floor cell: its strictly-largest
+  // neighbour (value, then index), or self if it is the local max (a peak).
+  const up = new Int32Array(N).fill(-1);
+  const active = (i: number): boolean => e[i] >= floor && e[i] > 0;
+  for (let i = 0; i < N; i++) {
+    if (!active(i)) continue;
+    const cx = i % B, cy = (i / B) | 0;
+    let best = i, bestV = e[i];
+    for (let dy = -1; dy <= 1; dy++) {
+      const ny = cy + dy;
+      if (ny < 0 || ny >= B) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = cx + dx;
+        if ((dx === 0 && dy === 0) || nx < 0 || nx >= B) continue;
+        const j = ny * B + nx;
+        // strict lexicographic (value, then index) so a flat plateau resolves
+        // to its single lowest-index cell (deterministic, one peak per plateau).
+        if (e[j] > bestV || (e[j] === bestV && j < best)) { best = j; bestV = e[j]; }
+      }
+    }
+    up[i] = best;
+  }
+  // follow up-pointers to the peak (self-pointer), with path compression.
+  const peakOf = new Int32Array(N).fill(-1);
+  const findPeak = (i: number): number => {
+    let r = i;
+    while (up[r] !== r && up[r] !== -1) r = up[r];
+    let c = i;
+    while (c !== r && up[c] !== -1) { const n = up[c]; up[c] = r; c = n; }
+    return r;
+  };
+  const byPeak = new Map<number, number[]>();
+  for (let i = 0; i < N; i++) {
+    if (!active(i)) continue;
+    const p = findPeak(i);
+    peakOf[i] = p;
+    let arr = byPeak.get(p);
+    if (!arr) { arr = []; byPeak.set(p, arr); }
+    arr.push(i);
+  }
+
+  interface Basin { peak: number; peakV: number; x0: number; y0: number; x1: number; y1: number; d: number; n: number }
+  const basins: Basin[] = [];
+  for (const [peak, cells] of byPeak) {
+    const peakV = e[peak];
+    const cutoff = Math.max(1e-9, frac * peakV);
+    let minx = B, miny = B, maxx = -1, maxy = -1, esum = 0, n = 0;
+    for (const c of cells) {
+      if (e[c] < cutoff) continue; // trim to this basin's own high ground
+      const cx = c % B, cy = (c / B) | 0;
+      if (cx < minx) minx = cx;
+      if (cx > maxx) maxx = cx;
+      if (cy < miny) miny = cy;
+      if (cy > maxy) maxy = cy;
+      esum += e[c];
+      n++;
+    }
+    if (n < minCells) continue;
+    const span = peakV - cutoff;
+    const d = span > 1e-9 ? Math.min(1, Math.max(0, (esum / n - cutoff) / span)) : 0;
+    basins.push({ peak, peakV, x0: x0 + minx * cw, y0: y0 + miny * ch, x1: x0 + (maxx + 1) * cw, y1: y0 + (maxy + 1) * ch, d, n });
+  }
+  // top-K by peak height (then index) — the deliberate-count knob.
+  basins.sort((a, b) => (b.peakV - a.peakV) || (a.peak - b.peak));
+  return basins.slice(0, K).map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, d: b.d }));
 }
 
 export interface DemandOptions extends DensityWarp2DOptionsLike {
   /** Density-oracle cutoff (fraction of peak), as findDenseBoxes. Default 0.4. */
   frac?: number;
+  /** Absolute margin cap (px) for distortion containment; Infinity = off. */
+  marginCap?: number;
+  /** Curvature bound for the margin floor (keeps the C2 bend gentle). */
+  curvBound?: number;
+  /** Emphasis-box count (steepest-ascent watershed top-K). Default 6. */
+  emphasisK?: number;
+  /** Emphasis floor: ignore cells below this fraction of the global peak. */
+  floorFrac?: number;
+  /** Emphasis smoothing (bins); sharper than the default so districts stay
+   *  separate peaks. */
+  emphasisSigma?: number;
+  /** Minimum basin size (cells) below which an emphasis region is dropped. */
+  minCells?: number;
   /** Saturation margin as a fraction of box half-extent. Default 1. */
   marginFrac?: number;
   /** Derive the octi cellSize estimate ĉ from a median edge length. Supplied by
@@ -842,11 +1073,21 @@ export interface DemandOptions extends DensityWarp2DOptionsLike {
   expandMax?: number;
   /** Max per-axis canvas growth; demand beyond it shrinks globally. Default 2.5. */
   maxGrowth?: number;
+  /** Percentage-of-max-saturation mode (0–1): the granted growth FACTOR is
+   *  this fraction of the max-saturation growth (the full demand's growth),
+   *  floored at identity — t=0.5 on a map that saturates at 4.64 grows
+   *  exactly 2.32; positions below 1/saturation are the identity. Overrides
+   *  maxGrowth when set (expandMax per-box safety still applies). */
+  growthPct?: number;
   /** Direction-intelligence amount, 0–1: how far each box's expansion is
    *  reallocated toward its crowded axis (boxCrowdAnisotropy). 0 = isotropic
    *  split, 1 = full reallocation. Default 1. Env OCTI_BOX_ANISO
    *  overrides for dev sweeps. */
   aniso?: number;
+  /** Enable the contraction (pinch-survival) oracle. Default OFF: the warp is
+   *  aesthetic and pinches are the draw's job. Overrides the OCTI_BOX_CONTRACTION
+   *  env. Unit tests of the contraction pipeline set it true explicitly. */
+  contraction?: boolean;
   /** Capsule-demand oracle inputs. Optional: omitted by unit-level callers
    *  and dev tools that have no marker model, in which case the oracle
    *  doesn't run. */
@@ -871,15 +1112,16 @@ export interface DemandWarpResult {
   growthY: number;
 }
 
-/** Per-box demand: the expansion that lifts the box's median node gap to the
- *  demand target `need` (= ĉ/2 · slack), times the user's aesthetic multiplier.
- *  A box whose gaps already clear the target gets ~userMult (aesthetics only). */
+/** Per-box SURVIVAL demand: the expansion that lifts the box's median node
+ *  gap to the demand target `need` (= ĉ/2 · slack). Absolute and
+ *  slider-independent: the user multiplier no longer scales survival (the
+ *  caller composes the aesthetic term separately, from the box's normalized
+ *  density). A box whose gaps already clear the target gets 1 (no demand). */
 function boxDemand(
   b: DenseBox,
   nodes: readonly Pixel[],
   gaps: readonly number[],
   need: number,
-  userMult: number,
   expandMax: number,
 ): number {
   const inside: number[] = [];
@@ -888,10 +1130,10 @@ function boxDemand(
     if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 && Number.isFinite(gaps[i]) && gaps[i] > 0)
       inside.push(gaps[i]);
   }
-  if (inside.length === 0) return Math.min(expandMax, Math.max(1, userMult));
+  if (inside.length === 0) return 1;
   inside.sort((x, y) => x - y);
   const gMed = inside[inside.length >> 1];
-  return Math.min(expandMax, Math.max(1, userMult * Math.max(1, need / gMed)));
+  return Math.min(expandMax, Math.max(1, need / gMed));
 }
 
 /** Build the per-axis saturating push warp for `boxes` with PER-BOX strengths.
@@ -905,10 +1147,16 @@ function buildWarpFromBoxes(
   strengths: readonly [number, number][], // per box: [sx, sy] = per-axis expand - 1
   box: WarpBox,
   marginFrac: number,
-  maxGrowth: number,
+  maxGrowth: number | [number, number], // scalar, or per-axis caps [capX, capY]
   out?: { boxes?: DenseBox[] },
   perAxisMargin = false, // aniso path: each axis's ramp scales with ITS half-extent
+  // Distortion containment: cap the margin at an absolute width so a large
+  // emphasis box stops bleeding its transition proportionally far into faithful
+  // geography, and FLOOR it so the (C2, corner-free) bend stays gentle — peak
+  // curvature 1.875*s/m under `curv`. cap=Infinity/curv=Infinity = off.
+  marginCapSpec: { cap: number; curv: number } = { cap: Infinity, curv: Infinity },
 ): DemandWarpResult {
+  const [capGx, capGy] = Array.isArray(maxGrowth) ? maxGrowth : [maxGrowth, maxGrowth];
   const identity: WarpFn = (p) => [p[0], p[1]];
   if (boxes.length === 0 || strengths.every(([sx, sy]) => sx === 0 && sy === 0)) {
     if (out) out.boxes = boxes.map((b) => ({ ...b }));
@@ -924,20 +1172,39 @@ function buildWarpFromBoxes(
     // stretch far into the neighbouring sub-box and washing the directions
     // back out. Per-axis margins keep each axis's ramp proportional to that
     // axis's own extent.
-    const m = Math.max(1, marginFrac * Math.max(hx, hy));
-    const mx = perAxisMargin ? Math.max(1, marginFrac * hx) : m;
-    const my = perAxisMargin ? Math.max(1, marginFrac * hy) : m;
-    return { cx, cy, hx, hy, mx, my, sx: strengths[i][0], sy: strengths[i][1] };
+    const sx = strengths[i][0], sy = strengths[i][1];
+    // margin = the proportional width, CAPPED at marginCapSpec.cap (contain
+    // distortion), FLOORED so peak curvature 1.875*s/m stays under
+    // marginCapSpec.curv (keep the C2 bend gentle) and at 1px.
+    const cap = marginCapSpec.cap, curv = marginCapSpec.curv;
+    const capped = (prop: number, s: number): number => {
+      const curvFloor = Number.isFinite(curv) ? (1.875 * Math.abs(s)) / curv : 0;
+      return Math.max(1, curvFloor, Math.min(prop, cap));
+    };
+    const propShared = marginFrac * Math.max(hx, hy);
+    const m = capped(propShared, Math.max(Math.abs(sx), Math.abs(sy)));
+    const mx = perAxisMargin ? capped(marginFrac * hx, sx) : m;
+    const my = perAxisMargin ? capped(marginFrac * hy, sy) : m;
+    return { cx, cy, hx, hy, mx, my, sx, sy };
   });
-  // Smooth saturating odd-symmetric push, per-box strength s (slope in [0,1]
-  // ⇒ each s·push term is monotone ⇒ the sum is monotone per axis ⇒
-  // fold-free, det >= 1).
+  // Smooth saturating odd-symmetric push, per-box strength s. C2-CONTINUOUS
+  // (no-coastline-kinks invariant): the margin ramps the SLOPE with a
+  // smootherstep, slope(u) = 1 - (6u^5 - 15u^4 + 10u^3), u = (a-h)/m. The push
+  // is its integral, p = h + m*(u - 2.5u^4 + 3u^5 - u^6), so slope'(0)=slope'(1)=0
+  // — curvature matches the flat regions on both sides and there is no corner at
+  // any margin width (the old a-(a-h)^2/(2m) had a LINEAR slope ramp: curvature
+  // jumped by s/m at both ends = the kink). slope in [0,1] keeps each s*push
+  // monotone (fold-free, det>=1), and the gain over the margin is still exactly
+  // m/2 (integral of a symmetric smootherstep is 1/2), so far-field displacement
+  // and the growth/throttle math are unchanged. Horner, no Math.pow (cross-V8).
   const push = (t: number, h: number, m: number): number => {
     const a = t < 0 ? -t : t;
     let p: number;
     if (a <= h) p = a;
-    else if (a <= h + m) { const u = a - h; p = a - (u * u) / (2 * m); }
-    else p = h + m / 2;
+    else if (a <= h + m) {
+      const u = (a - h) / m;
+      p = h + m * u * (1 + u * u * u * (-2.5 + u * (3 - u)));
+    } else p = h + m / 2;
     return t < 0 ? -p : p;
   };
   const raw = (px: number, py: number): Pixel => {
@@ -971,15 +1238,15 @@ function buildWarpFromBoxes(
   let { xl, xr, yt, yb } = corners();
   const rawGx = (xr - xl) / W;
   const rawGy = (yb - yt) / H;
-  if (rawGx > maxGrowth && rawGx > 1) {
-    const lx = (maxGrowth - 1) / (rawGx - 1);
+  if (rawGx > capGx && rawGx > 1) {
+    const lx = (Math.max(1, capGx) - 1) / (rawGx - 1);
     for (const b of bs) b.sx *= lx;
   }
-  if (rawGy > maxGrowth && rawGy > 1) {
-    const ly = (maxGrowth - 1) / (rawGy - 1);
+  if (rawGy > capGy && rawGy > 1) {
+    const ly = (Math.max(1, capGy) - 1) / (rawGy - 1);
     for (const b of bs) b.sy *= ly;
   }
-  if (rawGx > maxGrowth || rawGy > maxGrowth) ({ xl, xr, yt, yb } = corners());
+  if (rawGx > capGx || rawGy > capGy) ({ xl, xr, yt, yb } = corners());
   const growthX = (xr - xl) / W;
   const growthY = (yb - yt) / H;
   const warp: WarpFn = (p) => {
@@ -1022,9 +1289,33 @@ export function buildDemandBoxWarp(
 
   const medLen = medianEdgeLenPx(g);
   const cell = opts.cellFromMedLen(medLen);
-  const density = samples.length ? findDenseBoxes(samples, box, opts) : [];
-  const contraction = findContractionBoxes(g, (cell / 2) * safety);
+  const marginCapSpec = { cap: opts.marginCap ?? Infinity, curv: opts.curvBound ?? Infinity };
+  // The warp is an AESTHETIC feature: give crowded areas room to breathe and
+  // emphasize important areas, with FEW meaningful boxes. Its two aesthetic
+  // drivers are the DENSITY oracle (line-weighted station crowding — captures
+  // both crowded regions and important hubs) and the CAPSULE oracle (spreading
+  // colliding interchanges — emphasis on the important interchange areas).
+  // OCTI_BOX_DENSITY=0 drops density (diagnostic).
+  const useDensity = envStr('OCTI_BOX_DENSITY') !== '0';
+  // Empty padding remnants and lone stops warp nothing a marker needs; drop
+  // post-merge boxes holding fewer than 2 stations. OCTI_BOX_DROP_TINY=0 keeps
+  // the legacy behavior.
+  const dropTiny = envStr('OCTI_BOX_DROP_TINY') !== '0';
+  // The CONTRACTION oracle is pure pinch-survival: it pre-spread every sub-8px
+  // edge so octi wouldn't contract it. That is the DRAW's job now (a draw must
+  // render any geometry cleanly; loops/broken-contiguity from a pinch are draw
+  // bugs, not warp concerns) — and its ~60 tiny per-pinch boxes were exactly
+  // the swarm that undermined the aesthetic goal. DEFAULT OFF. OCTI_BOX_CONTRACTION=1
+  // (or 'all') re-enables it for comparison; the draw issues its removal
+  // surfaces are tracked as a draw-robustness backlog, not fixed here.
+  const contractionEnv = envStr('OCTI_BOX_CONTRACTION');
+  const useContraction = opts.contraction ?? (contractionEnv === '1' || contractionEnv === 'all');
+  // The density driver is the steepest-ascent EMPHASIS watershed (few
+  // deliberate regions), not the single-blob findDenseBoxes. findDenseBoxes
+  // stays as the splitMixedBoxes decomposition primitive.
+  const density = (useDensity && samples.length) ? findEmphasisBoxes(samples, box, opts) : [];
   const capsule = opts.capsule ? findCapsuleBoxes(g, opts.capsule.lineCounts, opts.capsule) : [];
+  const contraction = useContraction ? findContractionBoxes(g, (cell / 2) * safety) : [];
   // The corridor oracle ignores passes inside the contraction threshold (those
   // corridors get welded or contracted into ONE drawn corridor downstream) and
   // pairs whose paint a single grid cell already absorbs.
@@ -1035,16 +1326,35 @@ export function buildDemandBoxWarp(
         minReq: Math.max(opts.corridor.minReq ?? 0, cell * 1.25),
       })
     : [];
-  const merged = mergeDemandBoxes([
-    ...density.map((b) => ({ ...b, kind: 'density' as const, pairs: [] })),
+  let merged = mergeDemandBoxes([
+    ...density.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, kind: 'density' as const, pairs: [], aes: b.d })),
     ...contraction.map((b) => ({ ...b, kind: 'contraction' as const, pairs: [] })),
     ...capsule,
     ...corridor,
   ]);
+  if (dropTiny) {
+    // A box earns its push only if it actually holds stations to spread: count
+    // the graph nodes inside and drop any with fewer than 2 (empty clip
+    // remnants, lone stops). Density boxes are exempt — their job is to dilate
+    // a REGION, not to separate a specific pair, so they legitimately span
+    // sparse ground between the cells that made them dense.
+    const nodesInBox = (b: DemandBox): number => {
+      let n = 0;
+      for (const p of g.nodes) {
+        if (p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 && ++n >= 2) break;
+      }
+      return n;
+    };
+    merged = merged.filter((b) => b.kind === 'density' || nodesInBox(b) >= 2);
+  }
   const need = (cell / 2) * slack;
-  // Direction intelligence step 1: break direction-mixed boxes into coherent
+  // Direction intelligence step 1: break direction-MIXED boxes into coherent
   // sub-boxes so each can take its room on its OWN crowded axis. anisoAmt 0
-  // leaves boxes unsplit.
+  // leaves boxes unsplit. Emphasis (density) boxes go through this too: the
+  // watershed already gives FEW deliberate basins, and splitMixedBoxes only
+  // splits a basin that is genuinely direction-mixed (a region with both N-S
+  // and E-W trunks), producing a couple of direction-coherent pieces — that is
+  // quality, not a swarm. A direction-coherent basin passes through whole.
   const boxes = anisoAmt > 0 ? splitMixedBoxes(merged, g, need / 2) : merged;
   probeBoxes(density, merged, boxes, g.nodes, (b) => boxCrowdAnisotropy(b, g));
   if (boxes.length === 0) {
@@ -1053,15 +1363,24 @@ export function buildDemandBoxWarp(
   }
 
   const gaps = nodeGaps(g);
-  let expands = boxes.map((b) => boxDemand(b, g.nodes, gaps, need, userMult, expandMax));
-  // Capsule pair targets seed on top of the contraction-floor demand: the
-  // expansion that lifts each pair to its required separation (× userMult).
+  // Demand = max(survival, aesthetics). Survival (need/gap, pair lifts) is
+  // absolute and granted at 1x at every slider position; the user multiplier
+  // scales ONLY the aesthetic term, linear in the box's normalized density
+  // (density boxes carry aes in [0,1]; oracle boxes carry none). A shallow
+  // density range or a slider at/below center leaves aesthetics at 1.
+  let expands = boxes.map((b) => {
+    const survival = boxDemand(b, g.nodes, gaps, need, expandMax);
+    const aesthetic = 1 + Math.max(0, userMult - 1) * (b.aes ?? 0);
+    return Math.min(expandMax, Math.max(survival, aesthetic));
+  });
+  // Capsule pair targets seed on top: the expansion that lifts each pair to
+  // its required separation (absolute, slider-independent).
   expands = expands.map((e, i) => {
     let seed = e; // (not `out`, which is the output-sink parameter used below)
     for (const t of boxes[i].pairs) {
       const pa = g.nodes[t.a], pb = g.nodes[t.b];
       const d = Math.sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]));
-      if (d > 0) seed = Math.max(seed, Math.min(expandMax, Math.max(1, userMult * Math.max(1, t.required / d))));
+      if (d > 0) seed = Math.max(seed, Math.min(expandMax, Math.max(1, t.required / d)));
     }
     return seed;
   });
@@ -1103,7 +1422,7 @@ export function buildDemandBoxWarp(
   // final build: demands = the warp we'd like, throttle = the warp we allow,
   // canvas = exactly the space the allowed warp produces.
   const oref: { boxes?: DenseBox[] } = out ?? {};
-  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
+  let result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0, marginCapSpec);
 
   // Refinement: expansion raises the global median edge length, so the real
   // post-warp contraction threshold is HIGHER than the pre-warp estimate the
@@ -1156,7 +1475,10 @@ export function buildDemandBoxWarp(
     // Previous secant point per box: the UNWARPED state (expand 1, input-space box).
     let prev = boxes.map((b, i) => evalBox(i, b, g.nodes, need));
     let ePrev = boxes.map(() => 1);
-    for (let pass = 0; pass < 4; pass++) {
+    // 6 passes (was 4): the per-pass raise is now bounded 1.5x, so a genuine
+    // deficit converges from below in a couple more steps instead of being
+    // cleared by a single overshooting jump.
+    for (let pass = 0; pass < 6; pass++) {
       const advected = g.nodes.map((p) => result.warp([p[0], p[1]]) as Pixel);
       const needAfter = (opts.cellFromMedLen(medianEdgeLenPx({ nodes: advected, edges: g.edges })) / 2) * slack;
       const now = boxes.map((_, i) => evalBox(i, oref.boxes![i], advected, needAfter));
@@ -1167,31 +1489,51 @@ export function buildDemandBoxWarp(
         // (the two 1e-9 guards below are just "<= 0 with an fp cushion";
         // scale-independent, since the guarded deltas are far above 1e-9
         // whenever a real step happened.)
+        // EVERY refinement raise is bounded to 1.5x per pass, and a raise is
+        // granted only on measured PROGRESS. The first-pass demand already
+        // encodes the measured need/gap ratios directly (pinned pairs seed at
+        // their true lift), so refinement only polishes against the post-warp
+        // state. The old behavior escalated on stalls; a box whose gap does
+        // not respond to its own expansion (a large cluster whose median
+        // inside edge lies along its weak axis) then ratcheted to the ceiling
+        // and the growth throttle renormalized the whole map onto the cap.
+        // Deficits that expansion provably cannot clear are ACCEPTED, not
+        // chased.
+        const step = (t: number): number => Math.min(expandMax, Math.min(e * 1.5, Math.max(e, t)));
         const de = e - ePrev[i];
-        if (de <= 1e-9) return Math.min(expandMax, (e * (needV + margin)) / gap); // no slope yet: proportional seed
+        if (de <= 1e-9) return step((e * (needV + margin)) / gap); // no slope yet: proportional seed
         const denom = (gap - prev[i].gap) - (needV - prev[i].need);
-        // denom <= 0: the secant's LOCAL affine model says the need rises at
-        // least as fast as this box's gap, but the push saturates: as e
-        // rises, straddling/outside edges stop stretching, the median stops
-        // climbing, and the gap catches up. Jump to the ceiling to exploit
-        // that saturation; keeping e instead leaves pinned clusters
-        // under-need while the raw-growth saving is negligible.
-        if (denom <= 1e-9) return expandMax;
-        const target = e + ((needV + margin - gap) * de) / denom;
-        return Math.min(expandMax, Math.max(e, target));
+        // denom <= 0: the need moved at least as fast as this box's gap. The
+        // push saturates as e rises (straddling edges stop stretching, the
+        // median stops climbing, the gap catches up), so a BOUNDED step
+        // toward that regime is warranted; the jump to the ceiling is not.
+        if (denom <= 1e-9) return step(expandMax);
+        return step(e + ((needV + margin - gap) * de) / denom);
       });
       // No progress: every box either cleared or sits saturated at the
       // ceiling, so another pass would rebuild bit-identically. Stop.
       if (eNext.every((e, i) => e === expands[i])) break;
       ePrev = expands; prev = now;
       expands = eNext;
-      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0);
+      result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0, marginCapSpec);
     }
   }
-  // The one and only capped build: throttle the solved demands to the allowed
+  // The one and only capped build. Percentage mode: the granted GROWTH
+  // FACTOR is t x the max-saturation growth (the full solved demand's
+  // growth), floored at identity — 50% of a map whose saturation renders at
+  // 4.64 is exactly 2.32. `result` still holds the last unthrottled build,
+  // so its growth IS the max saturation; the exact per-axis throttle lands
+  // the strengths on the target. Legacy mode throttles against the fixed
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
-  result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0);
+  if (opts.growthPct !== undefined) {
+    const t = Math.min(1, Math.max(0, opts.growthPct));
+    const capX = Math.max(1, t * result.growthX);
+    const capY = Math.max(1, t * result.growthY);
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, [capX, capY], oref, anisoAmt > 0, marginCapSpec);
+  } else {
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, maxGrowth, oref, anisoAmt > 0, marginCapSpec);
+  }
   if (out) { out.expands = expands; out.aniso = rs; }
 
   debugBoxWarp({

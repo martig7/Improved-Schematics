@@ -28,7 +28,7 @@ import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
-import { buildDemandBoxWarp, buildSepDemandBoxWarp, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
+import { buildDemandBoxWarp, buildSepDemandBoxWarp, medianEdgeLenPx, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP, regimeDivisor } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
@@ -680,6 +680,16 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
     if (typeof opts.boxGrowth === 'number' && Number.isFinite(opts.boxGrowth) && opts.boxGrowth >= 1) return opts.boxGrowth;
     return 2.5;
   })();
+  // Percentage-of-maximum mode: the Box warp slider grants a linear fraction
+  // of the map's full measured demand (0 = identity, 1 = all of it),
+  // bypassing the fixed growth cap. Absent on legacy saved options, which
+  // keep the cap semantics and replay unchanged. OCTI_BOX_PCT overrides.
+  const boxPct = (() => {
+    const pv = envNum('OCTI_BOX_PCT');
+    if (Number.isFinite(pv) && pv >= 0) return Math.min(1, pv);
+    if (typeof opts.boxPct === 'number' && Number.isFinite(opts.boxPct) && opts.boxPct >= 0) return Math.min(1, opts.boxPct);
+    return undefined;
+  })();
   // Per-station warp weight = (lines through it) × (local crowding):
   //  · LINE term dilates corridor-rich hubs (a West-Seattle fan needs room
   //    proportional to its line fan, not just its station count).
@@ -781,11 +791,38 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // enable for sweeps on maps with growth headroom.
   const corrMarginEnv = envNum('OCTI_CORR_MARGIN');
   const corrMargin = Number.isFinite(corrMarginEnv) ? corrMarginEnv : -1;
+  // Per-box expansion ceiling (densityBoxWarp expandMax, default 10). This is
+  // what defines the top of the percentage dial on dense maps: lower it to
+  // shrink what 100% saturation means. OCTI_BOX_EXPANDMAX overrides for sweeps.
+  const boxExpandMax = (() => {
+    const v = envNum('OCTI_BOX_EXPANDMAX');
+    return Number.isFinite(v) && v >= 1 ? v : undefined;
+  })();
+  // Emphasis-watershed knobs (aesthetic warp): K = how many crowded regions to
+  // emphasize; floorFrac = drop cells below this fraction of the global peak
+  // (low so secondary boroughs survive the line-weighted peak towering over
+  // them); emphasisSigma = smoothing (sharper than the default so districts
+  // stay separate peaks). Env overrides for tuning.
+  const emphasisK = (() => { const v = envNum('OCTI_BOX_K'); return Number.isFinite(v) && v >= 1 ? v : 6; })();
+  const emphasisFloor = (() => { const v = envNum('OCTI_BOX_FLOOR'); return Number.isFinite(v) && v > 0 ? v : 0.02; })();
+  const emphasisSigma = (() => { const v = envNum('OCTI_BOX_SIGMA'); return Number.isFinite(v) && v > 0 ? v : 1.2; })();
+  // Distortion containment: cap the push margin at an absolute width (default a
+  // few cells) so large emphasis boxes stop bleeding distortion proportionally
+  // across faithful geography; curvBound floors it so the C2 bend stays gentle.
+  const marginCap = (() => { const v = envNum('OCTI_BOX_MARGIN_CAP'); return Number.isFinite(v) && v > 0 ? v : cellFromMedLen(medianEdgeLenPx(boxGraph)) * 4; })();
+  const curvBound = (() => { const v = envNum('OCTI_BOX_CURV'); return Number.isFinite(v) && v > 0 ? v : 0.06; })();
   const boxOpts = {
     frac: boxFrac,
     marginFrac: boxMargin,
     userMult: boxUserMult,
     maxGrowth: boxMaxGrowth,
+    emphasisK,
+    floorFrac: emphasisFloor,
+    emphasisSigma,
+    marginCap,
+    curvBound,
+    ...(boxPct !== undefined ? { growthPct: boxPct } : {}),
+    ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,
     capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
     ...(corrMargin >= 0

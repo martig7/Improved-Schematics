@@ -128,6 +128,13 @@ export interface SchematicOptions {
    *  boxes (broader warping); higher keeps only the densest cores, giving
    *  fewer/smaller boxes. Default 0.4. */
   boxFrac?: number;
+  /** Smoothed mode only: PERCENTAGE-of-maximum-warp mode (0–1). When set, the
+   *  box warp is granted as this linear fraction of the map's full measured
+   *  demand (survival plus full aesthetics): 0 = identity, 1 = the whole
+   *  demanded warp, and boxGrowth's fixed cap is bypassed (boxExpand still
+   *  sets the aesthetic ceiling inside the maximum). Absent = legacy cap
+   *  semantics, so saved maps replay unchanged. */
+  boxPct?: number;
   /** Smoothed mode only (BETA): build one graph node per member STATION of a
    *  multi-station complex (platforms at their real coordinates) instead of one
    *  node per station group. Parallel trunks through a complex stay

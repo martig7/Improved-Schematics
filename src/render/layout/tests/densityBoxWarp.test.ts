@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDenseBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, findCorridorBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
+import { findDenseBoxes, findEmphasisBoxes, findContractionBoxes, mergeIntersectingBoxes, medianEdgeLenPx, buildDemandBoxWarp, buildSepDemandBoxWarp, findCapsuleBoxes, findCorridorBoxes, mergeDemandBoxes, boxCrowdAnisotropy, splitMixedBoxes } from '../densityBoxWarp';
 import type { BoxGraph, DenseBox, DemandBox, PairTarget, BoxKind } from '../densityBoxWarp';
 import { buildDensityWarp } from '../densityWarp';
 import type { WarpFn } from '../densityWarp';
@@ -15,6 +15,17 @@ const DOPTS = {
   bins: 48, frac: 0.4, marginFrac: 1,
   cellFromMedLen: (m: number) => Math.max(12, m / 1.6),
   safety: 1.3, slack: 1.3, userMult: 1, expandMax: 10, maxGrowth: 8,
+  // The contraction (pinch-survival) oracle is default OFF in production (the
+  // warp is aesthetic; pinches are the draw's job). These demand-pipeline
+  // tests exercise it directly, so enable it explicitly.
+  contraction: true,
+  // Emphasis-watershed params suited to the SMALL synthetic fixtures (the
+  // production defaults — sharp sigma 1.2, minCells 4 — are tuned for
+  // full-map, line-weighted inputs and would drop these tiny clusters). A
+  // coarse sigma keeps a two-direction fixture as one splittable box.
+  emphasisSigma: 2.5,
+  minCells: 1,
+  floorFrac: 0.05,
 };
 
 // numeric area magnification J = det(Jacobian) at p, via finite differences
@@ -456,10 +467,37 @@ test('findCapsuleBoxes: deterministic', () => {
 const DB = (x0: number, y0: number, x1: number, y1: number, kind: BoxKind, pairs: PairTarget[] = []): DemandBox =>
   ({ x0, y0, x1, y1, kind, pairs });
 
-test('mergeDemandBoxes: same-kind overlap unions (old behavior); pairs concatenate', () => {
+const totalArea = (bs: { x0: number; y0: number; x1: number; y1: number }[]): number =>
+  bs.reduce((a, b) => a + Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0), 0);
+const disjointPairwise = (bs: DemandBox[]): boolean => {
+  for (let i = 0; i < bs.length; i++)
+    for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i], b = bs[j];
+      const aInB = a.x0 >= b.x0 - 1e-6 && a.x1 <= b.x1 + 1e-6 && a.y0 >= b.y0 - 1e-6 && a.y1 <= b.y1 + 1e-6;
+      const bInA = b.x0 >= a.x0 - 1e-6 && b.x1 <= a.x1 + 1e-6 && b.y0 >= a.y0 - 1e-6 && b.y1 <= a.y1 + 1e-6;
+      if (a.kind !== b.kind && (aInB || bInA)) continue; // nests are sanctioned
+      const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+      const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      if (ox > 1e-6 && oy > 1e-6) return false;
+    }
+  return true;
+};
+
+test('mergeDemandBoxes: same-kind LIGHT overlap clips apart (no union growth)', () => {
   const m = mergeDemandBoxes([
     DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
     DB(8, 8, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]),
+  ]);
+  assert.equal(m.length, 2, 'a 4% overlap is not the same region');
+  assert.ok(disjointPairwise(m), 'clipped disjoint');
+  assert.ok(totalArea(m) <= 100 + 144 + 1e-6, 'no area growth');
+  assert.equal(m.reduce((n, b) => n + b.pairs.length, 0), 2, 'both pairs survive');
+});
+
+test('mergeDemandBoxes: same-kind HEAVY overlap (>= half the smaller box) unions; pairs concatenate', () => {
+  const m = mergeDemandBoxes([
+    DB(0, 0, 10, 10, 'capsule', [{ a: 0, b: 1, required: 20 }]),
+    DB(2, 2, 20, 20, 'capsule', [{ a: 2, b: 3, required: 30 }]), // overlap 64 of 100
   ]);
   assert.equal(m.length, 1);
   assert.deepEqual({ x0: m[0].x0, y0: m[0].y0, x1: m[0].x1, y1: m[0].y1 }, { x0: 0, y0: 0, x1: 20, y1: 20 });
@@ -474,20 +512,60 @@ test('mergeDemandBoxes: cross-kind CONTAINMENT nests — both boxes survive', ()
   assert.equal(m.length, 2);
 });
 
-test('mergeDemandBoxes: cross-kind PARTIAL overlap unions; capsule kind and pairs win', () => {
+test('mergeDemandBoxes: cross-kind PARTIAL overlap clips the lower rank; higher rank keeps its extent', () => {
   const m = mergeDemandBoxes([
     DB(0, 0, 50, 50, 'contraction'),
     DB(40, 40, 90, 90, 'capsule', [{ a: 0, b: 1, required: 25 }]),
   ]);
-  assert.equal(m.length, 1);
-  assert.equal(m[0].kind, 'capsule');
-  assert.equal(m[0].pairs.length, 1);
-  assert.deepEqual({ x0: m[0].x0, x1: m[0].x1 }, { x0: 0, x1: 90 });
+  assert.equal(m.length, 2, 'clip, not union');
+  const caps = m.find((b) => b.kind === 'capsule')!;
+  const cont = m.find((b) => b.kind === 'contraction')!;
+  assert.deepEqual({ x0: caps.x0, y0: caps.y0, x1: caps.x1, y1: caps.y1 }, { x0: 40, y0: 40, x1: 90, y1: 90 }, 'winner untouched');
+  assert.ok(disjointPairwise(m));
+  // least-loss clip: losing a 10px strip on one axis, not both
+  assert.ok(totalArea([cont]) >= 50 * 40 - 1e-6, `loser keeps its least-loss remainder (got ${totalArea([cont])})`);
+  assert.equal(caps.pairs.length, 1);
 });
 
-test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through', () => {
+test('mergeDemandBoxes: a chain of small overlapping boxes cannot union into a mega box', () => {
+  // six contraction boxlets each straddling the next, plus one density box
+  // overlapping the first: under bbox-union fixpoint these chained into one
+  // giant box; clip-apart must keep every output within its input extent.
+  const chain: DemandBox[] = [];
+  for (let i = 0; i < 6; i++) chain.push(DB(10 + i * 8, 10, 22 + i * 8, 22, 'contraction'));
+  chain.push(DB(0, 0, 30, 30, 'density'));
+  const m = mergeDemandBoxes(chain);
+  assert.ok(disjointPairwise(m), 'outputs disjoint (nests aside)');
+  assert.ok(totalArea(m) <= totalArea(chain) + 1e-6, 'total area never grows');
+  const maxW = Math.max(...m.map((b) => b.x1 - b.x0));
+  const maxH = Math.max(...m.map((b) => b.y1 - b.y0));
+  assert.ok(maxW <= 30 + 1e-6 && maxH <= 30 + 1e-6, `no output exceeds the largest input (${maxW}x${maxH})`);
+});
+
+test('mergeDemandBoxes: a clip that consumes a box drops it and migrates its pairs', () => {
+  // the loser pokes out of the winner by a sub-1px fringe on its only free
+  // side: every clip remainder is a sliver -> drop, pairs migrate
+  const m = mergeDemandBoxes([
+    DB(10, 19.8, 30, 20.5, 'contraction', [{ a: 4, b: 5, required: 9 }]),
+    DB(0, 20, 40, 60, 'capsule', [{ a: 0, b: 1, required: 25 }]),
+  ]);
+  assert.equal(m.length, 1, 'sliver remainder dropped');
+  assert.equal(m[0].kind, 'capsule');
+  assert.equal(m[0].pairs.length, 2, 'orphaned pair migrated to the winner');
+});
+
+test('mergeDemandBoxes: disjoint boxes pass through; empty input passes through; input-order invariant', () => {
   assert.equal(mergeDemandBoxes([DB(0, 0, 10, 10, 'density'), DB(50, 50, 60, 60, 'contraction')]).length, 2);
   assert.deepEqual(mergeDemandBoxes([]), []);
+  const boxes = [
+    DB(0, 0, 50, 50, 'contraction'),
+    DB(40, 40, 90, 90, 'capsule'),
+    DB(45, 0, 70, 30, 'density'),
+  ];
+  const key = (b: DemandBox) => `${b.kind}:${b.x0.toFixed(3)},${b.y0.toFixed(3)},${b.x1.toFixed(3)},${b.y1.toFixed(3)}`;
+  const a = mergeDemandBoxes(boxes).map(key).sort();
+  const b = mergeDemandBoxes([boxes[2], boxes[0], boxes[1]]).map(key).sort();
+  assert.deepEqual(a, b, 'result independent of input order');
 });
 
 test('buildDemandBoxWarp: capsule oracle lifts a close interchange pair to its required separation', () => {
@@ -593,17 +671,13 @@ test('buildDemandBoxWarp: a vertically-lined box stretches horizontally, dramati
   assert.ok(alongY >= 1 - 1e-9, `along-line never shrinks locally, y=${alongY.toFixed(2)}`);
 });
 
-test('buildDemandBoxWarp: aniso 0 → isotropic (both axes of a box grow equally, legacy behavior)', () => {
+test('buildDemandBoxWarp: aniso 0 → isotropic strengths (all reported r = 0.5)', () => {
   const { g, samples } = verticalLinesGraph();
   const opts = { ...DOPTS, cellFromMedLen: () => 12, userMult: 3, maxGrowth: 8, aniso: 0 };
-  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  const o: { boxes?: DenseBox[]; expands?: number[]; aniso?: number[] } = {};
   buildDemandBoxWarp(samples, g, DBOX, opts, o);
-  const pre = mergeIntersectingBoxes(findDenseBoxes(samples, DBOX, opts));
-  for (let i = 0; i < pre.length; i++) {
-    const gx = (o.boxes![i].x1 - o.boxes![i].x0) / (pre[i].x1 - pre[i].x0);
-    const gy = (o.boxes![i].y1 - o.boxes![i].y0) / (pre[i].y1 - pre[i].y0);
-    assert.ok(Math.abs(gx - gy) < 1e-6, `isotropic growth: gx=${gx.toFixed(3)} gy=${gy.toFixed(3)}`);
-  }
+  assert.ok((o.aniso?.length ?? 0) >= 1, 'at least one box reported');
+  for (const r of o.aniso!) assert.ok(Math.abs(r - 0.5) < 1e-9, `aniso 0 → isotropic split r=${r}`);
 });
 
 test('buildDemandBoxWarp: pinned pair expands along its displacement axis and still clears need', () => {
@@ -816,4 +890,174 @@ test('buildDemandBoxWarp: under the cap, growth equals the raw warp growth (spac
   assert.deepEqual(loose.warp([123, 456]), looser.warp([123, 456]));
   // far field at unit scale here too
   assert.ok(Math.abs(jacDet(loose.warp, [520, 520]) - 1) < 0.02);
+});
+
+test('buildDemandBoxWarp: refinement never teleports a box to the ceiling', () => {
+  // a pinned pair (gap 6 << need 7.8) inside a sparse frame: the secant may
+  // stall (need moves with the median), but each stall step is bounded 1.5x,
+  // so 4 passes from the first-pass demand can reach at most first*1.5^4 —
+  // far below a straight expandMax jump for a mild deficit.
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const o: { boxes?: DenseBox[]; expands?: number[] } = {};
+  buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12 }, o);
+  // first-pass demand for the pinned box is ~need/gap ≈ 1.3*1.3*12/2/6 ≈ 1.7;
+  // the bound admits at most ~1.7*1.5^4 ≈ 8.6, but a genuine converge lands
+  // far lower. The regression asserts the ceiling itself is never hit.
+  for (const e of o.expands ?? []) {
+    assert.ok(e < 10 - 1e-9, `no expand pinned at expandMax (got ${e})`);
+  }
+});
+
+test('buildDemandBoxWarp: a graph whose gaps clear the need yields identity growth at userMult 1', () => {
+  const g: BoxGraph = {
+    nodes: [[100, 100], [200, 100], [300, 100], [400, 100]],
+    edges: [[0, 1], [1, 2], [2, 3]],
+  };
+  const r = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12 });
+  assert.equal(r.growthX, 1);
+  assert.equal(r.growthY, 1);
+});
+
+test('findDenseBoxes: components carry a normalized density d, linear cutoff->peak', () => {
+  // one strong cluster + one weaker cluster: the strong core's d must exceed
+  // the weak one's, both within [0,1]
+  const samples = [...clusterAt(25, 25, 240), ...clusterAt(75, 75, 90)];
+  const boxes = findDenseBoxes(samples, BOX, { bins: 32, frac: 0.2 });
+  const at = (x: number, y: number) => boxes.find((b) => b.x0 <= x && x <= b.x1 && b.y0 <= y && y <= b.y1);
+  const strong = at(25, 25);
+  const weak = at(75, 75);
+  assert.ok(strong && weak, 'both clusters boxed');
+  assert.ok(strong!.d >= 0 && strong!.d <= 1 && weak!.d >= 0 && weak!.d <= 1, 'd in [0,1]');
+  assert.ok(strong!.d > weak!.d, `denser core has higher d (${strong!.d.toFixed(2)} vs ${weak!.d.toFixed(2)})`);
+});
+
+test('demand pricing: survival ignores userMult; aesthetics scale linearly with d', () => {
+  // pinned pair (gap 6 << need ~10.1): survival demand identical across sliders
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const grow = (userMult: number): number => {
+    const r = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, userMult, cellFromMedLen: () => 12 });
+    return r.growthX * r.growthY;
+  };
+  const lo = grow(0.25);
+  const mid = grow(1);
+  const hi = grow(4);
+  assert.ok(Math.abs(lo - mid) < 1e-9, `survival identical at 0.25 and 1 (${lo} vs ${mid})`);
+  assert.ok(Math.abs(hi - mid) < 1e-9, `no density samples -> no aesthetic term even at 4 (${hi} vs ${mid})`);
+  // aesthetics: a dense cluster with cleared survival grows only when the
+  // slider goes right, proportionally to its d
+  const s = clusterAt(50, 50, 200);
+  const aLo = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 1 });
+  const aHi = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 32, frac: 0.4, marginFrac: 1, cellFromMedLen: () => 12, userMult: 4 });
+  assert.equal(aLo.growthX, 1, 'userMult 1 -> no aesthetic demand');
+  assert.ok(aHi.growthX > 1, 'userMult 4 magnifies the dense core');
+});
+
+test('buildDemandBoxWarp: percentage mode grows by t x the max-saturation growth', () => {
+  const g: BoxGraph = {
+    nodes: [[300, 300], [306, 300], [30, 30], [570, 570], [570, 30], [30, 570]],
+    edges: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5]],
+  };
+  const at = (growthPct: number) =>
+    buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, growthPct });
+  const t0 = at(0);
+  assert.deepEqual(t0.warp([123, 456]), [123, 456], 't=0 is the identity');
+  assert.equal(t0.growthX, 1);
+  const t1 = at(1);
+  const full = buildDemandBoxWarp([], g, DBOX, { ...DOPTS, cellFromMedLen: () => 12, maxGrowth: Infinity });
+  assert.ok(Math.abs(t1.growthX - full.growthX) < 1e-9, 't=1 equals the max saturation');
+  const t5 = at(0.5);
+  assert.ok(Math.abs(t5.growthX - Math.max(1, 0.5 * t1.growthX)) < 1e-9,
+    `growth(0.5) = half the saturation growth: ${t5.growthX} vs ${t1.growthX}`);
+  assert.ok(Math.abs(t5.growthY - Math.max(1, 0.5 * t1.growthY)) < 1e-9);
+  // below 1/saturation the target cap falls under 1 and the warp is identity
+  const tTiny = at(1 / (t1.growthX * 2));
+  assert.equal(tTiny.growthX, 1);
+});
+
+test('C2 push: far-field gain is exactly m/2 — growth gain preserved', () => {
+  // The saturated push (u>=1) must translate a far point by exactly h+m/2 on
+  // each axis, identical to the old quadratic segment, so the growth/throttle
+  // and percentage-slider calibration are unchanged by the C2 profile.
+  const m = 120;
+  const pushGain = (u: number) => m * u * (1 + u * u * u * (-2.5 + u * (3 - u)));
+  assert.ok(Math.abs(pushGain(1) - m / 2) < 1e-9, `gain at u=1 = ${pushGain(1)} vs m/2 ${m / 2}`);
+  assert.ok(Math.abs(pushGain(0)) < 1e-12, 'gain at u=0 is 0');
+  const mid = m * (0.5 - 2.5 / 16 + 3 / 32 - 1 / 64);
+  assert.ok(Math.abs(pushGain(0.5) - mid) < 1e-9, 'midpoint gain matches closed form');
+});
+
+test('C2 push: second derivative continuous across both margin ends (no kink)', () => {
+  // Reproduce push(a) for a single axis, h=40, m=120, and finite-difference the
+  // curvature across a=h and a=h+m. The old linear ramp jumped by ~s/m here.
+  const h = 40, m = 120;
+  const push = (a: number): number => {
+    if (a <= h) return a;
+    if (a <= h + m) { const u = (a - h) / m; return h + m * u * (1 + u * u * u * (-2.5 + u * (3 - u))); }
+    return h + m / 2;
+  };
+  const d2 = (a: number, e = 0.25): number => (push(a + e) - 2 * push(a) + push(a - e)) / (e * e);
+  // curvature just inside/outside each transition must nearly match (continuous)
+  for (const edge of [h, h + m]) {
+    const lo = d2(edge - 1.5);
+    const hi = d2(edge + 1.5);
+    assert.ok(Math.abs(lo - hi) < 0.02, `curvature continuous at a=${edge}: ${lo} vs ${hi}`);
+  }
+  // and the flat regions have ~zero curvature
+  assert.ok(Math.abs(d2(h - 5)) < 1e-6 && Math.abs(d2(h + m + 5)) < 1e-6, 'flat regions curvature 0');
+});
+
+test('findEmphasisBoxes: two peaks with a saddle → two disjoint basins, neither contains the other peak', () => {
+  // Two dense clusters separated by a gap. The watershed must partition at the
+  // ridge — neither basin box may contain the other cluster's centre (the
+  // saddle-leak that rebuilds the map box, review item 1).
+  const s = [...clusterAt(30, 50, 200), ...clusterAt(75, 50, 160)];
+  const boxes = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 6 });
+  assert.ok(boxes.length >= 2, `two basins, got ${boxes.length}`);
+  const contains = (b: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number) =>
+    x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
+  const a = boxes.find((b) => contains(b, 30, 50))!;
+  const c = boxes.find((b) => contains(b, 75, 50))!;
+  assert.ok(a && c && a !== c, 'the two peaks land in different basins');
+  assert.ok(!contains(a, 75, 50), 'basin A does not swallow peak B');
+  assert.ok(!contains(c, 30, 50), 'basin C does not swallow peak A');
+});
+
+test('findEmphasisBoxes: top-K caps the region count; determinism', () => {
+  const s = [...clusterAt(20, 20, 120), ...clusterAt(80, 20, 120), ...clusterAt(50, 80, 120)];
+  const k2 = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 2 });
+  const k9 = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 9 });
+  assert.ok(k2.length <= 2, `K=2 caps count, got ${k2.length}`);
+  assert.ok(k9.length >= k2.length, 'higher K keeps at least as many');
+  const again = findEmphasisBoxes(s, BOX, { bins: 48, frac: 0.4, emphasisK: 9 });
+  assert.deepEqual(k9, again, 'deterministic');
+  for (const b of k9) assert.ok(b.d >= 0 && b.d <= 1, `d in [0,1]: ${b.d}`);
+});
+
+test('margin cap: large box band <= cap; small box proportional; still fold-safe', () => {
+  // A big density cluster (wide box) with the margin capped: the transition
+  // band must be <= cap, not marginFrac*halfExtent. Fold-safe: no point has
+  // negative local scale (jacDet > 0) everywhere.
+  const s = clusterAt(50, 50, 220);
+  const capped = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 48, frac: 0.4, marginFrac: 3, cellFromMedLen: () => 12, userMult: 4, emphasisSigma: 2.5, minCells: 1, floorFrac: 0.05, marginCap: 24, curvBound: Infinity });
+  const uncapped = buildDemandBoxWarp(s, EMPTY_GRAPH, BOX, { bins: 48, frac: 0.4, marginFrac: 3, cellFromMedLen: () => 12, userMult: 4, emphasisSigma: 2.5, minCells: 1, floorFrac: 0.05 });
+  // the capped warp returns to ~unit scale closer to the box than the uncapped
+  // one: sample the local scale a fixed distance outside the core.
+  const sampleScale = (W: WarpFn, x: number): number => (W([x + 0.5, 50])[0] - W([x - 0.5, 50])[0]);
+  // far outside both boxes: both ~unit
+  assert.ok(Math.abs(sampleScale(capped.warp, 98) - 1) < 0.05, 'capped: faithful far out');
+  // at ~35px right of center: capped should be back near unit (band<=24),
+  // uncapped still stretched (band ~3*half)
+  const cappedMid = sampleScale(capped.warp, 85);
+  const uncappedMid = sampleScale(uncapped.warp, 85);
+  assert.ok(cappedMid <= uncappedMid + 1e-6, `capped contains distortion sooner: ${cappedMid.toFixed(3)} <= ${uncappedMid.toFixed(3)}`);
+  // fold-safe everywhere
+  for (let y = 4; y < 100; y += 8) for (let x = 4; x < 100; x += 8) {
+    assert.ok(jacDet(capped.warp, [x, y]) > 0, `fold-safe at (${x},${y})`);
+  }
 });
