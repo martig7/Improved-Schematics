@@ -133,6 +133,10 @@ const LINE_SCALE_MAX = 1.5;
 const DEFAULT_DECLUTTER = 0;
 const DEFAULT_AESTHETIC = 0.5; // slider strength used when the Aesthetic checkbox is on
 const DEFAULT_AESTHETIC_ON = false;
+// Geography warp (SchematicOptions.warpAlpha, the LOOM density magnification) is
+// gated by a checkbox too; default OFF so the smoothed map starts geographically
+// faithful. The warpPos slider sets its strength when enabled (0 -> warpAlpha 0.8).
+const DEFAULT_GEOWARP_ON = false;
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -253,7 +257,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; stationSplit?: boolean; disabledRoutes?: string[] };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; stationSplit?: boolean; disabledRoutes?: string[] };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -381,6 +385,8 @@ export function SchematicPanel() {
   // the expensive precompute, so they ride the same draft→Save flow and a Save
   // in smoothed mode regenerates the layout.
   const [warpPos, setWarpPos] = useState(rapp?.warpPos ?? DEFAULT_REALISM_POS);
+  // Geography warp (warpAlpha) gated by a checkbox; default OFF (faithful).
+  const [geoWarpOn, setGeoWarpOn] = useState(rapp?.geoWarpOn ?? DEFAULT_GEOWARP_ON);
   const [linePos, setLinePos] = useState(rapp?.linePos ?? DEFAULT_REALISM_POS);
   const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
   // Box density cutoff (densityBoxWarp frac) — same draft→Save flow as the realism sliders.
@@ -401,12 +407,13 @@ export function SchematicPanel() {
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
-        { ...rapp, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
+        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
           mapMargin: DEFAULT_MAP_MARGIN,
           warpPos: DEFAULT_REALISM_POS,
+          geoWarpOn: DEFAULT_GEOWARP_ON,
           linePos: DEFAULT_REALISM_POS,
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
@@ -423,6 +430,7 @@ export function SchematicPanel() {
     applied.stationRadius !== stationRadius ||
     applied.mapMargin !== mapMargin ||
     applied.warpPos !== warpPos ||
+    (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) !== geoWarpOn ||
     applied.linePos !== linePos ||
     applied.boxWarpPos !== boxWarpPos ||
     applied.boxFrac !== boxFrac ||
@@ -439,6 +447,7 @@ export function SchematicPanel() {
     stationRadius === DEFAULT_STATION_RADIUS &&
     mapMargin === DEFAULT_MAP_MARGIN &&
     warpPos === DEFAULT_REALISM_POS &&
+    geoWarpOn === DEFAULT_GEOWARP_ON &&
     linePos === DEFAULT_REALISM_POS &&
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
@@ -452,6 +461,7 @@ export function SchematicPanel() {
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
     applied.warpPos === DEFAULT_REALISM_POS &&
+    (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) === DEFAULT_GEOWARP_ON &&
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
     applied.boxFrac === DEFAULT_BOX_FRAC &&
@@ -550,7 +560,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
-    const ap = { ...apRaw, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
+    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -566,6 +576,7 @@ export function SchematicPanel() {
     setStationRadius(ap.stationRadius);
     setMapMargin(ap.mapMargin);
     setWarpPos(ap.warpPos);
+    setGeoWarpOn(ap.geoWarpOn);
     setLinePos(ap.linePos);
     setBoxWarpPos(ap.boxWarpPos);
     setBoxFrac(ap.boxFrac);
@@ -721,7 +732,7 @@ export function SchematicPanel() {
         neighborhoodZoom, neighborhoodPad,
         dark,
         padding: applied.mapMargin,
-        warpAlpha: warpAlphaFromPos(applied.warpPos),
+        warpAlpha: (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) ? warpAlphaFromPos(applied.warpPos) : 0,
         geographicAffinity: affinityFromPos(applied.linePos),
         boxExpand: BOX_AES,
         declutterWarp: applied.declutterWarp ?? DEFAULT_DECLUTTER,
@@ -1179,6 +1190,7 @@ export function SchematicPanel() {
       stationRadius: num(s.applied.stationRadius, 1, 6, DEFAULT_STATION_RADIUS),
       mapMargin: num(s.applied.mapMargin, 0, 0.15, DEFAULT_MAP_MARGIN),
       warpPos: num(s.applied.warpPos, -1, 1, DEFAULT_REALISM_POS),
+      geoWarpOn: s.applied.geoWarpOn === true,
       linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
       boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
       boxFrac: num(s.applied.boxFrac, BOX_FRAC_MIN, BOX_FRAC_MAX, DEFAULT_BOX_FRAC),
@@ -1206,6 +1218,7 @@ export function SchematicPanel() {
       setStationRadius(clampedApplied.stationRadius);
       setMapMargin(clampedApplied.mapMargin);
       setWarpPos(clampedApplied.warpPos);
+      setGeoWarpOn(clampedApplied.geoWarpOn);
       setLinePos(clampedApplied.linePos);
       setBoxWarpPos(clampedApplied.boxWarpPos);
       setBoxFrac(clampedApplied.boxFrac);
@@ -1243,10 +1256,14 @@ export function SchematicPanel() {
       stationRadius: DEFAULT_STATION_RADIUS,
       mapMargin: DEFAULT_MAP_MARGIN,
       warpPos: DEFAULT_REALISM_POS,
+      geoWarpOn: DEFAULT_GEOWARP_ON,
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
       lineScale: DEFAULT_LINE_SCALE,
+      declutterWarp: DEFAULT_DECLUTTER,
+      aestheticWarp: DEFAULT_AESTHETIC,
+      aestheticOn: DEFAULT_AESTHETIC_ON,
       stationSplit: DEFAULT_STATION_SPLIT,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
@@ -1259,7 +1276,7 @@ export function SchematicPanel() {
           geography: geographyRef.current,
           options: {
             padding: ap.mapMargin,
-            warpAlpha: warpAlphaFromPos(ap.warpPos),
+            warpAlpha: (ap.geoWarpOn ?? DEFAULT_GEOWARP_ON) ? warpAlphaFromPos(ap.warpPos) : 0,
             geographicAffinity: affinityFromPos(ap.linePos),
             boxExpand: BOX_AES,
             declutterWarp: ap.declutterWarp ?? DEFAULT_DECLUTTER,
@@ -1540,7 +1557,7 @@ export function SchematicPanel() {
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, stationSplit, disabledRoutes });
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, stationSplit, disabledRoutes });
     if (mode === 'smoothed' && smoothedReady) regenerate();
     // Commit dismisses whichever surface hosts the Save button (settings popover,
     // Algorithm page, or Routes overlay).
@@ -1554,6 +1571,7 @@ export function SchematicPanel() {
     setStationRadius(DEFAULT_STATION_RADIUS);
     setMapMargin(DEFAULT_MAP_MARGIN);
     setWarpPos(DEFAULT_REALISM_POS);
+    setGeoWarpOn(DEFAULT_GEOWARP_ON);
     setLinePos(DEFAULT_REALISM_POS);
     setBoxWarpPos(DEFAULT_REALISM_POS);
     setBoxFrac(DEFAULT_BOX_FRAC);
@@ -1570,6 +1588,7 @@ export function SchematicPanel() {
       stationRadius: DEFAULT_STATION_RADIUS,
       mapMargin: DEFAULT_MAP_MARGIN,
       warpPos: DEFAULT_REALISM_POS,
+      geoWarpOn: DEFAULT_GEOWARP_ON,
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
@@ -2573,7 +2592,16 @@ export function SchematicPanel() {
           <Slider label="Map margin" value={mapMargin} min={0} max={0.15} step={0.01} display={`${Math.round(mapMargin * 100)}%`} onChange={setMapMargin} />
           {mode === 'smoothed' && (
             <>
-              <Slider label="Geography warp" value={warpPos} min={-1} max={1} step={0.1} display={warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized'} onChange={setWarpPos} />
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: 0.85 }}>
+                  <span>Geography warp</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7 }}>{geoWarpOn ? (warpPos === 0 ? 'Default' : warpPos < 0 ? 'Realistic' : 'Stylized') : 'off'}</span>
+                    <input type="checkbox" checked={geoWarpOn} onChange={(e) => setGeoWarpOn(e.target.checked)} style={{ cursor: 'pointer' }} />
+                  </span>
+                </span>
+                <input type="range" min={-1} max={1} step={0.1} value={warpPos} disabled={!geoWarpOn} onChange={(e) => setWarpPos(parseFloat(e.target.value))} style={{ width: '100%', cursor: geoWarpOn ? 'pointer' : 'default', accentColor: '#2563eb', opacity: geoWarpOn ? 1 : 0.45 }} />
+              </label>
               <Slider label="Line accuracy" value={linePos} min={-1} max={1} step={0.1} display={linePos === 0 ? 'Default' : linePos < 0 ? 'Realistic' : 'Stylized'} onChange={setLinePos} />
               <Slider label="Declutter" value={declutterWarp} min={0} max={1} step={0.05} display={declutterWarp === 0 ? 'Off' : `${Math.round(declutterWarp * 100)}%`} onChange={setDeclutterWarp} />
               <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
