@@ -5,7 +5,7 @@
  */
 
 import type { Pixel, StopMark } from '../layout/types';
-import { MARKER_SCALE, MARK_R0, onDrawScale } from '../constants';
+import { MARKER_SCALE, MARK_R0, DRAW_SCALE, onDrawScale } from '../constants';
 import { type RectCapsule } from '../layout/rectSeat';
 import { type LondonCapsule } from '../layout/londonBubbles';
 import type { StopScene, StopLine, Capsule, Point } from './types';
@@ -107,7 +107,7 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   // the pill below (a capsule with a dot per station).
   const cross = ctx.capsuleMode === 'toronto' && isCapsule ? ctx.torontoByNode?.get(nodeId) : undefined;
   if (cross) {
-    return { nodeId, lines: [], capsule: { kind: 'ring', cx: cross.cx, cy: cross.cy, r: R0 + 3 }, anchor: [cross.cx, cross.cy], dotRadius };
+    return { nodeId, lines: [], capsule: { kind: 'ring', cx: cross.cx, cy: cross.cy, r: R0 + 3 * DRAW_SCALE }, anchor: [cross.cx, cross.cy], dotRadius };
   }
 
   // farthest pair: axis start (a) + max separation (best); memoized on the
@@ -140,7 +140,7 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   }
 
   if (best < 1e-3) {
-    return { nodeId, lines, capsule: { kind: 'ring', cx: a[0], cy: a[1], r: R0 + 3 }, anchor: [a[0], a[1]], dotRadius };
+    return { nodeId, lines, capsule: { kind: 'ring', cx: a[0], cy: a[1], r: R0 + 3 * DRAW_SCALE }, anchor: [a[0], a[1]], dotRadius };
   }
 
   if (!gm.pill) {

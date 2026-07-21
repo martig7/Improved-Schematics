@@ -542,8 +542,8 @@ const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
 // box matches the marker sizing; S = 3*RCAP/MARKER_SCALE = the single-stop box.
 let RECT_R0 = MARK_R0;
 let RECT_RCAP = RECT_R0 * MARKER_SCALE;
-onDrawScale(() => { RECT_R0 = MARK_R0; RECT_RCAP = RECT_R0 * MARKER_SCALE; });
-const RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
+let RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
+onDrawScale(() => { RECT_R0 = MARK_R0; RECT_RCAP = RECT_R0 * MARKER_SCALE; RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE; });
 // Above this member count a hub is seated by the LANE-AWARE path (matching
 // rectSeat's ENUM_MAX): each box slides along its own drawn lane instead of being
 // packed into an abstract row.

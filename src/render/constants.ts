@@ -37,6 +37,14 @@ export let LINE_GAP = BASE_LINE_GAP;
  *  site sizes the marker identically. Derived from the line width. */
 export let MARK_R0 = LINE_WIDTH * 0.7;
 
+/** The current draw scale k (1 = base). A live binding for the few chrome
+ *  dimensions that are FIXED-px offsets — capsule border padding, ring-capsule
+ *  radius margin and outline, dot-marker outline — rather than multiples of
+ *  LINE_WIDTH / MARK_R0. Multiplying those offsets by this makes them thin and
+ *  thicken with the Line-size control too, so a capsule stays proportional
+ *  instead of keeping a fixed rim as its dots shrink. */
+export let DRAW_SCALE = 1;
+
 /** Scale the drawn line/marker chrome by `s` (1 = base size, the shipped
  *  values). Set at the start of a render from the Line-size option, so both the
  *  precompute (seating/capsule geometry) and the draw (strokes/markers) size
@@ -54,6 +62,7 @@ export function onDrawScale(cb: () => void): void {
 }
 export function setDrawScale(s: number): void {
   const k = Number.isFinite(s) && s > 0 ? s : 1;
+  DRAW_SCALE = k;
   LINE_WIDTH = BASE_LINE_WIDTH * k;
   LINE_GAP = BASE_LINE_GAP * k;
   MARK_R0 = LINE_WIDTH * 0.7;
