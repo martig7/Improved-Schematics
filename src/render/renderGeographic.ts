@@ -845,7 +845,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         : {}),
     ...(boxExpandMax !== undefined ? { expandMax: boxExpandMax } : {}),
     cellFromMedLen,
-    capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing },
+    // Capsule (interchange-pair spreading) is SURVIVAL, so in two-dial mode it
+    // rides the DECLUTTER dial: supplied only when declutter > 0. The legacy /
+    // boxPct paths always supply it.
+    ...((twoDial ? (declutterPct ?? 0) > 0 : true)
+      ? { capsule: { spacing: LINE_WIDTH + LINE_GAP, lineCounts: nodeLineCounts, margin: capsMargin, casing: capsCasing } }
+      : {}),
     ...(corrMargin >= 0
       ? { corridor: { spacing: LINE_WIDTH + LINE_GAP, margin: corrMargin, edgeLines } }
       : {}),

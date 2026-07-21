@@ -135,18 +135,21 @@ export interface SchematicOptions {
    *  sets the aesthetic ceiling inside the maximum). Absent = legacy cap
    *  semantics, so saved maps replay unchanged. */
   boxPct?: number;
-  /** Smoothed mode only: DECLUTTER warp grant, 0–1 (default 0). Scales the
-   *  survival warp — the contraction (pinch-relief) and capsule-pair oracles
-   *  that un-pinch genuinely overlapping stations so a dense core is renderable.
-   *  0 = off (the draw handles pinches); 1 = the full solved un-pinching. Gates
-   *  the contraction oracle on > 0. Supersedes boxPct when set. Bakes into the
-   *  layout (fingerprint). */
+  /** Smoothed mode only: DECLUTTER warp grant, 0–1 (default 0). Un-pinches
+   *  genuinely overlapping stations (the contraction pinch-relief and
+   *  capsule-pair survival oracles) so a dense core is renderable. Maps to a
+   *  GENTLE per-axis canvas-growth cap (0 = identity, 1 = the two-dial ceiling,
+   *  a mild un-pinch — NOT the full ~5x solved contraction saturation), so it
+   *  reads as a taste dial and the draw handles whatever pinches remain. Gates
+   *  the contraction and capsule oracles on > 0. Supersedes boxPct when set.
+   *  Bakes into the layout (fingerprint). */
   declutterWarp?: number;
-  /** Smoothed mode only: AESTHETIC warp grant, 0–1 (default 0). Scales the
-   *  density-emphasis magnification (steepest-ascent watershed) that gives
-   *  crowded cores extra room for emphasis. 0 = off; 1 = full emphasis at the
-   *  BOX_AES ceiling. Gates the density oracle on > 0. Supersedes boxPct when
-   *  set. Bakes into the layout (fingerprint). */
+  /** Smoothed mode only: AESTHETIC warp grant, 0–1 (default 0). Density-emphasis
+   *  magnification (steepest-ascent watershed) giving crowded cores extra room
+   *  for emphasis. Maps to the same gentle per-axis growth cap as declutter
+   *  (0 = off, 1 = the two-dial ceiling), kept mild so magnifying an off-center
+   *  core does not visibly shove the surrounding field. Gates the density oracle
+   *  on > 0. Supersedes boxPct when set. Bakes into the layout (fingerprint). */
   aestheticWarp?: number;
   /** Smoothed mode only (BETA): build one graph node per member STATION of a
    *  multi-station complex (platforms at their real coordinates) instead of one

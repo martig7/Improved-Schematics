@@ -1262,6 +1262,10 @@ function buildWarpFromBoxes(
   if (rawGx > capGx || rawGy > capGy) ({ xl, xr, yt, yb } = corners());
   const growthX = (xr - xl) / W;
   const growthY = (yb - yt) / H;
+  // Pin the warped top-left back to the box origin. The absolute offset is
+  // irrelevant to the final image (the caller re-fits the warped content bbox to
+  // the canvas per axis, absorbing any constant translation), so this only keeps
+  // warp-output coordinates in a sane range for the debug overlay.
   const warp: WarpFn = (p) => {
     const q = raw(p[0], p[1]);
     return [box.minX + (q[0] - xl), box.minY + (q[1] - yt)];
@@ -1281,6 +1285,12 @@ function buildWarpFromBoxes(
  *  Each is expanded by exactly what its own targets need (contraction survival
  *  plus capsule pair separations, × userMult). Growth is absorbed by the canvas
  *  up to maxGrowth. */
+/** Two-dial (declutter / aesthetic) growth ceiling. Each dial at 1 maps to this
+ *  per-axis canvas growth cap; 0 is identity. Kept GENTLE (a mild un-pinch, like
+ *  a low OCTI_BOX_GROWTH) rather than the full contraction saturation (~5x on a
+ *  dense core), so the dials read as taste, not as a violent redistribution. */
+const TWO_DIAL_MAX_GROWTH = 1.6;
+
 export function buildDemandBoxWarp(
   samples: readonly Pixel[],
   g: BoxGraph,
@@ -1541,19 +1551,17 @@ export function buildDemandBoxWarp(
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
   if (opts.declutterPct !== undefined || opts.aestheticPct !== undefined) {
-    // Two-dial grant: scale each box's final strengths by its kind's fraction
-    // (survival kinds × declutter, aesthetic/density × aesthetic). The full
-    // survival warp was already solved above; this throttles the GRANTED result
-    // per kind, so 0 = that kind off, 1 = its full demand. maxGrowth stays the
-    // safety ceiling. When both fractions are 0 the strengths vanish and
-    // buildWarpFromBoxes returns the identity.
+    // Two-dial grant: each dial maps to a GENTLE growth cap (0 -> identity, 1 ->
+    // TWO_DIAL_MAX_GROWTH), like a low OCTI_BOX_GROWTH. The throttle scales the
+    // (fully refined) strengths to hit the cap, so declutter is a mild un-pinch
+    // dial rather than the full contraction saturation (which is ~5x on a dense
+    // core). Which oracles emit boxes is gated upstream by the dials, so the cap
+    // acts on the right kind. A gentle cap also keeps the emphasis magnification
+    // mild enough that the surrounding field is not visibly shoved aside.
     const dPct = Math.min(1, Math.max(0, opts.declutterPct ?? 0));
     const aPct = Math.min(1, Math.max(0, opts.aestheticPct ?? 0));
-    const granted = axisStrengths(expands).map((s, i) => {
-      const f = boxes[i].kind === 'density' ? aPct : dPct;
-      return [s[0] * f, s[1] * f] as [number, number];
-    });
-    result = buildWarpFromBoxes(boxes, granted, box, marginFrac, maxGrowth, oref, anisoAmt > 0, marginCapSpec);
+    const cap = 1 + Math.max(dPct, aPct) * (TWO_DIAL_MAX_GROWTH - 1);
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, cap, oref, anisoAmt > 0, marginCapSpec);
   } else if (opts.growthPct !== undefined) {
     const t = Math.min(1, Math.max(0, opts.growthPct));
     const capX = Math.max(1, t * result.growthX);
