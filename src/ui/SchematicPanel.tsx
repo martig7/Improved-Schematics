@@ -29,7 +29,7 @@ import { serializeMap, deserializeMap } from '../render/persist';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
-import { readCachedPre, writeCachedPre, peekCache, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
+import { readCachedPre, writeCachedPre, readFullPre, writeFullPre, peekCache, peekFullPre, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
 import { cropSubgraph } from '../render/cropSubgraph';
 import { filterRoutesByEnabled } from '../render/filterRoutes';
 import type { SceneOut } from '../render/renderOctilinear';
@@ -137,6 +137,11 @@ const DEFAULT_AESTHETIC_ON = false;
 // gated by a checkbox too; default OFF so the smoothed map starts geographically
 // faithful. The warpPos slider sets its strength when enabled (0 -> warpAlpha 0.8).
 const DEFAULT_GEOWARP_ON = false;
+// Crop (SchematicOptions.cropBbox / cropAspectW / cropAspectH). The aspect boxes
+// have a sensible default shape; the crop itself is OFF until a box is applied
+// (cropBbox null). Baked into the layout (Apply/Save).
+const DEFAULT_CROP_ASPECT_W = 16;
+const DEFAULT_CROP_ASPECT_H = 9;
 
 const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
@@ -149,6 +154,13 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 // Order-independent id-set equality, for comparing the draft hidden-route set
 // against the applied one.
 const sameIdSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
+// Compare two geographic crop bboxes (or null). Small epsilon so restore-from-JSON
+// float drift doesn't read as dirty.
+const sameBbox = (a: [number, number, number, number] | null, b: [number, number, number, number] | null): boolean => {
+  if (a == null || b == null) return a == null && b == null;
+  return a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+};
+const gcd = (a: number, b: number): number => (b === 0 ? Math.max(1, a) : gcd(b, a % b));
 
 // Labeled range slider for the settings popover. `display` is the formatted
 // current value shown to the right of the label.
@@ -257,7 +269,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; stationSplit?: boolean; disabledRoutes?: string[] };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[] };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -327,7 +339,8 @@ export function SchematicPanel() {
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
   // The Routes overlay (opened from Settings): a grid of routes + per-route toggle.
   const [routeMenuOpen, setRouteMenuOpen] = useState(false);
-  // The Algorithm and Labels setting pages (opened from Settings).
+  // The Map, Algorithm and Labels setting pages (opened from Settings).
+  const [mapPageOpen, setMapPageOpen] = useState(false);
   const [algorithmPageOpen, setAlgorithmPageOpen] = useState(false);
   const [labelsPageOpen, setLabelsPageOpen] = useState(false);
   // The example station shown in the picker tiles: a representative player route
@@ -398,6 +411,31 @@ export function SchematicPanel() {
   const [declutterWarp, setDeclutterWarp] = useState(rapp?.declutterWarp ?? DEFAULT_DECLUTTER);
   const [aestheticWarp, setAestheticWarp] = useState(rapp?.aestheticWarp ?? DEFAULT_AESTHETIC);
   const [aestheticOn, setAestheticOn] = useState(rapp?.aestheticOn ?? DEFAULT_AESTHETIC_ON);
+  // Crop (layout-baking): the W:H aspect boxes + the geographic crop bbox (null =
+  // no crop). `cropEditing` is transient UI (like drawMode/editingId): while true
+  // the map renders UNCROPPED so the crop box can be placed on the full map.
+  const [cropAspectW, setCropAspectW] = useState(rapp?.cropAspectW ?? DEFAULT_CROP_ASPECT_W);
+  const [cropAspectH, setCropAspectH] = useState(rapp?.cropAspectH ?? DEFAULT_CROP_ASPECT_H);
+  const [cropBbox, setCropBbox] = useState<[number, number, number, number] | null>(rapp?.cropBbox ?? null);
+  const [cropEditing, setCropEditing] = useState(false);
+  const cropEditingRef = useRef(cropEditing);
+  cropEditingRef.current = cropEditing;
+  // Freehand crop resize: unlock the aspect ratio (the W:H inputs then follow the box).
+  const [cropFreehand, setCropFreehand] = useState(false);
+  const cropFreehandRef = useRef(cropFreehand);
+  cropFreehandRef.current = cropFreehand;
+  // The working crop box (in the FULL map's content coords) while editing, drawn on
+  // the canvas so it tracks pan/zoom with the map. Plus the drag state.
+  const cropBoxRef = useRef<Box | null>(null);
+  const cropDragRef = useRef<{ h: 'move' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1'; box0: Box; sx: number; sy: number } | null>(null);
+  // Cached UNCROPPED ("full map") scene + pre (for geo<->px) + frame + the fp it was
+  // built for, so entering crop edit shows the full map INSTANTLY (no octi / spinner).
+  const fullSceneRef = useRef<PreparedScene | null>(null);
+  const fullPreRef = useRef<SmoothedPrecomputed | null>(null);
+  const fullFrameRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const fullSceneFpRef = useRef<string | null>(null);
+  // The crop's own fit frame, remembered so Cancel/Apply can re-fit to it.
+  const cropFrameRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   // Per-station complex split (layout-baking toggle, same draft→Save flow).
   const [stationSplit, setStationSplit] = useState(rapp?.stationSplit ?? DEFAULT_STATION_SPLIT);
   // The hidden-route set (route ids removed from the layout). A staged/draft value like
@@ -407,7 +445,7 @@ export function SchematicPanel() {
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
-        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
+        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -421,6 +459,9 @@ export function SchematicPanel() {
           declutterWarp: DEFAULT_DECLUTTER,
           aestheticWarp: DEFAULT_AESTHETIC,
           aestheticOn: DEFAULT_AESTHETIC_ON,
+          cropAspectW: DEFAULT_CROP_ASPECT_W,
+          cropAspectH: DEFAULT_CROP_ASPECT_H,
+          cropBbox: null as [number, number, number, number] | null,
           stationSplit: DEFAULT_STATION_SPLIT,
           disabledRoutes: [],
         },
@@ -438,6 +479,9 @@ export function SchematicPanel() {
     (applied.declutterWarp ?? DEFAULT_DECLUTTER) !== declutterWarp ||
     (applied.aestheticWarp ?? DEFAULT_AESTHETIC) !== aestheticWarp ||
     (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) !== aestheticOn ||
+    (applied.cropAspectW ?? DEFAULT_CROP_ASPECT_W) !== cropAspectW ||
+    (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H) !== cropAspectH ||
+    !sameBbox(applied.cropBbox ?? null, cropBbox) ||
     applied.stationSplit !== stationSplit ||
     !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
   // True when both the draft sliders and the applied values are already at the
@@ -455,6 +499,9 @@ export function SchematicPanel() {
     declutterWarp === DEFAULT_DECLUTTER &&
     aestheticWarp === DEFAULT_AESTHETIC &&
     aestheticOn === DEFAULT_AESTHETIC_ON &&
+    cropAspectW === DEFAULT_CROP_ASPECT_W &&
+    cropAspectH === DEFAULT_CROP_ASPECT_H &&
+    cropBbox === null &&
     stationSplit === DEFAULT_STATION_SPLIT &&
     disabledRoutes.length === 0 &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
@@ -469,6 +516,9 @@ export function SchematicPanel() {
     (applied.declutterWarp ?? DEFAULT_DECLUTTER) === DEFAULT_DECLUTTER &&
     (applied.aestheticWarp ?? DEFAULT_AESTHETIC) === DEFAULT_AESTHETIC &&
     (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) === DEFAULT_AESTHETIC_ON &&
+    (applied.cropAspectW ?? DEFAULT_CROP_ASPECT_W) === DEFAULT_CROP_ASPECT_W &&
+    (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H) === DEFAULT_CROP_ASPECT_H &&
+    (applied.cropBbox ?? null) === null &&
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
     (applied.disabledRoutes?.length ?? 0) === 0;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
@@ -560,7 +610,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
-    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
+    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -584,6 +634,10 @@ export function SchematicPanel() {
     setDeclutterWarp(ap.declutterWarp);
     setAestheticWarp(ap.aestheticWarp);
     setAestheticOn(ap.aestheticOn);
+    setCropAspectW(ap.cropAspectW);
+    setCropAspectH(ap.cropAspectH);
+    setCropBbox(ap.cropBbox);
+    setCropEditing(false);
     setStationSplit(ap.stationSplit);
     setDisabledRoutes(ap.disabledRoutes);
     setMode(target);
@@ -749,6 +803,29 @@ export function SchematicPanel() {
     }, mapBearing);
   }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing]);
 
+  // The CURRENT base input the whole UI operates on: the raw uncropped input, or
+  // (when a crop is active and not being edited) the cropped-and-magnified
+  // subgraph. Everything downstream — the main precompute, detail insets, the
+  // input dump — builds from this, so a cropped map behaves exactly like the full
+  // map (insets re-crop the cropped base, so crop-of-crop composes for free).
+  // cropSubgraph keeps the core stations inside the box plus a one-stop ring and
+  // shapes the sub-canvas to the aspect (long side = the base 2700). Editing the
+  // crop returns the uncropped input so the box can be placed on the full map.
+  const buildMainInput = useCallback((base?: ReturnType<typeof buildInput>) => {
+    const input = base ?? buildInput();
+    const bbox = applied.cropBbox;
+    if (bbox == null) return input;
+    const stations = input.stations as unknown as { id: string; coords?: [number, number] }[];
+    const core = new Set<string>();
+    for (const s of stations) {
+      const c = s.coords;
+      if (c && c[0] >= bbox[0] && c[0] <= bbox[2] && c[1] >= bbox[1] && c[1] <= bbox[3]) core.add(s.id);
+    }
+    if (core.size < 2) return input; // empty/degenerate crop → fall back to uncropped
+    const aspect = (applied.cropAspectW ?? DEFAULT_CROP_ASPECT_W) / (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H);
+    return cropSubgraph(input as never, core, bbox, aspect);
+  }, [buildInput, applied]);
+
   // The exact live render inputs, captured for offline repro (geojson reconstructions
   // drift from the live save and the game's station grouping). Formerly downloaded via a
   // standalone "input dump" button; now baked into the saved map JSON (exportMap) so the
@@ -760,7 +837,7 @@ export function SchematicPanel() {
   // any area be debugged on its own offline, the same way the whole map can.
   const buildInputDump = useCallback(() => {
     const dark = api.ui.getResolvedTheme() === 'dark';
-    const full = buildInput();
+    const full = buildMainInput();
     // One cropped sub-input per area, mirroring DetailInset's re-sim crop (core stations
     // inside the box + the box's unprojected geographic bounds for the geography clip).
     const pre = smoothedCacheRef.current?.pre;
@@ -813,7 +890,7 @@ export function SchematicPanel() {
       // Per-area cropped sub-inputs (see above) for debugging any area in isolation.
       areas,
     };
-  }, [buildInput, geography, exportFormat, rasterScale, jpegQuality, mapBearing]);
+  }, [buildMainInput, geography, exportFormat, rasterScale, jpegQuality, mapBearing]);
 
   const svg = useMemo(() => {
     if (mode === 'smoothed') {
@@ -833,10 +910,21 @@ export function SchematicPanel() {
       if (!cache) {
         const input = buildInput();
         const city = modState.cityCode ?? api.utils.getCityCode?.() ?? '';
-        const fp = fingerprintInputs(input as never).fp;
+        // A crop bakes into the layout. Fingerprint the UNCROPPED input with the
+        // crop descriptor in options (NOT the cropSubgraph output) so the key is
+        // stable and distinguishes crops; the crop wrapper is applied only when
+        // building the pre (buildMainInput). Crop editing is decoupled from the
+        // memo: it swaps to the cached full-map scene at draw time, not here.
+        const cropOn = applied.cropBbox != null;
+        const fpInput = cropOn
+          ? { ...input, options: { ...(input as { options: Record<string, unknown> }).options, cropAspectW: applied.cropAspectW, cropAspectH: applied.cropAspectH, cropBbox: applied.cropBbox } }
+          : input;
+        const fp = fingerprintInputs(fpInput as never).fp;
         const force = forceRegenRef.current; // Regenerate → recompute fresh, ignore cache
         forceRegenRef.current = false;
-        const hit = !force && city ? readCachedPre(city, fp) : null;
+        // Uncropped displays also accept the dedicated full-map slot, so clearing a
+        // crop (Off) swaps back to the cached full map instead of recomputing.
+        const hit = !force && city ? (readCachedPre(city, fp) ?? (cropOn ? null : readFullPre(city, fp))) : null;
         currentCityRef.current = city;
         currentFpRef.current = fp;
         // A real generate establishes the live city as the one the displayed settings belong
@@ -848,7 +936,7 @@ export function SchematicPanel() {
           cacheWriteRef.current = null;
         } else {
           const t0 = performance.now();
-          cache = { pre: precomputeSmoothedSchematic(input) };
+          cache = { pre: precomputeSmoothedSchematic(buildMainInput(input)) };
           genMsRef.current = performance.now() - t0;
           // Queue the (heavy) serialize+write for after render, not in the memo.
           cacheWriteRef.current = city ? { city, fp, pre: cache.pre } : null;
@@ -890,7 +978,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -1198,6 +1286,10 @@ export function SchematicPanel() {
       declutterWarp: num(s.applied.declutterWarp, 0, 1, DEFAULT_DECLUTTER),
       aestheticWarp: num(s.applied.aestheticWarp, 0, 1, DEFAULT_AESTHETIC),
       aestheticOn: s.applied.aestheticOn === true,
+      cropAspectW: num(s.applied.cropAspectW, 1, 100, DEFAULT_CROP_ASPECT_W),
+      cropAspectH: num(s.applied.cropAspectH, 1, 100, DEFAULT_CROP_ASPECT_H),
+      cropBbox: (Array.isArray(s.applied.cropBbox) && s.applied.cropBbox.length === 4 && s.applied.cropBbox.every((v) => Number.isFinite(v)))
+        ? (s.applied.cropBbox as [number, number, number, number]) : null,
       stationSplit: s.applied.stationSplit === true,
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
@@ -1226,6 +1318,10 @@ export function SchematicPanel() {
       setDeclutterWarp(clampedApplied.declutterWarp);
       setAestheticWarp(clampedApplied.aestheticWarp);
       setAestheticOn(clampedApplied.aestheticOn);
+      setCropAspectW(clampedApplied.cropAspectW);
+      setCropAspectH(clampedApplied.cropAspectH);
+      setCropBbox(clampedApplied.cropBbox);
+      setCropEditing(false);
       setStationSplit(clampedApplied.stationSplit);
     }
     // Queue the saved detail areas; the inject effect restores them after the new
@@ -1264,6 +1360,9 @@ export function SchematicPanel() {
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
       aestheticOn: DEFAULT_AESTHETIC_ON,
+      cropAspectW: DEFAULT_CROP_ASPECT_W,
+      cropAspectH: DEFAULT_CROP_ASPECT_H,
+      cropBbox: null as [number, number, number, number] | null,
       stationSplit: DEFAULT_STATION_SPLIT,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
@@ -1281,6 +1380,7 @@ export function SchematicPanel() {
             boxExpand: BOX_AES,
             declutterWarp: ap.declutterWarp ?? DEFAULT_DECLUTTER,
             aestheticWarp: (ap.aestheticOn ?? DEFAULT_AESTHETIC_ON) ? (ap.aestheticWarp ?? DEFAULT_AESTHETIC) : 0,
+            ...(ap.cropBbox != null ? { cropAspectW: ap.cropAspectW, cropAspectH: ap.cropAspectH, cropBbox: ap.cropBbox } : {}),
             boxFrac: ap.boxFrac,
             lineScale: ap.lineScale,
             stationSplit: ap.stationSplit,
@@ -1474,7 +1574,10 @@ export function SchematicPanel() {
     if (canvas.height !== bh) canvas.height = bh;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const prepared = sceneRef.current;
+    // While editing a crop, display the cached UNCROPPED full-map scene (with the
+    // crop box drawn on top) instead of the cropped one — an instant swap, no re-run.
+    const editing = cropEditingRef.current;
+    const prepared = editing && fullSceneRef.current ? fullSceneRef.current : sceneRef.current;
     if (!prepared) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, bw, bh);
@@ -1482,19 +1585,25 @@ export function SchematicPanel() {
     }
     // Warp-box overlay: only in smoothed mode (it's a smoothed-layout feature), only
     // when the toggle is on and the precompute carries the boxes (older cached layouts
-    // lack them → none drawn until the next Generate).
+    // lack them → none drawn until the next Generate). Off while editing (the pre is
+    // the crop but the shown scene is the full map).
     const pre = smoothedCacheRef.current?.pre;
     const warpBoxes =
-      showWarpBoxesRef.current && modeRef.current === 'smoothed' && pre && typeof pre !== 'string'
+      !editing && showWarpBoxesRef.current && modeRef.current === 'smoothed' && pre && typeof pre !== 'string'
         ? pre.denseBoxesPx
         : undefined;
     drawScene(ctx, prepared, view, {
       dpr,
       cssWidth: cssW,
       cssHeight: cssH,
-      clipBoxes: selectionsRef.current.map((s) => s.box),
+      clipBoxes: editing ? [] : selectionsRef.current.map((s) => s.box),
       warpBoxes,
       labelScale: labelScaleRef.current,
+      // A crop layout places geography / boundary stubs just outside the box; clip
+      // the display to the scene bounds so they don't show (the SVG uses viewBox).
+      // Not while editing — the full map is shown and must not be clipped.
+      clipToBounds: !editing && pre != null && typeof pre !== 'string' && !!pre.detailCrop,
+      cropEdit: editing && cropBoxRef.current ? { box: cropBoxRef.current } : undefined,
     });
   }, []);
 
@@ -1553,11 +1662,141 @@ export function SchematicPanel() {
     setGenerating(true);
   }, []);
 
+  // Build (or reuse) the cached UNCROPPED full-map scene + pre so crop editing shows
+  // it INSTANTLY. Prefers the layout cache (fast hit); computes synchronously only on
+  // a rare miss (a cropped map opened without its uncropped layout ever cached).
+  const ensureFullScene = () => {
+    const input = buildInput();
+    const fp = fingerprintInputs(input as never).fp;
+    if (fullSceneFpRef.current === fp && fullSceneRef.current && fullPreRef.current) return;
+    const city = currentCityRef.current || '';
+    // Prefer the dedicated full-map slot, then the main slot (if it currently holds
+    // the uncropped map), and only compute on a true miss.
+    const cached = city ? (readFullPre(city, fp) ?? readCachedPre(city, fp)) : null;
+    const pre = cached ?? precomputeSmoothedSchematic(input);
+    if (typeof pre === 'string') return;
+    // Persist the full map in its OWN slot so a later session that loads a crop of
+    // this city can edit it instantly (the main slot holds the crop, not this).
+    if (city) writeFullPre(city, fp, pre);
+    const out: SceneOut = { scene: null };
+    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign }, out);
+    const scene = out.scene ?? sceneFromSvg(drawn);
+    fullSceneRef.current = prepareScene(scene);
+    fullPreRef.current = pre;
+    fullFrameRef.current = scene.frame && scene.frame.w > 0
+      ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
+      : { x: 0, y: 0, w: scene.width || GEO_SIZE, h: scene.height || GEO_SIZE };
+    fullSceneFpRef.current = fp;
+  };
+  // Seed the working crop box (full-map content coords): from the stored geographic
+  // bbox projected onto the full map, else a centered box at the chosen aspect.
+  const initCropBox = () => {
+    const pre = fullPreRef.current;
+    const fr = fullFrameRef.current ?? { x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE };
+    const bbox = applied.cropBbox;
+    if (bbox && pre?.project) {
+      const p0 = pre.project([bbox[0], bbox[1]]);
+      const p1 = pre.project([bbox[2], bbox[3]]);
+      cropBoxRef.current = { x0: Math.min(p0[0], p1[0]), y0: Math.min(p0[1], p1[1]), x1: Math.max(p0[0], p1[0]), y1: Math.max(p0[1], p1[1]) };
+    } else {
+      const A = Math.max(1e-3, (cropAspectW || 1) / (cropAspectH || 1));
+      let w = Math.min(fr.w, fr.h * A), h = w / A;
+      if (h > fr.h) { h = fr.h; w = h * A; }
+      w *= 0.7; h *= 0.7;
+      const cx = fr.x + fr.w / 2, cy = fr.y + fr.h / 2;
+      cropBoxRef.current = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+    }
+  };
+  // Crop-edit lifecycle. Enter: swap to the cached full map (INSTANT, no re-run) with
+  // the box drawn on the canvas. Apply: commit the drawn bbox and, if it changed,
+  // recompute the cropped layout. Cancel: discard, swap back to the current map,
+  // return to the Map settings. All set cropEditingRef synchronously so the immediate
+  // repaint picks the right scene.
+  const startCropEdit = () => {
+    if (mode !== 'smoothed' || !smoothedReady) return;
+    setDrawMode(false); // area-draw and crop-edit are mutually exclusive
+    cropFrameRef.current = { ...fitBoxRef.current }; // remember the pre-edit fit
+    // Dismiss the settings FIRST, then set up the edit on the next frame, so if
+    // building the full scene rerenders, the menu is already gone (not left hanging
+    // over it).
+    setMapPageOpen(false);
+    setSettingsOpen(false);
+    requestAnimationFrame(() => {
+      ensureFullScene();
+      initCropBox();
+      cropEditingRef.current = true;
+      setCropEditing(true);
+      if (fullFrameRef.current) fitBoxRef.current = { ...fullFrameRef.current };
+      fit();
+    });
+  };
+  const applyCrop = () => {
+    const pre = fullPreRef.current;
+    const b = cropBoxRef.current;
+    if (!pre?.unproject || !b) return;
+    const bl = pre.unproject([b.x0, b.y1]);
+    const tr = pre.unproject([b.x1, b.y0]);
+    const bbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
+    const changed = !sameBbox(bbox, applied.cropBbox ?? null);
+    // Persist the full map to its dedicated slot NOW (the crop is about to overwrite
+    // the main slot), so editing this crop after a reload is instant.
+    if (fullSceneFpRef.current && currentCityRef.current) writeFullPre(currentCityRef.current, fullSceneFpRef.current, pre);
+    cropEditingRef.current = false;
+    setCropEditing(false);
+    setCropBbox(bbox);
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes });
+    if (changed && mode === 'smoothed' && smoothedReady) regenerate();
+    else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
+  };
+  const cancelCropEdit = () => {
+    cropEditingRef.current = false;
+    setCropEditing(false);
+    setCropFreehand(false);
+    setCropBbox(applied.cropBbox ?? null);
+    setMapPageOpen(true);
+    setSettingsOpen(false);
+    if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current };
+    fit();
+  };
+  // Clear an applied crop (the Off affordance): drop the box and swap back to the
+  // full map. HIT THE CACHE — the full-map slot holds the uncropped layout, so this
+  // does not re-run octi (only a spinner if the full map somehow isn't cached).
+  const clearCrop = () => {
+    cropEditingRef.current = false;
+    setCropEditing(false);
+    setCropBbox(null);
+    setMapPageOpen(false);
+    setSettingsOpen(false);
+    if (mode === 'smoothed' && smoothedReady) {
+      // buildInput is crop-free, so this is the uncropped fingerprint.
+      const uncroppedFp = fingerprintInputs(buildInput() as never).fp;
+      const city = currentCityRef.current || '';
+      const cached =
+        (fullSceneFpRef.current === uncroppedFp && !!fullSceneRef.current) ||
+        (!!city && (peekFullPre(city, uncroppedFp) || peekCache(city, uncroppedFp)));
+      smoothedCacheRef.current = null; // memo rebuilds the (now uncropped) map
+      forceRegenRef.current = false;   // ALLOW the cache — no forced octi
+      if (!cached) { setSmoothedReady(false); setGenerating(true); } // spinner only if it must recompute
+    }
+    setApplied((a) => ({ ...a, cropBbox: null })); // memo dep change → re-run
+  };
+  // The crop bbox is stored in the rotated-geo frame, so a map-bearing change
+  // invalidates it; drop the crop (the empty-core guard also protects against a
+  // now-degenerate box). Skips the initial mount.
+  const prevBearingRef = useRef(mapBearing);
+  useEffect(() => {
+    if (prevBearingRef.current === mapBearing) return;
+    prevBearingRef.current = mapBearing;
+    setCropEditing(false);
+    setCropBbox(null);
+    setApplied((a) => (a.cropBbox != null ? { ...a, cropBbox: null } : a));
+  }, [mapBearing]);
+
   // Commit the staged appearance (including the hidden-route set) to `applied`, which
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, stationSplit, disabledRoutes });
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes });
     if (mode === 'smoothed' && smoothedReady) regenerate();
     // Commit dismisses whichever surface hosts the Save button (settings popover,
     // Algorithm page, or Routes overlay).
@@ -1579,6 +1818,10 @@ export function SchematicPanel() {
     setDeclutterWarp(DEFAULT_DECLUTTER);
     setAestheticWarp(DEFAULT_AESTHETIC);
     setAestheticOn(DEFAULT_AESTHETIC_ON);
+    setCropAspectW(DEFAULT_CROP_ASPECT_W);
+    setCropAspectH(DEFAULT_CROP_ASPECT_H);
+    setCropBbox(null);
+    setCropEditing(false);
     setStationSplit(DEFAULT_STATION_SPLIT);
     setLandmass('faithful');
     setLandmassDetail(0.5);
@@ -1596,6 +1839,9 @@ export function SchematicPanel() {
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
       aestheticOn: DEFAULT_AESTHETIC_ON,
+      cropAspectW: DEFAULT_CROP_ASPECT_W,
+      cropAspectH: DEFAULT_CROP_ASPECT_H,
+      cropBbox: null,
       stationSplit: DEFAULT_STATION_SPLIT,
       disabledRoutes: [],
     });
@@ -1649,6 +1895,17 @@ export function SchematicPanel() {
         scene.frame && scene.frame.w > 0 && scene.frame.h > 0
           ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
           : { x: 0, y: 0, w, h };
+      // Crop-edit caching: when the displayed layout is the UNCROPPED full map,
+      // cache its scene + frame + fp so entering crop edit shows it instantly. When
+      // it is a crop, remember the crop's own fit frame so Cancel/Apply re-fit to it.
+      const dp = smoothedCacheRef.current?.pre;
+      const isCrop = mode === 'smoothed' && dp != null && typeof dp !== 'string' && !!dp.detailCrop;
+      if (mode === 'smoothed' && !isCrop && dp != null && typeof dp !== 'string') {
+        fullSceneRef.current = sceneRef.current;
+        fullPreRef.current = dp;
+        fullFrameRef.current = { ...fitBoxRef.current };
+        fullSceneFpRef.current = currentFpRef.current;
+      }
     } else {
       sceneRef.current = null;
     }
@@ -1710,14 +1967,33 @@ export function SchematicPanel() {
     applyToDom(true);
   }, [showWarpBoxes, applyToDom]);
 
-  // Resize the backing store + repaint when the viewport resizes.
+  // Resize the backing store on viewport resize, and ZOOM the image so enlarging
+  // the panel scales the map up (keeping the viewport-centre world point fixed)
+  // rather than revealing more surrounding area. The logical canvas size is fixed
+  // (GEO_SIZE), so this is purely a camera change. The first callback (fired on
+  // observe) only records the size — no jump on mount.
   useEffect(() => {
     const vp = viewportRef.current;
     if (!vp || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => drawCanvas());
+    let prev: { w: number; h: number } | null = null;
+    const ro = new ResizeObserver(() => {
+      const W1 = vp.clientWidth, H1 = vp.clientHeight;
+      const view = viewRef.current;
+      if (view && prev && prev.w > 0 && prev.h > 0 && W1 > 0 && H1 > 0) {
+        const factor = Math.min(W1 / prev.w, H1 / prev.h);
+        if (factor !== 1) {
+          const cx = view.vx + (prev.w / 2) / view.scale;
+          const cy = view.vy + (prev.h / 2) / view.scale;
+          const newScale = clamp(view.scale * factor, MIN_SCALE, MAX_SCALE);
+          viewRef.current = { scale: newScale, vx: cx - (W1 / 2) / newScale, vy: cy - (H1 / 2) / newScale };
+        }
+      }
+      prev = { w: W1, h: H1 };
+      applyToDom(true);
+    });
     ro.observe(vp);
     return () => ro.disconnect();
-  }, [drawCanvas]);
+  }, [applyToDom]);
 
   // Re-fit on mode switch (different layout shape). Smoothed always lands on the
   // Generate Map button (nothing is auto-restored), so just blank the gate and
@@ -1780,6 +2056,25 @@ export function SchematicPanel() {
   };
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    // Crop edit: grab a corner handle or the interior; a click elsewhere pans.
+    if (cropEditingRef.current && cropBoxRef.current) {
+      const c = screenToContent(e.clientX, e.clientY);
+      const view = viewRef.current;
+      if (c && view) {
+        const b = cropBoxRef.current;
+        const tol = 12 / view.scale;
+        const near = (hx: number, hy: number) => Math.abs(c.x - hx) <= tol && Math.abs(c.y - hy) <= tol;
+        let h: 'move' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1' | null = null;
+        if (near(b.x0, b.y0)) h = 'x0y0';
+        else if (near(b.x1, b.y0)) h = 'x1y0';
+        else if (near(b.x0, b.y1)) h = 'x0y1';
+        else if (near(b.x1, b.y1)) h = 'x1y1';
+        else if (c.x >= b.x0 && c.x <= b.x1 && c.y >= b.y0 && c.y <= b.y1) h = 'move';
+        if (h) { cropDragRef.current = { h, box0: { ...b }, sx: c.x, sy: c.y }; return; }
+      }
+      setDragging(true);
+      return;
+    }
     if (drawMode) {
       const c = screenToContent(e.clientX, e.clientY);
       if (!c) return;
@@ -1791,6 +2086,45 @@ export function SchematicPanel() {
     setDragging(true);
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (cropEditingRef.current && cropDragRef.current) {
+      const c = screenToContent(e.clientX, e.clientY);
+      if (!c) return;
+      const d = cropDragRef.current;
+      const fr = fullFrameRef.current ?? { x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE };
+      const FX0 = fr.x, FY0 = fr.y, FX1 = fr.x + fr.w, FY1 = fr.y + fr.h;
+      const dx = c.x - d.sx, dy = c.y - d.sy;
+      const MIN = 40;
+      if (d.h === 'move') {
+        const w = d.box0.x1 - d.box0.x0, h = d.box0.y1 - d.box0.y0;
+        let x0 = Math.max(FX0, Math.min(d.box0.x0 + dx, FX1 - w));
+        let y0 = Math.max(FY0, Math.min(d.box0.y0 + dy, FY1 - h));
+        cropBoxRef.current = { x0, y0, x1: x0 + w, y1: y0 + h };
+      } else {
+        const xEdge = d.h.startsWith('x0') ? 'x0' : 'x1';
+        const yEdge = d.h.endsWith('y0') ? 'y0' : 'y1';
+        const anchorX = xEdge === 'x0' ? d.box0.x1 : d.box0.x0;
+        const anchorY = yEdge === 'y0' ? d.box0.y1 : d.box0.y0;
+        const desX = (xEdge === 'x0' ? d.box0.x0 : d.box0.x1) + dx;
+        const desY = (yEdge === 'y0' ? d.box0.y0 : d.box0.y1) + dy;
+        if (cropFreehandRef.current) {
+          const nx0 = Math.max(FX0, Math.min(anchorX, desX)), nx1 = Math.min(FX1, Math.max(anchorX, desX));
+          const ny0 = Math.max(FY0, Math.min(anchorY, desY)), ny1 = Math.min(FY1, Math.max(anchorY, desY));
+          if (nx1 - nx0 >= MIN && ny1 - ny0 >= MIN) cropBoxRef.current = { x0: nx0, y0: ny0, x1: nx1, y1: ny1 };
+        } else {
+          const A = Math.max(1e-3, (cropAspectW || 1) / (cropAspectH || 1));
+          const sgnX = xEdge === 'x0' ? -1 : 1, sgnY = yEdge === 'y0' ? -1 : 1;
+          let w = Math.max(Math.abs(desX - anchorX), Math.abs(desY - anchorY) * A);
+          const maxWx = sgnX < 0 ? anchorX - FX0 : FX1 - anchorX;
+          const maxWy = (sgnY < 0 ? anchorY - FY0 : FY1 - anchorY) * A;
+          w = Math.max(MIN, Math.min(w, maxWx, maxWy));
+          const hh = w / A;
+          const cornerX = anchorX + sgnX * w, cornerY = anchorY + sgnY * hh;
+          cropBoxRef.current = { x0: Math.min(anchorX, cornerX), y0: Math.min(anchorY, cornerY), x1: Math.max(anchorX, cornerX), y1: Math.max(anchorY, cornerY) };
+        }
+      }
+      scheduleDraw(false);
+      return;
+    }
     if (drawMode && drawStartRef.current) {
       const c = screenToContent(e.clientX, e.clientY);
       if (!c) return;
@@ -1806,6 +2140,24 @@ export function SchematicPanel() {
   };
   const endDrag = (e: React.PointerEvent) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
+    if (cropEditingRef.current && cropDragRef.current) {
+      const wasResize = cropDragRef.current.h !== 'move';
+      cropDragRef.current = null;
+      // Freehand resize: reflect the box's aspect back into the W:H inputs (reduced).
+      if (wasResize && cropFreehandRef.current && cropBoxRef.current) {
+        const b = cropBoxRef.current;
+        const w = b.x1 - b.x0, h = b.y1 - b.y0;
+        if (w > 0 && h > 0) {
+          const r = w / h;
+          const aw = r >= 1 ? Math.round(r * 10) : 10;
+          const ah = r >= 1 ? 10 : Math.round(10 / r);
+          const g = gcd(aw, ah);
+          setCropAspectW(Math.max(1, Math.round(aw / g)));
+          setCropAspectH(Math.max(1, Math.round(ah / g)));
+        }
+      }
+      return;
+    }
     if (drawMode && drawStartRef.current) {
       drawStartRef.current = null;
       const b = boxRef.current;
@@ -2205,6 +2557,19 @@ export function SchematicPanel() {
                   Change
                 </button>
               </div>
+              {/* Map: map-shape backdrop + crop (smoothed only). */}
+              {mode === 'smoothed' && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>Map</span>
+                  <button
+                    onClick={() => { setMapPageOpen(true); setSettingsOpen(false); }}
+                    title="Map shape and crop"
+                    style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
               {/* Algorithm: the layout-baking sliders (staged; Save regenerates). */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                 <span style={{ fontSize: 14, fontWeight: 600 }}>Algorithm</span>
@@ -2248,49 +2613,6 @@ export function SchematicPanel() {
                   display={`${stationRadius.toFixed(1)} px`}
                   onChange={setStationRadius}
                 />
-              )}
-              {/* Map shape: the landmass backdrop style. Draw-time; the dropdown and
-                  slider apply instantly with a repaint, no Save/regenerate. */}
-              {mode === 'smoothed' && (
-                <>
-                  <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55, marginTop: 2 }}>
-                    Map shape
-                  </span>
-                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
-                    Landmass
-                    <select
-                      value={landmass}
-                      onChange={(e) => {
-                        const v = e.target.value as 'faithful' | 'rounded' | 'diagram';
-                        requestToggle(() => setLandmass(v));
-                      }}
-                      title="Faithful = real coastlines · Rounded = simplified soft blobs (MTA-style) · Diagram = octilinear blobs (TfL-style)"
-                      style={{
-                        flex: '0 0 auto',
-                        padding: '3px 6px',
-                        borderRadius: 5,
-                        fontSize: 12,
-                        background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5',
-                        color: 'inherit',
-                        border: '1px solid rgba(136,136,136,0.35)',
-                      }}
-                    >
-                      <option value="faithful">Faithful</option>
-                      <option value="rounded">Rounded</option>
-                      <option value="diagram">Diagram</option>
-                    </select>
-                  </label>
-                  <Slider
-                    label="Simplification"
-                    value={landmassDetail}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    display={landmassDetail <= 0.1 ? 'Subtle' : landmassDetail >= 0.9 ? 'Bold' : landmassDetail.toFixed(2)}
-                    onChange={(v) => requestToggle(() => setLandmassDetail(v))}
-                    disabled={landmass === 'faithful'}
-                  />
-                </>
               )}
 
               {/* Sliders only stage values; Save commits them to the renderer,
@@ -2464,7 +2786,7 @@ export function SchematicPanel() {
             insets in those states would paint areas over the Generate button, re-simulate
             against a missing pre, and flicker on geographic, so only mount them when the
             map is up. */}
-        {mode === 'smoothed' && smoothedReady && selections.map((s) => (
+        {mode === 'smoothed' && smoothedReady && !cropEditing && selections.map((s) => (
           <DetailInset
             key={s.id}
             sel={s}
@@ -2472,7 +2794,7 @@ export function SchematicPanel() {
             registerReposition={registerReposition}
             getMainPre={getMainPre}
             getCacheKey={getSubCacheKey}
-            buildInput={buildInput}
+            buildInput={buildMainInput}
             baseSvg={svg}
             showStations={showStations}
             showLabels={showLabels}
@@ -2487,6 +2809,24 @@ export function SchematicPanel() {
             registerExport={registerExport}
           />
         ))}
+        {mode === 'smoothed' && cropEditing && (
+          // Static crop-edit toolbar. The box itself is drawn ON the canvas (world
+          // space) so it tracks pan/zoom; this bar is fixed so it never jitters.
+          <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 8, zIndex: 7 }}>
+            <button
+              onClick={applyCrop}
+              style={{ fontSize: 13, fontWeight: 600, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', background: '#38bdf8', color: '#04283a', border: 'none', boxShadow: '0 1px 4px rgba(0,0,0,0.5)' }}
+            >Apply crop</button>
+            <button
+              onClick={cancelCropEdit}
+              style={{ fontSize: 13, fontWeight: 600, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', background: 'rgba(20,20,24,0.9)', color: '#fff', border: '1px solid rgba(255,255,255,0.3)', boxShadow: '0 1px 4px rgba(0,0,0,0.5)' }}
+            >Cancel</button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#fff', background: 'rgba(20,20,24,0.9)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.3)', cursor: 'pointer', boxShadow: '0 1px 4px rgba(0,0,0,0.5)' }}>
+              <input type="checkbox" checked={cropFreehand} onChange={(e) => setCropFreehand(e.target.checked)} style={{ cursor: 'pointer' }} />
+              Freehand
+            </label>
+          </div>
+        )}
         {mode === 'smoothed' && !smoothedReady && !generating && (
           <div
             style={{
@@ -2580,6 +2920,68 @@ export function SchematicPanel() {
           onBack={() => { setRouteMenuOpen(false); setSettingsOpen(true); }}
           onClose={() => setRouteMenuOpen(false)}
         />
+      )}
+      {mapPageOpen && (
+        <SettingsPage
+          title="Map"
+          dark={api.ui.getResolvedTheme() === 'dark'}
+          footer={saveResetFooter}
+          onBack={() => { setMapPageOpen(false); setSettingsOpen(true); }}
+          onClose={() => setMapPageOpen(false)}
+        >
+          {mode === 'smoothed' && (
+            <>
+              {/* Map shape (draw-time; applies instantly). */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55 }}>Map shape</span>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                Landmass
+                <select
+                  value={landmass}
+                  onChange={(e) => { const v = e.target.value as 'faithful' | 'rounded' | 'diagram'; requestToggle(() => setLandmass(v)); }}
+                  title="Faithful = real coastlines · Rounded = simplified soft blobs (MTA-style) · Diagram = octilinear blobs (TfL-style)"
+                  style={{ flex: '0 0 auto', padding: '3px 6px', borderRadius: 5, fontSize: 12, background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5', color: 'inherit', border: '1px solid rgba(136,136,136,0.35)' }}
+                >
+                  <option value="faithful">Faithful</option>
+                  <option value="rounded">Rounded</option>
+                  <option value="diagram">Diagram</option>
+                </select>
+              </label>
+              <Slider
+                label="Simplification"
+                value={landmassDetail}
+                min={0}
+                max={1}
+                step={0.05}
+                display={landmassDetail <= 0.1 ? 'Subtle' : landmassDetail >= 0.9 ? 'Bold' : landmassDetail.toFixed(2)}
+                onChange={(v) => requestToggle(() => setLandmassDetail(v))}
+                disabled={landmass === 'faithful'}
+              />
+              {/* Crop (bakes; Edit opens the box on the map, Apply regenerates). */}
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', opacity: 0.55, marginTop: 4 }}>Crop</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <span style={{ opacity: 0.85 }}>Aspect</span>
+                <input type="number" min={1} max={100} value={cropAspectW} aria-label="Crop aspect width"
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (Number.isFinite(n) && n >= 1 && n <= 100) setCropAspectW(n); }}
+                  style={{ width: 44, padding: '4px 6px', borderRadius: 5, border: '1px solid rgba(136,136,136,0.5)', background: 'transparent', color: 'inherit', fontSize: 12 }} />
+                <span style={{ opacity: 0.6 }}>:</span>
+                <input type="number" min={1} max={100} value={cropAspectH} aria-label="Crop aspect height"
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (Number.isFinite(n) && n >= 1 && n <= 100) setCropAspectH(n); }}
+                  style={{ width: 44, padding: '4px 6px', borderRadius: 5, border: '1px solid rgba(136,136,136,0.5)', background: 'transparent', color: 'inherit', fontSize: 12 }} />
+                <button onClick={startCropEdit}
+                  style={{ fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'inherit', border: '1px solid rgba(136,136,136,0.5)' }}>
+                  Edit crop
+                </button>
+                {cropBbox && (
+                  <button onClick={clearCrop}
+                    style={{ fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'inherit', border: '1px solid rgba(136,136,136,0.5)' }}>
+                    Off
+                  </button>
+                )}
+              </div>
+              {cropBbox && <span style={{ fontSize: 11, opacity: 0.6 }}>Cropped to {cropAspectW}:{cropAspectH}</span>}
+            </>
+          )}
+        </SettingsPage>
       )}
       {algorithmPageOpen && (
         <SettingsPage
