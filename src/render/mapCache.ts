@@ -109,6 +109,11 @@ const preKey = (city: string) => `${KEY}:pre:${city}`;
 const selKey = (city: string) => `${KEY}:sel:${city}`;
 const setKey = (city: string) => `${KEY}:set:${city}`;
 const subKey = (city: string) => `${KEY}:sub:${city}`;
+// Dedicated slot for the UNCROPPED "full map" layout, kept ALONGSIDE the main
+// :pre: slot (which holds the currently-shown layout — a crop when one is active).
+// So editing a cropped map can swap to the full map instantly, even after reload.
+const fullFpKey = (city: string) => `${KEY}:fullfp:${city}`;
+const fullPreKey = (city: string) => `${KEY}:fullpre:${city}`;
 const stamp = (fp: string) => `v${VERSION}:${fp}`;
 
 /** Cheap hit test: is there a cached entry for `city` whose fingerprint matches
@@ -172,13 +177,10 @@ export function writeCachedPre(
   } catch {
     // Quota: evict every OTHER city's cache, then retry once.
     try {
-      const keepFp = fpKey(city);
-      const keepPre = preKey(city);
-      const keepSel = selKey(city);
-      const keepSet = setKey(city);
+      const keep = new Set([fpKey(city), preKey(city), selKey(city), setKey(city), fullFpKey(city), fullPreKey(city)]);
       for (let i = store.length - 1; i >= 0; i--) {
         const k = store.key(i);
-        if (k && k.startsWith(KEY) && k !== keepFp && k !== keepPre && k !== keepSel && k !== keepSet) store.removeItem(k);
+        if (k && k.startsWith(KEY) && !keep.has(k)) store.removeItem(k);
       }
       return write();
     } catch {
@@ -191,6 +193,45 @@ export function writeCachedPre(
       }
       return false;
     }
+  }
+}
+
+/** Cheap hit test for the full-map slot (reads only the tiny :fullfp: key). */
+export function peekFullPre(city: string, fp: string, store: KVStore | null = defaultStore()): boolean {
+  if (!store || !city) return false;
+  try { return store.getItem(fullFpKey(city)) === stamp(fp); } catch { return false; }
+}
+
+/** Read the cached UNCROPPED full-map layout for `city` iff it matches `fp` (the
+ *  uncropped input fingerprint). Same provenance guard as readCachedPre. */
+export function readFullPre(city: string, fp: string, store: KVStore | null = defaultStore()): SmoothedPrecomputed | string | null {
+  if (!store || !city) return null;
+  try {
+    if (store.getItem(fullFpKey(city)) !== stamp(fp)) return null;
+    const preStr = store.getItem(fullPreKey(city));
+    if (!preStr) return null;
+    const pre = deserializePre(preStr);
+    if (typeof pre !== 'string' && pre.builtFp !== fp) return null;
+    return pre;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the UNCROPPED full-map layout in its dedicated slot, so a later session
+ *  that loads a crop of this city can edit it instantly. Best-effort (like
+ *  writeCachedPre); a quota failure just means the next edit re-computes it. */
+export function writeFullPre(city: string, fp: string, pre: SmoothedPrecomputed | string, store: KVStore | null = defaultStore()): boolean {
+  if (!store || !city) return false;
+  if (typeof pre !== 'string' && pre.builtFp !== fp) return false;
+  try {
+    store.setItem(fullPreKey(city), serializePre(pre));
+    store.setItem(fullFpKey(city), stamp(fp));
+    return true;
+  } catch {
+    // Quota: drop the full-map slot rather than the main layout; the edit just re-computes.
+    try { store.removeItem(fullPreKey(city)); store.removeItem(fullFpKey(city)); } catch { /* ignore */ }
+    return false;
   }
 }
 

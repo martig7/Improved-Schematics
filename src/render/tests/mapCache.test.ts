@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readCachedPre, writeCachedPre, clearCachedPre, clearCityLayout, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from '../mapCache';
+import { readCachedPre, writeCachedPre, readFullPre, writeFullPre, clearCachedPre, clearCityLayout, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, readSubPre, writeSubPre, pruneSubPres, type KVStore } from '../mapCache';
 
 // A precompute serializes via serializePre; a string `pre` (the degenerate
 // no-layout case) round-trips trivially, which is enough to exercise the cache.
@@ -29,6 +29,18 @@ test('mapCache: a new fingerprint overwrites; the old one no longer hits', () =>
   writeCachedPre('nyc', 'fp2', 'P2', s);
   assert.equal(readCachedPre('nyc', 'fp2', s), 'P2');
   assert.equal(readCachedPre('nyc', 'fp1', s), null);
+});
+
+test('mapCache: the full-map slot coexists with the main slot (a crop does not evict the full map)', () => {
+  const s = fakeStore();
+  // Uncropped full map cached in its dedicated slot...
+  writeFullPre('nyc', 'fpFull', 'FULL', s);
+  // ...then a crop overwrites the MAIN slot.
+  writeCachedPre('nyc', 'fpCrop', 'CROP', s);
+  assert.equal(readCachedPre('nyc', 'fpCrop', s), 'CROP', 'main slot holds the crop');
+  assert.equal(readFullPre('nyc', 'fpFull', s), 'FULL', 'full map still cached — instant edit after reload');
+  assert.equal(readFullPre('nyc', 'fpCrop', s), null, 'full slot fp-gated');
+  assert.equal(readCachedPre('nyc', 'fpFull', s), null, 'the main slot is the crop, not the full map');
 });
 
 test('mapCache: clear removes one city, or all', () => {
