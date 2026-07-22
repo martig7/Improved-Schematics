@@ -50,3 +50,23 @@ test('persist: deserializeMap rejects a non-map file', () => {
   assert.throws(() => deserializeMap('{"hello":"world"}'));
   assert.throws(() => deserializeMap('not json'));
 });
+
+test('persist: a restored pre carries a project() that inverts its unproject', () => {
+  // A synthetic separable projection: lng [10,20] -> x [0,W] (increasing),
+  // lat [40,50] -> y [H,0] (decreasing; north at the top), matching the real
+  // warped projection's monotonicity so the sampled tables reconstruct exactly.
+  const W = 1000, H = 800;
+  const unproject = ([x, y]: [number, number]): [number, number] => [10 + (x / W) * 10, 50 - (y / H) * 10];
+  const bundle = { ...baseBundle(), pre: { width: W, height: H, unproject } as never };
+  const out = deserializeMap(serializeMap(bundle));
+  const pre = out.pre as unknown as { project: (c: [number, number]) => [number, number]; unproject: (p: [number, number]) => [number, number] };
+  assert.equal(typeof pre.project, 'function');
+  // Forward matches the true projection (linear map → exact table interpolation).
+  const p = pre.project([15, 45]);
+  assert.ok(Math.abs(p[0] - 500) < 1e-6 && Math.abs(p[1] - 400) < 1e-6, `project([15,45]) ≈ [500,400], got ${p}`);
+  // Round-trips both ways.
+  for (const c of [[12, 42], [15, 45], [18, 48]] as [number, number][]) {
+    const back = pre.unproject(pre.project(c));
+    assert.ok(Math.abs(back[0] - c[0]) < 1e-6 && Math.abs(back[1] - c[1]) < 1e-6, `round-trip ${c} → ${back}`);
+  }
+});

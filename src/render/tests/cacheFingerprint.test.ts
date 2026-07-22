@@ -43,6 +43,18 @@ test('fingerprint changes on each layout-affecting input', () => {
   assert.notEqual(fp((i) => (i.options!.theme!.lineWidth = 8)), ref, 'lineWidth (feeds dHat)');
   assert.notEqual(fp((i) => (i.options!.dark = true)), ref, 'dark');
   assert.notEqual(fp((i) => (i.geography = undefined)), ref, 'geography presence (bug-1 token)');
+  assert.notEqual(fp((i) => (i.options!.cropBbox = [-122.1, 47.0, -122.0, 47.05])), ref, 'crop bbox');
+  assert.notEqual(fp((i) => (i.options!.cropAspectW = 16)), ref, 'crop aspect W');
+  assert.notEqual(fp((i) => (i.options!.cropAspectH = 9)), ref, 'crop aspect H');
+});
+
+test('crop bbox is rounded (r5) in the fingerprint — sub-metre drift keeps the key', () => {
+  const withCrop = (bbox: [number, number, number, number]) => { const i = base(); i.options!.cropBbox = bbox; return fingerprintInputs(i).fp; };
+  const a = withCrop([-122.123456, 47.111111, -122.0, 47.2]);
+  // A change below the 1e-5 rounding must NOT bust the cache...
+  assert.equal(withCrop([-122.1234561, 47.1111112, -122.0, 47.2]), a, 'sub-r5 drift stable');
+  // ...but a change above it must.
+  assert.notEqual(withCrop([-122.124, 47.111111, -122.0, 47.2]), a, 'above-r5 change busts');
 });
 
 test('fingerprint ignores draw-only changes (none of station name... wait, name IS in it)', () => {

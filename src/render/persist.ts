@@ -73,6 +73,26 @@ function rebuildUnproject(ux: number[], uy: number[], w: number, h: number): Smo
   };
   return ([px, py]) => [at((px / w) * N, ux), at((py / h) * N, uy)];
 }
+// Forward projection (geographic -> render pixel) rebuilt by INVERTING the same
+// two monotone sample tables (ux increases with render-x, uy decreases with
+// render-y). No extra serialized data. Sample-accurate, for displaying a stored
+// crop box while editing.
+function rebuildProject(ux: number[], uy: number[], w: number, h: number): SmoothedPrecomputed['project'] {
+  const invIdx = (val: number, a: number[]): number => {
+    const inc = a[N] >= a[0];
+    if (inc) { if (val <= a[0]) return 0; if (val >= a[N]) return N; }
+    else { if (val >= a[0]) return 0; if (val <= a[N]) return N; }
+    let lo = 0, hi = N;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      const before = inc ? a[mid] <= val : a[mid] >= val;
+      if (before) lo = mid; else hi = mid;
+    }
+    const denom = a[lo + 1] - a[lo];
+    return lo + (denom === 0 ? 0 : (val - a[lo]) / denom);
+  };
+  return ([lng, lat]) => [(invIdx(lng, ux) / N) * w, (invIdx(lat, uy) / N) * h];
+}
 
 // Just the precompute (Maps + sampled unproject), for the fingerprinted layout
 // cache (mapCache.ts) where only `pre` is stored per city. `unproject` is a
@@ -87,6 +107,7 @@ export function deserializePre(str: string): SmoothedPrecomputed | string {
   if (o.unproj && typeof o.pre !== 'string') {
     const pre = o.pre as SmoothedPrecomputed;
     pre.unproject = rebuildUnproject(o.unproj.ux, o.unproj.uy, pre.width, pre.height);
+    pre.project = rebuildProject(o.unproj.ux, o.unproj.uy, pre.width, pre.height);
   }
   return o.pre;
 }
@@ -103,6 +124,7 @@ export function deserializeMap(json: string): MapBundle {
   if (obj.unproj && typeof obj.pre !== 'string') {
     const pre = obj.pre as SmoothedPrecomputed;
     pre.unproject = rebuildUnproject(obj.unproj.ux, obj.unproj.uy, pre.width, pre.height);
+    pre.project = rebuildProject(obj.unproj.ux, obj.unproj.uy, pre.width, pre.height);
   }
   return obj;
 }

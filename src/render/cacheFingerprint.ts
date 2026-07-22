@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 28; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 29; // bump to bust all fingerprints when the renderer's inputs change
 //
 // Each SCHEMA bump corresponds to a renderer-side change that alters the octi
 // layout (or the support-graph topology, or capsule placement) while the raw
@@ -49,6 +49,9 @@ export interface FingerprintInput {
     boxPct?: number;
     declutterWarp?: number;
     aestheticWarp?: number;
+    cropAspectW?: number;
+    cropAspectH?: number;
+    cropBbox?: [number, number, number, number];
     stationSplit?: boolean;
     lineScale?: number;
     dark?: boolean;
@@ -130,6 +133,9 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.boxPct ?? '',
     o.declutterWarp ?? '',
     o.aestheticWarp ?? '',
+    o.cropAspectW ?? '',
+    o.cropAspectH ?? '',
+    o.cropBbox ? o.cropBbox.map(r5).join(',') : '',
     o.stationSplit ? 's' : '',
     o.lineScale ?? '',
     o.dark ? 'd' : 'l',

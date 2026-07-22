@@ -151,6 +151,20 @@ export interface SchematicOptions {
    *  core does not visibly shove the surrounding field. Gates the density oracle
    *  on > 0. Supersedes boxPct when set. Bakes into the layout (fingerprint). */
   aestheticWarp?: number;
+  /** Smoothed mode only: CROP aspect ratio numerator/denominator (the two W:H
+   *  boxes). Used with cropBbox to shape the sub-canvas: the longer side keeps
+   *  the base canvas size and the shorter side is derived from this ratio, so a
+   *  cropped region magnifies to fill the canvas. Only meaningful when cropBbox
+   *  is set. Bakes into the layout (fingerprint). */
+  cropAspectW?: number;
+  cropAspectH?: number;
+  /** Smoothed mode only: CROP region as a GEOGRAPHIC bbox [lng0, lat0, lng1, lat1].
+   *  When set, the layout is recomputed on just the sub-network inside this box
+   *  (plus a one-stop ring), reframed and magnified into the aspect-shaped canvas
+   *  so the region gets more room. Absent = no crop (the full square). Stored in
+   *  geographic space so it survives layout changes; the panel converts to/from
+   *  pixels via the projection. Bakes into the layout (fingerprint). */
+  cropBbox?: [number, number, number, number];
   /** Smoothed mode only (BETA): build one graph node per member STATION of a
    *  multi-station complex (platforms at their real coordinates) instead of one
    *  node per station group. Parallel trunks through a complex stay

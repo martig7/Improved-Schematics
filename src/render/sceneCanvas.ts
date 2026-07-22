@@ -115,6 +115,16 @@ export interface DrawSceneOpts {
   /** dense box-warp regions in world coords, drawn as a debug overlay on top of
    *  everything (the "show warp boxes" toggle). Display-only. */
   warpBoxes?: ClipBox[];
+  /** Clip the whole draw to the scene bounds [0,0,width,height] (the viewBox). For
+   *  a CROP the layout deliberately places geography and boundary exit stubs just
+   *  outside the box, relying on the SVG viewBox to clip them; the canvas has no
+   *  viewBox, so this reproduces that clip. Off for normal maps so edge labels
+   *  that overhang the canvas still show when panned. */
+  clipToBounds?: boolean;
+  /** Crop-edit overlay: the working crop box in world coords. Drawn LAST, under the
+   *  camera (so it tracks pan/zoom with the map, no DOM rehome): a dim mask outside
+   *  the box, a bright outline, and screen-sized corner handles. */
+  cropEdit?: { box: ClipBox };
 }
 
 export function drawScene(
@@ -134,6 +144,18 @@ export function drawScene(
   // width w then renders at w*scale css px; a screen stroke uses w/scale so it
   // renders at a constant w css px.
   const camera = () => ctx.setTransform(scale * dpr, 0, 0, scale * dpr, -vx * scale * dpr, -vy * scale * dpr);
+
+  // Crop clip: keep only what falls inside the scene bounds (the viewBox), so a
+  // crop's off-box geography / boundary stubs are cut exactly as the SVG viewBox
+  // cuts them. Set under the camera so the rect is world coords; the device-space
+  // clip then persists across the identical later camera() calls. Restored at the end.
+  if (opts.clipToBounds) {
+    camera();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, prepared.scene.width, prepared.scene.height);
+    ctx.clip();
+  }
 
   const drawPrim = (p: Prim): void => {
     ctx.globalAlpha = p.opacity ?? 1;
@@ -278,6 +300,37 @@ export function drawScene(
     }
     ctx.setLineDash([]);
   }
+
+  // Crop-edit overlay (LAST, on top): the working crop box drawn under the camera,
+  // so it pans/zooms with the map. A dim mask outside it, a bright outline, and
+  // screen-constant corner handles.
+  const ce = opts.cropEdit;
+  if (ce) {
+    const b = ce.box;
+    camera();
+    ctx.globalAlpha = 1;
+    const big = Math.max(prepared.scene.width, prepared.scene.height) * 100;
+    const mask = new Path2D();
+    mask.rect(-big, -big, big * 2, big * 2);
+    mask.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fill(mask, 'evenodd');
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2 / scale;
+    ctx.setLineDash([]);
+    ctx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    const hh = 7 / scale; // handle half-size, constant on screen
+    ctx.fillStyle = '#ffffff';
+    ctx.lineWidth = 1.5 / scale;
+    for (const [cx, cy] of [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]] as [number, number][]) {
+      ctx.beginPath();
+      ctx.rect(cx - hh, cy - hh, 2 * hh, 2 * hh);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  if (opts.clipToBounds) ctx.restore();
 }
 
 function roundRect(

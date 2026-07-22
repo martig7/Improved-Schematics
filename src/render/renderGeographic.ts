@@ -491,10 +491,20 @@ export interface SmoothedPrecomputed {
    *  pixel back to its geographic coord. Used by the magnifier inset to unproject
    *  the user's drawn box into the geographic bounds to crop on. */
   unproject: (p: Pixel) => Coordinate;
+  /** Forward warped projection: a geographic coord to its render pixel (the
+   *  inverse of unproject). Used to display a stored geographic crop box back on
+   *  this layout while editing it. On a restored pre this is rebuilt by inverting
+   *  the serialized unproject tables, so it is sample-accurate (display only). */
+  project: (c: Coordinate) => Pixel;
   /** Pixel extent of the geography's bbox through the warped projection — i.e.
    *  where the cropped region lands in this render. For the inset, this frames
    *  the view on exactly the selected geography. Undefined with no geography. */
   geoBboxFrame?: FrameRect;
+  /** True when this layout is a CROP (detailCrop framing): the canvas is framed
+   *  tight on the drawn box, with geography / boundary stubs deliberately just
+   *  outside it. The canvas display clips to the scene bounds so those don't show
+   *  (the SVG relies on its viewBox for the same clip). */
+  detailCrop?: boolean;
   /** The toggle-independent ribbon geometry (lane bundles + the expensive marker
    *  placement solver), memoized on first draw by drawSmoothed and serialized with
    *  the precompute. When present, a draw (and every cache read) skips the 80-90%
@@ -919,16 +929,13 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       if (p[1] > mxY) mxY = p[1];
     }
     // Detail-area crops: the stamped bbox IS the deliverable frame (the drawn
-    // box's geographic preimage). Frame the canvas on THAT rect, padded by a
-    // proportional margin, instead of the content bbox. The one-hop ring
-    // stations and their track courses reach arbitrarily far outside the drawn
-    // region and would otherwise squash the frame to a sliver of the canvas
-    // (wrong aspect) or push it off-canvas entirely (a clamped frame makes the
-    // popout show a truncated region). Proportional per-axis padding keeps
-    // frame aspect == canvas aspect == the drawn box's aspect, and the margin
-    // shows the margin-clipped geography continuing past the frame edge just
-    // like the main map. Ring content beyond the margin draws off-canvas, which
-    // is harmless: the popout's viewBox is the frame. (See SchematicOptions.detailCrop.)
+    // box's geographic preimage). Frame the canvas TIGHT on THAT rect, not the
+    // content bbox. Boundary exit nodes and their track courses reach outside the
+    // drawn region and would otherwise squash the frame to a sliver of the canvas
+    // (wrong aspect) or push it off-canvas entirely. Framing on the box keeps
+    // frame aspect == canvas aspect == the drawn box's aspect; content beyond the
+    // box draws off-canvas, which is harmless (the viewBox is the frame). The
+    // geography (clipped to box+0.35) still fills to the edge. (See detailCrop.)
     if (opts.detailCrop && input.geography) {
       const [g0, g1, g2, g3] = input.geography.bbox;
       let fx0 = Infinity, fy0 = Infinity, fx1 = -Infinity, fy1 = -Infinity;
@@ -940,11 +947,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
         if (p[1] > fy1) fy1 = p[1];
       }
       if (fx0 < fx1 && fy0 < fy1) {
-        const pad = 0.25; // per-axis margin fraction (< cropSubgraph's geo clip pad)
-        mnX = fx0 - (fx1 - fx0) * pad;
-        mxX = fx1 + (fx1 - fx0) * pad;
-        mnY = fy0 - (fy1 - fy0) * pad;
-        mxY = fy1 + (fy1 - fy0) * pad;
+        // Frame tight on the drawn box (no margin): the crop is WYSIWYG. The
+        // geography is clipped to box+0.35 and boundary exit nodes sit at box+0.5,
+        // so the backdrop still fills to the edge and boundary lines still exit it.
+        mnX = fx0; mxX = fx1;
+        mnY = fy0; mxY = fy1;
       }
     }
     if (mnX < mxX && mnY < mxY) {
@@ -990,6 +997,10 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
       return [(a + b) / 2, (c + d) / 2];
     };
   })();
+  // Forward warped projection (geographic -> render pixel), the exact inverse of
+  // unproject on a live pre. Restored pres rebuild this from the serialized
+  // unproject tables (see persist.ts).
+  const project = (c: Coordinate): Pixel => proj.toSVG(c) as Pixel;
   // Where the geography bbox lands in this render. Frames the inset on exactly
   // the selected region. Separable warp => the four bbox corners give the extent.
   const gbb = input.geography?.bbox;
@@ -1464,7 +1475,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // Frame (computed above) hugs the same backdrop extent geographic does, so
   // smoothed fit/export match. When undefined (no geography), renderRibbons
   // frames on the rendered network instead.
-  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, geoBboxFrame, denseBoxesPx, builtFp };
+  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, project, geoBboxFrame, detailCrop: !!opts.detailCrop, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
