@@ -344,6 +344,10 @@ export function SchematicPanel() {
   const [mapTheme, setMapTheme] = useState<'auto' | 'light' | 'dark'>(
     rvis.mapTheme === 'light' || rvis.mapTheme === 'dark' ? rvis.mapTheme : 'auto',
   );
+  // Bumped by the theme-check button to force a re-read of the app theme and a
+  // redraw. Needed because the mod API has no theme-change event, so 'auto' can
+  // otherwise lag the app theme until the panel re-renders for another reason.
+  const [themeTick, setThemeTick] = useState(0);
   const mapDark = mapTheme === 'auto' ? api.ui.getResolvedTheme() === 'dark' : mapTheme === 'dark';
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
@@ -1000,7 +1004,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput, mapDark]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput, mapDark, themeTick]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -2991,19 +2995,30 @@ export function SchematicPanel() {
           onBack={() => { setMapPageOpen(false); setSettingsOpen(true); }}
           onClose={() => setMapPageOpen(false)}
         >
-          {/* Theme (draw-time; applies instantly, both modes). */}
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
-            Theme
-            <select
-              value={mapTheme}
-              onChange={(e) => setMapTheme(e.target.value as 'auto' | 'light' | 'dark')}
-              style={{ flex: '0 0 auto', padding: '3px 6px', borderRadius: 5, fontSize: 12, background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5', color: 'inherit', border: '1px solid rgba(136,136,136,0.35)' }}
-            >
-              <option value="auto">Auto</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
-          </label>
+          {/* Theme (draw-time; applies instantly, both modes). Check re-reads the
+              app theme and redraws (Auto has no live event to hang off). */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+            <span>Theme</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => setThemeTick((t) => t + 1)}
+                title="Re-read the app theme and redraw"
+                style={{ padding: '3px 8px', borderRadius: 5, fontSize: 12, cursor: 'pointer', background: 'transparent', color: 'inherit', border: '1px solid rgba(136,136,136,0.5)' }}
+              >
+                Check
+              </button>
+              <select
+                value={mapTheme}
+                onChange={(e) => setMapTheme(e.target.value as 'auto' | 'light' | 'dark')}
+                style={{ flex: '0 0 auto', padding: '3px 6px', borderRadius: 5, fontSize: 12, background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5', color: 'inherit', border: '1px solid rgba(136,136,136,0.35)' }}
+              >
+                <option value="auto">Auto</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </span>
+          </div>
           {mode === 'smoothed' && (
             <>
               {/* Map shape (draw-time; applies instantly). */}
