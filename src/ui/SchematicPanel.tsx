@@ -270,6 +270,7 @@ type RestoredSettings = {
   neighborhoodZoom?: number;
   neighborhoodPad?: number;
   stationDesign?: string;
+  mapTheme?: 'auto' | 'light' | 'dark';
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
   applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
@@ -338,6 +339,12 @@ export function SchematicPanel() {
   const [neighborhoodZoom, setNeighborhoodZoom] = useState(rvis.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
   const [neighborhoodPad, setNeighborhoodPad] = useState(rvis.neighborhoodPad ?? DEFAULT_LABEL_PAD);
   const [stationDesign, setStationDesign] = useState(rvis.stationDesign ?? DEFAULT_STATION_DESIGN);
+  // Map theme: 'auto' follows the app theme, 'light'/'dark' force it. Draw-time
+  // (a repaint recolours the cached layout, no octi re-run), like stationDesign.
+  const [mapTheme, setMapTheme] = useState<'auto' | 'light' | 'dark'>(
+    rvis.mapTheme === 'light' || rvis.mapTheme === 'dark' ? rvis.mapTheme : 'auto',
+  );
+  const mapDark = mapTheme === 'auto' ? api.ui.getResolvedTheme() === 'dark' : mapTheme === 'dark';
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
   // The Routes overlay (opened from Settings): a grid of routes + per-route toggle.
@@ -631,6 +638,7 @@ export function SchematicPanel() {
     setNeighborhoodZoom(v.neighborhoodZoom ?? DEFAULT_LABEL_ZOOM);
     setNeighborhoodPad(v.neighborhoodPad ?? DEFAULT_LABEL_PAD);
     setStationDesign(v.stationDesign ?? DEFAULT_STATION_DESIGN);
+    setMapTheme(v.mapTheme === 'light' || v.mapTheme === 'dark' ? v.mapTheme : 'auto');
     setLandmass(v.landmass ?? 'faithful');
     setLandmassDetail(v.landmassDetail ?? 0.5);
     setLabelScale(v.labelScale ?? DEFAULT_LABEL_SCALE);
@@ -671,7 +679,7 @@ export function SchematicPanel() {
     if (!mountCity) return;
     const shared = readSettings(mountCity) as RestoredSettings | null;
     if (!shared) return;
-    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodZoom: shared.neighborhoodZoom, neighborhoodPad: shared.neighborhoodPad, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign };
+    const visual = { showStations: shared.showStations, showLabels: shared.showLabels, showNeighborhoods: shared.showNeighborhoods, neighborhoodFont: shared.neighborhoodFont, neighborhoodZoom: shared.neighborhoodZoom, neighborhoodPad: shared.neighborhoodPad, applied: shared.applied, labelScale: shared.labelScale, stationDesign: shared.stationDesign, mapTheme: shared.mapTheme };
     for (const m of ['geographic', 'smoothed'] as const) {
       if (readModeSettings(mountCity, m) == null) writeModeSettings(mountCity, m, visual);
     }
@@ -774,7 +782,7 @@ export function SchematicPanel() {
   // to trackGroupId grouping if absent. Extracted to a callback so the magnifier
   // inset can build the SAME input to crop + re-simulate a sub-network.
   const buildInput = useCallback(() => {
-    const dark = api.ui.getResolvedTheme() === 'dark';
+    const dark = mapDark;
     // Drop hidden routes (and their now-orphaned stNodes/stations/tracks) before layout,
     // so the fingerprint and the render both reflect the reduced network.
     const net = filterRoutesByEnabled(
@@ -815,7 +823,7 @@ export function SchematicPanel() {
         },
       },
     }, mapBearing);
-  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing]);
+  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing, mapDark]);
 
   // The CURRENT base input the whole UI operates on: the raw uncropped input, or
   // (when a crop is active and not being edited) the cropped-and-magnified
@@ -979,7 +987,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -992,7 +1000,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput, mapDark]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -1053,10 +1061,10 @@ export function SchematicPanel() {
       // and the shared export prefs separately. modeRef (not a dep) so a mode switch alone
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
-      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, labelScale, stationDesign });
+      writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, labelScale, stationDesign, mapTheme });
       writeSettings(city, { rasterScale, jpegQuality, exportFormat });
     }
-  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mountCity]);
+  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mapTheme, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -1192,7 +1200,7 @@ export function SchematicPanel() {
         return;
       }
       if (fmt.id === 'jpeg') {
-        ctx.fillStyle = api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#ffffff';
+        ctx.fillStyle = mapDark ? '#18181b' : '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -1225,7 +1233,7 @@ export function SchematicPanel() {
     // foreign-city file then re-saving without Generate would mislabel it (and read the wrong
     // city's mode settings). Falls back to the live city when nothing's been loaded.
     const city = settingsCityRef.current || modState.cityCode || api.utils.getCityCode?.() || 'map';
-    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign };
+    const settings = { mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mapTheme };
     // TRUE provenance: the fp the displayed layout was BUILT under (stamped by
     // precomputeSmoothed itself), never a remembered ref that can desync from
     // the displayed pre across load/generate sequences (a remembered ref can
@@ -1271,6 +1279,7 @@ export function SchematicPanel() {
       neighborhoodZoom?: number;
       neighborhoodPad?: number;
       stationDesign?: string;
+      mapTheme?: 'auto' | 'light' | 'dark';
       landmass?: 'faithful' | 'rounded' | 'diagram';
       landmassDetail?: number;
       applied?: typeof applied;
@@ -1323,6 +1332,7 @@ export function SchematicPanel() {
     if (s.neighborhoodZoom != null) setNeighborhoodZoom(clamp(s.neighborhoodZoom, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX));
     if (s.neighborhoodPad != null) setNeighborhoodPad(clamp(s.neighborhoodPad, LABEL_PAD_MIN, LABEL_PAD_MAX));
     if (typeof s.stationDesign === 'string') setStationDesign(STATION_DESIGNS.some((d) => d.id === s.stationDesign) ? s.stationDesign : DEFAULT_STATION_DESIGN);
+    if (s.mapTheme === 'light' || s.mapTheme === 'dark' || s.mapTheme === 'auto') setMapTheme(s.mapTheme);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
     if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
@@ -1705,7 +1715,7 @@ export function SchematicPanel() {
     // this city can edit it instantly (the main slot holds the crop, not this).
     if (city) writeFullPre(city, fp, pre);
     const out: SceneOut = { scene: null };
-    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes }, out);
+    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark }, out);
     const scene = out.scene ?? sceneFromSvg(drawn);
     fullSceneRef.current = prepareScene(scene);
     fullPreRef.current = pre;
@@ -2244,7 +2254,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail]);
+  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, mapDark]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -2980,6 +2990,19 @@ export function SchematicPanel() {
           onBack={() => { setMapPageOpen(false); setSettingsOpen(true); }}
           onClose={() => setMapPageOpen(false)}
         >
+          {/* Theme (draw-time; applies instantly, both modes). */}
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+            Theme
+            <select
+              value={mapTheme}
+              onChange={(e) => setMapTheme(e.target.value as 'auto' | 'light' | 'dark')}
+              style={{ flex: '0 0 auto', padding: '3px 6px', borderRadius: 5, fontSize: 12, background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5', color: 'inherit', border: '1px solid rgba(136,136,136,0.35)' }}
+            >
+              <option value="auto">Auto</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
           {mode === 'smoothed' && (
             <>
               {/* Map shape (draw-time; applies instantly). */}

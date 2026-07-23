@@ -14,7 +14,7 @@ import type { Route, Track, Station } from '../types/game-state';
 import type { GeographyData } from '../geography/types';
 import { getOrBuildStationGroups } from './layout/graph';
 
-const SCHEMA = 29; // bump to bust all fingerprints when the renderer's inputs change
+const SCHEMA = 30; // bump to bust all fingerprints when the renderer's inputs change
 //
 // Each SCHEMA bump corresponds to a renderer-side change that alters the octi
 // layout (or the support-graph topology, or capsule placement) while the raw
@@ -138,7 +138,9 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.cropBbox ? o.cropBbox.map(r5).join(',') : '',
     o.stationSplit ? 's' : '',
     o.lineScale ?? '',
-    o.dark ? 'd' : 'l',
+    // dark is NOT here: theme is applied at draw time (only the geography ring
+    // fills depend on it, and those are recoloured on the fly), so a light/dark
+    // switch reuses the same cached layout and merely repaints.
     o.theme?.lineWidth ?? '',
   ].join('|');
 

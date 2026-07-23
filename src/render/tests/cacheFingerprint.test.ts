@@ -41,7 +41,6 @@ test('fingerprint changes on each layout-affecting input', () => {
   assert.notEqual(fp((i) => (i.options!.boxFrac = 0.6)), ref, 'boxFrac (box density cutoff)');
   assert.notEqual(fp((i) => (i.options!.stationSplit = true)), ref, 'stationSplit (beta complex split)');
   assert.notEqual(fp((i) => (i.options!.theme!.lineWidth = 8)), ref, 'lineWidth (feeds dHat)');
-  assert.notEqual(fp((i) => (i.options!.dark = true)), ref, 'dark');
   assert.notEqual(fp((i) => (i.geography = undefined)), ref, 'geography presence (bug-1 token)');
   assert.notEqual(fp((i) => (i.options!.cropBbox = [-122.1, 47.0, -122.0, 47.05])), ref, 'crop bbox');
   assert.notEqual(fp((i) => (i.options!.cropAspectW = 16)), ref, 'crop aspect W');
@@ -66,4 +65,8 @@ test('fingerprint ignores draw-only changes (none of station name... wait, name 
   const drift = base();
   drift.geography = { bbox: [9, 9, 10, 10], water: [{}], green: [] } as never;
   assert.equal(fingerprintInputs(drift).fp, ref, 'bbox drift (same counts) must not invalidate');
+  // dark is DRAW-time (theme recolours on repaint), so it must NOT change the fp:
+  // light and dark share one cached layout.
+  const darkFp = base(); darkFp.options!.dark = true;
+  assert.equal(fingerprintInputs(darkFp).fp, ref, 'dark is draw-time and shares the cached layout');
 });

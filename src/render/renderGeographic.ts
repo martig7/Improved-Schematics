@@ -1585,7 +1585,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes; dark?: boolean },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1606,14 +1606,27 @@ export function drawSmoothed(
         hullPx: pre.geoHullPx,
       }
     : undefined;
+  // Theme is DRAW-TIME: an override recolors the map without re-running the
+  // layout. Only two baked values depend on it (the geography ring fills); the
+  // ring POSITIONS and everything else are theme-free. When the requested theme
+  // differs from the one baked into the pre, swap the two fills for the standard
+  // light/dark colours (a customised generate theme is only honoured in its own
+  // mode; the flipped mode uses the defaults).
+  const dark = opts.dark ?? pre.dark;
+  const rings = pre.geoRingsPx && dark !== pre.dark
+    ? { ...pre.geoRingsPx,
+        greenFill: dark ? DARK_THEME.green : DEFAULT_OPTIONS.theme.green,
+        waterFill: dark ? DARK_THEME.water : DEFAULT_OPTIONS.theme.water }
+    : pre.geoRingsPx;
   // The styled build unions + retraces the whole geography (~100ms on a big
-  // city), so memoize per (pre, style) so label/station toggles just repaint.
-  const lmKey = style ? JSON.stringify(style) : '';
+  // city), so memoize per (pre, style, dark) so label/station/theme toggles just
+  // repaint.
+  const lmKey = (dark ? 'd|' : 'l|') + (style ? JSON.stringify(style) : '');
   const cached = lmBackdropCache.get(pre);
   let backdrop: string;
   if (cached && cached.key === lmKey) backdrop = cached.svg;
   else {
-    backdrop = pre.geoRingsPx ? backdropFromRings(pre.geoRingsPx, { w: pre.width, h: pre.height }, style) : '';
+    backdrop = rings ? backdropFromRings(rings, { w: pre.width, h: pre.height }, style) : '';
     lmBackdropCache.set(pre, { key: lmKey, svg: backdrop });
   }
   const args = {
@@ -1622,7 +1635,7 @@ export function drawSmoothed(
     edgePolyline: (e: Layout['edges'][number]) => e.path.map((c) => [c[0], c[1]] as Pixel),
     width: pre.width,
     height: pre.height,
-    dark: pre.dark,
+    dark,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
     stationDesign: opts.stationDesign,

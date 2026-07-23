@@ -105,6 +105,9 @@ export function drawSmoothedSchematic(
       neighborhoodPad: opts.neighborhoodPad,
       stationDesign: opts.stationDesign,
       simplifiedRoutes: opts.simplifiedRoutes,
+      // Theme override is draw-time; the RAW option (not the DEFAULT_OPTIONS-merged
+      // one) so an absent value keeps the pre's baked theme instead of forcing a default.
+      dark: options?.dark,
       landmass: landmassParams(opts.landmass ?? 'faithful', opts.landmassDetail ?? 0.5),
     },
     sceneOut,
