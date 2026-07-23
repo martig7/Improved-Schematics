@@ -171,18 +171,21 @@ const fillFor = (dark: boolean): string => (dark ? FILL_DARK : FILL_LIGHT);
 
 /** SVG layer for the kept labels (empty string when there are none). `fontPx`
  *  is the paint size (base times user multiplier times per-mode scale). */
-export function placesSvg(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE): string {
+export function placesSvg(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE, color?: string): string {
   if (!places || places.length === 0) return '';
   const fs = fontPx.toFixed(1);
+  const fill = color ?? fillFor(dark);
   const parts = places.map((p) =>
-    `<text x="${p.px[0].toFixed(1)}" y="${p.px[1].toFixed(1)}" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="${fs}" font-weight="bold" fill="${fillFor(dark)}">${escapeXml(p.name.toUpperCase())}</text>`,
+    `<text x="${p.px[0].toFixed(1)}" y="${p.px[1].toFixed(1)}" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="${fs}" font-weight="bold" fill="${fill}">${escapeXml(p.name.toUpperCase())}</text>`,
   );
   return `<g class="nbhd">${parts.join('')}</g>`;
 }
 
-/** Scene prims for the kept labels (the canvas panel paints these). */
-export function placesPrims(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE): Prim[] {
+/** Scene prims for the kept labels (the canvas panel paints these). `color`
+ *  overrides the built-in dark/light fill with the colorset's neighborhood colour. */
+export function placesPrims(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE, color?: string): Prim[] {
   if (!places || places.length === 0) return [];
+  const fill = color ?? fillFor(dark);
   return places.map((p): Prim => ({
     kind: 'text',
     text: p.name.toUpperCase(),
@@ -193,7 +196,7 @@ export function placesPrims(places: PlacePx[] | undefined, dark: boolean, fontPx
     fontSize: fontPx,
     fontWeight: 'bold',
     align: 'center',
-    fill: fillFor(dark),
+    fill,
     layer: 'stops',
     worldScale: true,
   }));

@@ -398,6 +398,10 @@ export interface RenderRibbonsArgs {
    *  map paints its casing halos and canvas on it. Absent falls back to the
    *  built-in light/dark land. */
   land?: string;
+  /** Station-name label color from the colorset (cityLabel). Absent -> default. */
+  labelColor?: string;
+  /** Neighborhood-label color from the colorset (neighborhoodLabel). Absent -> default. */
+  placeColor?: string;
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
@@ -4441,7 +4445,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // label hangs off a real marker (and zoom pivots there) rather than the node
     // centre the single dot's lane, or a capsule's slid dots, may sit off.
     const anchor = labelAnchor(center, stopsByNode.get(n.id));
-    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined));
+    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined, args.labelColor));
   }
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';
@@ -4477,7 +4481,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const staticFrag = (waterPart || '') + (args.backdrop || '') + (args.gridOverlay || '');
     if (staticFrag) for (const p of sceneFromSvg(staticFrag).prims) prims.push(p);
     // neighborhood-name area labels: under the network, over the backdrop
-    for (const p of placesPrims(shownPlaces, dark, args.placesFontPx)) prims.push(p);
+    for (const p of placesPrims(shownPlaces, dark, args.placesFontPx, args.placeColor)) prims.push(p);
     // edges: the markup emits per paint GROUP, casings then strokes (I8);
     // match that order exactly.
     for (const group of paintGroups) {
@@ -4515,7 +4519,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     (waterPart ? waterPart + '\n' : '') +
     (args.backdrop ? args.backdrop + '\n' : '') +
     (args.gridOverlay ? args.gridOverlay + '\n' : '') +
-    (shownPlaces.length > 0 ? placesSvg(shownPlaces, dark, args.placesFontPx) + '\n' : '') +
+    (shownPlaces.length > 0 ? placesSvg(shownPlaces, dark, args.placesFontPx, args.placeColor) + '\n' : '') +
     '<g class="edges">\n' + edgeParts.join('\n') + '\n</g>\n' +
     '<g class="stops">\n' + [...connectorParts, ...stopParts].join('\n') +
     '\n</g>\n<g class="stations">\n' + labelParts.join('\n') + '\n</g>\n</svg>'

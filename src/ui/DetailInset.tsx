@@ -74,9 +74,9 @@ interface DetailInsetProps {
    *  light/dark theme as the map it magnifies. Draw-time, so a theme switch just
    *  repaints the inset. */
   dark: boolean;
-  /** Selected colorset's backdrop colors (land/water/green), so the inset matches
-   *  the map's colorset, not just its light/dark. */
-  theme: { land: string; water: string; green: string; stationFill: string; stationStroke: string };
+  /** Selected colorset's colors (backdrop + labels), so the inset matches the
+   *  map's colorset, not just its light/dark. */
+  theme: { land: string; water: string; green: string; stationFill: string; stationStroke: string; label?: string; place?: string };
   /** Label-size multiplier (the main map's setting); scaled onto this sub-map's labels. */
   labelScale: number;
   /** Bounds-edit mode: show draggable corner handles over the source box (the prior
@@ -272,7 +272,7 @@ export function DetailInset({
     };
     // Cheap redraw of a cached sub-layout with the CURRENT toggles.
     const drawResim = (subPre: SmoothedPrecomputed, selFrame: Rect | null) => {
-      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, stationDesign, landmass, landmassDetail, dark, theme: { ...theme, lineWidth: 4, stationRadius: 3 } });
+      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, stationDesign, landmass, landmassDetail, dark, theme: { ...theme, lineWidth: 4, stationRadius: 3 }, labelColor: theme.label, placeColor: theme.place });
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
       applyLabelScale();
