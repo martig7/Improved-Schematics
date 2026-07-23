@@ -237,12 +237,22 @@ export function RouteMenu(props: {
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))', gap: 12 }}>
       {routes.map((r) => {
         const on = !hidden.has(r.id);
+        // Edited = display changed from default: hidden or simplified.
+        const edited = !on || simpOf(r.id) !== undefined;
         return (
           <button
             key={r.id}
             onClick={() => setSelected(r.id)}
-            style={{ border: `0.5px solid ${border}`, background: 'transparent', color: text, borderRadius: 10, padding: '10px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, cursor: 'pointer', opacity: on ? 1 : 0.4 }}
+            style={{ position: 'relative', border: `0.5px solid ${border}`, background: 'transparent', color: text, borderRadius: 10, padding: '10px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, cursor: 'pointer', opacity: on ? 1 : 0.4 }}
           >
+            {edited && (
+              <span
+                aria-label="Edited"
+                style={{ position: 'absolute', top: 3, right: 5, color: '#ef4444', fontSize: 14, fontWeight: 700, lineHeight: 1, pointerEvents: 'none' }}
+              >
+                *
+              </span>
+            )}
             {preview(r, 44)}
             <span style={{ fontSize: 12, fontWeight: 600, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label(r)}</span>
           </button>
