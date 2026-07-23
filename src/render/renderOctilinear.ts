@@ -1739,6 +1739,30 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
   if (args.stations) {
+    // ROUTE-TRUTH line ends: the first node of a route's first traversal edge,
+    // the last node of its last, plus any node where the route reverses onto the
+    // same edge (an out-and-back turnaround). Both the marker terminus flag and
+    // the lane-crop targets read this. Drawn-lane COUNT is not the truth: a
+    // mid-route stop whose sibling lane was suppressed or trimmed also has a
+    // single incident lane, which would read as a false line end.
+    const routeEndNodes = new Map<string, Set<string>>();
+    for (const [lid, trav] of layout.lineTraversals) {
+      if (trav.length === 0) continue;
+      const ends = new Set<string>();
+      const eF = edgeById.get(trav[0].edgeId);
+      const eL = edgeById.get(trav[trav.length - 1].edgeId);
+      if (eF) ends.add(trav[0].reversed ? eF.to : eF.from);
+      if (eL) ends.add(trav[trav.length - 1].reversed ? eL.from : eL.to);
+      for (let i = 1; i < trav.length; i++) {
+        if (trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed) {
+          const e = edgeById.get(trav[i].edgeId);
+          if (e) ends.add(trav[i].reversed ? e.to : e.from);
+        }
+      }
+      routeEndNodes.set(lid, ends);
+    }
+    const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
+      routeEndNodes.get(lineId)?.has(flagNode) ?? false;
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
@@ -2097,10 +2121,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           const tg = curveTangent(curve, curve.anchorT);
           mk.axis = (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
           mk.dir = unitTangent(tg);
-          // Terminus: the line has a single drawn lane here, so it ends at this
-          // stop. A loop has two lanes at every stop, so none of its stops are
-          // termini. Tick markers cap a terminus with a full (two-sided) tick.
-          mk.terminus = polys.length === 1;
+          // Terminus: the ROUTE ends at this stop AND its single drawn lane ends
+          // here, so the cap has something to cap. Route truth is what makes it a
+          // line end; the lane count alone would also fire on a mid-route stop
+          // whose sibling lane was suppressed or trimmed (a false two-sided cap in
+          // the middle of a line). A loop has two lanes at every stop, so none of
+          // its stops are termini. Tick markers cap a terminus with a full
+          // (two-sided) tick.
+          mk.terminus = polys.length === 1 && isRouteTerminus(mk.lineId, mk.flagNode);
           // Which side of its bundle the lane sits on, so the one-sided tick
           // prefers the bundle's outer edge instead of striking across co-runners.
           mk.outward = bundleOutward(mk.lineId, mk.flagNode);
@@ -2138,7 +2166,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // octilinear run-axis per mark, a geometric fact for the rectangle
         // capsule seating; the exact tangent (dir) is kept for tick markers. The
         // guard keeps the first axis a re-queued unit saw.
-        s.marks.forEach((mk, i) => { if (mk.axis === undefined) { mk.axis = markAxis[i]; mk.dir = unitTangent(markTg[i]); mk.terminus = polysByMark[i].length === 1; } });
+        s.marks.forEach((mk, i) => { if (mk.axis === undefined) { mk.axis = markAxis[i]; mk.dir = unitTangent(markTg[i]); mk.terminus = polysByMark[i].length === 1 && isRouteTerminus(mk.lineId, mk.flagNode); } });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
           parent[x] === x ? x : (parent[x] = find(parent[x]));
@@ -3633,24 +3661,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // re-traverses an edge back the way it came (a branch tip on a forked
     // line). A seam never appears in the traversal, so it can never be
     // cropped.
-    const routeEndNodes = new Map<string, Set<string>>();
-    for (const [lid, trav] of layout.lineTraversals) {
-      if (trav.length === 0) continue;
-      const ends = new Set<string>();
-      const eF = edgeById.get(trav[0].edgeId);
-      const eL = edgeById.get(trav[trav.length - 1].edgeId);
-      if (eF) ends.add(trav[0].reversed ? eF.to : eF.from);
-      if (eL) ends.add(trav[trav.length - 1].reversed ? eL.from : eL.to);
-      for (let i = 1; i < trav.length; i++) {
-        if (trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed) {
-          const e = edgeById.get(trav[i].edgeId);
-          if (e) ends.add(trav[i].reversed ? e.to : e.from);
-        }
-      }
-      routeEndNodes.set(lid, ends);
-    }
-    const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
-      routeEndNodes.get(lineId)?.has(flagNode) ?? false;
     // Per-regime FOOTPRINT: the drawn marker shape a line's stop sits on. Each
     // capsule regime just maps its geometry to a CropShape; the crop routine is
     // shared, so a new design supplies a footprint and needs no crop code.
