@@ -17,13 +17,21 @@ test('getSimplifiedStyle: unknown/absent falls back rather than throwing', () =>
   assert.equal(getSimplifiedStyle(undefined).id, DEFAULT_SIMPLIFIED_STYLE);
 });
 
-test('default style: a bare thin line (quarter width, nothing else drawn)', () => {
+test('default style: a thin bare line that still shows its ends', () => {
   const d = getSimplifiedStyle('default');
   assert.equal(d.lineWidthScale, 0.25);
   assert.equal(d.casing, false);
-  assert.equal(d.stationMarks, false);
-  assert.equal(d.capsuleMember, false);
-  assert.equal(d.labels, false);
+  assert.equal(d.stationMarks, 'intersection', 'ends + interchanges keep a marker');
+  assert.equal(d.labels, 'intersection', 'ends + interchanges keep their name');
+});
+
+test('registry: every style declares valid marker/label scopes', () => {
+  const scale = ['all', 'intersection', 'termini', 'none'];
+  for (const s of SIMPLIFIED_STYLES) {
+    assert.ok(scale.includes(s.stationMarks), `${s.id} stationMarks`);
+    assert.ok(scale.includes(s.labels), `${s.id} labels`);
+    assert.ok(s.lineWidthScale > 0, `${s.id} draws a visible stroke`);
+  }
 });
 
 test('resolve: no setting -> empty map (the untouched draw path)', () => {

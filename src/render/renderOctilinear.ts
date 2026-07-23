@@ -35,7 +35,7 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
-import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle } from './simplify';
+import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle, type SimplifiedScope } from './simplify';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { sampleQuadratic } from './layout/segGeom';
@@ -4157,21 +4157,58 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     const w = LINE_WIDTH * s.lineWidthScale;
     return { width: w, casing: s.casing ? w + 3 : null };
   };
-  // Marks a simplified route contributes no markers for are dropped BEFORE any
-  // station geometry is built, so the route leaves both the dots and the
-  // interchange capsule membership in one step. Identity (same Map object) when
-  // nothing is simplified, so the untouched path stays byte-identical.
-  const stopsByNode = ((): Map<string, StopMark[]> => {
-    const drops = [...simplified.entries()].filter(([, s]) => !s.stationMarks).map(([id]) => id);
-    if (drops.length === 0) return geom.stopsByNode;
-    const hide = new Set(drops);
+  // Marks surviving one per-style scale ('all' | 'termini' | 'none'), applied to
+  // the FULL mark set so the marker and label rules stay independent. Returns the
+  // SAME Map when no line is restricted, so the untouched path stays
+  // byte-identical and callers can test identity to detect a filter.
+  // Nodes whose station is served by more than one line. Measured on the FULL
+  // membership, so two simplified routes still count as meeting each other, and
+  // unioned across the platform-split units of one station (which sit on separate
+  // nodes and would each look single-line). Built at most once per paint.
+  let interchangeAt: Set<string> | undefined;
+  const interchangeNodes = (): Set<string> => {
+    if (interchangeAt) return interchangeAt;
+    const baseOf = new Map<string, string>();
+    for (const [base, units] of splitGroups) for (const u of units) baseOf.set(u, base);
+    const linesAt = new Map<string, Set<string>>();
+    for (const [nodeId, marks] of geom.stopsByNode) {
+      const key = baseOf.get(nodeId) ?? nodeId;
+      let s = linesAt.get(key);
+      if (!s) { s = new Set<string>(); linesAt.set(key, s); }
+      for (const m of marks) s.add(m.lineId);
+    }
+    interchangeAt = new Set<string>();
+    for (const nodeId of geom.stopsByNode.keys()) {
+      if ((linesAt.get(baseOf.get(nodeId) ?? nodeId)?.size ?? 0) > 1) interchangeAt.add(nodeId);
+    }
+    return interchangeAt;
+  };
+  const marksUnder = (ruleOf: (s: SimplifiedStyle) => SimplifiedScope): Map<string, StopMark[]> => {
+    const rule = new Map<string, SimplifiedScope>();
+    for (const [id, s] of simplified) {
+      const r = ruleOf(s);
+      if (r !== 'all') rule.set(id, r);
+    }
+    if (rule.size === 0) return geom.stopsByNode;
+    // Wider scopes CONTAIN the narrower ones, so the ends survive either way.
+    const isect = [...rule.values()].some((r) => r === 'intersection') ? interchangeNodes() : undefined;
     const out = new Map<string, StopMark[]>();
     for (const [nodeId, marks] of geom.stopsByNode) {
-      const kept = marks.filter((m) => !hide.has(m.lineId));
+      const kept = marks.filter((m) => {
+        const r = rule.get(m.lineId);
+        if (r === undefined) return true;
+        if (r === 'none') return false;
+        if (m.terminus === true) return true;
+        return r === 'intersection' && isect!.has(nodeId);
+      });
       if (kept.length > 0) out.set(nodeId, kept);
     }
     return out;
-  })();
+  };
+  // Dropping a mark BEFORE any station geometry is built removes its dot and its
+  // interchange capsule membership in one step; a KEPT one (a terminus under the
+  // 'termini' rule) seats in its capsule normally.
+  const stopsByNode = marksUnder((s) => s.stationMarks);
   const marksFiltered = stopsByNode !== geom.stopsByNode;
 
 
@@ -4314,21 +4351,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   let placements: ReturnType<typeof placeLabels>;
   if (!showLabels) placements = new Map();
   else {
-    // A simplified route contributes no label, so a station served only by such
-    // routes drops out of the packer entirely and frees its space for a
-    // neighbour. The signature is part of the memo key: placements computed for
-    // a different simplification must never be reused.
-    const labelStops = ((): Map<string, StopMark[]> => {
-      const mute = [...simplified.entries()].filter(([, s]) => !s.labels).map(([id]) => id);
-      if (mute.length === 0) return stopsByNode;
-      const hide = new Set(mute);
-      const out = new Map<string, StopMark[]>();
-      for (const [nodeId, marks] of stopsByNode) {
-        const kept = marks.filter((m) => !hide.has(m.lineId));
-        if (kept.length > 0) out.set(nodeId, kept);
-      }
-      return out;
-    })();
+    // A stop a simplified route contributes no label for drops out of the packer,
+    // so a station served only by such stops frees its space for a neighbour. The
+    // signature is part of the memo key: placements computed for a different
+    // simplification must never be reused.
+    const labelStops = marksUnder((s) => s.labels);
     const hit = labelPlacementsMemo.get(geom);
     if (hit && hit.layout === layout && hit.nodePx === nodePx && hit.simpSig === simpSig) placements = hit.placements;
     else {

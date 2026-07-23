@@ -8,6 +8,14 @@
  * so a simplified route keeps the map's structure intact.
  */
 
+/** How much of a simplified route still draws a given per-stop element, widest
+ *  first. Each scope contains the ones after it: 'intersection' also keeps the
+ *  ends, so a route shows where it starts, where it finishes, and where it meets
+ *  other lines. An intersection is a station served by more than one line,
+ *  measured on the FULL membership (a simplified neighbour still counts) and
+ *  unioned across the platform-split units of one station. */
+export type SimplifiedScope = 'all' | 'intersection' | 'termini' | 'none';
+
 export interface SimplifiedStyle {
   id: string;
   name: string;
@@ -17,12 +25,15 @@ export interface SimplifiedStyle {
   lineWidthScale: number;
   /** Draw the background casing halo. Off leaves the slot's spare width clear. */
   casing: boolean;
-  /** Contribute station markers. */
-  stationMarks: boolean;
-  /** May join an interchange capsule. Only meaningful alongside stationMarks:
-   *  a route with no markers has nothing to seat in a capsule either way. */
-  capsuleMember: boolean;
-  /** Contribute station labels. A station whose every serving route declines
-   *  labels draws none. */
-  labels: boolean;
+  /** Which of the route's stops get a marker. A stop with no marker also leaves
+   *  its interchange capsule, since the capsule seats markers; a kept marker
+   *  joins one normally (a stop inside a station group takes its place in the
+   *  capsule rather than drawing a lone dot). */
+  stationMarks: SimplifiedScope;
+  /** Which of the route's stops contribute a station label, on the same scale.
+   *  Independent of stationMarks, though a style normally keeps them in step so
+   *  a label has a marker to hang off. A station labels itself when ANY route
+   *  serving it still contributes one, which is what names an interchange shared
+   *  by several simplified routes. */
+  labels: SimplifiedScope;
 }

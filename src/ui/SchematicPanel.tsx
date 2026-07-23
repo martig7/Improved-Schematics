@@ -1829,12 +1829,14 @@ export function SchematicPanel() {
     // Only a layout-baking change needs the octi re-run; a simplified-route change
     // alone repaints from the cached layout.
     if (mode === 'smoothed' && smoothedReady && layoutDirty) regenerate();
-    // Commit dismisses whichever surface hosts the Save button (settings popover,
-    // Algorithm page, or Routes overlay).
+    // Commit dismisses EVERY settings surface, whichever one hosts the Save
+    // button, so the committed change is visible on the map underneath.
     setSettingsOpen(false);
     setAlgorithmPageOpen(false);
     setLabelsPageOpen(false);
     setRouteMenuOpen(false);
+    setMapPageOpen(false);
+    setDesignPanelOpen(false);
   };
   const resetAppearance = () => {
     setLineWidth(DEFAULT_LINE_WIDTH);

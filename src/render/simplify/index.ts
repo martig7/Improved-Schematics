@@ -1,7 +1,7 @@
 import type { SimplifiedStyle } from './types';
 import { simplifiedDefault } from './default';
 
-export type { SimplifiedStyle } from './types';
+export type { SimplifiedStyle, SimplifiedScope } from './types';
 
 export const SIMPLIFIED_STYLES: SimplifiedStyle[] = [simplifiedDefault];
 export const DEFAULT_SIMPLIFIED_STYLE = 'default';
