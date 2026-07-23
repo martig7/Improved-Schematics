@@ -75,7 +75,7 @@ export interface GeoInput {
   smooth?: boolean;
 }
 
-// Interchange pill half-height as a multiple of the station dot radius
+// Interchange circle radius as a multiple of the station dot radius
 // (theme.stationRadius), preserving the tuned 3 : 4.2 proportion.
 const INTERCHANGE_R_FRAC = 1.4;
 
@@ -142,9 +142,9 @@ function nodeRouteCount(graph: TransitGraph): Map<string, number> {
 }
 
 /**
- * Dots + labels for the geographic renderer. Multi-route nodes get an oval
- * "pill" hint instead of a circle, signalling an interchange even though we
- * don't lane-bundle the lines in geographic mode.
+ * Dots + labels for the geographic renderer. Multi-route nodes get a larger
+ * circle than a plain stop, signalling an interchange even though we don't
+ * lane-bundle the lines in geographic mode.
  */
 function renderGeoNodes(
   graph: TransitGraph,
@@ -169,9 +169,10 @@ function renderGeoNodes(
       const ring = cs.length === 1 ? cs[0] : dark ? '#e4e4e7' : '#111111';
       const routeN = routeCounts.get(node.id) ?? 1;
       if (routeN > 1) {
-        // pill scaled by route count, capped so it stays readable
-        const halfW = interR + Math.min(routeN - 1, 4) * 1.6;
-        dots += `<rect x="${r(px[0] - halfW)}" y="${r(px[1] - interR)}" width="${r(halfW * 2)}" height="${r(interR * 2)}" rx="${r(interR)}" ry="${r(interR)}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
+        // Interchange circle, growing gently with the route count (capped) so a
+        // bigger hub still reads bigger while staying round.
+        const rad = interR + Math.min(routeN - 1, 4) * 0.7;
+        dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${r(rad)}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
       } else {
         dots += `<circle cx="${r(px[0])}" cy="${r(px[1])}" r="${r(stationR)}" fill="${fill}" stroke="${ring}" stroke-width="1.5"/>`;
       }
