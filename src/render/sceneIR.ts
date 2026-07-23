@@ -42,6 +42,10 @@ export interface PathPrim extends PrimBase {
   strokeWidth: number; // base (world) px
   lineCap: CanvasLineCap;
   lineJoin: CanvasLineJoin;
+  /** Stroke dash pattern in base (world) px, mirroring stroke-dasharray. Absent
+   *  = solid. Like strokeWidth it is stated in world units, so the camera scales
+   *  it with the map. */
+  dash?: number[];
 }
 
 export interface RectPrim extends PrimBase {

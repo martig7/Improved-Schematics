@@ -33,6 +33,7 @@ import { LINE_WIDTH, LINE_GAP, DRAW_SCALE, regimeDivisor } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
+import type { SimplifiedRoutes } from './simplify';
 import { nodeSeqFromSupport } from './layout/stopSeq';
 import { orderLines } from './layout/lineOrder';
 import { suppressHooks } from './layout/hookSuppress';
@@ -1584,7 +1585,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: Record<string, string> },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs

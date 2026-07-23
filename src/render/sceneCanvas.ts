@@ -171,7 +171,12 @@ export function drawScene(
           ctx.lineWidth = p.worldScale ? p.strokeWidth : p.strokeWidth / scale;
           ctx.lineCap = p.lineCap;
           ctx.lineJoin = p.lineJoin;
+          // Dash lengths are world px like strokeWidth, so a screen-space prim
+          // divides them by the camera scale the same way. Always reset, or the
+          // pattern leaks onto every later stroke.
+          if (p.dash && p.dash.length > 0) ctx.setLineDash(p.worldScale ? p.dash : p.dash.map((v) => v / scale));
           ctx.stroke(path);
+          if (p.dash && p.dash.length > 0) ctx.setLineDash([]);
         }
         break;
       }

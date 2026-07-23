@@ -32,7 +32,7 @@ import { fingerprintInputs } from '../render/cacheFingerprint';
 import { readCachedPre, writeCachedPre, readFullPre, writeFullPre, peekCache, peekFullPre, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
 import { cropSubgraph } from '../render/cropSubgraph';
 import { filterRoutesByEnabled } from '../render/filterRoutes';
-import { SIMPLIFIED_STYLES } from '../render/simplify';
+import { SIMPLIFIED_STYLES, sameSimplified, asSetting, type SimplifiedSetting, type SimplifiedRoutes } from '../render/simplify';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -157,11 +157,6 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 // Order-independent id-set equality, for comparing the draft hidden-route set
 // against the applied one.
 const sameIdSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
-// Per-route style maps compare by entries; key order is irrelevant.
-const sameStyleMap = (a: Record<string, string>, b: Record<string, string>) => {
-  const ka = Object.keys(a), kb = Object.keys(b);
-  return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
-};
 // Compare two geographic crop bboxes (or null). Small epsilon so restore-from-JSON
 // float drift doesn't read as dirty.
 const sameBbox = (a: [number, number, number, number] | null, b: [number, number, number, number] | null): boolean => {
@@ -277,7 +272,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: Record<string, string> };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -450,7 +445,7 @@ export function SchematicPanel() {
   // the layout-baking sliders: it rides the same applied/dirty/Save flow, so a toggle
   // takes effect on Save (smoothed regenerates; geographic re-renders).
   const [disabledRoutes, setDisabledRoutes] = useState<string[]>(rapp?.disabledRoutes ?? []);
-  const [simplifiedRoutes, setSimplifiedRoutes] = useState<Record<string, string>>(rapp?.simplifiedRoutes ?? {});
+  const [simplifiedRoutes, setSimplifiedRoutes] = useState<SimplifiedRoutes>(rapp?.simplifiedRoutes ?? {});
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
@@ -473,7 +468,7 @@ export function SchematicPanel() {
           cropBbox: null as [number, number, number, number] | null,
           stationSplit: DEFAULT_STATION_SPLIT,
           disabledRoutes: [],
-          simplifiedRoutes: {} as Record<string, string>,
+          simplifiedRoutes: {} as SimplifiedRoutes,
         },
   );
   // Staged changes that BAKE into the layout, so committing them has to re-run the
@@ -499,7 +494,7 @@ export function SchematicPanel() {
     applied.stationSplit !== stationSplit ||
     !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
   const appearanceDirty =
-    layoutDirty || !sameStyleMap(applied.simplifiedRoutes ?? {}, simplifiedRoutes);
+    layoutDirty || !sameSimplified(applied.simplifiedRoutes ?? {}, simplifiedRoutes);
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -1311,11 +1306,13 @@ export function SchematicPanel() {
         ? (s.applied.cropBbox as [number, number, number, number]) : null,
       stationSplit: s.applied.stationSplit === true,
       // Keep only entries naming a style this build still ships, so a file written
-      // against a removed style falls back to that route being unsimplified.
+      // against a removed style falls back to that route being unsimplified. Both
+      // stored forms are accepted; per-setting ranges are clamped at resolve.
       simplifiedRoutes: (s.applied.simplifiedRoutes && typeof s.applied.simplifiedRoutes === 'object')
         ? Object.fromEntries(
             Object.entries(s.applied.simplifiedRoutes)
-              .filter(([, v]) => SIMPLIFIED_STYLES.some((x) => x.id === v)),
+              .map(([k, v]) => [k, asSetting(v)])
+              .filter(([, v]) => SIMPLIFIED_STYLES.some((x) => x.id === (v as SimplifiedSetting | undefined)?.style)),
           )
         : {},
     };
@@ -1886,18 +1883,21 @@ export function SchematicPanel() {
   const toggleRoute = (id: string) =>
     setDisabledRoutes((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
 
-  // Stage a route's simplified style (null clears it). Staged like the hidden
-  // set; applied on Save.
-  const setRouteSimplified = (id: string, styleId: string | null) =>
+  // Stage a route's simplified display, style and settings together (null clears
+  // it). Staged like the hidden set; applied on Save.
+  const setRouteSimplified = (id: string, next: SimplifiedSetting | null) =>
     setSimplifiedRoutes((cur) => {
-      if (styleId === null) {
+      if (next === null) {
         if (!(id in cur)) return cur;
-        const next = { ...cur };
-        delete next[id];
-        return next;
+        const out = { ...cur };
+        delete out[id];
+        return out;
       }
-      if (cur[id] === styleId) return cur;
-      return { ...cur, [id]: styleId };
+      const prev = asSetting(cur[id]);
+      // Switching style drops the previous style's settings rather than carrying
+      // keys it never declared; same style keeps them.
+      const params = next.params ?? (prev?.style === next.style ? prev?.params : undefined);
+      return { ...cur, [id]: params ? { style: next.style, params } : { style: next.style } };
     });
 
   // Shared Save/Reset for the staged appearance, used by the Settings popover and the

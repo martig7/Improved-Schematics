@@ -9,7 +9,7 @@
 
 import { useState, type ReactNode, type CSSProperties } from 'react';
 import { renderStationPreview, routeToExample, type StationDesign } from '../render/stations';
-import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE } from '../render/simplify';
+import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle, paramsFor, asSetting, type SimplifiedSetting } from '../render/simplify';
 import { Icon } from './icons';
 
 interface MenuRoute { id: string; name?: string; bullet?: string; color?: string; textColor?: string }
@@ -20,12 +20,12 @@ export function RouteMenu(props: {
   dark: boolean;
   disabled: string[];
   /** Per-route simplified display: route id -> style id. Absent = not simplified. */
-  simplified: Record<string, string>;
+  simplified: Record<string, string | SimplifiedSetting>;
   dirty: boolean;
   atDefaults: boolean;
   onToggle: (routeId: string) => void;
   /** Set or clear a route's simplified style (null clears). */
-  onSetSimplified: (routeId: string, styleId: string | null) => void;
+  onSetSimplified: (routeId: string, next: SimplifiedSetting | null) => void;
   onSave: () => void;
   onReset: () => void;
   /** Back: close the overlay and reopen the settings popover it came from. */
@@ -34,7 +34,7 @@ export function RouteMenu(props: {
 }) {
   const { routes, design, dark, disabled, simplified, dirty, atDefaults, onToggle, onSetSimplified, onSave, onReset, onBack, onClose } = props;
   const [selected, setSelected] = useState<string | null>(null);
-  const simpOf = (id: string): string | undefined => simplified[id];
+  const simpOf = (id: string): string | SimplifiedSetting | undefined => simplified[id];
   const bg = dark ? '#18181b' : '#ffffff';
   const text = dark ? '#e4e4e7' : '#1a1a1a';
   const muted = dark ? '#a1a1aa' : '#6b7280';
@@ -94,6 +94,12 @@ export function RouteMenu(props: {
 
   if (sel) {
     const on = !hidden.has(sel.id);
+    // Resolved view of this route's simplified display: the style it named (or
+    // the fallback) and its settings with defaults filled in, so the controls
+    // always have a concrete value to show.
+    const cur = asSetting(simpOf(sel.id));
+    const style = getSimplifiedStyle(cur?.style);
+    const params = paramsFor(style, cur?.params);
     return shell(
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <button onClick={() => setSelected(null)} aria-label="Back" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', color: text, cursor: 'pointer', fontSize: 15, fontWeight: 600, padding: 0 }}>
@@ -114,16 +120,16 @@ export function RouteMenu(props: {
           <span style={{ fontSize: 14 }}>Simplify</span>
           <input
             type="checkbox"
-            checked={simpOf(sel.id) !== undefined}
-            onChange={(e) => onSetSimplified(sel.id, e.target.checked ? DEFAULT_SIMPLIFIED_STYLE : null)}
+            checked={cur !== undefined}
+            onChange={(e) => onSetSimplified(sel.id, e.target.checked ? { style: DEFAULT_SIMPLIFIED_STYLE } : null)}
           />
         </label>
-        <label style={{ ...row, cursor: simpOf(sel.id) ? 'pointer' : 'default', opacity: simpOf(sel.id) ? 1 : 0.45 }}>
+        <label style={{ ...row, cursor: cur ? 'pointer' : 'default', opacity: cur ? 1 : 0.45 }}>
           <span style={{ fontSize: 14 }}>Style</span>
           <select
-            value={simpOf(sel.id) ?? DEFAULT_SIMPLIFIED_STYLE}
-            disabled={simpOf(sel.id) === undefined}
-            onChange={(e) => onSetSimplified(sel.id, e.target.value)}
+            value={style.id}
+            disabled={cur === undefined}
+            onChange={(e) => onSetSimplified(sel.id, { style: e.target.value })}
             style={{ fontSize: 13, padding: '4px 6px', borderRadius: 6, background: 'transparent', color: 'inherit', border: `1px solid ${border}` }}
           >
             {SIMPLIFIED_STYLES.map((s) => (
@@ -131,6 +137,30 @@ export function RouteMenu(props: {
             ))}
           </select>
         </label>
+        {/* Whatever the chosen style exposes. Data-driven, so a new style's
+            controls appear here with no change to this component. */}
+        {cur && (style.settings ?? []).map((spec) => (
+          <label key={spec.key} style={{ ...row, gap: 10 }}>
+            <span style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{spec.label}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
+              <input
+                type="range"
+                min={spec.min}
+                max={spec.max}
+                step={spec.step}
+                value={params[spec.key]}
+                onChange={(e) => onSetSimplified(sel.id, {
+                  style: style.id,
+                  params: { ...params, [spec.key]: parseFloat(e.target.value) },
+                })}
+                style={{ flex: 1, minWidth: 80, cursor: 'pointer', accentColor: '#2563eb' }}
+              />
+              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7, minWidth: 24, textAlign: 'right' }}>
+                {params[spec.key]}
+              </span>
+            </span>
+          </label>
+        ))}
       </div>,
     );
   }

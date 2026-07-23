@@ -16,6 +16,22 @@
  *  unioned across the platform-split units of one station. */
 export type SimplifiedScope = 'all' | 'intersection' | 'termini' | 'none';
 
+/** One user-tunable number a style exposes, with everything a control needs to
+ *  render and everything a loader needs to clamp a stored value. Values are kept
+ *  per route, so two routes on the same style can be tuned apart. */
+export interface SimplifiedSettingSpec {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+}
+
+/** A route's simplified display: which style, plus that style's tunables. The
+ *  bare-string form is the shorthand for "this style, all defaults". */
+export type SimplifiedSetting = { style: string; params?: Record<string, number> };
+
 export interface SimplifiedStyle {
   id: string;
   name: string;
@@ -36,4 +52,10 @@ export interface SimplifiedStyle {
    *  serving it still contributes one, which is what names an interchange shared
    *  by several simplified routes. */
   labels: SimplifiedScope;
+  /** Numbers this style lets the user tune. Absent = nothing to configure. */
+  settings?: SimplifiedSettingSpec[];
+  /** Dashed stroke. The ON run is the named setting's value in world px and the
+   *  gap is that length times gapRatio, so the pattern is stated in map distance
+   *  and stays put as the view zooms. */
+  dash?: { lengthSetting: string; gapRatio: number };
 }

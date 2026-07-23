@@ -35,7 +35,7 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
-import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle, type SimplifiedScope } from './simplify';
+import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle, type SimplifiedScope, type SimplifiedRoutes } from './simplify';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { sampleQuadratic } from './layout/segGeom';
@@ -393,7 +393,7 @@ export interface RenderRibbonsArgs {
   stationDesign?: string;
   /** Per-route simplified display (route id -> style id). Resolved to per-LINE
    *  styles in paintRibbons. Draw-time only; never changes the layout. */
-  simplifiedRoutes?: Record<string, string>;
+  simplifiedRoutes?: SimplifiedRoutes;
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
@@ -4151,11 +4151,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const simpSig = simplifiedSignature(simplified);
   /** Drawn stroke + casing width for a line. One resolver, used by BOTH the SVG
    *  markup and the canvas Prim scene, so the two backends cannot drift. */
-  const strokeFor = (lineId: string): { width: number; casing: number | null } => {
-    const s = simplified.get(lineId);
-    if (!s) return { width: LINE_WIDTH, casing: casingWidth };
-    const w = LINE_WIDTH * s.lineWidthScale;
-    return { width: w, casing: s.casing ? w + 3 : null };
+  const strokeFor = (lineId: string): { width: number; casing: number | null; dash?: [number, number] } => {
+    const r = simplified.get(lineId);
+    if (!r) return { width: LINE_WIDTH, casing: casingWidth };
+    const w = LINE_WIDTH * r.style.lineWidthScale;
+    return { width: w, casing: r.style.casing ? w + 3 : null, ...(r.dash ? { dash: r.dash } : {}) };
   };
   // Marks surviving one per-style scale ('all' | 'termini' | 'none'), applied to
   // the FULL mark set so the marker and label rules stay independent. Returns the
@@ -4185,8 +4185,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   };
   const marksUnder = (ruleOf: (s: SimplifiedStyle) => SimplifiedScope): Map<string, StopMark[]> => {
     const rule = new Map<string, SimplifiedScope>();
-    for (const [id, s] of simplified) {
-      const r = ruleOf(s);
+    for (const [id, res] of simplified) {
+      const r = ruleOf(res.style);
       if (r !== 'all') rule.set(id, r);
     }
     if (rule.size === 0) return geom.stopsByNode;
@@ -4268,9 +4268,13 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
             '" stroke-linecap="round" stroke-linejoin="round"/>',
         );
       }
+      // A dashed stroke uses butt caps: round caps bleed half a stroke width past
+      // each dash end, which closes a short gap back up.
+      const dashAttr = sw.dash ? ' stroke-dasharray="' + sw.dash[0] + ' ' + sw.dash[1] + '"' : '';
       gStrokes.push(
         '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
-          sw.width + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
+          sw.width + '" stroke-linecap="' + (sw.dash ? 'butt' : 'round') + '" stroke-linejoin="round"' + dashAttr +
+          ' data-line-id="' + escapeXml(line.id) + '"/>',
       );
     }
     edgeParts.push(...gCasings, ...gStrokes);
@@ -4426,7 +4430,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (sw.casing !== null) {
           casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: sw.casing, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
         }
-        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: sw.width, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: sw.width, lineCap: sw.dash ? 'butt' : 'round', lineJoin: 'round', layer: 'edges', worldScale: true, ...(sw.dash ? { dash: [sw.dash[0], sw.dash[1]] } : {}) });
       }
       for (const p of casingPrims) prims.push(p);
       for (const p of strokePrims) prims.push(p);

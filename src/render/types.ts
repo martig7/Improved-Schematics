@@ -4,6 +4,7 @@
  */
 
 import type { Coordinate, BoundingBox } from '../types/core';
+import type { SimplifiedRoutes } from './simplify';
 
 /** A single route reduced to a geographic polyline ready for projection. */
 export interface RouteLine {
@@ -86,7 +87,7 @@ export interface SchematicOptions {
    *  render/simplify). A simplified route keeps its bundle membership and lane
    *  position and only changes how it is DRAWN, so like stationDesign this is
    *  draw-time only and excluded from the cache fingerprint. */
-  simplifiedRoutes?: Record<string, string>;
+  simplifiedRoutes?: SimplifiedRoutes;
   /** Diagnostic: overlay the Hanan routing grid underneath the routes.
    *  Smoothed mode only, since that's the only renderer that uses one. */
   showGrid?: boolean;
