@@ -4241,8 +4241,6 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // present) so a partial geometry degrades to the plain fallback, never a mixed
   // state.
   const activeCapsule = getStationDesign(args.stationDesign)?.capsule;
-  const activeCropped = activeCapsule ? geom.croppedLaneByLine?.get(activeCapsule) : undefined;
-  const isRect = activeCapsule === 'rectRows' && !!activeCropped;
   // Capsule geometry was solved at compute time over the FULL membership. When a
   // simplified route has left a station, that geometry would paint a bead or a
   // seat with no dot behind it, so re-derive the ACTIVE regime from the filtered
@@ -4250,6 +4248,15 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // byte-identical and pays nothing. The pill/ring regimes need no entry here:
   // buildScene already derives them live from the marks it is handed.
   const derived = marksFiltered ? deriveCapsules(stopsByNode, activeCapsule, geom, simpSig) : undefined;
+  const cachedCropped = activeCapsule ? geom.croppedLaneByLine?.get(activeCapsule) : undefined;
+  // A re-derived capsule no longer sits where the cached lanes were cut to, so the
+  // two stop being one atomic group. Honour the fallback rather than the mixed
+  // state: drop the stale crop and let the lanes run their full length under the
+  // (opaque) capsule, instead of cutting them to a footprint that has moved.
+  // Re-cutting them here is not possible from the cached geometry alone, which
+  // holds the assembled paths but not the per-edge lanes the crop consumes.
+  const activeCropped = derived ? undefined : cachedCropped;
+  const isRect = activeCapsule === 'rectRows' && (derived ? !!derived.rectByNode : !!cachedCropped);
   const rectByNode = isRect ? (derived?.rectByNode ?? geom.rectByNode) : undefined;
   const rectStopPos = isRect ? (derived?.tokyuStopPos ?? geom.tokyuStopPos) : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? (derived?.bubbleByNode ?? geom.bubbleByNode) : undefined;
