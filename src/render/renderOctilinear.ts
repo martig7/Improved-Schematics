@@ -559,30 +559,67 @@ interface DerivedCapsules {
   bubbleByNode?: Map<string, LondonCapsule>;
   torontoByNode?: Map<string, TorontoCross>;
 }
-const derivedCapsulesMemo = new WeakMap<RibbonGeometry, Map<string, DerivedCapsules>>();
+const derivedCapsulesMemo = new WeakMap<RibbonGeometry, Map<string, DerivedCapsules | undefined>>();
 
 function deriveCapsules(
   stopsByNode: Map<string, StopMark[]>,
   regime: string | undefined,
   geom: RibbonGeometry,
   simpSig: string,
-): DerivedCapsules {
+): DerivedCapsules | undefined {
   const key = (regime ?? 'pill') + '#' + simpSig;
   let byKey = derivedCapsulesMemo.get(geom);
   if (!byKey) { byKey = new Map(); derivedCapsulesMemo.set(geom, byKey); }
-  const hit = byKey.get(key);
-  if (hit) return hit;
-  let out: DerivedCapsules = {};
-  if (regime === 'rectRows') {
+  if (byKey.has(key)) return byKey.get(key);
+
+  // Which CAPSULE nodes actually lost a member? A capsule sits at a multi-line
+  // station, and the default scope keeps every mark at such a station, so usually
+  // NOTHING changes and the cached geometry (seated with the lane-extent clamp
+  // that keeps a box on its line and off past a terminus) must be kept verbatim.
+  // Re-seating an unchanged capsule from the mark-only path drops that clamp and
+  // slides it off its lanes. Only nodes whose membership differs AND that are a
+  // capsule on either side are re-derived; the rest keep the cache.
+  const lineSet = (marks: StopMark[] | undefined): string =>
+    (marks ?? []).map((m) => m.lineId).sort().join(',');
+  const changed = new Set<string>();
+  for (const nodeId of new Set([...geom.stopsByNode.keys(), ...stopsByNode.keys()])) {
+    const before = geom.stopsByNode.get(nodeId), after = stopsByNode.get(nodeId);
+    if (lineSet(before) === lineSet(after)) continue;
+    if ((before?.length ?? 0) >= 2 || (after?.length ?? 0) >= 2) changed.add(nodeId);
+  }
+  let out: DerivedCapsules | undefined;
+  if (changed.size === 0) {
+    out = undefined; // no capsule touched -> keep every cached map (and cropped lanes)
+  } else if (regime === 'rectRows') {
     const gathered = [...stopsByNode.entries()].map(([nodeId, marks]) => ({ nodeId, marks }));
-    const { rectByNode, tokyuStopPos } = computeRectByNode(gathered as Parameters<typeof computeRectByNode>[0], RECT_BOX);
-    out = { rectByNode, tokyuStopPos };
+    const re = computeRectByNode(gathered as Parameters<typeof computeRectByNode>[0], RECT_BOX);
+    out = {
+      rectByNode: mergeChanged(geom.rectByNode, re.rectByNode, changed),
+      tokyuStopPos: mergeChanged(geom.tokyuStopPos, re.tokyuStopPos, changed),
+    };
   } else if (regime === 'londonBubbles') {
-    out = { bubbleByNode: computeLondonByNode(stopsByNode, LINE_WIDTH) };
+    out = { bubbleByNode: mergeChanged(geom.bubbleByNode, computeLondonByNode(stopsByNode, LINE_WIDTH), changed) };
   } else if (regime === 'toronto') {
-    out = { torontoByNode: computeTorontoByNode(stopsByNode) };
+    out = { torontoByNode: mergeChanged(geom.torontoByNode, computeTorontoByNode(stopsByNode), changed) };
   }
   byKey.set(key, out);
+  return out;
+}
+
+/** Cached map with only the CHANGED nodes replaced by the re-derived values (and
+ *  removed where the re-derivation has no entry). Unchanged nodes keep their
+ *  cached, correctly-seated geometry. */
+function mergeChanged<V>(
+  cached: Map<string, V> | undefined,
+  reDerived: Map<string, V> | undefined,
+  changed: Set<string>,
+): Map<string, V> {
+  const out = new Map(cached ?? []);
+  for (const nodeId of changed) {
+    const v = reDerived?.get(nodeId);
+    if (v !== undefined) out.set(nodeId, v);
+    else out.delete(nodeId);
+  }
   return out;
 }
 
