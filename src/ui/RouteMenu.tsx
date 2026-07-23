@@ -35,7 +35,9 @@ export function RouteMenu(props: {
   const border = 'rgba(136,136,136,0.35)';
   const tileBg = dark ? '#2a2d34' : '#f5f2ea';
   const hidden = new Set(disabled);
-  const label = (r: MenuRoute) => r.name || r.bullet || r.id;
+  // An unnamed, unbulleted route reads as BLANK, not as its internal id: the id
+  // is storage detail the player never chose and cannot act on.
+  const label = (r: MenuRoute) => r.name || r.bullet || '';
 
   const preview = (r: MenuRoute, px: number) => (
     <span
