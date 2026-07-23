@@ -398,8 +398,6 @@ export interface RenderRibbonsArgs {
    *  map paints its casing halos and canvas on it. Absent falls back to the
    *  built-in light/dark land. */
   land?: string;
-  /** Station-name label color from the colorset (cityLabel). Absent -> default. */
-  labelColor?: string;
   /** Neighborhood-label color from the colorset (neighborhoodLabel). Absent -> default. */
   placeColor?: string;
   /** Neighborhood labels (pre-projected through the warped projection), drawn
@@ -4445,7 +4443,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // label hangs off a real marker (and zoom pivots there) rather than the node
     // centre the single dot's lane, or a capsule's slid dots, may sit off.
     const anchor = labelAnchor(center, stopsByNode.get(n.id));
-    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined, args.labelColor));
+    labelParts.push(renderLabel(n, placement, anchor, stopsByNode.has(n.id), dark, sceneOut ? labelPrims : undefined));
   }
 
   const waterPart = args.water ? waterBackdrop(layout, nodePx, args.water, dark) : '';

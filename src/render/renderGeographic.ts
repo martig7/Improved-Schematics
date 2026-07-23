@@ -189,7 +189,7 @@ function renderGeoNodes(
     for (const node of labelNodes.values()) {
       const p = placements.get(node.id);
       const anchor = nodePx.get(node.id);
-      if (p && anchor) labels += renderLabel(node, p, anchor, true, dark, undefined, opts.labelColor);
+      if (p && anchor) labels += renderLabel(node, p, anchor, true, dark);
     }
     out += `<g class="stations">${labels}</g>`;
   }
@@ -1587,7 +1587,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes; dark?: boolean; palette?: { land: string; water: string; green: string }; labelColor?: string; placeColor?: string },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes; dark?: boolean; palette?: { land: string; water: string; green: string }; placeColor?: string },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1641,7 +1641,6 @@ export function drawSmoothed(
     height: pre.height,
     dark,
     land,
-    labelColor: opts.labelColor,
     placeColor: opts.placeColor,
     showLabels: opts.showLabels,
     showStations: opts.showStations,

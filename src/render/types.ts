@@ -88,9 +88,6 @@ export interface SchematicOptions {
    *  position and only changes how it is DRAWN, so like stationDesign this is
    *  draw-time only and excluded from the cache fingerprint. */
   simplifiedRoutes?: SimplifiedRoutes;
-  /** Station-name label color from the selected colorset (the game's cityLabel).
-   *  Draw-time; absent falls back to the built-in dark/light label color. */
-  labelColor?: string;
   /** Neighborhood-label color from the selected colorset (the game's
    *  neighborhoodLabel). Draw-time; absent falls back to the built-in color. */
   placeColor?: string;

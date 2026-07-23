@@ -664,12 +664,8 @@ export function renderLabel(
   hasStops: boolean,
   dark: boolean,
   prims?: Prim[],
-  textColor?: string,
 ): string {
-  // A station's name follows the colorset's label colour when one is supplied;
-  // bare nodes (no stops) stay the dim default. Absent -> the built-in dark/light
-  // colours, byte-identical.
-  const fill = hasStops ? (textColor ?? (dark ? '#f4f4f5' : '#222')) : (dark ? '#71717a' : '#888');
+  const fill = dark ? (hasStops ? '#f4f4f5' : '#71717a') : hasStops ? '#222' : '#888';
   const angle = placement.angle ?? 0;
   // Group transform: translate to the text origin, then rotate about it when the
   // placement is octilinear. Flat (angle 0) emits translate-only, byte-identical

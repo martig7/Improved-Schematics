@@ -353,26 +353,26 @@ export function SchematicPanel() {
   // custom overrides), resolved for the current light/dark. api.gameState
   // .getMapColors is present at runtime; when absent (older game) fall back to the
   // built-in theme. Route line colors are excluded — those come from the routes.
-  const mapPalette = ((): { land: string; water: string; green: string; stationFill: string; stationStroke: string; label?: string; place?: string } => {
+  const mapPalette = ((): { land: string; water: string; green: string; stationFill: string; stationStroke: string; place?: string } => {
     const base = mapDark ? DARK_THEME : DEFAULT_THEME;
     const c = api.gameState.getMapColors?.(mapDark);
     if (!c) return { land: base.land, water: base.water, green: base.green, stationFill: base.stationFill, stationStroke: base.stationStroke };
-    // label / place stay undefined when a key is missing, so the renderer keeps its
-    // built-in label color (platforms are intentionally not pulled).
+    // place stays undefined when the key is missing, so the renderer keeps its
+    // built-in neighborhood-label color. Station labels stay black/white (not pulled),
+    // and platforms are intentionally not pulled either.
     return {
       land: c.background ?? base.land,
       water: c.water ?? base.water,
       green: c.parks ?? base.green,
       stationFill: c.platforms ?? base.stationFill,
       stationStroke: c.platformsStroke ?? base.stationStroke,
-      label: c.cityLabel,
       place: c.neighborhoodLabel,
     };
   })();
   // Stable string of the palette for dependency arrays (the object is recreated
   // each render). A colorset change moves this and repaints; the Check button's
   // themeTick forces a re-read when the game gives no colorset-change event.
-  const mapPaletteKey = mapPalette.land + mapPalette.water + mapPalette.green + mapPalette.stationFill + mapPalette.stationStroke + (mapPalette.label ?? '') + (mapPalette.place ?? '');
+  const mapPaletteKey = mapPalette.land + mapPalette.water + mapPalette.green + mapPalette.stationFill + mapPalette.stationStroke + (mapPalette.place ?? '');
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
   // The Routes overlay (opened from Settings): a grid of routes + per-route toggle.
@@ -850,7 +850,6 @@ export function SchematicPanel() {
           lineWidth: applied.lineWidth,
           stationRadius: applied.stationRadius,
         },
-        labelColor: mapPalette.label,
         placeColor: mapPalette.place,
       },
     }, mapBearing);
@@ -1018,7 +1017,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius }, labelColor: mapPalette.label, placeColor: mapPalette.place }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius }, placeColor: mapPalette.place }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -1746,7 +1745,7 @@ export function SchematicPanel() {
     // this city can edit it instantly (the main slot holds the crop, not this).
     if (city) writeFullPre(city, fp, pre);
     const out: SceneOut = { scene: null };
-    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius }, labelColor: mapPalette.label, placeColor: mapPalette.place }, out);
+    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius }, placeColor: mapPalette.place }, out);
     const scene = out.scene ?? sceneFromSvg(drawn);
     fullSceneRef.current = prepareScene(scene);
     fullPreRef.current = pre;

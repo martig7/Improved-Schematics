@@ -112,8 +112,7 @@ export function drawSmoothedSchematic(
       palette: options?.theme
         ? { land: options.theme.land, water: options.theme.water, green: options.theme.green }
         : undefined,
-      // Colorset label colours (station names, neighborhood names).
-      labelColor: options?.labelColor,
+      // Colorset neighborhood-label colour.
       placeColor: options?.placeColor,
       landmass: landmassParams(opts.landmass ?? 'faithful', opts.landmassDetail ?? 0.5),
     },
