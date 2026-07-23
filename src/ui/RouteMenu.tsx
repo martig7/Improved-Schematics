@@ -7,8 +7,9 @@
  * smoothed regenerates. Presentational: all data and actions come through props.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useState, type ReactNode, type CSSProperties } from 'react';
 import { renderStationPreview, routeToExample, type StationDesign } from '../render/stations';
+import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE } from '../render/simplify';
 import { Icon } from './icons';
 
 interface MenuRoute { id: string; name?: string; bullet?: string; color?: string; textColor?: string }
@@ -18,23 +19,29 @@ export function RouteMenu(props: {
   design: StationDesign;
   dark: boolean;
   disabled: string[];
+  /** Per-route simplified display: route id -> style id. Absent = not simplified. */
+  simplified: Record<string, string>;
   dirty: boolean;
   atDefaults: boolean;
   onToggle: (routeId: string) => void;
+  /** Set or clear a route's simplified style (null clears). */
+  onSetSimplified: (routeId: string, styleId: string | null) => void;
   onSave: () => void;
   onReset: () => void;
   /** Back: close the overlay and reopen the settings popover it came from. */
   onBack: () => void;
   onClose: () => void;
 }) {
-  const { routes, design, dark, disabled, dirty, atDefaults, onToggle, onSave, onReset, onBack, onClose } = props;
+  const { routes, design, dark, disabled, simplified, dirty, atDefaults, onToggle, onSetSimplified, onSave, onReset, onBack, onClose } = props;
   const [selected, setSelected] = useState<string | null>(null);
+  const simpOf = (id: string): string | undefined => simplified[id];
   const bg = dark ? '#18181b' : '#ffffff';
   const text = dark ? '#e4e4e7' : '#1a1a1a';
   const muted = dark ? '#a1a1aa' : '#6b7280';
   const border = 'rgba(136,136,136,0.35)';
   const tileBg = dark ? '#2a2d34' : '#f5f2ea';
   const hidden = new Set(disabled);
+  const row: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', border: `0.5px solid ${border}`, borderRadius: 8, cursor: 'pointer' };
   // An unnamed, unbulleted route reads as BLANK, not as its internal id: the id
   // is storage detail the player never chose and cannot act on.
   const label = (r: MenuRoute) => r.name || r.bullet || '';
@@ -99,9 +106,30 @@ export function RouteMenu(props: {
           {preview(sel, 64)}
           <div style={{ fontSize: 16, fontWeight: 600 }}>{label(sel)}</div>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', border: `0.5px solid ${border}`, borderRadius: 8, cursor: 'pointer' }}>
+        <label style={row}>
           <span style={{ fontSize: 14 }}>Show on map</span>
           <input type="checkbox" checked={on} onChange={() => onToggle(sel.id)} />
+        </label>
+        <label style={row}>
+          <span style={{ fontSize: 14 }}>Simplify</span>
+          <input
+            type="checkbox"
+            checked={simpOf(sel.id) !== undefined}
+            onChange={(e) => onSetSimplified(sel.id, e.target.checked ? DEFAULT_SIMPLIFIED_STYLE : null)}
+          />
+        </label>
+        <label style={{ ...row, cursor: simpOf(sel.id) ? 'pointer' : 'default', opacity: simpOf(sel.id) ? 1 : 0.45 }}>
+          <span style={{ fontSize: 14 }}>Style</span>
+          <select
+            value={simpOf(sel.id) ?? DEFAULT_SIMPLIFIED_STYLE}
+            disabled={simpOf(sel.id) === undefined}
+            onChange={(e) => onSetSimplified(sel.id, e.target.value)}
+            style={{ fontSize: 13, padding: '4px 6px', borderRadius: 6, background: 'transparent', color: 'inherit', border: `1px solid ${border}` }}
+          >
+            {SIMPLIFIED_STYLES.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
         </label>
       </div>,
     );

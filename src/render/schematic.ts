@@ -104,6 +104,7 @@ export function drawSmoothedSchematic(
       neighborhoodZoom: opts.neighborhoodZoom,
       neighborhoodPad: opts.neighborhoodPad,
       stationDesign: opts.stationDesign,
+      simplifiedRoutes: opts.simplifiedRoutes,
       landmass: landmassParams(opts.landmass ?? 'faithful', opts.landmassDetail ?? 0.5),
     },
     sceneOut,

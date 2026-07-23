@@ -82,6 +82,11 @@ export interface SchematicOptions {
    *  Draw-time only — never changes the layout and is excluded from the cache
    *  fingerprint. Smoothed/topo modes only for now. */
   stationDesign?: string;
+  /** Per-route simplified display: route id -> simplified style id (see
+   *  render/simplify). A simplified route keeps its bundle membership and lane
+   *  position and only changes how it is DRAWN, so like stationDesign this is
+   *  draw-time only and excluded from the cache fingerprint. */
+  simplifiedRoutes?: Record<string, string>;
   /** Diagnostic: overlay the Hanan routing grid underneath the routes.
    *  Smoothed mode only, since that's the only renderer that uses one. */
   showGrid?: boolean;

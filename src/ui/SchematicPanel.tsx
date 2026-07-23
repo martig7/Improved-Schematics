@@ -32,6 +32,7 @@ import { fingerprintInputs } from '../render/cacheFingerprint';
 import { readCachedPre, writeCachedPre, readFullPre, writeFullPre, peekCache, peekFullPre, readSelections, writeSelections, readSettings, writeSettings, readModeSettings, writeModeSettings, pruneSubPres, readAllSubPres, writeAllSubPres, clearCityLayout } from '../render/mapCache';
 import { cropSubgraph } from '../render/cropSubgraph';
 import { filterRoutesByEnabled } from '../render/filterRoutes';
+import { SIMPLIFIED_STYLES } from '../render/simplify';
 import type { SceneOut } from '../render/renderOctilinear';
 import { prepareScene, drawScene, type PreparedScene } from '../render/sceneCanvas';
 import type { RenderMode } from '../render/types';
@@ -156,6 +157,11 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 // Order-independent id-set equality, for comparing the draft hidden-route set
 // against the applied one.
 const sameIdSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
+// Per-route style maps compare by entries; key order is irrelevant.
+const sameStyleMap = (a: Record<string, string>, b: Record<string, string>) => {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
+};
 // Compare two geographic crop bboxes (or null). Small epsilon so restore-from-JSON
 // float drift doesn't read as dirty.
 const sameBbox = (a: [number, number, number, number] | null, b: [number, number, number, number] | null): boolean => {
@@ -271,7 +277,7 @@ type RestoredSettings = {
   stationDesign?: string;
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[] };
+  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: Record<string, string> };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -444,10 +450,11 @@ export function SchematicPanel() {
   // the layout-baking sliders: it rides the same applied/dirty/Save flow, so a toggle
   // takes effect on Save (smoothed regenerates; geographic re-renders).
   const [disabledRoutes, setDisabledRoutes] = useState<string[]>(rapp?.disabledRoutes ?? []);
+  const [simplifiedRoutes, setSimplifiedRoutes] = useState<Record<string, string>>(rapp?.simplifiedRoutes ?? {});
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
-        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [] }
+        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [], simplifiedRoutes: rapp.simplifiedRoutes ?? {} }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -466,9 +473,14 @@ export function SchematicPanel() {
           cropBbox: null as [number, number, number, number] | null,
           stationSplit: DEFAULT_STATION_SPLIT,
           disabledRoutes: [],
+          simplifiedRoutes: {} as Record<string, string>,
         },
   );
-  const appearanceDirty =
+  // Staged changes that BAKE into the layout, so committing them has to re-run the
+  // octi pipeline. Simplified routes are deliberately excluded: they only change
+  // how a line is drawn (they are not in the cache fingerprint), so committing one
+  // repaints from the cached layout instead of regenerating.
+  const layoutDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
     applied.mapMargin !== mapMargin ||
@@ -486,6 +498,8 @@ export function SchematicPanel() {
     !sameBbox(applied.cropBbox ?? null, cropBbox) ||
     applied.stationSplit !== stationSplit ||
     !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
+  const appearanceDirty =
+    layoutDirty || !sameStyleMap(applied.simplifiedRoutes ?? {}, simplifiedRoutes);
   // True when both the draft sliders and the applied values are already at the
   // defaults — nothing for Reset to do.
   const appearanceAtDefaults =
@@ -506,6 +520,7 @@ export function SchematicPanel() {
     cropBbox === null &&
     stationSplit === DEFAULT_STATION_SPLIT &&
     disabledRoutes.length === 0 &&
+    Object.keys(simplifiedRoutes).length === 0 &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
     applied.mapMargin === DEFAULT_MAP_MARGIN &&
@@ -522,7 +537,8 @@ export function SchematicPanel() {
     (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H) === DEFAULT_CROP_ASPECT_H &&
     (applied.cropBbox ?? null) === null &&
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
-    (applied.disabledRoutes?.length ?? 0) === 0;
+    (applied.disabledRoutes?.length ?? 0) === 0 &&
+    Object.keys(applied.simplifiedRoutes ?? {}).length === 0;
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -612,7 +628,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
-    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [] };
+    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [], simplifiedRoutes: apRaw.simplifiedRoutes ?? {} };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -642,6 +658,7 @@ export function SchematicPanel() {
     setCropEditing(false);
     setStationSplit(ap.stationSplit);
     setDisabledRoutes(ap.disabledRoutes);
+    setSimplifiedRoutes(ap.simplifiedRoutes);
     setMode(target);
   }, [mountCity]);
   // One-time migration: the pre-split single settings blob (:set:<city>) seeded BOTH modes.
@@ -967,7 +984,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -1293,6 +1310,14 @@ export function SchematicPanel() {
       cropBbox: (Array.isArray(s.applied.cropBbox) && s.applied.cropBbox.length === 4 && s.applied.cropBbox.every((v) => Number.isFinite(v)))
         ? (s.applied.cropBbox as [number, number, number, number]) : null,
       stationSplit: s.applied.stationSplit === true,
+      // Keep only entries naming a style this build still ships, so a file written
+      // against a removed style falls back to that route being unsimplified.
+      simplifiedRoutes: (s.applied.simplifiedRoutes && typeof s.applied.simplifiedRoutes === 'object')
+        ? Object.fromEntries(
+            Object.entries(s.applied.simplifiedRoutes)
+              .filter(([, v]) => SIMPLIFIED_STYLES.some((x) => x.id === v)),
+          )
+        : {},
     };
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
@@ -1683,7 +1708,7 @@ export function SchematicPanel() {
     // this city can edit it instantly (the main slot holds the crop, not this).
     if (city) writeFullPre(city, fp, pre);
     const out: SceneOut = { scene: null };
-    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign }, out);
+    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes }, out);
     const scene = out.scene ?? sceneFromSvg(drawn);
     fullSceneRef.current = prepareScene(scene);
     fullPreRef.current = pre;
@@ -1748,7 +1773,7 @@ export function SchematicPanel() {
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(bbox);
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes });
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
     if (changed && mode === 'smoothed' && smoothedReady) regenerate();
     else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
   };
@@ -1800,8 +1825,10 @@ export function SchematicPanel() {
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes });
-    if (mode === 'smoothed' && smoothedReady) regenerate();
+    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    // Only a layout-baking change needs the octi re-run; a simplified-route change
+    // alone repaints from the cached layout.
+    if (mode === 'smoothed' && smoothedReady && layoutDirty) regenerate();
     // Commit dismisses whichever surface hosts the Save button (settings popover,
     // Algorithm page, or Routes overlay).
     setSettingsOpen(false);
@@ -1830,6 +1857,7 @@ export function SchematicPanel() {
     setLandmass('faithful');
     setLandmassDetail(0.5);
     setDisabledRoutes([]);
+    setSimplifiedRoutes({});
     setApplied({
       lineWidth: DEFAULT_LINE_WIDTH,
       stationRadius: DEFAULT_STATION_RADIUS,
@@ -1848,12 +1876,27 @@ export function SchematicPanel() {
       cropBbox: null,
       stationSplit: DEFAULT_STATION_SPLIT,
       disabledRoutes: [],
+      simplifiedRoutes: {},
     });
     if (mode === 'smoothed' && smoothedReady) regenerate();
   };
   // Toggle one route in/out of the hidden set (staged; applied on Save).
   const toggleRoute = (id: string) =>
     setDisabledRoutes((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+
+  // Stage a route's simplified style (null clears it). Staged like the hidden
+  // set; applied on Save.
+  const setRouteSimplified = (id: string, styleId: string | null) =>
+    setSimplifiedRoutes((cur) => {
+      if (styleId === null) {
+        if (!(id in cur)) return cur;
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      }
+      if (cur[id] === styleId) return cur;
+      return { ...cur, [id]: styleId };
+    });
 
   // Shared Save/Reset for the staged appearance, used by the Settings popover and the
   // Algorithm page (both commit the same `applied`).
@@ -2916,6 +2959,8 @@ export function SchematicPanel() {
           design={getStationDesign(stationDesign)}
           dark={api.ui.getResolvedTheme() === 'dark'}
           disabled={disabledRoutes}
+          simplified={simplifiedRoutes}
+          onSetSimplified={setRouteSimplified}
           dirty={appearanceDirty}
           atDefaults={appearanceAtDefaults}
           onToggle={toggleRoute}

@@ -60,6 +60,12 @@ export interface TransitGraph {
   /** Per (lineId|groupId): the 1-based station number along the line, from the
    *  raw route stop order at intake. */
   numberByGroup: Map<string, number>;
+  /** route id -> the id of the LINE it is drawn as. Routes sharing a bullet and
+   *  an edge set collapse onto one drawn line, so this is not the identity. Lets
+   *  a per-route display setting name the line it actually affects. OPTIONAL:
+   *  absent in graphs built before the field existed; callers then treat each
+   *  route as its own line. */
+  canonLineId?: Map<string, string>;
 }
 
 export interface LayoutNode {
@@ -87,6 +93,11 @@ export interface Layout {
   /** Per (lineId|nodeId): the station number to render at that node, resolved
    *  from the intake numbers via the support graph's per-group stop-node map. */
   nodeSeq?: Map<string, number>;
+  /** route id -> the id of the LINE it is drawn as (carried over from the
+   *  transit graph). Lets a per-route display setting name the line it actually
+   *  affects. OPTIONAL: absent on layouts built before the field existed;
+   *  callers then treat each route as its own line. */
+  canonLineId?: Map<string, string>;
 }
 
 /** Walk result element from walkRouteVisits. */

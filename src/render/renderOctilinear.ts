@@ -35,6 +35,7 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
+import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle } from './simplify';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { sampleQuadratic } from './layout/segGeom';
@@ -390,6 +391,9 @@ export interface RenderRibbonsArgs {
   /** Station design id (marker style); resolved via getStationDesign, unknown →
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
+  /** Per-route simplified display (route id -> style id). Resolved to per-LINE
+   *  styles in paintRibbons. Draw-time only; never changes the layout. */
+  simplifiedRoutes?: Record<string, string>;
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
@@ -534,8 +538,53 @@ export interface RibbonGeometry {
 const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
   layout: Layout;
   nodePx: Map<string, Pixel>;
+  simpSig: string;
   placements: ReturnType<typeof placeLabels>;
 }>();
+
+/** Capsule geometry for ONE regime, re-derived when a simplified route has left
+ *  some stations and the compute-time maps (solved over the full membership)
+ *  would paint a bead or seat with no dot behind it.
+ *
+ *  Only the active regime is built, and only while a simplification is active.
+ *  The lane accessors the compute-time pass supplies (a lane-curve item source
+ *  for large-hub rect seating, a per-stop lane for the Toronto crossing test) are
+ *  optional in both solvers and live inside computeRibbonGeometry, so the
+ *  re-derived geometry uses the mark-only path: the seat is still correct for the
+ *  reduced membership, it just forgoes those refinements at the affected hubs.
+ *  Memoized per (geometry, regime, simplification signature). */
+interface DerivedCapsules {
+  rectByNode?: Map<string, RectCapsule>;
+  tokyuStopPos?: Map<string, [number, number]>;
+  bubbleByNode?: Map<string, LondonCapsule>;
+  torontoByNode?: Map<string, TorontoCross>;
+}
+const derivedCapsulesMemo = new WeakMap<RibbonGeometry, Map<string, DerivedCapsules>>();
+
+function deriveCapsules(
+  stopsByNode: Map<string, StopMark[]>,
+  regime: string | undefined,
+  geom: RibbonGeometry,
+  simpSig: string,
+): DerivedCapsules {
+  const key = (regime ?? 'pill') + '#' + simpSig;
+  let byKey = derivedCapsulesMemo.get(geom);
+  if (!byKey) { byKey = new Map(); derivedCapsulesMemo.set(geom, byKey); }
+  const hit = byKey.get(key);
+  if (hit) return hit;
+  let out: DerivedCapsules = {};
+  if (regime === 'rectRows') {
+    const gathered = [...stopsByNode.entries()].map(([nodeId, marks]) => ({ nodeId, marks }));
+    const { rectByNode, tokyuStopPos } = computeRectByNode(gathered as Parameters<typeof computeRectByNode>[0], RECT_BOX);
+    out = { rectByNode, tokyuStopPos };
+  } else if (regime === 'londonBubbles') {
+    out = { bubbleByNode: computeLondonByNode(stopsByNode, LINE_WIDTH) };
+  } else if (regime === 'toronto') {
+    out = { torontoByNode: computeTorontoByNode(stopsByNode) };
+  }
+  byKey.set(key, out);
+  return out;
+}
 
 // Single-stop box side length used to seat rectangle-capsule interchanges. R0 and
 // RCAP are defined exactly as the placement geometry defines them so the seated
@@ -4084,10 +4133,46 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
   const bg = dark ? DARK_THEME.land : '#ffffff';
   const casingWidth = LINE_WIDTH + 3;
-  const { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf } = geom;
+  const { membersByNode, dByLine, segments, lineById, orderOf } = geom;
   // pre-splitGroups geometry (older saved maps deserialize without the field);
   // draw with no connectors rather than crash on an undefined iterate
   const splitGroups = geom.splitGroups ?? new Map<string, string[]>();
+
+  // ---- simplified routes -------------------------------------------------
+  // Per-route display setting resolved to the LINES it actually affects (routes
+  // sharing a bullet and edge set are drawn as one line). Nothing here moves a
+  // line: the lane slot keeps its width and position, and a thinner stroke
+  // inside it is what reads as separation from its bundle mates.
+  const simplified = resolveSimplifiedLines(
+    args.simplifiedRoutes,
+    layout.canonLineId,
+    layout.canonLineId ? [...layout.canonLineId.keys()] : undefined,
+  );
+  const simpSig = simplifiedSignature(simplified);
+  /** Drawn stroke + casing width for a line. One resolver, used by BOTH the SVG
+   *  markup and the canvas Prim scene, so the two backends cannot drift. */
+  const strokeFor = (lineId: string): { width: number; casing: number | null } => {
+    const s = simplified.get(lineId);
+    if (!s) return { width: LINE_WIDTH, casing: casingWidth };
+    const w = LINE_WIDTH * s.lineWidthScale;
+    return { width: w, casing: s.casing ? w + 3 : null };
+  };
+  // Marks a simplified route contributes no markers for are dropped BEFORE any
+  // station geometry is built, so the route leaves both the dots and the
+  // interchange capsule membership in one step. Identity (same Map object) when
+  // nothing is simplified, so the untouched path stays byte-identical.
+  const stopsByNode = ((): Map<string, StopMark[]> => {
+    const drops = [...simplified.entries()].filter(([, s]) => !s.stationMarks).map(([id]) => id);
+    if (drops.length === 0) return geom.stopsByNode;
+    const hide = new Set(drops);
+    const out = new Map<string, StopMark[]>();
+    for (const [nodeId, marks] of geom.stopsByNode) {
+      const kept = marks.filter((m) => !hide.has(m.lineId));
+      if (kept.length > 0) out.set(nodeId, kept);
+    }
+    return out;
+  })();
+  const marksFiltered = stopsByNode !== geom.stopsByNode;
 
 
   // A design that paints an opaque interchange footprint draws its lanes cropped
@@ -4105,10 +4190,17 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const activeCapsule = getStationDesign(args.stationDesign)?.capsule;
   const activeCropped = activeCapsule ? geom.croppedLaneByLine?.get(activeCapsule) : undefined;
   const isRect = activeCapsule === 'rectRows' && !!activeCropped;
-  const rectByNode = isRect ? geom.rectByNode : undefined;
-  const rectStopPos = isRect ? geom.tokyuStopPos : undefined;
-  const bubbleByNode = activeCapsule === 'londonBubbles' ? geom.bubbleByNode : undefined;
-  const torontoByNode = activeCapsule === 'toronto' ? geom.torontoByNode : undefined;
+  // Capsule geometry was solved at compute time over the FULL membership. When a
+  // simplified route has left a station, that geometry would paint a bead or a
+  // seat with no dot behind it, so re-derive the ACTIVE regime from the filtered
+  // marks. Untouched membership keeps the precomputed maps, so the normal path is
+  // byte-identical and pays nothing. The pill/ring regimes need no entry here:
+  // buildScene already derives them live from the marks it is handed.
+  const derived = marksFiltered ? deriveCapsules(stopsByNode, activeCapsule, geom, simpSig) : undefined;
+  const rectByNode = isRect ? (derived?.rectByNode ?? geom.rectByNode) : undefined;
+  const rectStopPos = isRect ? (derived?.tokyuStopPos ?? geom.tokyuStopPos) : undefined;
+  const bubbleByNode = activeCapsule === 'londonBubbles' ? (derived?.bubbleByNode ?? geom.bubbleByNode) : undefined;
+  const torontoByNode = activeCapsule === 'toronto' ? (derived?.torontoByNode ?? geom.torontoByNode) : undefined;
   // Bundle-coherent layers (I8): each paint group draws its casings then its
   // strokes, so a later group's casing separates it cleanly from everything
   // it crosses below. Geometry without the field (older caches) falls back
@@ -4132,13 +4224,16 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
       const d = dByLine.get(lineId);
       if (!line || !d || d.length < 2) continue;
       const dStr = activeCropped?.get(lineId) ?? d.join(' ');
-      gCasings.push(
-        '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + casingWidth +
-          '" stroke-linecap="round" stroke-linejoin="round"/>',
-      );
+      const sw = strokeFor(lineId);
+      if (sw.casing !== null) {
+        gCasings.push(
+          '<path d="' + dStr + '" fill="none" stroke="' + bg + '" stroke-width="' + sw.casing +
+            '" stroke-linecap="round" stroke-linejoin="round"/>',
+        );
+      }
       gStrokes.push(
         '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
-          LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
+          sw.width + '" stroke-linecap="round" stroke-linejoin="round" data-line-id="' + escapeXml(line.id) + '"/>',
       );
     }
     edgeParts.push(...gCasings, ...gStrokes);
@@ -4219,11 +4314,26 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   let placements: ReturnType<typeof placeLabels>;
   if (!showLabels) placements = new Map();
   else {
+    // A simplified route contributes no label, so a station served only by such
+    // routes drops out of the packer entirely and frees its space for a
+    // neighbour. The signature is part of the memo key: placements computed for
+    // a different simplification must never be reused.
+    const labelStops = ((): Map<string, StopMark[]> => {
+      const mute = [...simplified.entries()].filter(([, s]) => !s.labels).map(([id]) => id);
+      if (mute.length === 0) return stopsByNode;
+      const hide = new Set(mute);
+      const out = new Map<string, StopMark[]>();
+      for (const [nodeId, marks] of stopsByNode) {
+        const kept = marks.filter((m) => !hide.has(m.lineId));
+        if (kept.length > 0) out.set(nodeId, kept);
+      }
+      return out;
+    })();
     const hit = labelPlacementsMemo.get(geom);
-    if (hit && hit.layout === layout && hit.nodePx === nodePx) placements = hit.placements;
+    if (hit && hit.layout === layout && hit.nodePx === nodePx && hit.simpSig === simpSig) placements = hit.placements;
     else {
-      placements = placeLabels(layout, nodePx, stopsByNode, segments);
-      labelPlacementsMemo.set(geom, { layout, nodePx, placements });
+      placements = placeLabels(layout, nodePx, labelStops, segments);
+      labelPlacementsMemo.set(geom, { layout, nodePx, simpSig, placements });
     }
   }
   const labelParts: string[] = [];
@@ -4285,8 +4395,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         // Same cropped-lane source as the SVG markup above; a design with no
         // cropped lanes reads dByLine only, so the scene IR stays identical.
         const dStr = activeCropped?.get(lineId) ?? d.join(' ');
-        casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: casingWidth, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
-        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: LINE_WIDTH, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+        const sw = strokeFor(lineId);
+        if (sw.casing !== null) {
+          casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: sw.casing, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
+        }
+        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: sw.width, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
       }
       for (const p of casingPrims) prims.push(p);
       for (const p of strokePrims) prims.push(p);

@@ -426,6 +426,7 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
   const h = buildSupportGraph(graph, groups, topoParams);
   const { layout, nodePx } = supportToLayout(h);
   layout.nodeSeq = nodeSeqFromSupport(h, graph.numberByGroup);
+  layout.canonLineId = graph.canonLineId;
   orderLines(layout);
 
   // Render geography through the real projection (the support graph carries no
@@ -1303,6 +1304,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // polylines. Each layout edge already carries the union of merged line ids.
   const { layout, nodePx } = supportToLayout(supportM);
   layout.nodeSeq = nodeSeqFromSupport(supportM, graph.numberByGroup);
+  layout.canonLineId = graph.canonLineId;
   for (const n of layout.nodes.values()) {
     const placed = image.placement.get(n.id);
     if (placed) {
@@ -1582,7 +1584,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: Record<string, string> },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1623,6 +1625,7 @@ export function drawSmoothed(
     showLabels: opts.showLabels,
     showStations: opts.showStations,
     stationDesign: opts.stationDesign,
+    simplifiedRoutes: opts.simplifiedRoutes,
     // Neighborhood labels: pre-projected at precompute (every kind baked); the
     // chosen kind and the canvas-scaled paint font are draw-time. The grown
     // smoothed canvas magnifies the base font so it matches geographic on screen.
@@ -1646,7 +1649,7 @@ export function drawSmoothed(
 function renderSmoothed(input: GeoInput, opts: SchematicOptions): string {
   const pre = precomputeSmoothed(input);
   if (typeof pre === 'string') return pre;
-  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodZoom: opts.neighborhoodZoom, neighborhoodPad: opts.neighborhoodPad, stationDesign: opts.stationDesign });
+  return drawSmoothed(pre, { showLabels: opts.showLabels, showStations: opts.showStations, showNeighborhoods: opts.showNeighborhoods, neighborhoodFontScale: opts.neighborhoodFontScale, neighborhoodZoom: opts.neighborhoodZoom, neighborhoodPad: opts.neighborhoodPad, stationDesign: opts.stationDesign, simplifiedRoutes: opts.simplifiedRoutes });
 }
 
 /** Axis-aligned bounds of a set of pixel positions, for sizing the Γ' overlay. */

@@ -639,5 +639,5 @@ export function buildTransitGraph(
     }
   }
 
-  return { nodes, edges, adj, lineTraversals, numberByGroup };
+  return { nodes, edges, adj, lineTraversals, numberByGroup, canonLineId };
 }
