@@ -204,3 +204,20 @@ test('sceneFromSvg: geographic backdrop (water/green groups) classifies to the w
   const routes = s.prims.filter((p) => p.kind === 'path' && p.layer === 'other');
   assert.equal(routes.length, 1, 'unclassed routes stay in the other layer (above the backdrop, below stations)');
 });
+
+test('path stroke-dasharray survives the parse, so a dashed lane is not solid on canvas', () => {
+  const svg = (dash: string) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="10" height="10">` +
+    `<g class="edges"><path d="M0 0 L10 10" fill="none" stroke="#00933c" stroke-width="1"` +
+    `${dash} stroke-linecap="butt"/></g></svg>`;
+  const pathOf = (s: string) => sceneFromSvg(s).prims.find((p) => p.kind === 'path');
+
+  const dashed = pathOf(svg(' stroke-dasharray="10 10"'));
+  assert.deepEqual((dashed as { dash?: number[] }).dash, [10, 10], 'space separated');
+  assert.deepEqual((pathOf(svg(' stroke-dasharray="4,2"')) as { dash?: number[] }).dash, [4, 2], 'comma separated');
+
+  // A solid stroke must stay solid rather than gain an empty pattern.
+  for (const d of ['', ' stroke-dasharray="none"', ' stroke-dasharray="0 0"', ' stroke-dasharray="junk"']) {
+    assert.equal((pathOf(svg(d)) as { dash?: number[] }).dash, undefined, `solid for ${d || '(absent)'}`);
+  }
+});

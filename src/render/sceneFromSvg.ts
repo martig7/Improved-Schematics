@@ -28,6 +28,16 @@ const num = (v: string | undefined, d = 0): number => {
   return Number.isFinite(n) ? n : d;
 };
 
+/** stroke-dasharray to the Prim's dash lengths. Comma or space separated, as SVG
+ *  allows. Undefined for absent, 'none', or an all-zero pattern, which are the
+ *  spellings of a solid stroke. */
+const dashOf = (v: string | undefined): number[] | undefined => {
+  if (!v || v.trim() === 'none') return undefined;
+  const parts = v.trim().split(/[\s,]+/).map((s) => parseFloat(s));
+  if (parts.length === 0 || parts.some((n) => !Number.isFinite(n) || n < 0)) return undefined;
+  return parts.some((n) => n > 0) ? parts : undefined;
+};
+
 type Attrs = Record<string, string>;
 
 const parseAttrs = (s: string): Attrs => {
@@ -145,6 +155,10 @@ export function sceneFromSvg(svg: string): Scene {
         strokeWidth: num(attrs['stroke-width'], 1),
         lineCap: (attrs['stroke-linecap'] as CanvasLineCap) || 'butt',
         lineJoin: (attrs['stroke-linejoin'] as CanvasLineJoin) || 'miter',
+        // Without this a dashed stroke comes back SOLID on every path that
+        // reaches the canvas through the parse fallback rather than the emitted
+        // scene, so the two backends disagree about the same markup.
+        ...(dashOf(attrs['stroke-dasharray']) ? { dash: dashOf(attrs['stroke-dasharray']) } : {}),
         layer,
         worldScale: ws,
         opacity,
