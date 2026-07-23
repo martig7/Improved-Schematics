@@ -130,7 +130,9 @@ const LINE_SCALE_MAX = 1.5;
 // grant fraction. Declutter (survival un-pinch) defaults to the minimum (0);
 // Aesthetic (density-emphasis) defaults OFF via a checkbox, with the slider
 // setting its strength when enabled. Both bake into the layout (Apply/Save).
-const DEFAULT_DECLUTTER = 0;
+// Default declutter sits at half the (doubled) range, i.e. the OLD maximum growth;
+// the slider now reaches twice that. 0 is off, 1 is the firm un-pinch.
+const DEFAULT_DECLUTTER = 0.5;
 const DEFAULT_AESTHETIC = 0.5; // slider strength used when the Aesthetic checkbox is on
 const DEFAULT_AESTHETIC_ON = false;
 // Geography warp (SchematicOptions.warpAlpha, the LOOM density magnification) is
@@ -1588,9 +1590,11 @@ export function SchematicPanel() {
     // lack them → none drawn until the next Generate). Off while editing (the pre is
     // the crop but the shown scene is the full map).
     const pre = smoothedCacheRef.current?.pre;
+    // Only the aesthetic (density) boxes are shown; the survival/declutter boxes
+    // (contraction, capsule, corridor) are hidden from the overlay.
     const warpBoxes =
       !editing && showWarpBoxesRef.current && modeRef.current === 'smoothed' && pre && typeof pre !== 'string'
-        ? pre.denseBoxesPx
+        ? pre.denseBoxesPx?.filter((b) => b.kind === 'density')
         : undefined;
     drawScene(ctx, prepared, view, {
       dpr,

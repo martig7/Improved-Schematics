@@ -892,6 +892,47 @@ test('buildDemandBoxWarp: under the cap, growth equals the raw warp growth (spac
   assert.ok(Math.abs(jacDet(loose.warp, [520, 520]) - 1) < 0.02);
 });
 
+test('buildDemandBoxWarp: per-warp caps throttle each warp INDEPENDENTLY (total growth = sum)', () => {
+  // A contraction cluster (short cluster edges) and a capsule pair (a close,
+  // heavy interchange), in disjoint regions so they stay separate single-kind
+  // boxes. Both ride the Declutter dial, but each has its OWN growth cap; capping
+  // one to identity must leave the other's growth untouched, and the full-map
+  // growth must equal the sum of the two capped contributions.
+  const g: BoxGraph = {
+    nodes: [
+      [50, 50], [55, 50], [60, 50], [55, 55], [50, 55], // 0-4 contraction cluster (~5px edges)
+      [400, 300], [430, 300],                           // 5,6 capsule pair (30px, needs ~46)
+      [30, 30], [560, 560], [560, 30], [30, 560],       // 7-10 sparse frame anchors
+    ],
+    edges: [[0, 1], [1, 2], [1, 3], [3, 4], [5, 6], [0, 7], [2, 8], [6, 9], [5, 10]],
+  };
+  const lineCounts = [1, 1, 1, 1, 1, 7, 6, 1, 1, 1, 1];
+  const opts = {
+    ...DOPTS, cellFromMedLen: () => 12, declutterPct: 1,
+    capsule: { spacing: 5.5, lineCounts, margin: 4, casing: 8 }, contraction: true,
+  };
+  const growXof = (): number => buildDemandBoxWarp([], g, DBOX, opts).growthX;
+  const env = (process as { env: Record<string, string | undefined> }).env;
+  const restore = { c: env.OCTI_CONTRACTION_MAX, k: env.OCTI_CAPSULE_MAX };
+  try {
+    // active warp uncapped (10) in every measurement, so nothing throttles the
+    // warp under test; only the zeroed warp's contribution vanishes.
+    env.OCTI_CONTRACTION_MAX = '10'; env.OCTI_CAPSULE_MAX = '10';
+    const gAll = growXof() - 1;
+    env.OCTI_CAPSULE_MAX = '1'; // capsule -> identity
+    const gConOnly = growXof() - 1;
+    env.OCTI_CAPSULE_MAX = '10'; env.OCTI_CONTRACTION_MAX = '1'; // contraction -> identity
+    const gCapOnly = growXof() - 1;
+    assert.ok(gConOnly > 1e-6, `contraction alone grows X (${gConOnly})`);
+    assert.ok(gCapOnly > 1e-6, `capsule alone grows X (${gCapOnly})`);
+    assert.ok(Math.abs(gAll - (gConOnly + gCapOnly)) < 1e-6,
+      `total ${gAll} = contraction ${gConOnly} + capsule ${gCapOnly}`);
+  } finally {
+    if (restore.c === undefined) delete env.OCTI_CONTRACTION_MAX; else env.OCTI_CONTRACTION_MAX = restore.c;
+    if (restore.k === undefined) delete env.OCTI_CAPSULE_MAX; else env.OCTI_CAPSULE_MAX = restore.k;
+  }
+});
+
 test('buildDemandBoxWarp: refinement never teleports a box to the ceiling', () => {
   // a pinned pair (gap 6 << need 7.8) inside a sparse frame: the secant may
   // stall (need moves with the median), but each stall step is bounded 1.5x,

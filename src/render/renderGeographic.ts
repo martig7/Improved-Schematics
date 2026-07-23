@@ -970,7 +970,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const denseBoxesPx: DenseBox[] = (warpOut.boxes ?? []).map((b) => {
     const a = refitPx([b.x0, b.y0]);
     const c = refitPx([b.x1, b.y1]);
-    return { x0: a[0], y0: a[1], x1: c[0], y1: c[1] };
+    return { x0: a[0], y0: a[1], x1: c[0], y1: c[1], ...(b.kind ? { kind: b.kind } : {}) };
   });
   for (const n of graph.nodes.values()) n.pos = proj.toSVG(n.lngLat);
 

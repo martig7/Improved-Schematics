@@ -61,6 +61,10 @@ export interface DenseBox {
   y0: number;
   x1: number;
   y1: number;
+  /** Which oracle emitted the box. Present on demand-warp OUTPUT boxes; the
+   *  overlay uses it to show only the aesthetic (density) boxes and hide the
+   *  survival (declutter) ones. */
+  kind?: BoxKind;
 }
 
 /** The projected transit graph, for the contraction oracle: node positions in
@@ -1168,6 +1172,10 @@ function buildWarpFromBoxes(
   // geography, and FLOOR it so the (C2, corner-free) bend stays gentle — peak
   // curvature 1.875*s/m under `curv`. cap=Infinity/curv=Infinity = off.
   marginCapSpec: { cap: number; curv: number } = { cap: Infinity, curv: Infinity },
+  // Per-warp throttle: when supplied, each box KIND is throttled to its own
+  // per-axis growth cap independently (total growth = sum of the capped
+  // contributions), instead of the single `maxGrowth` applied to all boxes.
+  perKindCap?: (kind: BoxKind | undefined) => [number, number],
 ): DemandWarpResult {
   const [capGx, capGy] = Array.isArray(maxGrowth) ? maxGrowth : [maxGrowth, maxGrowth];
   const identity: WarpFn = (p) => [p[0], p[1]];
@@ -1249,17 +1257,43 @@ function buildWarpFromBoxes(
     yb: raw(box.minX, box.maxY)[1],
   });
   let { xl, xr, yt, yb } = corners();
-  const rawGx = (xr - xl) / W;
-  const rawGy = (yb - yt) / H;
-  if (rawGx > capGx && rawGx > 1) {
-    const lx = (Math.max(1, capGx) - 1) / (rawGx - 1);
-    for (const b of bs) b.sx *= lx;
+  if (perKindCap) {
+    // Per-warp throttle. Growth is ADDITIVE and affine in the strengths (corner
+    // images are sums of s.push terms), and post-merge boxes are single-kind and
+    // non-overlapping across kinds, so a kind's growth is exactly the sum of ITS
+    // boxes' spans x strengths. Throttle each kind to its own cap independently;
+    // the canvas then grows by the sum of the capped per-kind contributions. The
+    // span of box i on an axis is push(far) - push(near) at the frame corners
+    // (the same terms `corners()` sums), so the split is exact. Fixed kind order
+    // keeps it deterministic.
+    const spanX = bs.map((b) => push(box.maxX - b.cx, b.hx, b.mx) - push(box.minX - b.cx, b.hx, b.mx));
+    const spanY = bs.map((b) => push(box.maxY - b.cy, b.hy, b.my) - push(box.minY - b.cy, b.hy, b.my));
+    const KIND_ORDER: (BoxKind | undefined)[] = ['density', 'contraction', 'capsule', 'corridor', undefined];
+    for (const k of KIND_ORDER) {
+      const idx: number[] = [];
+      for (let i = 0; i < boxes.length; i++) if (boxes[i].kind === k) idx.push(i);
+      if (idx.length === 0) continue;
+      const [ckx, cky] = perKindCap(k);
+      let gx = 0, gy = 0;
+      for (const i of idx) { gx += bs[i].sx * spanX[i]; gy += bs[i].sy * spanY[i]; }
+      const rGx = 1 + gx / W, rGy = 1 + gy / H;
+      if (rGx > ckx && rGx > 1) { const lx = (Math.max(1, ckx) - 1) / (rGx - 1); for (const i of idx) bs[i].sx *= lx; }
+      if (rGy > cky && rGy > 1) { const ly = (Math.max(1, cky) - 1) / (rGy - 1); for (const i of idx) bs[i].sy *= ly; }
+    }
+    ({ xl, xr, yt, yb } = corners());
+  } else {
+    const rawGx = (xr - xl) / W;
+    const rawGy = (yb - yt) / H;
+    if (rawGx > capGx && rawGx > 1) {
+      const lx = (Math.max(1, capGx) - 1) / (rawGx - 1);
+      for (const b of bs) b.sx *= lx;
+    }
+    if (rawGy > capGy && rawGy > 1) {
+      const ly = (Math.max(1, capGy) - 1) / (rawGy - 1);
+      for (const b of bs) b.sy *= ly;
+    }
+    if (rawGx > capGx || rawGy > capGy) ({ xl, xr, yt, yb } = corners());
   }
-  if (rawGy > capGy && rawGy > 1) {
-    const ly = (Math.max(1, capGy) - 1) / (rawGy - 1);
-    for (const b of bs) b.sy *= ly;
-  }
-  if (rawGx > capGx || rawGy > capGy) ({ xl, xr, yt, yb } = corners());
   const growthX = (xr - xl) / W;
   const growthY = (yb - yt) / H;
   // Pin the warped top-left back to the box origin. The absolute offset is
@@ -1274,7 +1308,7 @@ function buildWarpFromBoxes(
     out.boxes = boxes.map((b) => {
       const a = warp([b.x0, b.y0]);
       const c = warp([b.x1, b.y1]);
-      return { x0: a[0], y0: a[1], x1: c[0], y1: c[1] };
+      return { x0: a[0], y0: a[1], x1: c[0], y1: c[1], ...(b.kind ? { kind: b.kind } : {}) };
     });
   }
   return { warp, growthX, growthY };
@@ -1285,11 +1319,18 @@ function buildWarpFromBoxes(
  *  Each is expanded by exactly what its own targets need (contraction survival
  *  plus capsule pair separations, × userMult). Growth is absorbed by the canvas
  *  up to maxGrowth. */
-/** Two-dial (declutter / aesthetic) growth ceiling. Each dial at 1 maps to this
- *  per-axis canvas growth cap; 0 is identity. Kept GENTLE (a mild un-pinch, like
- *  a low OCTI_BOX_GROWTH) rather than the full contraction saturation (~5x on a
- *  dense core), so the dials read as taste, not as a violent redistribution. */
-const TWO_DIAL_MAX_GROWTH = 1.6;
+/** Per-warp growth ceilings. Each warp (oracle kind) has its OWN cap: a dial at 1
+ *  maps its warp to that cap, 0 is identity, and each warp's growth is throttled to
+ *  its cap INDEPENDENTLY, so the total canvas growth is the sum of the (clean,
+ *  non-overlapping across kinds) capped contributions. Kept GENTLE (a mild un-pinch,
+ *  like a low OCTI_BOX_GROWTH) rather than the full contraction saturation (~5x on a
+ *  dense core), so the dials read as taste, not a violent redistribution. The two
+ *  survival warps ride the Declutter dial, density rides Aesthetic. OCTI_*_MAX env
+ *  overrides tune each cap for sweeps. */
+const CONTRACTION_MAX_GROWTH = 2.2;
+const CAPSULE_MAX_GROWTH = 2.2;
+const DENSITY_MAX_GROWTH = 1.6;
+const CORRIDOR_MAX_GROWTH = 2.2; // survival, rides Declutter (experimental path)
 
 export function buildDemandBoxWarp(
   samples: readonly Pixel[],
@@ -1551,17 +1592,35 @@ export function buildDemandBoxWarp(
   // growth budget (see buildWarpFromBoxes: strengths scale, far field stays
   // unit-scale, canvas = exactly the allowed warp's growth).
   if (opts.declutterPct !== undefined || opts.aestheticPct !== undefined) {
-    // Two-dial grant: each dial maps to a GENTLE growth cap (0 -> identity, 1 ->
-    // TWO_DIAL_MAX_GROWTH), like a low OCTI_BOX_GROWTH. The throttle scales the
-    // (fully refined) strengths to hit the cap, so declutter is a mild un-pinch
-    // dial rather than the full contraction saturation (which is ~5x on a dense
-    // core). Which oracles emit boxes is gated upstream by the dials, so the cap
-    // acts on the right kind. A gentle cap also keeps the emphasis magnification
-    // mild enough that the surrounding field is not visibly shoved aside.
+    // Two-dial grant, PER-WARP caps: each dial sets a warp's strength, and each
+    // warp is throttled to its OWN gentle growth cap (0 -> identity, 1 -> that
+    // warp's *_MAX_GROWTH), like a low OCTI_BOX_GROWTH. The two survival warps
+    // (contraction, capsule, and the experimental corridor) ride the Declutter
+    // dial; density rides Aesthetic. Growth is capped INDEPENDENTLY per warp so
+    // one crowded concern cannot spend another's room; the total is the sum of
+    // the capped contributions. Which oracles emit boxes is gated upstream, and
+    // the caps keep the un-pinch/emphasis mild enough not to shove the far field.
+    // Per-warp *_MAX env overrides tune each ceiling for sweeps.
     const dPct = Math.min(1, Math.max(0, opts.declutterPct ?? 0));
     const aPct = Math.min(1, Math.max(0, opts.aestheticPct ?? 0));
-    const cap = 1 + Math.max(dPct, aPct) * (TWO_DIAL_MAX_GROWTH - 1);
-    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, cap, oref, anisoAmt > 0, marginCapSpec);
+    const envMax = (name: string, dflt: number): number => {
+      const v = envNum(name);
+      return Number.isFinite(v) && v >= 1 ? v : dflt;
+    };
+    const contractionMax = envMax('OCTI_CONTRACTION_MAX', CONTRACTION_MAX_GROWTH);
+    const capsuleMax = envMax('OCTI_CAPSULE_MAX', CAPSULE_MAX_GROWTH);
+    const densityMax = envMax('OCTI_DENSITY_MAX', DENSITY_MAX_GROWTH);
+    const corridorMax = envMax('OCTI_CORRIDOR_MAX', CORRIDOR_MAX_GROWTH);
+    const capForKind = (kind: BoxKind | undefined): [number, number] => {
+      const [pct, max] =
+        kind === 'density' ? [aPct, densityMax]
+        : kind === 'capsule' ? [dPct, capsuleMax]
+        : kind === 'corridor' ? [dPct, corridorMax]
+        : [dPct, contractionMax]; // contraction + any unlabeled survival box
+      const c = 1 + pct * (max - 1);
+      return [c, c];
+    };
+    result = buildWarpFromBoxes(boxes, axisStrengths(expands), box, marginFrac, Infinity, oref, anisoAmt > 0, marginCapSpec, capForKind);
   } else if (opts.growthPct !== undefined) {
     const t = Math.min(1, Math.max(0, opts.growthPct));
     const capX = Math.max(1, t * result.growthX);
