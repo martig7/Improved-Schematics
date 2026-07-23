@@ -26,6 +26,9 @@ export interface SimplifiedSettingSpec {
   max: number;
   step: number;
   default: number;
+  /** Suffix for the displayed value, when the number alone is ambiguous
+   *  (a percentage against a raw pixel length). */
+  unit?: string;
 }
 
 /** A route's simplified display: which style, plus that style's tunables. The
@@ -35,9 +38,12 @@ export type SimplifiedSetting = { style: string; params?: Record<string, number>
 export interface SimplifiedStyle {
   id: string;
   name: string;
-  /** Multiplies the drawn stroke width. The lane SLOT keeps its full width and
-   *  position, so a thinner stroke leaves clear space either side: separation
-   *  from its bundle mates without moving the line. */
+  /** The style's intended stroke weight as a fraction of normal. Every style
+   *  carries a user-tunable Line width setting and this is its DEFAULT, so a
+   *  style declares its weight once instead of restating the control. The lane
+   *  SLOT keeps its full width and position, so a thinner stroke leaves clear
+   *  space either side: separation from its bundle mates without moving the
+   *  line. */
   lineWidthScale: number;
   /** Draw the background casing halo. Off leaves the slot's spare width clear. */
   casing: boolean;

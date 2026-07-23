@@ -1,4 +1,4 @@
-import type { SimplifiedStyle, SimplifiedSetting, SimplifiedScope } from './types';
+import type { SimplifiedStyle, SimplifiedSetting, SimplifiedScope, SimplifiedSettingSpec } from './types';
 import { simplifiedDefault } from './default';
 import { simplifiedDashed } from './dashed';
 
@@ -22,17 +22,44 @@ export function asSetting(v: string | SimplifiedSetting | undefined): Simplified
   return typeof v === 'string' ? { style: v } : v;
 }
 
+/** Stroke weight as a PERCENTAGE of normal line width. Every style carries it,
+ *  so it is injected rather than restated per style; the style's own
+ *  lineWidthScale supplies the default. */
+export const LINE_WIDTH_SETTING = 'lineWidthPct';
+
+/** Every setting a style exposes: the universal Line width, then its own. */
+export function settingsOf(style: SimplifiedStyle): SimplifiedSettingSpec[] {
+  return [
+    {
+      key: LINE_WIDTH_SETTING,
+      label: 'Line width',
+      min: 0,
+      max: 100,
+      step: 5,
+      default: Math.round(style.lineWidthScale * 1000) / 10,
+      unit: '%',
+    },
+    ...(style.settings ?? []),
+  ];
+}
+
 /** A style's settings resolved to concrete numbers: every declared key present,
- *  each clamped to its own range, unknown/absent/non-finite falling back to the
- *  declared default. Unknown stored keys are dropped, so a style that removes a
- *  setting cannot be poisoned by an old save. */
+ *  each clamped to its own range and SNAPPED to its step grid, with
+ *  unknown/absent/non-finite falling back to the declared default. Snapping keeps
+ *  a hand-edited or float-drifted value from reaching the deterministic render as
+ *  fp dust. Unknown stored keys are dropped, so a style that removes a setting
+ *  cannot be poisoned by an old save. */
 export function paramsFor(style: SimplifiedStyle, raw: Record<string, number> | undefined): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const spec of style.settings ?? []) {
+  for (const spec of settingsOf(style)) {
     const v = raw?.[spec.key];
-    out[spec.key] = Number.isFinite(v)
+    const clamped = Number.isFinite(v)
       ? Math.min(spec.max, Math.max(spec.min, v as number))
       : spec.default;
+    const snapped = spec.step > 0
+      ? spec.min + Math.round((clamped - spec.min) / spec.step) * spec.step
+      : clamped;
+    out[spec.key] = Math.round(snapped * 1e6) / 1e6;
   }
   return out;
 }
@@ -43,6 +70,8 @@ export function paramsFor(style: SimplifiedStyle, raw: Record<string, number> | 
 export interface ResolvedSimplified {
   style: SimplifiedStyle;
   params: Record<string, number>;
+  /** Stroke weight as a FRACTION of normal width, from the Line width setting. */
+  widthScale: number;
   dash?: [number, number];
 }
 
@@ -54,6 +83,7 @@ function resolve(styleId: string, raw: Record<string, number> | undefined): Reso
   return {
     style,
     params,
+    widthScale: params[LINE_WIDTH_SETTING] / 100,
     ...(d && Number.isFinite(len) && (len as number) > 0
       ? { dash: [len as number, (len as number) * d.gapRatio] as [number, number] }
       : {}),

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle,
-  resolveSimplifiedLines, simplifiedSignature, paramsFor, sameSimplified,
+  resolveSimplifiedLines, simplifiedSignature, paramsFor, sameSimplified, settingsOf, LINE_WIDTH_SETTING,
 } from '../index';
 
 test('registry: ids are unique and the default id resolves', () => {
@@ -79,14 +79,48 @@ test('resolve: one drawn line, same style but different settings, is rejected', 
 
 test('paramsFor: fills defaults, clamps to range, drops unknown keys', () => {
   const dashed = getSimplifiedStyle('dashed');
-  const spec = dashed.settings!.find((s) => s.key === 'dashLength')!;
+  const spec = settingsOf(dashed).find((s) => s.key === 'dashLength')!;
   assert.equal(paramsFor(dashed, undefined).dashLength, spec.default, 'absent -> default');
   assert.equal(paramsFor(dashed, { dashLength: NaN }).dashLength, spec.default, 'non-finite -> default');
   assert.equal(paramsFor(dashed, { dashLength: spec.max + 999 }).dashLength, spec.max, 'clamped high');
   assert.equal(paramsFor(dashed, { dashLength: spec.min - 999 }).dashLength, spec.min, 'clamped low');
   assert.equal(paramsFor(dashed, { bogus: 3 } as Record<string, number>).bogus, undefined, 'unknown key dropped');
-  // A style with no settings resolves to an empty param set, never undefined.
-  assert.deepEqual(paramsFor(getSimplifiedStyle('default'), { dashLength: 5 }), {});
+  // A style with no settings of its own still carries the universal width one.
+  assert.deepEqual(Object.keys(paramsFor(getSimplifiedStyle('default'), { dashLength: 5 })), [LINE_WIDTH_SETTING]);
+});
+
+test('line width: every style exposes it, 0%..100% in 5s, defaulted per style', () => {
+  for (const s of SIMPLIFIED_STYLES) {
+    const spec = settingsOf(s).find((x) => x.key === LINE_WIDTH_SETTING);
+    assert.ok(spec, `${s.id} exposes a line-width setting`);
+    assert.equal(spec!.min, 0);
+    assert.equal(spec!.max, 100);
+    assert.equal(spec!.step, 5);
+    assert.equal(spec!.unit, '%');
+    assert.equal(spec!.default, Math.round(s.lineWidthScale * 1000) / 10, 'default is the style weight');
+    // The declared weight must land ON the grid, or a style would render at a
+    // width the user can never dial back to.
+    assert.equal(spec!.default % spec!.step, 0, `${s.id} default sits on the step grid`);
+  }
+});
+
+test('line width: resolves to a fraction, clamped and step-snapped', () => {
+  const canon = new Map([['r1', 'r1']]);
+  const at = (pct?: number) =>
+    resolveSimplifiedLines(
+      { r1: pct === undefined ? 'default' : { style: 'default', params: { [LINE_WIDTH_SETTING]: pct } } },
+      canon, ['r1'],
+    ).get('r1')!;
+  assert.equal(at().widthScale, 0.25, 'default style weight, unchanged');
+  assert.equal(at(100).widthScale, 1, 'full width');
+  assert.equal(at(5).widthScale, 0.05, 'thinnest visible step');
+  assert.equal(at(0).widthScale, 0, 'zero hides the stroke, markers and labels stay');
+  assert.equal(at(1000).widthScale, 1, 'clamped to 100%');
+  assert.equal(at(-50).widthScale, 0, 'clamped to 0%');
+  // Snapped to the 5 grid, and free of float dust so the render stays
+  // deterministic and the value serializes identically every time.
+  assert.equal(at(37).params[LINE_WIDTH_SETTING], 35);
+  assert.equal(at(38).params[LINE_WIDTH_SETTING], 40);
 });
 
 test('resolve: dashed yields a concrete on/off pattern from its setting', () => {

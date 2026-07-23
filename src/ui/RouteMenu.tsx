@@ -9,7 +9,7 @@
 
 import { useState, type ReactNode, type CSSProperties } from 'react';
 import { renderStationPreview, routeToExample, type StationDesign } from '../render/stations';
-import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle, paramsFor, asSetting, type SimplifiedSetting } from '../render/simplify';
+import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle, paramsFor, settingsOf, asSetting, type SimplifiedSetting } from '../render/simplify';
 import { Icon } from './icons';
 
 interface MenuRoute { id: string; name?: string; bullet?: string; color?: string; textColor?: string }
@@ -139,7 +139,7 @@ export function RouteMenu(props: {
         </label>
         {/* Whatever the chosen style exposes. Data-driven, so a new style's
             controls appear here with no change to this component. */}
-        {cur && (style.settings ?? []).map((spec) => (
+        {cur && settingsOf(style).map((spec) => (
           <label key={spec.key} style={{ ...row, gap: 10 }}>
             <span style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{spec.label}</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
@@ -155,8 +155,8 @@ export function RouteMenu(props: {
                 })}
                 style={{ flex: 1, minWidth: 80, cursor: 'pointer', accentColor: '#2563eb' }}
               />
-              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7, minWidth: 24, textAlign: 'right' }}>
-                {params[spec.key]}
+              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7, minWidth: 42, textAlign: 'right' }}>
+                {params[spec.key]}{spec.unit ?? ''}
               </span>
             </span>
           </label>

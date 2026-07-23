@@ -4154,7 +4154,10 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const strokeFor = (lineId: string): { width: number; casing: number | null; dash?: [number, number] } => {
     const r = simplified.get(lineId);
     if (!r) return { width: LINE_WIDTH, casing: casingWidth };
-    const w = LINE_WIDTH * r.style.lineWidthScale;
+    // Scaling a width by a percentage lands on values like 0.17500000000000002,
+    // which would print in full into every path. Trim to sub-pixel precision so
+    // the markup stays readable and the two backends agree exactly.
+    const w = Math.round(LINE_WIDTH * r.widthScale * 1000) / 1000;
     return { width: w, casing: r.style.casing ? w + 3 : null, ...(r.dash ? { dash: r.dash } : {}) };
   };
   // Marks surviving one per-style scale ('all' | 'termini' | 'none'), applied to
