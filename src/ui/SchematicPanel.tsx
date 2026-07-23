@@ -349,6 +349,26 @@ export function SchematicPanel() {
   // otherwise lag the app theme until the panel re-renders for another reason.
   const [themeTick, setThemeTick] = useState(0);
   const mapDark = mapTheme === 'auto' ? api.ui.getResolvedTheme() === 'dark' : mapTheme === 'dark';
+  // The map adopts the game's own map palette for the selected colorset (preset +
+  // custom overrides), resolved for the current light/dark. api.gameState
+  // .getMapColors is present at runtime; when absent (older game) fall back to the
+  // built-in theme. Route line colors are excluded — those come from the routes.
+  const mapPalette = ((): { land: string; water: string; green: string; stationFill: string; stationStroke: string } => {
+    const base = mapDark ? DARK_THEME : DEFAULT_THEME;
+    const c = api.gameState.getMapColors?.(mapDark);
+    if (!c) return { land: base.land, water: base.water, green: base.green, stationFill: base.stationFill, stationStroke: base.stationStroke };
+    return {
+      land: c.background ?? base.land,
+      water: c.water ?? base.water,
+      green: c.parks ?? base.green,
+      stationFill: c.platforms ?? base.stationFill,
+      stationStroke: c.platformsStroke ?? base.stationStroke,
+    };
+  })();
+  // Stable string of the palette for dependency arrays (the object is recreated
+  // each render). A colorset change moves this and repaints; the Check button's
+  // themeTick forces a re-read when the game gives no colorset-change event.
+  const mapPaletteKey = mapPalette.land + mapPalette.water + mapPalette.green + mapPalette.stationFill + mapPalette.stationStroke;
   // The design picker overlay (Appearance ▸ Change). Draw-time; instant apply.
   const [designPanelOpen, setDesignPanelOpen] = useState(false);
   // The Routes overlay (opened from Settings): a grid of routes + per-route toggle.
@@ -821,13 +841,13 @@ export function SchematicPanel() {
         lineScale: applied.lineScale,
         stationSplit: applied.stationSplit,
         theme: {
-          ...(dark ? DARK_THEME : DEFAULT_THEME),
+          ...mapPalette,
           lineWidth: applied.lineWidth,
           stationRadius: applied.stationRadius,
         },
       },
     }, mapBearing);
-  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing, mapDark]);
+  }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing, mapDark, mapPaletteKey]);
 
   // The CURRENT base input the whole UI operates on: the raw uncropped input, or
   // (when a crop is active and not being edited) the cropped-and-magnified
@@ -991,7 +1011,7 @@ export function SchematicPanel() {
       // Capture the Scene IR the draw emits directly (Phase 3), so the canvas
       // inject path can paint this display list instead of re-parsing the svg.
       const out: SceneOut = { scene: null };
-      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark }, out);
+      const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius } }, out);
       emittedSceneRef.current = { svg: drawn, scene: out.scene };
       return drawn;
     }
@@ -1004,7 +1024,7 @@ export function SchematicPanel() {
     }
     layoutIdRef.current = geoIdRef.current;
     return generateSchematicSVG(buildInput());
-  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput, mapDark, themeTick]);
+  }, [mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, geography, smoothedReady, applied, buildInput, buildMainInput, mapDark, themeTick, mapPaletteKey]);
 
   // Flush a queued layout-cache write (set by the svg memo on an octi MISS only).
   // Runs in an effect (after paint, so the map shows first); the ~MB serializePre
@@ -1719,7 +1739,7 @@ export function SchematicPanel() {
     // this city can edit it instantly (the main slot holds the crop, not this).
     if (city) writeFullPre(city, fp, pre);
     const out: SceneOut = { scene: null };
-    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark }, out);
+    const drawn = drawSmoothedSchematic(pre, { showLabels, showStations, showNeighborhoods, neighborhoodFontScale: neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, stationDesign, simplifiedRoutes: applied.simplifiedRoutes, dark: mapDark, theme: { ...mapPalette, lineWidth: applied.lineWidth, stationRadius: applied.stationRadius } }, out);
     const scene = out.scene ?? sceneFromSvg(drawn);
     fullSceneRef.current = prepareScene(scene);
     fullPreRef.current = pre;
@@ -2258,7 +2278,7 @@ export function SchematicPanel() {
     const wait = Math.max(0, MIN_MS - (performance.now() - rerenderStartRef.current));
     const t = setTimeout(() => setRerendering(false), wait);
     return () => clearTimeout(t);
-  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, mapDark]);
+  }, [showLabels, showStations, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, stationDesign, landmass, landmassDetail, mapDark, mapPaletteKey]);
 
   // Close the settings popover when clicking anywhere outside it (or its gear).
   useEffect(() => {
@@ -2865,6 +2885,7 @@ export function SchematicPanel() {
             landmass={landmass}
             landmassDetail={landmassDetail}
             dark={mapDark}
+            theme={mapPalette}
             labelScale={labelScale}
             editing={editingId === s.id}
             onBoundsChange={onBoundsChange}

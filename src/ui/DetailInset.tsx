@@ -74,6 +74,9 @@ interface DetailInsetProps {
    *  light/dark theme as the map it magnifies. Draw-time, so a theme switch just
    *  repaints the inset. */
   dark: boolean;
+  /** Selected colorset's backdrop colors (land/water/green), so the inset matches
+   *  the map's colorset, not just its light/dark. */
+  theme: { land: string; water: string; green: string; stationFill: string; stationStroke: string };
   /** Label-size multiplier (the main map's setting); scaled onto this sub-map's labels. */
   labelScale: number;
   /** Bounds-edit mode: show draggable corner handles over the source box (the prior
@@ -113,6 +116,7 @@ export function DetailInset({
   landmass,
   landmassDetail,
   dark,
+  theme,
   labelScale,
   editing,
   onBoundsChange,
@@ -268,7 +272,7 @@ export function DetailInset({
     };
     // Cheap redraw of a cached sub-layout with the CURRENT toggles.
     const drawResim = (subPre: SmoothedPrecomputed, selFrame: Rect | null) => {
-      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, stationDesign, landmass, landmassDetail, dark });
+      const out = drawSmoothedSchematic(subPre, { showLabels, showStations, stationDesign, landmass, landmassDetail, dark, theme: { ...theme, lineWidth: 4, stationRadius: 3 } });
       if (!bodyRef.current) return;
       bodyRef.current.innerHTML = out;
       applyLabelScale();
@@ -369,7 +373,7 @@ export function DetailInset({
       }),
     );
     return () => { cancelled = true; cancelAnimationFrame(raf); };
-  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, stationDesign, landmass, landmassDetail, dark, position, buildInput, applyLabelScale]);
+  }, [sel.box, getMainPre, getCacheKey, baseSvg, showStations, showLabels, stationDesign, landmass, landmassDetail, dark, theme, position, buildInput, applyLabelScale]);
 
   // Re-apply the label scale when only the setting changes (no re-draw needed).
   useEffect(() => { applyLabelScale(); }, [labelScale, applyLabelScale]);

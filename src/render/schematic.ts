@@ -108,6 +108,10 @@ export function drawSmoothedSchematic(
       // Theme override is draw-time; the RAW option (not the DEFAULT_OPTIONS-merged
       // one) so an absent value keeps the pre's baked theme instead of forcing a default.
       dark: options?.dark,
+      // Selected colorset's backdrop colours (land/water/green), applied on repaint.
+      palette: options?.theme
+        ? { land: options.theme.land, water: options.theme.water, green: options.theme.green }
+        : undefined,
       landmass: landmassParams(opts.landmass ?? 'faithful', opts.landmassDetail ?? 0.5),
     },
     sceneOut,

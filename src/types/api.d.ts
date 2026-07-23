@@ -374,6 +374,12 @@ export interface ModdingAPI {
   // ---------------------------------------------------------------------------
 
   gameState: {
+    /** Resolved map colors for the selected colorset (preset + custom overrides),
+     *  merged for the given theme. Omit `dark` to read the live `.dark` class.
+     *  Keys include background, water, parks, platforms, platformsStroke,
+     *  cityLabel, neighborhoodLabel, roadLabel, etc. Present at runtime; optional
+     *  here so an older game without it degrades to the built-in palette. */
+    getMapColors?(dark?: boolean): Record<string, string>;
     /** Get all stations. */
     getStations(): Station[];
     /** Get all routes. */

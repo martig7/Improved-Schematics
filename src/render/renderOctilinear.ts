@@ -394,6 +394,10 @@ export interface RenderRibbonsArgs {
   /** Per-route simplified display (route id -> style id). Resolved to per-LINE
    *  styles in paintRibbons. Draw-time only; never changes the layout. */
   simplifiedRoutes?: SimplifiedRoutes;
+  /** Land / background color from the selected colorset. Draw-time; the smoothed
+   *  map paints its casing halos and canvas on it. Absent falls back to the
+   *  built-in light/dark land. */
+  land?: string;
   /** Neighborhood labels (pre-projected through the warped projection), drawn
    *  between the backdrop and the route lanes when present. Draw-time only. */
   placesPx?: PlacePx[];
@@ -4168,7 +4172,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
 // showLabels; bg/casing are theme (dark). ~tens of ms. See docs/cache-read-perf.md.
 export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, sceneOut?: SceneOut): string {
   const { layout, nodePx, edgePolyline, width, height, dark, showLabels } = args;
-  const bg = dark ? DARK_THEME.land : '#ffffff';
+  const bg = args.land ?? (dark ? DARK_THEME.land : '#ffffff');
   const casingWidth = LINE_WIDTH + 3;
   const { membersByNode, dByLine, segments, lineById, orderOf } = geom;
   // pre-splitGroups geometry (older saved maps deserialize without the field);

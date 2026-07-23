@@ -295,7 +295,9 @@ export function renderGeographic(input: GeoInput): string {
   const opts: SchematicOptions = { ...DEFAULT_OPTIONS, ...input.options };
   const theme = { ...DEFAULT_OPTIONS.theme, ...(input.options?.theme ?? {}) };
   const { width, height, padding, dark } = opts;
-  const land = dark ? DARK_THEME.land : theme.land;
+  // theme carries the selected colorset (resolved for the current dark), so use
+  // its land directly rather than the fixed dark default.
+  const land = theme.land;
 
   const parts: string[] = [`<rect x="0" y="0" width="${width}" height="${height}" fill="${land}"/>`];
 
@@ -1585,7 +1587,7 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
  *  precomputeSmoothed. This is what re-runs when labels/stations toggle. */
 export function drawSmoothed(
   pre: SmoothedPrecomputed,
-  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes; dark?: boolean },
+  opts: { showLabels: boolean; showStations: boolean; showNeighborhoods?: boolean; neighborhoodFontScale?: number; neighborhoodZoom?: number; neighborhoodPad?: number; landmass?: LandmassParams; stationDesign?: string; simplifiedRoutes?: SimplifiedRoutes; dark?: boolean; palette?: { land: string; water: string; green: string } },
   sceneOut?: SceneOut,
 ): string {
   // Draw-time backdrop: faithful polygons by default, simplified landmass blobs
@@ -1607,21 +1609,23 @@ export function drawSmoothed(
       }
     : undefined;
   // Theme is DRAW-TIME: an override recolors the map without re-running the
-  // layout. Only two baked values depend on it (the geography ring fills); the
-  // ring POSITIONS and everything else are theme-free. When the requested theme
-  // differs from the one baked into the pre, swap the two fills for the standard
-  // light/dark colours (a customised generate theme is only honoured in its own
-  // mode; the flipped mode uses the defaults).
+  // layout. Only the geography ring fills and the land background depend on the
+  // palette (ring POSITIONS and everything else are theme-free), so a palette or
+  // light/dark change just repaints. `palette` carries the selected colorset's
+  // resolved colours; without it the standard light/dark defaults are used (and a
+  // customised generate theme is only honoured in its own mode).
   const dark = opts.dark ?? pre.dark;
-  const rings = pre.geoRingsPx && dark !== pre.dark
+  const pal = opts.palette;
+  const rings = pre.geoRingsPx && (pal || dark !== pre.dark)
     ? { ...pre.geoRingsPx,
-        greenFill: dark ? DARK_THEME.green : DEFAULT_OPTIONS.theme.green,
-        waterFill: dark ? DARK_THEME.water : DEFAULT_OPTIONS.theme.water }
+        greenFill: pal?.green ?? (dark ? DARK_THEME.green : DEFAULT_OPTIONS.theme.green),
+        waterFill: pal?.water ?? (dark ? DARK_THEME.water : DEFAULT_OPTIONS.theme.water) }
     : pre.geoRingsPx;
+  const land = pal?.land;
   // The styled build unions + retraces the whole geography (~100ms on a big
-  // city), so memoize per (pre, style, dark) so label/station/theme toggles just
-  // repaint.
-  const lmKey = (dark ? 'd|' : 'l|') + (style ? JSON.stringify(style) : '');
+  // city), so memoize per (pre, style, dark, palette) so label/station/theme
+  // toggles just repaint.
+  const lmKey = (dark ? 'd|' : 'l|') + (pal ? pal.green + pal.water + '|' : '') + (style ? JSON.stringify(style) : '');
   const cached = lmBackdropCache.get(pre);
   let backdrop: string;
   if (cached && cached.key === lmKey) backdrop = cached.svg;
@@ -1636,6 +1640,7 @@ export function drawSmoothed(
     width: pre.width,
     height: pre.height,
     dark,
+    land,
     showLabels: opts.showLabels,
     showStations: opts.showStations,
     stationDesign: opts.stationDesign,

@@ -43,8 +43,8 @@ export function projectGeoRings(
   return {
     green: project(geo.green),
     water: project(geo.water),
-    greenFill: dark ? DARK_THEME.green : theme.green,
-    waterFill: dark ? DARK_THEME.water : theme.water,
+    greenFill: theme.green,
+    waterFill: theme.water,
   };
 }
 
@@ -133,8 +133,8 @@ export function geographyBackdrop(
   dark: boolean,
 ): string {
   if (!geo) return '';
-  const greenFill = dark ? DARK_THEME.green : theme.green;
-  const waterFill = dark ? DARK_THEME.water : theme.water;
+  const greenFill = theme.green;
+  const waterFill = theme.water;
   // Both nonzero: overlapping/self-overlapping tile polygons fill solid instead
   // of XOR-ing into gaps (the mid-ocean "spike"). Correctly-wound holes (islands)
   // still render as holes under nonzero.
