@@ -2860,6 +2860,7 @@ export function SchematicPanel() {
             stationDesign={stationDesign}
             landmass={landmass}
             landmassDetail={landmassDetail}
+            dark={mapDark}
             labelScale={labelScale}
             editing={editingId === s.id}
             onBoundsChange={onBoundsChange}
