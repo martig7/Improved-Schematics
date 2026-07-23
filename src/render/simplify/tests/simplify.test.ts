@@ -89,11 +89,11 @@ test('paramsFor: fills defaults, clamps to range, drops unknown keys', () => {
   assert.deepEqual(Object.keys(paramsFor(getSimplifiedStyle('default'), { dashLength: 5 })), [LINE_WIDTH_SETTING]);
 });
 
-test('line width: every style exposes it, 0%..100% in 5s, defaulted per style', () => {
+test('line width: every style exposes it, 5%..100% in 5s, defaulted per style', () => {
   for (const s of SIMPLIFIED_STYLES) {
     const spec = settingsOf(s).find((x) => x.key === LINE_WIDTH_SETTING);
     assert.ok(spec, `${s.id} exposes a line-width setting`);
-    assert.equal(spec!.min, 0);
+    assert.equal(spec!.min, 5, 'a simplified line always draws something');
     assert.equal(spec!.max, 100);
     assert.equal(spec!.step, 5);
     assert.equal(spec!.unit, '%');
@@ -113,10 +113,12 @@ test('line width: resolves to a fraction, clamped and step-snapped', () => {
     ).get('r1')!;
   assert.equal(at().widthScale, 0.25, 'default style weight, unchanged');
   assert.equal(at(100).widthScale, 1, 'full width');
-  assert.equal(at(5).widthScale, 0.05, 'thinnest visible step');
-  assert.equal(at(0).widthScale, 0, 'zero hides the stroke, markers and labels stay');
+  assert.equal(at(5).widthScale, 0.05, 'thinnest step');
   assert.equal(at(1000).widthScale, 1, 'clamped to 100%');
-  assert.equal(at(-50).widthScale, 0, 'clamped to 0%');
+  // The floor keeps a simplified route drawn: it is de-emphasized, not hidden
+  // (hiding one is Show-on-map's job), so 0 and negatives come back up to 5%.
+  assert.equal(at(0).widthScale, 0.05, 'clamped up to the 5% floor');
+  assert.equal(at(-50).widthScale, 0.05, 'clamped up to the 5% floor');
   // Snapped to the 5 grid, and free of float dust so the render stays
   // deterministic and the value serializes identically every time.
   assert.equal(at(37).params[LINE_WIDTH_SETTING], 35);

@@ -33,7 +33,7 @@ export function settingsOf(style: SimplifiedStyle): SimplifiedSettingSpec[] {
     {
       key: LINE_WIDTH_SETTING,
       label: 'Line width',
-      min: 0,
+      min: 5,
       max: 100,
       step: 5,
       default: Math.round(style.lineWidthScale * 1000) / 10,
