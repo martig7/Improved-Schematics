@@ -115,3 +115,20 @@ test('placesPrims mirrors the SVG layer for the canvas scene at the given size',
   assert.equal(t.worldScale, true);
   assert.equal(t.fontSize, 30);
 });
+
+test('neighborhood labels render as imprints: desaturated toward grey and semi-transparent', () => {
+  const kept = [{ name: 'Soho', px: [10, 10] as [number, number], kind: 'neighbourhood' }];
+  const fillOf = (svg: string) => (svg.match(/fill="([^"]+)"/) || [])[1];
+  // A bold colorset color is pulled toward its own grey and capped in opacity, so
+  // it reads as a faint impression rather than shouting over the land.
+  const red = fillOf(placesSvg(kept, false, 20, '#ff0000'));
+  const m = red.match(/^rgba\((\d+),(\d+),(\d+),([\d.]+)\)$/)!;
+  assert.ok(m, `imprint is rgba, got ${red}`);
+  const [r, g, b, a] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  assert.ok(r > g && r > b, 'still a warm/red hue, just muted');
+  assert.ok(r < 255 && g > 0, 'desaturated toward grey (not pure red)');
+  assert.equal(a, 0.5, 'capped at half opacity');
+  // The default (already a translucent grey) stays grey and no more than half opacity.
+  const def = fillOf(placesSvg(kept, true, 20));
+  assert.ok(Number(def.match(/,([\d.]+)\)$/)![1]) <= 0.5, 'default is <= 0.5 opacity');
+});

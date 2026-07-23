@@ -33,6 +33,37 @@ export const PLACE_FONT_SIZE = LABEL_FONT_SIZE * 1.5;
 const FILL_DARK = 'rgba(190,193,201,0.55)';
 const FILL_LIGHT = 'rgba(90,92,100,0.55)';
 
+// Parse #rgb / #rrggbb / rgb() / rgba() to [r, g, b, a]. Falls back to opaque
+// mid-grey for anything unrecognised, so an odd colorset value can't produce
+// broken markup.
+function parseColor(c: string): [number, number, number, number] {
+  const s = c.trim();
+  const h = s.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+  if (h) {
+    const x = h[1].length === 3 ? h[1].replace(/./g, (d) => d + d) : h[1];
+    const n = parseInt(x, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 1];
+  }
+  const m = s.match(/^rgba?\(([^)]+)\)$/);
+  if (m) {
+    const p = m[1].split(',').map((v) => parseFloat(v));
+    if (p.length >= 3 && p.every((v) => Number.isFinite(v))) return [p[0], p[1], p[2], p[3] ?? 1];
+  }
+  return [128, 128, 128, 1];
+}
+
+// An IMPRINT of a colour: desaturate it toward its own grey and lower the opacity,
+// so neighborhood labels (including a colorset's bold neighborhoodLabel) read as a
+// faint impression in the land rather than shouting over it.
+function imprint(c: string): string {
+  const [r, g, b, a] = parseColor(c);
+  const grey = Math.round(0.3 * r + 0.59 * g + 0.11 * b);
+  const k = 0.55; // fraction pulled toward grey
+  const mix = (v: number) => Math.round(v + (grey - v) * k);
+  const alpha = Math.round(Math.min(a, 0.5) * 100) / 100; // slightly transparent, capped
+  return `rgba(${mix(r)},${mix(g)},${mix(b)},${alpha})`;
+}
+
 /** Area-label tiers by size, coarse (largest areas) to fine (smallest). The rank
  *  (index) is the size order; a lower rank is a bigger area and wins a collision.
  *  Unknown kinds rank after every tier. */
@@ -174,7 +205,7 @@ const fillFor = (dark: boolean): string => (dark ? FILL_DARK : FILL_LIGHT);
 export function placesSvg(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE, color?: string): string {
   if (!places || places.length === 0) return '';
   const fs = fontPx.toFixed(1);
-  const fill = color ?? fillFor(dark);
+  const fill = imprint(color ?? fillFor(dark));
   const parts = places.map((p) =>
     `<text x="${p.px[0].toFixed(1)}" y="${p.px[1].toFixed(1)}" text-anchor="middle" font-family="Helvetica, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="${fs}" font-weight="bold" fill="${fill}">${escapeXml(p.name.toUpperCase())}</text>`,
   );
@@ -185,7 +216,7 @@ export function placesSvg(places: PlacePx[] | undefined, dark: boolean, fontPx =
  *  overrides the built-in dark/light fill with the colorset's neighborhood colour. */
 export function placesPrims(places: PlacePx[] | undefined, dark: boolean, fontPx = PLACE_FONT_SIZE, color?: string): Prim[] {
   if (!places || places.length === 0) return [];
-  const fill = color ?? fillFor(dark);
+  const fill = imprint(color ?? fillFor(dark));
   return places.map((p): Prim => ({
     kind: 'text',
     text: p.name.toUpperCase(),
