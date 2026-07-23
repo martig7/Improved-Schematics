@@ -29,6 +29,13 @@ export interface SimplifiedSettingSpec {
   /** Suffix for the displayed value, when the number alone is ambiguous
    *  (a percentage against a raw pixel length). */
   unit?: string;
+  /** How the value is presented. Absent is a plain range slider. 'shade' is a
+   *  black-to-white value shown as a swatch that opens a gradient picker, and is
+   *  only in effect while its `enableKey` is on. */
+  control?: 'shade';
+  /** 'shade' only: the companion on/off key, stored as 0 or 1. Defaults to off,
+   *  so a style carrying the setting does not change how it draws until asked. */
+  enableKey?: string;
 }
 
 /** A route's simplified display: which style, plus that style's tunables. The

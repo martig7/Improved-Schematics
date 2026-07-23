@@ -9,7 +9,7 @@
 
 import { useState, type ReactNode, type CSSProperties } from 'react';
 import { renderStationPreview, routeToExample, type StationDesign } from '../render/stations';
-import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle, paramsFor, settingsOf, asSetting, type SimplifiedSetting } from '../render/simplify';
+import { SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle, paramsFor, settingsOf, shadeHex, asSetting, type SimplifiedSetting } from '../render/simplify';
 import { Icon } from './icons';
 
 interface MenuRoute { id: string; name?: string; bullet?: string; color?: string; textColor?: string }
@@ -34,6 +34,8 @@ export function RouteMenu(props: {
 }) {
   const { routes, design, dark, disabled, simplified, dirty, atDefaults, onToggle, onSetSimplified, onSave, onReset, onBack, onClose } = props;
   const [selected, setSelected] = useState<string | null>(null);
+  // Which shade picker is open, by setting key. Closes when the route changes.
+  const [shadeOpen, setShadeOpen] = useState<string | null>(null);
   const simpOf = (id: string): string | SimplifiedSetting | undefined => simplified[id];
   const bg = dark ? '#18181b' : '#ffffff';
   const text = dark ? '#e4e4e7' : '#1a1a1a';
@@ -102,7 +104,7 @@ export function RouteMenu(props: {
     const params = paramsFor(style, cur?.params);
     return shell(
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <button onClick={() => setSelected(null)} aria-label="Back" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', color: text, cursor: 'pointer', fontSize: 15, fontWeight: 600, padding: 0 }}>
+        <button onClick={() => { setSelected(null); setShadeOpen(null); }} aria-label="Back" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', color: text, cursor: 'pointer', fontSize: 15, fontWeight: 600, padding: 0 }}>
           <Icon name="chevronLeft" size={18} /> Routes
         </button>
         {closeBtn}
@@ -139,28 +141,88 @@ export function RouteMenu(props: {
         </label>
         {/* Whatever the chosen style exposes. Data-driven, so a new style's
             controls appear here with no change to this component. */}
-        {cur && settingsOf(style).map((spec) => (
-          <label key={spec.key} style={{ ...row, gap: 10 }}>
-            <span style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{spec.label}</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
-              <input
-                type="range"
-                min={spec.min}
-                max={spec.max}
-                step={spec.step}
-                value={params[spec.key]}
-                onChange={(e) => onSetSimplified(sel.id, {
-                  style: style.id,
-                  params: { ...params, [spec.key]: parseFloat(e.target.value) },
-                })}
-                style={{ flex: 1, minWidth: 80, cursor: 'pointer', accentColor: '#2563eb' }}
-              />
-              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7, minWidth: 42, textAlign: 'right' }}>
-                {params[spec.key]}{spec.unit ?? ''}
+        {cur && settingsOf(style).map((spec) => {
+          const set = (patch: Record<string, number>) =>
+            onSetSimplified(sel.id, { style: style.id, params: { ...params, ...patch } });
+          // A 'shade' setting is one row: a checkbox that switches it on, and a
+          // swatch of the current shade that opens the picker.
+          if (spec.control === 'shade') {
+            const on = !!params[spec.enableKey!];
+            const hex = shadeHex(params[spec.key]);
+            const open = shadeOpen === spec.key;
+            return (
+              <div key={spec.key} style={{ ...row, position: 'relative', cursor: 'default' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={on} onChange={(e) => set({ [spec.enableKey!]: e.target.checked ? 1 : 0 })} />
+                  <span style={{ fontSize: 14 }}>{spec.label}</span>
+                </label>
+                <button
+                  type="button"
+                  aria-label={`${spec.label} shade`}
+                  disabled={!on}
+                  onClick={() => setShadeOpen(open ? null : spec.key)}
+                  style={{
+                    width: 30, height: 20, padding: 0, borderRadius: 4, background: hex,
+                    // Black outer ring, white inner ring, so the swatch reads at
+                    // either end of the scale and against either theme.
+                    border: '1px solid #000000', boxShadow: 'inset 0 0 0 1px #ffffff',
+                    cursor: on ? 'pointer' : 'default', opacity: on ? 1 : 0.4,
+                  }}
+                />
+                {open && on && (
+                  <div
+                    style={{
+                      position: 'absolute', top: '100%', right: 8, zIndex: 30, marginTop: 6,
+                      display: 'flex', flexDirection: 'column', gap: 8, width: 190,
+                      padding: 10, borderRadius: 8, background: bg, color: text,
+                      border: `0.5px solid ${border}`, boxShadow: '0 6px 20px rgba(0,0,0,0.28)',
+                    }}
+                  >
+                    <div style={{ height: 14, borderRadius: 3, border: `0.5px solid ${border}`, background: 'linear-gradient(to right, #000000, #ffffff)' }} />
+                    <input
+                      type="range"
+                      min={spec.min}
+                      max={spec.max}
+                      step={spec.step}
+                      value={params[spec.key]}
+                      onChange={(e) => set({ [spec.key]: parseFloat(e.target.value) })}
+                      style={{ width: '100%', cursor: 'pointer', accentColor: hex }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, opacity: 0.7 }}>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{params[spec.key]}{spec.unit ?? ''}</span>
+                      <button
+                        type="button"
+                        onClick={() => setShadeOpen(null)}
+                        style={{ fontSize: 12, padding: '2px 8px', borderRadius: 5, background: 'transparent', color: 'inherit', border: `1px solid ${border}`, cursor: 'pointer' }}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return (
+            <label key={spec.key} style={{ ...row, gap: 10 }}>
+              <span style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{spec.label}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
+                <input
+                  type="range"
+                  min={spec.min}
+                  max={spec.max}
+                  step={spec.step}
+                  value={params[spec.key]}
+                  onChange={(e) => set({ [spec.key]: parseFloat(e.target.value) })}
+                  style={{ flex: 1, minWidth: 80, cursor: 'pointer', accentColor: '#2563eb' }}
+                />
+                <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7, minWidth: 42, textAlign: 'right' }}>
+                  {params[spec.key]}{spec.unit ?? ''}
+                </span>
               </span>
-            </span>
-          </label>
-        ))}
+            </label>
+          );
+        })}
       </div>,
     );
   }

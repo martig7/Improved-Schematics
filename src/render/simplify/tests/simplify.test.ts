@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle,
-  resolveSimplifiedLines, simplifiedSignature, paramsFor, sameSimplified, settingsOf, LINE_WIDTH_SETTING,
+  resolveSimplifiedLines, simplifiedSignature, paramsFor, sameSimplified, settingsOf, LINE_WIDTH_SETTING, GRAY_SETTING, GRAY_ENABLE_SETTING, shadeHex,
 } from '../index';
 
 test('registry: ids are unique and the default id resolves', () => {
@@ -85,8 +85,12 @@ test('paramsFor: fills defaults, clamps to range, drops unknown keys', () => {
   assert.equal(paramsFor(dashed, { dashLength: spec.max + 999 }).dashLength, spec.max, 'clamped high');
   assert.equal(paramsFor(dashed, { dashLength: spec.min - 999 }).dashLength, spec.min, 'clamped low');
   assert.equal(paramsFor(dashed, { bogus: 3 } as Record<string, number>).bogus, undefined, 'unknown key dropped');
-  // A style with no settings of its own still carries the universal width one.
-  assert.deepEqual(Object.keys(paramsFor(getSimplifiedStyle('default'), { dashLength: 5 })), [LINE_WIDTH_SETTING]);
+  // A style with no settings of its own still carries the universal ones, and a
+  // key belonging to a DIFFERENT style is dropped rather than carried along.
+  assert.deepEqual(
+    Object.keys(paramsFor(getSimplifiedStyle('default'), { dashLength: 5 })),
+    [LINE_WIDTH_SETTING, GRAY_ENABLE_SETTING, GRAY_SETTING],
+  );
 });
 
 test('line width: every style exposes it, 5%..100% in 5s, defaulted per style', () => {
@@ -123,6 +127,41 @@ test('line width: resolves to a fraction, clamped and step-snapped', () => {
   // deterministic and the value serializes identically every time.
   assert.equal(at(37).params[LINE_WIDTH_SETTING], 35);
   assert.equal(at(38).params[LINE_WIDTH_SETTING], 40);
+});
+
+test('grey: off by default, so carrying the setting changes nothing', () => {
+  const canon = new Map([['r1', 'r1']]);
+  for (const s of SIMPLIFIED_STYLES) {
+    const spec = settingsOf(s).find((x) => x.key === GRAY_SETTING)!;
+    assert.ok(spec, `${s.id} exposes a grey setting`);
+    assert.equal(spec.control, 'shade');
+    assert.equal(spec.enableKey, GRAY_ENABLE_SETTING);
+    const r = resolveSimplifiedLines({ r1: s.id }, canon, ['r1']).get('r1')!;
+    assert.equal(r.params[GRAY_ENABLE_SETTING], 0, `${s.id} grey defaults off`);
+    assert.equal(r.color, undefined, `${s.id} keeps the route colour`);
+  }
+});
+
+test('grey: enabling resolves a shade on the black-to-white scale', () => {
+  const canon = new Map([['r1', 'r1']]);
+  const at = (shade: number) =>
+    resolveSimplifiedLines(
+      { r1: { style: 'default', params: { [GRAY_ENABLE_SETTING]: 1, [GRAY_SETTING]: shade } } },
+      canon, ['r1'],
+    ).get('r1')!;
+  assert.equal(at(0).color, '#000000', 'black end');
+  assert.equal(at(100).color, '#ffffff', 'white end');
+  assert.equal(at(50).color, '#808080', 'mid grey');
+  // Always a grey: the three channels move together.
+  for (const pct of [0, 13, 37, 50, 88, 100]) {
+    const c = at(pct).color!;
+    assert.match(c, /^#([0-9a-f]{2})\1\1$/, `${pct}% is a neutral grey (${c})`);
+  }
+});
+
+test('shadeHex: clamps outside the scale rather than emitting bad hex', () => {
+  assert.equal(shadeHex(-40), '#000000');
+  assert.equal(shadeHex(400), '#ffffff');
 });
 
 test('resolve: dashed yields a concrete on/off pattern from its setting', () => {

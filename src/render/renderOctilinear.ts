@@ -4151,15 +4151,24 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const simpSig = simplifiedSignature(simplified);
   /** Drawn stroke + casing width for a line. One resolver, used by BOTH the SVG
    *  markup and the canvas Prim scene, so the two backends cannot drift. */
-  const strokeFor = (lineId: string): { width: number; casing: number | null; dash?: [number, number] } => {
+  const strokeFor = (lineId: string): { width: number; casing: number | null; dash?: [number, number]; color?: string } => {
     const r = simplified.get(lineId);
     if (!r) return { width: LINE_WIDTH, casing: casingWidth };
     // Scaling a width by a percentage lands on values like 0.17500000000000002,
     // which would print in full into every path. Trim to sub-pixel precision so
     // the markup stays readable and the two backends agree exactly.
     const w = Math.round(LINE_WIDTH * r.widthScale * 1000) / 1000;
-    return { width: w, casing: r.style.casing ? w + 3 : null, ...(r.dash ? { dash: r.dash } : {}) };
+    return {
+      width: w,
+      casing: r.style.casing ? w + 3 : null,
+      ...(r.dash ? { dash: r.dash } : {}),
+      ...(r.color ? { color: r.color } : {}),
+    };
   };
+  // Routes recoloured by the grey setting. Their MARKERS follow the line, or a
+  // greyed route would keep full-colour dots at the stops it still draws.
+  const recolored = new Map<string, string>();
+  for (const [id, r] of simplified) if (r.color) recolored.set(id, r.color);
   // Marks surviving one per-style scale ('all' | 'termini' | 'none'), applied to
   // the FULL mark set so the marker and label rules stay independent. Returns the
   // SAME Map when no line is restricted, so the untouched path stays
@@ -4192,7 +4201,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
       const r = ruleOf(res.style);
       if (r !== 'all') rule.set(id, r);
     }
-    if (rule.size === 0) return geom.stopsByNode;
+    if (rule.size === 0 && recolored.size === 0) return geom.stopsByNode;
     // Wider scopes CONTAIN the narrower ones, so the ends survive either way.
     const isect = [...rule.values()].some((r) => r === 'intersection') ? interchangeNodes() : undefined;
     const out = new Map<string, StopMark[]>();
@@ -4204,7 +4213,11 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (m.terminus === true) return true;
         return r === 'intersection' && isect!.has(nodeId);
       });
-      if (kept.length > 0) out.set(nodeId, kept);
+      // Copy rather than mutate: these marks belong to the cached geometry.
+      const painted = recolored.size === 0
+        ? kept
+        : kept.map((m) => (recolored.has(m.lineId) ? { ...m, color: recolored.get(m.lineId)! } : m));
+      if (painted.length > 0) out.set(nodeId, painted);
     }
     return out;
   };
@@ -4275,7 +4288,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
       // each dash end, which closes a short gap back up.
       const dashAttr = sw.dash ? ' stroke-dasharray="' + sw.dash[0] + ' ' + sw.dash[1] + '"' : '';
       gStrokes.push(
-        '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(line.color) + '" stroke-width="' +
+        '<path d="' + dStr + '" fill="none" stroke="' + escapeXml(sw.color ?? line.color) + '" stroke-width="' +
           sw.width + '" stroke-linecap="' + (sw.dash ? 'butt' : 'round') + '" stroke-linejoin="round"' + dashAttr +
           ' data-line-id="' + escapeXml(line.id) + '"/>',
       );
@@ -4433,7 +4446,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
         if (sw.casing !== null) {
           casingPrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: bg, strokeWidth: sw.casing, lineCap: 'round', lineJoin: 'round', layer: 'edges', worldScale: true });
         }
-        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: line.color, strokeWidth: sw.width, lineCap: sw.dash ? 'butt' : 'round', lineJoin: 'round', layer: 'edges', worldScale: true, ...(sw.dash ? { dash: [sw.dash[0], sw.dash[1]] } : {}) });
+        strokePrims.push({ kind: 'path', d: dStr, fill: 'none', stroke: sw.color ?? line.color, strokeWidth: sw.width, lineCap: sw.dash ? 'butt' : 'round', lineJoin: 'round', layer: 'edges', worldScale: true, ...(sw.dash ? { dash: [sw.dash[0], sw.dash[1]] } : {}) });
       }
       for (const p of casingPrims) prims.push(p);
       for (const p of strokePrims) prims.push(p);

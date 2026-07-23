@@ -27,7 +27,19 @@ export function asSetting(v: string | SimplifiedSetting | undefined): Simplified
  *  lineWidthScale supplies the default. */
 export const LINE_WIDTH_SETTING = 'lineWidthPct';
 
-/** Every setting a style exposes: the universal Line width, then its own. */
+/** Draw the route in a shade of grey instead of its own colour: an on/off key
+ *  plus the shade, 0 black to 100 white. Universal like line width. */
+export const GRAY_SETTING = 'grayShade';
+export const GRAY_ENABLE_SETTING = 'gray';
+
+/** Hex for a shade on the black-to-white scale. */
+export function shadeHex(pct: number): string {
+  const v = Math.min(255, Math.max(0, Math.round((pct / 100) * 255)));
+  const h = v.toString(16).padStart(2, '0');
+  return '#' + h + h + h;
+}
+
+/** Every setting a style exposes: the universal ones, then its own. */
 export function settingsOf(style: SimplifiedStyle): SimplifiedSettingSpec[] {
   return [
     {
@@ -38,6 +50,17 @@ export function settingsOf(style: SimplifiedStyle): SimplifiedSettingSpec[] {
       step: 5,
       default: Math.round(style.lineWidthScale * 1000) / 10,
       unit: '%',
+    },
+    {
+      key: GRAY_SETTING,
+      label: 'Grey',
+      min: 0,
+      max: 100,
+      step: 1,
+      default: 50,
+      unit: '%',
+      control: 'shade',
+      enableKey: GRAY_ENABLE_SETTING,
     },
     ...(style.settings ?? []),
   ];
@@ -52,6 +75,8 @@ export function settingsOf(style: SimplifiedStyle): SimplifiedSettingSpec[] {
 export function paramsFor(style: SimplifiedStyle, raw: Record<string, number> | undefined): Record<string, number> {
   const out: Record<string, number> = {};
   for (const spec of settingsOf(style)) {
+    // A paired on/off key is stored as 0 or 1 and defaults to off.
+    if (spec.enableKey) out[spec.enableKey] = raw?.[spec.enableKey] ? 1 : 0;
     const v = raw?.[spec.key];
     const clamped = Number.isFinite(v)
       ? Math.min(spec.max, Math.max(spec.min, v as number))
@@ -72,6 +97,9 @@ export interface ResolvedSimplified {
   params: Record<string, number>;
   /** Stroke weight as a FRACTION of normal width, from the Line width setting. */
   widthScale: number;
+  /** Colour override for the whole route (line and its markers), when the grey
+   *  setting is on. Absent = the route keeps its own colour. */
+  color?: string;
   dash?: [number, number];
 }
 
@@ -84,6 +112,7 @@ function resolve(styleId: string, raw: Record<string, number> | undefined): Reso
     style,
     params,
     widthScale: params[LINE_WIDTH_SETTING] / 100,
+    ...(params[GRAY_ENABLE_SETTING] ? { color: shadeHex(params[GRAY_SETTING]) } : {}),
     ...(d && Number.isFinite(len) && (len as number) > 0
       ? { dash: [len as number, (len as number) * d.gapRatio] as [number, number] }
       : {}),
