@@ -31,7 +31,7 @@ import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, medianEdgeLenPx, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
 import { LINE_WIDTH, LINE_GAP, DRAW_SCALE, regimeDivisor } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
-import { placeLabels, renderLabel, type Segment } from './labels';
+import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
 import type { SimplifiedRoutes } from './simplify';
 import { nodeSeqFromSupport } from './layout/stopSeq';
@@ -142,6 +142,43 @@ function nodeRouteCount(graph: TransitGraph): Map<string, number> {
 }
 
 /**
+ * Per-node stop marks for the label placer, built the way the smoothed renderer
+ * builds its own: one mark per line through a node, carrying the line id and the
+ * 1-based station number along that line (numberByGroup). This is what lets
+ * placeLabels order stations in route sequence and keep a line's labels on a
+ * consistent side (the same algorithm smoothed uses), rather than the old
+ * synthetic single-dummy-stop that carried neither. Geographic mode has no lane
+ * bundling, so every mark sits at the node centre; the placer's multi-dot anchor
+ * logic collapses to that centre, so labels still hang exactly off the drawn dot.
+ * A node no line passes through (e.g. an unrouted station) keeps a lone synthetic
+ * mark so it still gets a label.
+ */
+export function geoLabelStops(graph: TransitGraph, nodePx: Map<string, Pixel>): Map<string, StopMark[]> {
+  const byNode = new Map<string, StopMark[]>();
+  const seen = new Map<string, Set<string>>();
+  for (const e of graph.edges) {
+    for (const nid of [e.from, e.to]) {
+      const px = nodePx.get(nid);
+      if (!px) continue;
+      let arr = byNode.get(nid);
+      if (!arr) byNode.set(nid, (arr = []));
+      let ls = seen.get(nid);
+      if (!ls) seen.set(nid, (ls = new Set()));
+      for (const l of e.lines) {
+        if (ls.has(l.id)) continue;
+        ls.add(l.id);
+        const seq = graph.numberByGroup.get(l.id + '|' + nid);
+        arr.push({ lineId: l.id, color: l.color, textColor: l.textColor, pos: px, ...(seq != null ? { seq } : {}) });
+      }
+    }
+  }
+  for (const [id, px] of nodePx) {
+    if (!byNode.has(id)) byNode.set(id, [{ lineId: '', color: '#000', pos: px }]);
+  }
+  return byNode;
+}
+
+/**
  * Dots + labels for the geographic renderer. Multi-route nodes get a larger
  * circle than a plain stop, signalling an interchange even though we don't
  * lane-bundle the lines in geographic mode.
@@ -183,14 +220,17 @@ function renderGeoNodes(
   if (opts.showLabels) {
     const labelNodes = new Map<string, { id: string; label: string }>();
     for (const n of graph.nodes.values()) labelNodes.set(n.id, { id: n.id, label: n.label });
-    const stops = new Map<string, StopMark[]>();
-    for (const [id, px] of nodePx) stops.set(id, [{ lineId: '', color: '#000', pos: px }]);
+    // Feed the placer real per-line, route-sequenced stop marks (same as smoothed
+    // mode) so it orders stations along each line and keeps their labels on a
+    // consistent side, instead of the old order-blind synthetic single stop.
+    const stops = geoLabelStops(graph, nodePx);
     const placements = placeLabels({ nodes: labelNodes }, nodePx, stops, segments);
     let labels = '';
     for (const node of labelNodes.values()) {
       const p = placements.get(node.id);
-      const anchor = nodePx.get(node.id);
-      if (p && anchor) labels += renderLabel(node, p, anchor, true, dark);
+      const center = nodePx.get(node.id);
+      if (!p || !center) continue;
+      labels += renderLabel(node, p, labelAnchor(center, stops.get(node.id)), stops.has(node.id), dark);
     }
     out += `<g class="stations">${labels}</g>`;
   }
