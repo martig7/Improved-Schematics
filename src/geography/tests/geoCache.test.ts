@@ -21,19 +21,19 @@ const BBOX: BoundingBox = [10, 20, 30, 40]; // the demand HARVEST extent (distin
 
 test('geoCache: round-trips geography + its harvest extent per city', () => {
   const s = fakeStore();
-  writeGeoCache('nyc', BBOX, GEO, s);
-  assert.deepEqual(readGeoCache('nyc', s), { bbox: BBOX, geography: GEO });
+  writeGeoCache('nyc', BBOX, GEO, 'detailed', s);
+  assert.deepEqual(readGeoCache('nyc', s), { bbox: BBOX, geography: GEO, detail: 'detailed' });
   assert.equal(readGeoCache('chi', s), null, 'other city → null');
   assert.equal(readGeoCache('sea', s), null, 'absent → null');
 });
 
 test('geoCache: clear removes one city, or all', () => {
   const s = fakeStore();
-  writeGeoCache('nyc', BBOX, GEO, s);
-  writeGeoCache('chi', BBOX, GEO, s);
+  writeGeoCache('nyc', BBOX, GEO, 'detailed', s);
+  writeGeoCache('chi', BBOX, GEO, 'detailed', s);
   clearGeoCache('nyc', s);
   assert.equal(readGeoCache('nyc', s), null);
-  assert.deepEqual(readGeoCache('chi', s), { bbox: BBOX, geography: GEO });
+  assert.deepEqual(readGeoCache('chi', s), { bbox: BBOX, geography: GEO, detail: 'detailed' });
   clearGeoCache(undefined, s);
   assert.equal(readGeoCache('chi', s), null);
 });
@@ -56,8 +56,15 @@ test('geoCache: on quota it evicts other cities and retries', () => {
     key: (i) => [...m.keys()][i] ?? null,
     get length() { return m.size; },
   };
-  writeGeoCache('old', BBOX, GEO, capped);
-  writeGeoCache('new', BBOX, GEO, capped); // quota → evict old → retry
-  assert.deepEqual(readGeoCache('new', capped), { bbox: BBOX, geography: GEO });
+  writeGeoCache('old', BBOX, GEO, 'detailed', capped);
+  writeGeoCache('new', BBOX, GEO, 'detailed', capped); // quota → evict old → retry
+  assert.deepEqual(readGeoCache('new', capped), { bbox: BBOX, geography: GEO, detail: 'detailed' });
   assert.equal(readGeoCache('old', capped), null, 'old city evicted');
+});
+
+test('geoCache: a harvest taken at another detail level is still readable, tagged with it', () => {
+  const s2 = fakeStore();
+  writeGeoCache('nyc', BBOX, GEO, 'ultra', s2);
+  const got = readGeoCache('nyc', s2);
+  assert.equal(got?.detail, 'ultra', 'the level round-trips so the caller can treat a mismatch as a miss');
 });

@@ -16,7 +16,7 @@ import type { BoundingBox } from '../types/core';
 import type { KVStore } from '../render/mapCache';
 
 const KEY = 'improvedschematics:geocache';
-const VERSION = 5; // v5: harvest the city_labels tier too (three-tier area labels)
+const VERSION = 6; // v6: harvest detail level (offscreen container size) is part of the entry
 const key = (city: string) => `${KEY}:${city}`;
 
 /** A persisted harvest + the demand extent it was harvested at, so a later session can tell
@@ -24,6 +24,10 @@ const key = (city: string) => `${KEY}:${city}`;
 export interface GeoCacheEntry {
   bbox: BoundingBox;
   geography: GeographyData;
+  /** Land-detail level the harvest was taken at. A different level is treated as a
+   *  miss (like a changed bbox), so raising detail re-harvests instead of serving
+   *  the coarser geometry. */
+  detail?: string;
 }
 
 function defaultStore(): KVStore | null {
@@ -42,9 +46,9 @@ export function readGeoCache(city: string, store: KVStore | null = defaultStore(
   try {
     const raw = store.getItem(key(city));
     if (!raw) return null;
-    const o = JSON.parse(raw) as { v?: number; bbox?: BoundingBox; geography?: GeographyData };
+    const o = JSON.parse(raw) as { v?: number; bbox?: BoundingBox; geography?: GeographyData; detail?: string };
     if (o.v !== VERSION || !o.geography || !o.bbox) return null;
-    return { bbox: o.bbox, geography: o.geography };
+    return { bbox: o.bbox, geography: o.geography, detail: o.detail };
   } catch {
     return null;
   }
@@ -53,9 +57,9 @@ export function readGeoCache(city: string, store: KVStore | null = defaultStore(
 /** Persist a harvested geography for `city` together with the extent it was harvested at.
  *  Best-effort: on quota it evicts OTHER cities' geography and retries once; if it still
  *  can't fit it gives up, and the next open just re-harvests. */
-export function writeGeoCache(city: string, bbox: BoundingBox, geography: GeographyData, store: KVStore | null = defaultStore()): void {
+export function writeGeoCache(city: string, bbox: BoundingBox, geography: GeographyData, detail: string, store: KVStore | null = defaultStore()): void {
   if (!store || !city) return;
-  const payload = JSON.stringify({ v: VERSION, bbox, geography });
+  const payload = JSON.stringify({ v: VERSION, bbox, geography, detail });
   try {
     store.setItem(key(city), payload);
   } catch {

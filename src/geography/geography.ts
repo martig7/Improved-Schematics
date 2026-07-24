@@ -9,13 +9,14 @@ import { featuresBbox } from './bbox';
 import { combineClose } from './combine';
 import { readGeoCache, writeGeoCache } from './geoCache';
 import { computeHarvestBbox, bboxApproxEqual } from './harvestBbox';
+import { getLandDetail, type LandDetail } from './detail';
 import { envNum as readEnvNum } from '../env';
 
 const TAG = '[ImprovedSchematics] geography:';
 // In-memory per-city cache, tagged with the harvest extent so a changed demand extent
 // (across this session OR a reload, via the persisted layer) is re-harvested, not served
 // stale. Only successful harvests are stored.
-const cache = new Map<string, { bbox: BoundingBox; geography: GeographyData }>();
+const cache = new Map<string, { bbox: BoundingBox; geography: GeographyData; detail: LandDetail }>();
 
 /** Read a numeric dev knob from the environment (Electron renderer exposes
  *  process.env, mirroring the OCTI_* tuning vars), falling back to a default. */
@@ -28,7 +29,7 @@ function envNum(name: string, fallback: number): number {
 export interface GeographyDeps {
   getMap: () => MlMap | null;
   probe: (style: StyleLike) => ProbeResult | null;
-  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox) => Promise<TaggedFeature[]>;
+  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox, detail: LandDetail) => Promise<TaggedFeature[]>;
 }
 
 // window.SubwayBuilderAPI is accessed lazily (only when getMap is actually
@@ -41,7 +42,11 @@ const defaultDeps: GeographyDeps = {
 
 /** Probe → harvest the demand-extent tiles → classify. The framing bbox is
  *  derived from the harvested features (the real data extent). Null on failure. */
-export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDeps = defaultDeps): Promise<GeographyData | null> {
+export async function buildGeography(
+  harvestBbox: BoundingBox,
+  deps: GeographyDeps = defaultDeps,
+  detail: LandDetail = getLandDetail(),
+): Promise<GeographyData | null> {
   try {
     const map = deps.getMap();
     if (!map) return null;
@@ -69,7 +74,7 @@ export async function buildGeography(harvestBbox: BoundingBox, deps: GeographyDe
       const unqueried = [...styled].filter((sl) => !probe.sourceLayers.includes(sl));
       console.warn(`${TAG} probe: schema=${probe.schema} source='${probe.sourceId}' querying [${probe.sourceLayers.join(', ')}]; other style layers [${unqueried.join(', ')}]`);
     }
-    const raw = await deps.harvest(map, probe, harvestBbox);
+    const raw = await deps.harvest(map, probe, harvestBbox, detail);
     {
       const perLayer = new Map<string, number>();
       for (const f of raw) perLayer.set(f.sourceLayer, (perLayer.get(f.sourceLayer) ?? 0) + 1);
@@ -123,11 +128,14 @@ export function peekGeography(cityCode: string): GeographyData | null {
   // from a DIFFERENT extent is treated as a miss so the poll/warm-up re-harvests; when the
   // extent can't be computed yet, fall back to whatever's cached (best-effort display).
   const cur = computeHarvestBbox();
+  // A harvest taken at a different DETAIL level is a miss too, so raising the
+  // setting re-harvests rather than showing the coarser geometry indefinitely.
+  const detail = getLandDetail();
   const mem = cache.get(cityCode);
-  if (mem && (!cur || bboxApproxEqual(mem.bbox, cur.bbox))) return mem.geography;
+  if (mem && mem.detail === detail && (!cur || bboxApproxEqual(mem.bbox, cur.bbox))) return mem.geography;
   const persisted = readGeoCache(cityCode);
-  if (persisted && (!cur || bboxApproxEqual(persisted.bbox, cur.bbox))) {
-    cache.set(cityCode, persisted);
+  if (persisted && persisted.detail === detail && (!cur || bboxApproxEqual(persisted.bbox, cur.bbox))) {
+    cache.set(cityCode, { bbox: persisted.bbox, geography: persisted.geography, detail });
     return persisted.geography;
   }
   return null;
@@ -145,20 +153,23 @@ export async function generateGeography(
 ): Promise<GeographyData | null> {
   // Reuse a cached harvest only when it was taken at the SAME extent as requested; a changed
   // demand extent re-harvests (the persisted entry is keyed by city but tagged with its bbox).
+  // A harvest is reusable only at the same extent AND the same detail level, since
+  // the level caps the tile detail baked into the geometry.
+  const detail = getLandDetail();
   const cached = cache.get(cityCode);
-  if (cached && bboxApproxEqual(cached.bbox, harvestBbox)) return cached.geography;
+  if (cached && cached.detail === detail && bboxApproxEqual(cached.bbox, harvestBbox)) return cached.geography;
   const persisted = readGeoCache(cityCode);
-  if (persisted && bboxApproxEqual(persisted.bbox, harvestBbox)) {
-    cache.set(cityCode, persisted);
+  if (persisted && persisted.detail === detail && bboxApproxEqual(persisted.bbox, harvestBbox)) {
+    cache.set(cityCode, { bbox: persisted.bbox, geography: persisted.geography, detail });
     return persisted.geography;
   }
-  const result = await buildGeography(harvestBbox, deps);
+  const result = await buildGeography(harvestBbox, deps, detail);
   if (result) {
-    cache.set(cityCode, { bbox: harvestBbox, geography: result });
+    cache.set(cityCode, { bbox: harvestBbox, geography: result, detail });
     // Persist only a DEMAND-based harvest (the stable, full-city extent). A transient
     // station-fallback harvest (demand not ready yet) is kept in memory for the session but
     // not frozen to disk, so a later reload re-harvests at the proper extent.
-    if (persist) writeGeoCache(cityCode, harvestBbox, result);
+    if (persist) writeGeoCache(cityCode, harvestBbox, result, detail);
   }
   return result;
 }

@@ -3,19 +3,18 @@ import type { Map as MlMap, StyleSpecification, SourceSpecification } from 'mapl
 import type { TaggedFeature } from './types';
 import type { BoundingBox } from '../types/core';
 import type { ProbeResult } from './schemaProbe';
+import { harvestContainerPx, tileEstimate, DEFAULT_LAND_DETAIL, type LandDetail } from './detail';
 
-// Offscreen canvas size. Tiles-to-cover-the-viewport scales with this, so keep
-// it small: halving the dimension loads ~4× fewer tiles (less GPU and less
-// contention with the real map's tile worker during the one-time harvest), at a
-// slightly lower fitBounds zoom. That is fine, since we simplify the geometry
-// afterwards anyway.
-const CONTAINER_PX = 512;
 // Total budget to wait for the offscreen source's tiles after fitBounds. On a fresh
 // game load the basemap is saturating the tile worker/network, so the harvest tiles
 // can take a long time to arrive. Waiting on a single `idle` event is unreliable
 // (it can fire before the fitBounds tiles arrive under contention). We instead wait
 // until areTilesLoaded() actually reports them in, up to this budget.
 const TILE_WAIT_MS = 20_000;
+// Extra budget per tile beyond a handful, so a high-detail harvest (which loads
+// quadratically more tiles) is not cut off mid-load by a budget tuned for one.
+const TILE_WAIT_PER_TILE_MS = 250;
+const TILE_WAIT_MAX_MS = 45_000;
 const POLL_MS = 250;
 // Cap the wait for the offscreen map's `load` event. If the source can't initialize (the
 // game's tile backend not serving yet, so the map errors instead of firing `load`), this
@@ -25,9 +24,9 @@ const POLL_MS = 250;
 const LOAD_TIMEOUT_MS = 15_000;
 
 /** Resolve once the tiles for the fitBounds view are loaded, or the budget elapses. */
-async function waitForTiles(map: MlMap): Promise<void> {
+async function waitForTiles(map: MlMap, budgetMs: number): Promise<void> {
   const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const deadline = now() + TILE_WAIT_MS;
+  const deadline = now() + budgetMs;
   const idleOrDelay = (capMs: number): Promise<void> => Promise.race([
     new Promise<void>((r) => { map.once('idle', () => r()); }),
     new Promise<void>((r) => setTimeout(r, Math.max(0, capMs))),
@@ -54,13 +53,23 @@ export async function harvestTaggedFeatures(
   gameMap: MlMap,
   probe: ProbeResult,
   bbox: BoundingBox,
+  detail: LandDetail = DEFAULT_LAND_DETAIL,
 ): Promise<TaggedFeature[]> {
   // Borrow the constructor from the live instance so we never import the runtime.
   const MapCtor = gameMap.constructor as typeof MlMap;
 
+  // The container spans the whole bbox, so its size sets the fitBounds zoom and
+  // therefore how detailed the tiles arrive. Clamped to the source's maxzoom:
+  // past it a vector source serves overzoomed parent tiles, which would cost four
+  // times the tiles per step and return no new geometry.
+  const maxzoom = (probe.source as { maxzoom?: number } | null)?.maxzoom;
+  const containerPx = harvestContainerPx(bbox, detail, maxzoom);
+  const tiles = tileEstimate(containerPx);
+  const tileBudgetMs = Math.min(TILE_WAIT_MAX_MS, TILE_WAIT_MS + Math.max(0, tiles - 4) * TILE_WAIT_PER_TILE_MS);
+
   const container = document.createElement('div');
   container.style.cssText =
-    `position:absolute;left:-99999px;top:0;width:${CONTAINER_PX}px;height:${CONTAINER_PX}px;visibility:hidden;`;
+    `position:absolute;left:-99999px;top:0;width:${containerPx}px;height:${containerPx}px;visibility:hidden;`;
   document.body.appendChild(container);
 
   // Minimal style: just the probed source + transparent fill layers for each
@@ -94,8 +103,8 @@ export async function harvestTaggedFeatures(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },
     );
-    logHarvestFit(bbox, map.getZoom());
-    await waitForTiles(map);
+    logHarvestFit(bbox, map.getZoom(), detail, containerPx, tiles, maxzoom);
+    await waitForTiles(map, tileBudgetMs);
 
     const out: TaggedFeature[] = [];
     const counts: Record<string, number> = {};
@@ -111,7 +120,7 @@ export async function harvestTaggedFeatures(
         });
       }
     }
-    logHarvestCounts(counts, loaded, tileErrors, out.length, TILE_WAIT_MS);
+    logHarvestCounts(counts, loaded, tileErrors, out.length, tileBudgetMs);
     return out;
   } catch (err) {
     logHarvestFailed(err);

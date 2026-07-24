@@ -6,9 +6,22 @@ import type { BoundingBox } from '../../types/core';
 
 const TAG = '[ImprovedSchematics] geography:';
 
-/** Trace the fitBounds result: the bbox we fit to and the resulting zoom. */
-export function logHarvestFit(bbox: BoundingBox, zoom: number): void {
-  console.info(`${TAG} fit to [${bbox.map((n) => n.toFixed(3)).join(', ')}] → offscreen zoom ${zoom.toFixed(1)}`);
+/** Trace the fitBounds result: the bbox we fit to, the resulting zoom, and the
+ *  detail level that chose the offscreen container (the tile level of detail the
+ *  whole backdrop is limited by). */
+export function logHarvestFit(
+  bbox: BoundingBox,
+  zoom: number,
+  detail: string,
+  containerPx: number,
+  tiles: number,
+  maxzoom?: number,
+): void {
+  const cap = typeof maxzoom === 'number' && Number.isFinite(maxzoom) ? `, source maxzoom ${maxzoom}` : '';
+  console.info(
+    `${TAG} fit to [${bbox.map((n) => n.toFixed(3)).join(', ')}] → offscreen zoom ${zoom.toFixed(1)} ` +
+    `(detail '${detail}', container ${containerPx}px, ~${tiles} tiles${cap})`,
+  );
 }
 
 /** Trace the harvested per-source-layer counts, plus the "not serving yet" and

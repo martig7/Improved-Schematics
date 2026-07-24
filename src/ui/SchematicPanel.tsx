@@ -40,6 +40,7 @@ import type { RenderMode } from '../render/types';
 import { DEFAULT_LABEL_ZOOM, DEFAULT_LABEL_PAD, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX, LABEL_PAD_MIN, LABEL_PAD_MAX } from '../render/neighborhoods';
 import { DEFAULT_THEME, DARK_THEME } from '../render/types';
 import { peekGeography } from '../geography/geography';
+import { LAND_DETAILS, DEFAULT_LAND_DETAIL, setLandDetail, type LandDetail } from '../geography/detail';
 import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
@@ -286,6 +287,7 @@ type RestoredSettings = {
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
   applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; gridRef?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
+  landDetail?: LandDetail;
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -581,6 +583,9 @@ export function SchematicPanel() {
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
     (applied.disabledRoutes?.length ?? 0) === 0 &&
     Object.keys(applied.simplifiedRoutes ?? {}).length === 0;
+  // How much land detail to harvest from the basemap tiles. Harvest-time (not
+  // draw-time): changing it makes the geography caches miss and re-harvest.
+  const [landDetail, setLandDetailState] = useState<LandDetail>(rset.landDetail ?? DEFAULT_LAND_DETAIL);
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -761,13 +766,16 @@ export function SchematicPanel() {
       if (attempts === SPINNER_ATTEMPTS) setGeoLoading(false); // drop the spinner, keep polling
       if (attempts < MAX_ATTEMPTS) timer = setTimeout(poll, DELAY);
     };
+    // Publish the level before polling: peekGeography/warmGeography read it, and a
+    // changed level must miss the caches so the harvest re-runs at the new detail.
+    setLandDetail(landDetail);
     setGeoLoading(true);
     poll();
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [landDetail]);
 
   // Drop the game's persisted panel size/position when the panel closes, so
   // the next open uses our defaults instead of the last user-resized state.
@@ -1104,9 +1112,9 @@ export function SchematicPanel() {
       // doesn't write — switchMode changes the visual state, which re-triggers this under the
       // new mode.
       writeModeSettings(city, modeRef.current, { showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, labelScale, stationDesign, mapTheme });
-      writeSettings(city, { rasterScale, jpegQuality, exportFormat });
+      writeSettings(city, { rasterScale, jpegQuality, exportFormat, landDetail });
     }
-  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mapTheme, mountCity]);
+  }, [showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, landmass, landmassDetail, applied, rasterScale, jpegQuality, exportFormat, labelScale, stationDesign, mapTheme, landDetail, mountCity]);
 
   // Crop the generated SVG to the frame (data-frame = the geography water/green
   // extent), so exports outline it — content outside is clipped by the viewBox.
@@ -1381,6 +1389,7 @@ export function SchematicPanel() {
       landmass?: 'faithful' | 'rounded' | 'diagram';
       landmassDetail?: number;
       applied?: typeof applied;
+      landDetail?: LandDetail;
       rasterScale?: number;
       jpegQuality?: number;
       exportFormat?: ExportFormat;
@@ -1433,6 +1442,7 @@ export function SchematicPanel() {
     if (s.mapTheme === 'light' || s.mapTheme === 'dark' || s.mapTheme === 'auto') setMapTheme(s.mapTheme);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
     if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
+    if (s.landDetail && LAND_DETAILS.some((d) => d.id === s.landDetail)) setLandDetailState(s.landDetail);
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
     if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
     if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
@@ -3127,6 +3137,23 @@ export function SchematicPanel() {
               </select>
             </span>
           </div>
+          {/* How detailed the harvested land is. Harvest-time, not draw-time: the
+              basemap tiles arrive already simplified for the zoom the harvest runs
+              at, so detail dropped here cannot be recovered by the shape controls
+              below. Changing it re-harvests this city (a one-time wait). */}
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+            Land detail
+            <select
+              value={landDetail}
+              onChange={(e) => setLandDetailState(e.target.value as LandDetail)}
+              title="Detail harvested from the basemap. Higher loads more map tiles once per city, then is cached."
+              style={{ flex: '0 0 auto', padding: '3px 6px', borderRadius: 5, fontSize: 12, background: api.ui.getResolvedTheme() === 'dark' ? '#18181b' : '#f4f4f5', color: 'inherit', border: '1px solid rgba(136,136,136,0.35)' }}
+            >
+              {LAND_DETAILS.map((d) => (
+                <option key={d.id} value={d.id}>{d.label}</option>
+              ))}
+            </select>
+          </label>
           {mode === 'smoothed' && (
             <>
               {/* Map shape (draw-time; applies instantly). */}
