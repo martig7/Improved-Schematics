@@ -17,8 +17,14 @@
 import { SchematicPanel } from './ui/SchematicPanel';
 import { modState, PANEL_ID, PANEL_STORAGE_KEY } from './state';
 import { MOD_VERSION } from './version';
+import { installLogCapture } from './debugLog';
 
 const TAG = '[ImprovedSchematics]';
+
+// Capture console output from here on, so a player who cannot open the dev
+// console can still save a log after hitting a problem (panel: "Save logs").
+// Installed before the API check so a failed startup is captured too.
+installLogCapture();
 
 const api = window.SubwayBuilderAPI;
 

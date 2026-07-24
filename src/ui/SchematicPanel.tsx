@@ -45,6 +45,7 @@ import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
 import { rotateSchematicInput } from '../render/rotateInput';
 import { MOD_VERSION } from '../version';
+import { logText, logCount } from '../debugLog';
 
 const api = window.SubwayBuilderAPI;
 
@@ -1213,6 +1214,20 @@ export function SchematicPanel() {
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }, [mode]);
 
+  // Write the captured console output to a text file. The dev console is not
+  // reachable in the packaged game, so this is how a failure gets reported.
+  const saveLogs = useCallback(() => {
+    const text = logText({
+      mod: MOD_VERSION,
+      mode,
+      city: settingsCityRef.current || modState.cityCode || '',
+      exportFormat,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+    });
+    triggerDownload(new Blob([text], { type: 'text/plain' }), 'txt', 'improvedschematics-log');
+    setMapMsg(`Saved ${logCount()} log entries`);
+  }, [mode, exportFormat, triggerDownload, modState]);
+
   // Export the current map in the chosen format. SVG is the serialized markup
   // verbatim; PNG/JPEG rasterize that markup onto an upscaled canvas. JPEG has no
   // alpha channel, so the canvas is first flooded with the theme background (the
@@ -1234,10 +1249,16 @@ export function SchematicPanel() {
     const svgUrl = URL.createObjectURL(new Blob([built.markup], { type: 'image/svg+xml' }));
     const img = new Image();
     img.onload = () => {
+      // The whole raster/encode path runs in this callback, so an exception here
+      // would otherwise vanish and the download would silently do nothing. Report
+      // it to the log buffer and to the panel instead.
+      try {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         URL.revokeObjectURL(svgUrl);
+        console.error('[ImprovedSchematics] export: no 2D canvas context; nothing written.');
+        setMapMsg('Export failed: no canvas context');
         return;
       }
       if (fmt.id === 'discord') {
@@ -1255,11 +1276,13 @@ export function SchematicPanel() {
           ctx.drawImage(img, 0, 0, w, h);
           return { rgba: ctx.getImageData(0, 0, w, h).data.buffer, width: w, height: h };
         };
+        console.info(`[ImprovedSchematics] Discord export: source ${built.width}x${built.height}, encoding…`);
         const { png, fits } = encodeForDiscord(rasterize);
         URL.revokeObjectURL(svgUrl);
         if (!fits) {
           console.warn('[ImprovedSchematics] Discord export stayed above the size budget at the smallest step; downloading anyway.');
         }
+        console.info(`[ImprovedSchematics] Discord export: ${(png.byteLength / 1048576).toFixed(2)} MB, embeds=${fits}`);
         triggerDownload(new Blob([png], { type: fmt.mime }), fmt.ext, name);
         return;
       }
@@ -1278,8 +1301,17 @@ export function SchematicPanel() {
         fmt.mime,
         jpegQuality,
       );
+      } catch (err) {
+        URL.revokeObjectURL(svgUrl);
+        console.error(`[ImprovedSchematics] ${fmt.id} export failed:`, err);
+        setMapMsg(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     };
-    img.onerror = () => URL.revokeObjectURL(svgUrl);
+    img.onerror = (e) => {
+      URL.revokeObjectURL(svgUrl);
+      console.error('[ImprovedSchematics] export: the map image failed to load for rasterizing.', String(e));
+      setMapMsg('Export failed: could not load the map image');
+    };
     img.src = svgUrl;
   }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality, mode, modState, mapDark]);
 
@@ -2849,6 +2881,15 @@ export function SchematicPanel() {
                 </div>
                 {/* Clear the saved layout cache for this city, an escape hatch for a stale or
                     wrong cached layout. The on-screen map stays, but reload/next Generate rebuilds. */}
+                {/* Console output is unreachable in the packaged game, so the captured
+                    buffer is written to a text file for reporting a failure. */}
+                <button
+                  onClick={saveLogs}
+                  title="Save the captured console log to a text file"
+                  style={{ fontSize: 12, fontWeight: 600, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(136,136,136,0.4)', background: 'transparent', color: 'inherit', cursor: 'pointer' }}
+                >
+                  ⭳ Save logs
+                </button>
                 <button
                   onClick={clearCache}
                   title="Delete this city's saved layout cache (forces a fresh rebuild on next Generate or reload)"
