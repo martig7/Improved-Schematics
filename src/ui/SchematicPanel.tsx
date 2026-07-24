@@ -123,6 +123,13 @@ const DEFAULT_BOX_FRAC = 0.4;
 const DEFAULT_STATION_SPLIT = false;
 const BOX_FRAC_MIN = 0.1;
 const BOX_FRAC_MAX = 0.8;
+// Routing-grid REFERENCE spacing in meters (SchematicOptions.gridRef). At or below
+// this median station spacing the grid keeps its plain cell; above it the cell is
+// refined proportionally. LOWER = refines sooner (finer grid, more detail, slower).
+// Layout-baking, so it rides the draft->Save flow and the fingerprint like boxFrac.
+const DEFAULT_GRID_REF = 680;
+const GRID_REF_MIN = 300;
+const GRID_REF_MAX = 1500;
 // Drawn line/marker chrome scale (SchematicOptions.lineScale). 1 = the shipped
 // line width; lower thins every stroke and marker to declutter a dense core,
 // higher thickens. Bakes into the layout (marker seating), so it rides the
@@ -277,7 +284,7 @@ type RestoredSettings = {
   mapTheme?: 'auto' | 'light' | 'dark';
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
+  applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; gridRef?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -445,6 +452,7 @@ export function SchematicPanel() {
   const [boxWarpPos, setBoxWarpPos] = useState(rapp?.boxWarpPos ?? DEFAULT_REALISM_POS);
   // Box density cutoff (densityBoxWarp frac) — same draft→Save flow as the realism sliders.
   const [boxFrac, setBoxFrac] = useState(rapp?.boxFrac ?? DEFAULT_BOX_FRAC);
+  const [gridRef, setGridRef] = useState(rapp?.gridRef ?? DEFAULT_GRID_REF);
   // Drawn line/marker chrome scale (layout-baking, same draft→Save flow).
   const [lineScale, setLineScale] = useState(rapp?.lineScale ?? DEFAULT_LINE_SCALE);
   // Two-dial box warp (layout-baking): Declutter (survival) + Aesthetic
@@ -487,7 +495,7 @@ export function SchematicPanel() {
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
-        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [], simplifiedRoutes: rapp.simplifiedRoutes ?? {} }
+        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: rapp.gridRef ?? DEFAULT_GRID_REF, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [], simplifiedRoutes: rapp.simplifiedRoutes ?? {} }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -496,6 +504,7 @@ export function SchematicPanel() {
           linePos: DEFAULT_REALISM_POS,
           boxWarpPos: DEFAULT_REALISM_POS,
           boxFrac: DEFAULT_BOX_FRAC,
+          gridRef: DEFAULT_GRID_REF,
           lineScale: DEFAULT_LINE_SCALE,
           declutterWarp: DEFAULT_DECLUTTER,
           aestheticWarp: DEFAULT_AESTHETIC,
@@ -520,6 +529,7 @@ export function SchematicPanel() {
     applied.linePos !== linePos ||
     applied.boxWarpPos !== boxWarpPos ||
     applied.boxFrac !== boxFrac ||
+    (applied.gridRef ?? DEFAULT_GRID_REF) !== gridRef ||
     (applied.lineScale ?? DEFAULT_LINE_SCALE) !== lineScale ||
     (applied.declutterWarp ?? DEFAULT_DECLUTTER) !== declutterWarp ||
     (applied.aestheticWarp ?? DEFAULT_AESTHETIC) !== aestheticWarp ||
@@ -541,6 +551,7 @@ export function SchematicPanel() {
     linePos === DEFAULT_REALISM_POS &&
     boxWarpPos === DEFAULT_REALISM_POS &&
     boxFrac === DEFAULT_BOX_FRAC &&
+    gridRef === DEFAULT_GRID_REF &&
     lineScale === DEFAULT_LINE_SCALE &&
     declutterWarp === DEFAULT_DECLUTTER &&
     aestheticWarp === DEFAULT_AESTHETIC &&
@@ -558,6 +569,7 @@ export function SchematicPanel() {
     applied.linePos === DEFAULT_REALISM_POS &&
     applied.boxWarpPos === DEFAULT_REALISM_POS &&
     applied.boxFrac === DEFAULT_BOX_FRAC &&
+    (applied.gridRef ?? DEFAULT_GRID_REF) === DEFAULT_GRID_REF &&
     (applied.lineScale ?? DEFAULT_LINE_SCALE) === DEFAULT_LINE_SCALE &&
     (applied.declutterWarp ?? DEFAULT_DECLUTTER) === DEFAULT_DECLUTTER &&
     (applied.aestheticWarp ?? DEFAULT_AESTHETIC) === DEFAULT_AESTHETIC &&
@@ -656,7 +668,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
-    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [], simplifiedRoutes: apRaw.simplifiedRoutes ?? {} };
+    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: apRaw.gridRef ?? DEFAULT_GRID_REF, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [], simplifiedRoutes: apRaw.simplifiedRoutes ?? {} };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -676,6 +688,7 @@ export function SchematicPanel() {
     setLinePos(ap.linePos);
     setBoxWarpPos(ap.boxWarpPos);
     setBoxFrac(ap.boxFrac);
+    setGridRef(ap.gridRef);
     setLineScale(ap.lineScale);
     setDeclutterWarp(ap.declutterWarp);
     setAestheticWarp(ap.aestheticWarp);
@@ -839,6 +852,7 @@ export function SchematicPanel() {
         declutterWarp: applied.declutterWarp ?? DEFAULT_DECLUTTER,
         aestheticWarp: (applied.aestheticOn ?? DEFAULT_AESTHETIC_ON) ? (applied.aestheticWarp ?? DEFAULT_AESTHETIC) : 0,
         boxFrac: applied.boxFrac,
+        gridRef: applied.gridRef,
         lineScale: applied.lineScale,
         stationSplit: applied.stationSplit,
         theme: {
@@ -1356,6 +1370,7 @@ export function SchematicPanel() {
       linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
       boxWarpPos: num(s.applied.boxWarpPos, -1, 1, DEFAULT_REALISM_POS),
       boxFrac: num(s.applied.boxFrac, BOX_FRAC_MIN, BOX_FRAC_MAX, DEFAULT_BOX_FRAC),
+      gridRef: num(s.applied.gridRef, GRID_REF_MIN, GRID_REF_MAX, DEFAULT_GRID_REF),
       lineScale: num(s.applied.lineScale, LINE_SCALE_MIN, LINE_SCALE_MAX, DEFAULT_LINE_SCALE),
       declutterWarp: num(s.applied.declutterWarp, 0, 1, DEFAULT_DECLUTTER),
       aestheticWarp: num(s.applied.aestheticWarp, 0, 1, DEFAULT_AESTHETIC),
@@ -1398,6 +1413,7 @@ export function SchematicPanel() {
       setLinePos(clampedApplied.linePos);
       setBoxWarpPos(clampedApplied.boxWarpPos);
       setBoxFrac(clampedApplied.boxFrac);
+      setGridRef(clampedApplied.gridRef);
       setLineScale(clampedApplied.lineScale);
       setDeclutterWarp(clampedApplied.declutterWarp);
       setAestheticWarp(clampedApplied.aestheticWarp);
@@ -1439,6 +1455,7 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
+      gridRef: DEFAULT_GRID_REF,
       lineScale: DEFAULT_LINE_SCALE,
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
@@ -1465,6 +1482,7 @@ export function SchematicPanel() {
             aestheticWarp: (ap.aestheticOn ?? DEFAULT_AESTHETIC_ON) ? (ap.aestheticWarp ?? DEFAULT_AESTHETIC) : 0,
             ...(ap.cropBbox != null ? { cropAspectW: ap.cropAspectW, cropAspectH: ap.cropAspectH, cropBbox: ap.cropBbox } : {}),
             boxFrac: ap.boxFrac,
+            gridRef: ap.gridRef,
             lineScale: ap.lineScale,
             stationSplit: ap.stationSplit,
             dark,
@@ -1829,7 +1847,7 @@ export function SchematicPanel() {
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(bbox);
-    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
     if (changed && mode === 'smoothed' && smoothedReady) regenerate();
     else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
   };
@@ -1881,7 +1899,7 @@ export function SchematicPanel() {
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
     // Only a layout-baking change needs the octi re-run; a simplified-route change
     // alone repaints from the cached layout.
     if (mode === 'smoothed' && smoothedReady && layoutDirty) regenerate();
@@ -1902,6 +1920,7 @@ export function SchematicPanel() {
     setLinePos(DEFAULT_REALISM_POS);
     setBoxWarpPos(DEFAULT_REALISM_POS);
     setBoxFrac(DEFAULT_BOX_FRAC);
+    setGridRef(DEFAULT_GRID_REF);
     setLineScale(DEFAULT_LINE_SCALE);
     setDeclutterWarp(DEFAULT_DECLUTTER);
     setAestheticWarp(DEFAULT_AESTHETIC);
@@ -1923,6 +1942,7 @@ export function SchematicPanel() {
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
       boxFrac: DEFAULT_BOX_FRAC,
+      gridRef: DEFAULT_GRID_REF,
       lineScale: DEFAULT_LINE_SCALE,
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
@@ -3153,6 +3173,7 @@ export function SchematicPanel() {
                 <input type="range" min={0} max={1} step={0.05} value={aestheticWarp} disabled={!aestheticOn} onChange={(e) => setAestheticWarp(parseFloat(e.target.value))} style={{ width: '100%', cursor: aestheticOn ? 'pointer' : 'default', accentColor: '#2563eb', opacity: aestheticOn ? 1 : 0.45 }} />
               </label>
               <Slider label="Box density cutoff" value={boxFrac} min={BOX_FRAC_MIN} max={BOX_FRAC_MAX} step={0.05} display={`${boxFrac.toFixed(2)}${boxFrac < DEFAULT_BOX_FRAC ? ' · more' : boxFrac > DEFAULT_BOX_FRAC ? ' · fewer' : ' · default'}`} onChange={setBoxFrac} />
+              <Slider label="Grid reference" value={gridRef} min={GRID_REF_MIN} max={GRID_REF_MAX} step={20} display={`${gridRef} m`} onChange={setGridRef} />
               <Slider label="Line size" value={lineScale} min={LINE_SCALE_MIN} max={LINE_SCALE_MAX} step={0.05} display={lineScale === DEFAULT_LINE_SCALE ? 'Default' : `${lineScale.toFixed(2)}× · ${lineScale < DEFAULT_LINE_SCALE ? 'thinner' : 'thicker'}`} onChange={setLineScale} />
               <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, cursor: 'pointer' }}>
                 <span>Split station groups</span>

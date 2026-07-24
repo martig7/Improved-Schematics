@@ -22,14 +22,14 @@ import type { Pixel, StopMark, TransitGraph, Layout, LayoutNode, LayoutEdge, Cel
 import { DEFAULT_OPTIONS, DARK_THEME } from './types';
 import { createProjection, computeBounds, padBounds, projectedBounds, type Projection, type FrameRect } from './projection';
 import { extractRouteLines } from './routes';
-import { getOrBuildStationGroups, buildTransitGraph, servedStationIds } from './layout/graph';
+import { getOrBuildStationGroups, buildTransitGraph, servedStationIds, medianGeoEdgeMeters } from './layout/graph';
 import { fingerprintInputs } from './cacheFingerprint';
 import { octi, DEFAULT_OCTI_OPTIONS, medianEdgeLength } from './layout/octi';
 import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, medianEdgeLenPx, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
-import { LINE_WIDTH, LINE_GAP, DRAW_SCALE, regimeDivisor } from './constants';
+import { LINE_WIDTH, LINE_GAP, DRAW_SCALE, regimeDivisor, scaleAwareDivisor, SCALE_GRID_REF_M, SCALE_GRID_DMAX } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
@@ -124,6 +124,23 @@ function nodeRingColors(graph: TransitGraph): Map<string, string[]> {
     }
   }
   return m;
+}
+
+/** The routing-grid divisor: the regime `base`, refined for geographically large
+ *  networks so the cell stays fine enough in real meters (scaleAwareDivisor).
+ *  Default on. OCTI_NO_SCALEGRID=1 restores the plain regime divisor (A/B and
+ *  reproducing pre-refinement layouts); OCTI_SCALEGRID / OCTI_SCALEGRID_MAX
+ *  override the reference spacing (m) and the divisor bound for tuning. */
+function resolveScaleDivisor(base: number, graph: TransitGraph, optRef?: number): number {
+  if (envStr('OCTI_NO_SCALEGRID') === '1') return base;
+  const envRef = envNum('OCTI_SCALEGRID');
+  const ref = Number.isFinite(envRef)
+    ? envRef
+    : typeof optRef === 'number' && Number.isFinite(optRef) && optRef > 0
+      ? optRef
+      : SCALE_GRID_REF_M;
+  const dmax = Number.isFinite(envNum('OCTI_SCALEGRID_MAX')) ? envNum('OCTI_SCALEGRID_MAX') : SCALE_GRID_DMAX;
+  return scaleAwareDivisor(base, medianGeoEdgeMeters(graph), ref, dmax);
 }
 
 /** How many distinct routes pass through each node. */
@@ -837,9 +854,11 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // ĉ estimate for the contraction oracle: mirrors the real post-warp
   // cellSize = max(12, medianSupportEdgeLen / divisor). graph edge count is a
   // PROXY for the support edge count (topo merge hasn't run yet); the demand
-  // safety factor covers the regime mismatch. Same regimeDivisor helper as the
-  // real grid, so the OCTI_DIVISOR override reaches both in dev sweeps.
-  const divisorEst = regimeDivisor(graph.edges.length);
+  // safety factor covers the regime mismatch. Same regimeDivisor + scale-aware
+  // refinement as the real grid, so both stay in sync: a finer real grid contracts
+  // less, so the oracle must predict less contraction demand and not over-grow the
+  // canvas. (graph edge count is the pre-warp proxy for the support edge count.)
+  const divisorEst = resolveScaleDivisor(regimeDivisor(graph.edges.length), graph, opts.gridRef);
   const cellFromMedLen = (m: number) => Math.max(12, m / divisorEst);
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   // Capsule-demand oracle (spec 2026-07-02): marker geometry constants +
@@ -1156,7 +1175,14 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // The threshold + constants live in regimeDivisor, which is also mirrored
   // pre-warp as `divisorEst` (box-warp contraction oracle), so both stay in
   // sync and the OCTI_DIVISOR override reaches both.
-  const divisor = regimeDivisor(support.edges.size);
+  // Scale-aware grid refinement (default on): on a geographically large network
+  // the base cell is coarse in real meters, so grid snapping can push a coastal
+  // station across the shoreline into the water; a proportionally finer cell keeps
+  // it on the correct side. The refinement is bounded (SCALE_GRID_DMAX) so a huge
+  // network can't explode the cell count. Compact cities sit at/below the reference
+  // spacing and are unchanged. OCTI_SCALEGRID / OCTI_SCALEGRID_MAX tune it;
+  // OCTI_NO_SCALEGRID=1 restores the plain regime divisor (A/B + old-layout repro).
+  const divisor = resolveScaleDivisor(regimeDivisor(support.edges.size), graph, opts.gridRef);
   octiOpts.cellSize = Math.max(12, medLen / divisor);
   // (dev A/B pin: OCTI_CELL=<px> fixes the grid cell absolutely, so upstream
   //  structural changes are measured on the SAME ruler instead of re-rolling

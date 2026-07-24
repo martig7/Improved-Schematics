@@ -81,6 +81,34 @@ export function regimeDivisor(edgeCount: number): number {
   return envNum('OCTI_DIVISOR') || (edgeCount > 800 ? 1.2 : 1.6);
 }
 
+/** Scale-aware refinement of the grid divisor. On geographically large networks
+ *  the median station spacing (in real meters) is long, so the base cell is
+ *  coarse in real terms and grid snapping can push a coastal station across the
+ *  shoreline into the water. When the geographic median edge exceeds `refMeters`,
+ *  raise the divisor proportionally so the cell stays near a target real-world
+ *  size, bounded by `dmax` so a huge network cannot explode the cell count (which
+ *  drives routing cost). Networks at or below the reference spacing are unchanged
+ *  (returns `base`), so compact cities keep their current grid.
+ *  @param base the regime divisor.
+ *  @param medGeoMeters geographic median edge length in meters (0 disables).
+ *  @param refMeters median spacing at which refinement starts (<= 0 disables).
+ *  @param dmax upper bound on the refined divisor. */
+export function scaleAwareDivisor(base: number, medGeoMeters: number, refMeters: number, dmax: number): number {
+  if (!(medGeoMeters > 0) || refMeters <= 0) return base;
+  const scaled = base * (medGeoMeters / refMeters);
+  return Math.min(dmax, Math.max(base, scaled));
+}
+
+/** Reference median station spacing (meters): at or below this, the grid keeps
+ *  the plain regime divisor; above it the cell is refined proportionally so it
+ *  stays fine enough in real terms to keep coastal stations on the correct side
+ *  of the shoreline. Compact cities sit at/below this; only geographically large
+ *  networks refine. Override with OCTI_SCALEGRID. */
+export const SCALE_GRID_REF_M = 680;
+/** Upper bound on the scale-refined divisor, so a huge network cannot explode the
+ *  cell count (which drives routing cost). Override with OCTI_SCALEGRID_MAX. */
+export const SCALE_GRID_DMAX = 3.2;
+
 /** Capsule markers render at this fraction of full radius so bullet rings
  *  inside a capsule clear each other. SHARED so the rigid-row solver's
  *  intra-capsule gap floor (renderOctilinear) uses the SAME scale the markers

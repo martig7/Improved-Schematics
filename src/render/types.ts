@@ -137,6 +137,13 @@ export interface SchematicOptions {
    *  boxes (broader warping); higher keeps only the densest cores, giving
    *  fewer/smaller boxes. Default 0.4. */
   boxFrac?: number;
+  /** Smoothed mode only: routing-grid REFERENCE spacing in METERS. At or below
+   *  this median station spacing the grid keeps its plain regime cell; above it
+   *  the cell is refined proportionally so it stays fine enough in real terms to
+   *  keep coastal stations on the correct side of the shoreline. LOWER refines
+   *  sooner (a finer grid, more detail, slower); higher keeps a coarser grid.
+   *  Bakes into the layout (fingerprint). Default SCALE_GRID_REF_M. */
+  gridRef?: number;
   /** Smoothed mode only: PERCENTAGE-of-maximum-warp mode (0–1). When set, the
    *  box warp is granted as this linear fraction of the map's full measured
    *  demand (survival plus full aesthetics): 0 = identity, 1 = the whole

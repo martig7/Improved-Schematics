@@ -198,6 +198,32 @@ function groupEdgeKey(a: string, b: string): string {
   return a < b ? a + '|' + b : b + '|' + a;
 }
 
+/** Median edge length in METERS, via the same equirectangular meters projection
+ *  buildTransitGraph uses (quantized cos, then multiply + correctly-rounded sqrt),
+ *  so it is bit-identical cross-V8 and safe to feed into the deterministic layout.
+ *  Sizes the routing grid in real-world terms (see scaleAwareDivisor). Reads the
+ *  never-overwritten node lng/lat, not `pos` (which becomes pixel space downstream).
+ *  Returns 0 for an edgeless graph. */
+export function medianGeoEdgeMeters(graph: TransitGraph): number {
+  if (graph.edges.length === 0 || graph.nodes.size === 0) return 0;
+  let latSum = 0;
+  for (const n of graph.nodes.values()) latSum += n.lngLat[1];
+  const project = projectFactory(latSum / graph.nodes.size);
+  const lens: number[] = [];
+  for (const e of graph.edges) {
+    const a = graph.nodes.get(e.from), b = graph.nodes.get(e.to);
+    if (!a || !b) continue;
+    const pa = project(a.lngLat[0], a.lngLat[1]);
+    const pb = project(b.lngLat[0], b.lngLat[1]);
+    const dx = pa[0] - pb[0], dy = pa[1] - pb[1];
+    lens.push(Math.sqrt(dx * dx + dy * dy));
+  }
+  if (lens.length === 0) return 0;
+  lens.sort((a, b) => a - b);
+  const mid = lens.length >> 1;
+  return lens.length % 2 ? lens[mid] : (lens[mid - 1] + lens[mid]) / 2;
+}
+
 /** Equirectangular meters projection centered at `lat0` (degrees). */
 function projectFactory(lat0: number): (lng: number, lat: number) => [number, number] {
   const R = 6371e3;
