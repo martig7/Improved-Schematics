@@ -69,6 +69,7 @@ export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: num
             importance: imp ? (x: number, y: number) => GREEN_IMP * imp(x, y) : undefined,
             dryPoints: undefined,
             keepConnected: undefined,
+            minWidthPx: undefined,
           }
         : { ...style, keepConnected: true };
       d = stylizeRingsPathD(rs, catStyle, extent);

@@ -38,6 +38,8 @@ export interface LandmassParams {
   round: number;
   minArea: number;
   octi?: boolean;
+  /** Water-only floor width for narrow features (base-canvas px). */
+  minWidth: number;
 }
 
 /** Map the two UI knobs (mode + 0..1 detail slider) onto the px primitives.
@@ -56,6 +58,10 @@ export function landmassParams(mode: LandmassMode, strength: number): LandmassPa
     round: 12 + 58 * s,
     minArea: (tol * 4) * (tol * 4),
     octi,
+    // Constant across the slider: a channel is either legible or it is not, so
+    // the floor must not shrink as the rest of the map generalizes. Sized to
+    // read as a distinct channel at a base-canvas render.
+    minWidth: 7,
   };
 }
 
@@ -91,6 +97,11 @@ export interface LandmassStyle {
   hullPx?: readonly Pt[];
   /** Clearance around a repaired dry point, px (default 14). */
   dryMarginPx?: number;
+  /** Water only: floor width (render px) for narrow features. Channels, cuts and
+   *  canals thinner than this are restored after the generalizing opening and
+   *  drawn at this width, so they cannot be dissolved at any simplification
+   *  setting. 0 disables the guarantee. */
+  minWidthPx?: number;
 }
 
 /** VW protection gain: importance scales the simplify threshold down by
@@ -490,6 +501,98 @@ export function morphOpen(r: GeoRaster, radiusPx: (x: number, y: number) => numb
   }
 }
 
+/** Chebyshev chamfer distance, two passes each way. Deterministic.
+ *  `toFilled` picks the seed set: false = distance to the nearest EMPTY cell
+ *  (what an erosion needs), true = distance to the nearest FILLED cell (what a
+ *  dilation needs). Getting this backwards on a dilation is catastrophic: an
+ *  empty seed set makes every cell distance 0, i.e. fills the whole raster. */
+function chamfer(src: Uint8Array, W: number, H: number, toFilled = false): Int32Array {
+  const N = W * H;
+  const INF = 1 << 20;
+  const d = new Int32Array(N);
+  if (toFilled) for (let i = 0; i < N; i++) d[i] = src[i] ? 0 : INF;
+  else for (let i = 0; i < N; i++) d[i] = src[i] ? INF : 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      let m = d[i];
+      if (x > 0 && d[i - 1] + 1 < m) m = d[i - 1] + 1;
+      if (y > 0) {
+        const j = i - W;
+        if (d[j] + 1 < m) m = d[j] + 1;
+        if (x > 0 && d[j - 1] + 1 < m) m = d[j - 1] + 1;
+        if (x < W - 1 && d[j + 1] + 1 < m) m = d[j + 1] + 1;
+      }
+      d[i] = m;
+    }
+  }
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      let m = d[i];
+      if (x < W - 1 && d[i + 1] + 1 < m) m = d[i + 1] + 1;
+      if (y < H - 1) {
+        const j = i + W;
+        if (d[j] + 1 < m) m = d[j] + 1;
+        if (x > 0 && d[j - 1] + 1 < m) m = d[j - 1] + 1;
+        if (x < W - 1 && d[j + 1] + 1 < m) m = d[j + 1] + 1;
+      }
+      d[i] = m;
+    }
+  }
+  return d;
+}
+
+/**
+ * Guarantee a minimum drawn width for narrow water (in place).
+ *
+ * The feature-scale opening removes anything thinner than twice its radius, which
+ * is exactly the class a transit map must keep: the channels, cuts and canals that
+ * make a coastline legible. Rather than weaken the opening (which would leave the
+ * wide coastline un-generalized), restore the narrow parts afterwards at a floor
+ * width, the way a printed map draws a river wider than scale.
+ *
+ * NARROW is defined against the ORIGINAL water: a cell is narrow when no disk of
+ * radius minWidth/2 fits inside the water while covering it, i.e. it is outside
+ * `open(original, minWidth/2)`. That excludes the rims of wide bodies (a rim cell
+ * is covered by a disk seated further in), so this only ever re-adds genuine thin
+ * structure and never undoes the generalization of a big shoreline.
+ *
+ * @param origGrid the water grid BEFORE the generalizing opening.
+ * @param minWidthPx floor width in render px; <= one cell is a no-op.
+ * @param openRadiusPx the generalizing opening's radius, i.e. the scale at which
+ *        features were removed. Detection happens at THIS scale, not at the floor,
+ *        or everything between the floor and the opening would still be lost.
+ */
+export function enforceMinWidth(r: GeoRaster, origGrid: Uint8Array, minWidthPx: number, openRadiusPx: number): void {
+  const { grid, W, H, cell } = r;
+  const N = W * H;
+  const kMin = Math.round(minWidthPx / 2 / cell);
+  const kOpen = Math.round(openRadiusPx / cell);
+  if (kMin < 1) return; // finer than the raster can express
+  // Regions of the ORIGINAL not covered by any disk of radius k seated inside it,
+  // i.e. everything narrower than 2k. A wide body's rim IS covered (by a disk
+  // seated further in), so this never re-adds a generalized shoreline.
+  const d0 = chamfer(origGrid, W, H);
+  const narrowerThan = (k: number): Uint8Array => {
+    const eroded = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (origGrid[i] && d0[i] > k) eroded[i] = 1;
+    const dOpen = chamfer(eroded, W, H, true); // dilation: distance TO the survivors
+    const out = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (origGrid[i] && dOpen[i] > k) out[i] = 1;
+    return out;
+  };
+  // Everything the opening dissolved: restore at true width, so a channel exists.
+  const removed = narrowerThan(kOpen);
+  for (let i = 0; i < N; i++) if (removed[i]) grid[i] = 1;
+  // Of those, the ones below the floor are widened to it, so they stay legible.
+  const subMin = narrowerThan(kMin);
+  const dSub = chamfer(subMin, W, H, true); // dilation: distance TO the sub-floor regions
+  for (let i = 0; i < N; i++) if (dSub[i] <= kMin) grid[i] = 1;
+}
+
 /** Boundary walk over a raster: for every unvisited boundary edge, follow the
  *  contour keeping the filled region on the RIGHT, emitting a vertex at each
  *  turn. Output winding is consistent (outers and holes opposite), so nonzero
@@ -866,7 +969,13 @@ export function stylizeRingsPathD(
   const imp = style.importance;
   // Raster resolution: fine enough that the morphological opening's SMALL radii
   // (protected regions) are resolvable. cell ≈ tol/5, floor 3, cap 8.
-  const cell = Math.min(8, Math.max(3, style.simplifyPx / 5));
+  // ...and fine enough to express the minimum-width floor, which is measured in
+  // cells (a floor below one cell would silently vanish).
+  const minW = style.minWidthPx ?? 0;
+  const cell = Math.min(
+    minW > 0 ? Math.max(1, minW / 2) : Infinity,
+    Math.min(8, Math.max(3, style.simplifyPx / 5)),
+  );
   const raster = rasterizeRings(rings, extent, cell);
   if (!raster) return '';
   // Feature-scale generalization: opening with radius tol/2, scaled DOWN by
@@ -893,6 +1002,9 @@ export function stylizeRingsPathD(
     const u = 1 - (v > 1 ? 1 : v < 0 ? 0 : v);
     return (style.simplifyPx / 2) * u * u;
   });
+  // Narrow water survives the generalization at a floor width, so a channel is
+  // never dissolved. Uses the pre-opening grid to decide what counts as narrow.
+  if (minW > 0 && origGrid) enforceMinWidth(raster, origGrid, minW, style.simplifyPx / 2);
   // No created lakes: reconnect severed channels (or swallow whole bodies).
   // Corridor midpoints join the VW veto so simplification can't pinch them.
   const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];

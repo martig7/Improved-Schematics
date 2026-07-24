@@ -1672,6 +1672,7 @@ export function drawSmoothed(
         importance: buildImportance(pre),
         dryPoints: dryStations(pre),
         dryMarginPx: 14 * scale,
+        minWidthPx: lm.minWidth * scale,
         hullPx: pre.geoHullPx,
       }
     : undefined;
