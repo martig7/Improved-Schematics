@@ -72,7 +72,9 @@ const DEFAULT_LINE_WIDTH = 4; // matches DEFAULT_THEME.lineWidth
 // Geographic-mode dot radius; matches DEFAULT_THEME.stationRadius. The smoothed
 // renderer sizes its markers from the line width, so its settings omit this.
 const DEFAULT_STATION_RADIUS = 3;
-const DEFAULT_MAP_MARGIN = 0.06; // matches DEFAULT_OPTIONS.padding
+// The render always fills the canvas edge to edge (no map margin); the content
+// fit frame already insets the drawn network.
+const MAP_MARGIN = 0;
 // Labels render at a constant WORLD size — i.e. constant relative to the map
 // image, scaling WITH zoom (like text printed on the map), not pinned to a fixed
 // screen size. This multiplies that world size. Applied at DISPLAY time (canvas
@@ -273,7 +275,7 @@ type RestoredSettings = {
   mapTheme?: 'auto' | 'light' | 'dark';
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; mapMargin: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
+  applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
   rasterScale?: number;
   jpegQuality?: number;
   exportFormat?: ExportFormat;
@@ -431,7 +433,6 @@ export function SchematicPanel() {
   // — so dragging a slider doesn't trigger an (expensive) re-render mid-drag.
   const [lineWidth, setLineWidth] = useState(rapp?.lineWidth ?? DEFAULT_LINE_WIDTH);
   const [stationRadius, setStationRadius] = useState(rapp?.stationRadius ?? DEFAULT_STATION_RADIUS);
-  const [mapMargin, setMapMargin] = useState(rapp?.mapMargin ?? DEFAULT_MAP_MARGIN);
   // Smoothed-mode realism positions in [-1, +1] (0 = default). These bake into
   // the expensive precompute, so they ride the same draft→Save flow and a Save
   // in smoothed mode regenerates the layout.
@@ -488,7 +489,6 @@ export function SchematicPanel() {
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
-          mapMargin: DEFAULT_MAP_MARGIN,
           warpPos: DEFAULT_REALISM_POS,
           geoWarpOn: DEFAULT_GEOWARP_ON,
           linePos: DEFAULT_REALISM_POS,
@@ -513,7 +513,6 @@ export function SchematicPanel() {
   const layoutDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
-    applied.mapMargin !== mapMargin ||
     applied.warpPos !== warpPos ||
     (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) !== geoWarpOn ||
     applied.linePos !== linePos ||
@@ -535,7 +534,6 @@ export function SchematicPanel() {
   const appearanceAtDefaults =
     lineWidth === DEFAULT_LINE_WIDTH &&
     stationRadius === DEFAULT_STATION_RADIUS &&
-    mapMargin === DEFAULT_MAP_MARGIN &&
     warpPos === DEFAULT_REALISM_POS &&
     geoWarpOn === DEFAULT_GEOWARP_ON &&
     linePos === DEFAULT_REALISM_POS &&
@@ -553,7 +551,6 @@ export function SchematicPanel() {
     Object.keys(simplifiedRoutes).length === 0 &&
     applied.lineWidth === DEFAULT_LINE_WIDTH &&
     applied.stationRadius === DEFAULT_STATION_RADIUS &&
-    applied.mapMargin === DEFAULT_MAP_MARGIN &&
     applied.warpPos === DEFAULT_REALISM_POS &&
     (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) === DEFAULT_GEOWARP_ON &&
     applied.linePos === DEFAULT_REALISM_POS &&
@@ -652,7 +649,6 @@ export function SchematicPanel() {
     const apRaw = v.applied ?? {
       lineWidth: DEFAULT_LINE_WIDTH,
       stationRadius: DEFAULT_STATION_RADIUS,
-      mapMargin: DEFAULT_MAP_MARGIN,
       warpPos: DEFAULT_REALISM_POS,
       linePos: DEFAULT_REALISM_POS,
       boxWarpPos: DEFAULT_REALISM_POS,
@@ -673,7 +669,6 @@ export function SchematicPanel() {
     setApplied(ap);
     setLineWidth(ap.lineWidth);
     setStationRadius(ap.stationRadius);
-    setMapMargin(ap.mapMargin);
     setWarpPos(ap.warpPos);
     setGeoWarpOn(ap.geoWarpOn);
     setLinePos(ap.linePos);
@@ -835,7 +830,7 @@ export function SchematicPanel() {
         neighborhoodFontScale: neighborhoodFont,
         neighborhoodZoom, neighborhoodPad,
         dark,
-        padding: applied.mapMargin,
+        padding: MAP_MARGIN,
         warpAlpha: (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) ? warpAlphaFromPos(applied.warpPos) : 0,
         geographicAffinity: affinityFromPos(applied.linePos),
         boxExpand: BOX_AES,
@@ -1329,7 +1324,6 @@ export function SchematicPanel() {
     const clampedApplied = s.applied && {
       lineWidth: num(s.applied.lineWidth, 1, 8, DEFAULT_LINE_WIDTH),
       stationRadius: num(s.applied.stationRadius, 1, 6, DEFAULT_STATION_RADIUS),
-      mapMargin: num(s.applied.mapMargin, 0, 0.15, DEFAULT_MAP_MARGIN),
       warpPos: num(s.applied.warpPos, -1, 1, DEFAULT_REALISM_POS),
       geoWarpOn: s.applied.geoWarpOn === true,
       linePos: num(s.applied.linePos, -1, 1, DEFAULT_REALISM_POS),
@@ -1372,7 +1366,6 @@ export function SchematicPanel() {
     if (clampedApplied) {
       setLineWidth(clampedApplied.lineWidth);
       setStationRadius(clampedApplied.stationRadius);
-      setMapMargin(clampedApplied.mapMargin);
       setWarpPos(clampedApplied.warpPos);
       setGeoWarpOn(clampedApplied.geoWarpOn);
       setLinePos(clampedApplied.linePos);
@@ -1414,7 +1407,6 @@ export function SchematicPanel() {
     const ap = clampedApplied ?? {
       lineWidth: DEFAULT_LINE_WIDTH,
       stationRadius: DEFAULT_STATION_RADIUS,
-      mapMargin: DEFAULT_MAP_MARGIN,
       warpPos: DEFAULT_REALISM_POS,
       geoWarpOn: DEFAULT_GEOWARP_ON,
       linePos: DEFAULT_REALISM_POS,
@@ -1438,7 +1430,7 @@ export function SchematicPanel() {
           stationGroups: resolveStationGroupsFromGameState(api.gameState),
           geography: geographyRef.current,
           options: {
-            padding: ap.mapMargin,
+            padding: MAP_MARGIN,
             warpAlpha: (ap.geoWarpOn ?? DEFAULT_GEOWARP_ON) ? warpAlphaFromPos(ap.warpPos) : 0,
             geographicAffinity: affinityFromPos(ap.linePos),
             boxExpand: BOX_AES,
@@ -1810,7 +1802,7 @@ export function SchematicPanel() {
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(bbox);
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
     if (changed && mode === 'smoothed' && smoothedReady) regenerate();
     else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
   };
@@ -1862,7 +1854,7 @@ export function SchematicPanel() {
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, mapMargin, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
     // Only a layout-baking change needs the octi re-run; a simplified-route change
     // alone repaints from the cached layout.
     if (mode === 'smoothed' && smoothedReady && layoutDirty) regenerate();
@@ -1878,7 +1870,6 @@ export function SchematicPanel() {
   const resetAppearance = () => {
     setLineWidth(DEFAULT_LINE_WIDTH);
     setStationRadius(DEFAULT_STATION_RADIUS);
-    setMapMargin(DEFAULT_MAP_MARGIN);
     setWarpPos(DEFAULT_REALISM_POS);
     setGeoWarpOn(DEFAULT_GEOWARP_ON);
     setLinePos(DEFAULT_REALISM_POS);
@@ -1900,7 +1891,6 @@ export function SchematicPanel() {
     setApplied({
       lineWidth: DEFAULT_LINE_WIDTH,
       stationRadius: DEFAULT_STATION_RADIUS,
-      mapMargin: DEFAULT_MAP_MARGIN,
       warpPos: DEFAULT_REALISM_POS,
       geoWarpOn: DEFAULT_GEOWARP_ON,
       linePos: DEFAULT_REALISM_POS,
@@ -2659,17 +2649,20 @@ export function SchematicPanel() {
                   </button>
                 </div>
               )}
-              {/* Algorithm: the layout-baking sliders (staged; Save regenerates). */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                <span style={{ fontSize: 14, fontWeight: 600 }}>Algorithm</span>
-                <button
-                  onClick={() => { setAlgorithmPageOpen(true); setSettingsOpen(false); }}
-                  title="Layout and warp settings"
-                  style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
-                >
-                  Change
-                </button>
-              </div>
+              {/* Algorithm: the layout-baking sliders (staged; Save regenerates).
+                  Smoothed only: every control on the page is smoothed-mode warp/layout. */}
+              {mode === 'smoothed' && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>Algorithm</span>
+                  <button
+                    onClick={() => { setAlgorithmPageOpen(true); setSettingsOpen(false); }}
+                    title="Layout and warp settings"
+                    style={{ fontSize: 12, fontWeight: 600, color: '#ffffff', background: '#2563eb', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
               {/* Labels: text size and neighborhood-label sliders (live). */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                 <span style={{ fontSize: 14, fontWeight: 600 }}>Labels</span>
@@ -3108,7 +3101,6 @@ export function SchematicPanel() {
           onBack={() => { setAlgorithmPageOpen(false); setSettingsOpen(true); }}
           onClose={() => setAlgorithmPageOpen(false)}
         >
-          <Slider label="Map margin" value={mapMargin} min={0} max={0.15} step={0.01} display={`${Math.round(mapMargin * 100)}%`} onChange={setMapMargin} />
           {mode === 'smoothed' && (
             <>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
