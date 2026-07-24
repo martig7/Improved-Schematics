@@ -53,10 +53,16 @@ export function projectGeoRings(
  *  set. Mirrors geographyBackdrop's structure (green under water, one path per
  *  category, nonzero fill). */
 export function backdropFromRings(rings: GeoRingsPx, extent: { w: number; h: number }, style?: LandmassStyle): string {
-  // Parks claim importance far more weakly than water. A lake in the dense
-  // core is a landmark; a pocket park is clutter. Full green protection is a
-  // major source of mid-map speckle in the diagram modes.
-  const GREEN_IMP = 0.5;
+  // Parks track the network's density at full strength: a pocket park beside a
+  // busy interchange is orienting, the same park in empty periphery is clutter.
+  // Importance is a station-density kernel, so this is what makes small parks
+  // survive simplification exactly where the lines are and generalize away
+  // outside. At the previous half strength the cull threshold bottomed out at a
+  // quarter of the base area, which small parks never reach, so density bought
+  // them nothing: measured 0% survival in a dense core, vs 42% at full strength
+  // with the sparse periphery still clearing to 0%. The periphery is what keeps
+  // the diagram modes free of speckle, not a blanket handicap on green.
+  const GREEN_IMP = 1;
   const group = (rs: Pt[][], fill: string, cls: string): string => {
     let d = '';
     if (style) {
