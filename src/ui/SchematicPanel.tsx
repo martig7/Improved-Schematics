@@ -26,6 +26,7 @@ import { SettingsPage } from './SettingsPage';
 import { ensureSignFonts } from './fonts';
 import { STATION_DESIGNS, getStationDesign, pickExampleRoute, DEFAULT_STATION_DESIGN } from '../render/stations';
 import { serializeMap, deserializeMap } from '../render/persist';
+import { encodeForDiscord, edgeScale, DISCORD_MAX_EDGE } from '../render/discordExport';
 import { resolveStationGroupsFromGameState } from '../render/layout/graph';
 import { sceneFromSvg } from '../render/sceneFromSvg';
 import { fingerprintInputs } from '../render/cacheFingerprint';
@@ -63,7 +64,7 @@ interface View {
   vy: number; // content y at viewport top
 }
 
-type ExportFormat = 'svg' | 'png' | 'jpeg';
+type ExportFormat = 'svg' | 'png' | 'jpeg' | 'discord';
 
 // Render/export tunables exposed as sliders in the settings popover. The first
 // three feed the renderer via SchematicOptions (theme.lineWidth, theme
@@ -152,6 +153,7 @@ const FORMATS: { id: ExportFormat; label: string; ext: string; mime: string }[] 
   { id: 'svg', label: 'SVG (vector)', ext: 'svg', mime: 'image/svg+xml' },
   { id: 'png', label: 'PNG (image)', ext: 'png', mime: 'image/png' },
   { id: 'jpeg', label: 'JPEG (image)', ext: 'jpg', mime: 'image/jpeg' },
+  { id: 'discord', label: 'Discord (PNG)', ext: 'png', mime: 'image/png' },
 ];
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -1201,6 +1203,8 @@ export function SchematicPanel() {
   // verbatim; PNG/JPEG rasterize that markup onto an upscaled canvas. JPEG has no
   // alpha channel, so the canvas is first flooded with the theme background (the
   // SVG's own land rect covers the full canvas, but this guards rounding edges).
+  // Discord caps the long edge to a Discord-safe size and encodes a palette PNG
+  // (small enough to embed inline), ignoring the resolution/quality sliders.
   const downloadImage = useCallback(() => {
     const built = buildExportSvg();
     if (!built) return;
@@ -1217,13 +1221,36 @@ export function SchematicPanel() {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(built.width * rasterScale));
-      canvas.height = Math.max(1, Math.round(built.height * rasterScale));
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         URL.revokeObjectURL(svgUrl);
         return;
       }
+      if (fmt.id === 'discord') {
+        // Rasterize the vector map with its longer side at `edge` px (crisp: the
+        // SVG re-rasterizes at draw size), flooded opaque so the palette carries
+        // no stray edge-transparency colour, then hand the pixels to the encoder.
+        const rasterize = (edge: number) => {
+          const s = edgeScale(built.width, built.height, edge);
+          const w = Math.max(1, Math.round(built.width * s));
+          const h = Math.max(1, Math.round(built.height * s));
+          canvas.width = w;
+          canvas.height = h;
+          ctx.fillStyle = mapDark ? '#18181b' : '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          return { rgba: ctx.getImageData(0, 0, w, h).data.buffer, width: w, height: h };
+        };
+        const { png, fits } = encodeForDiscord(rasterize);
+        URL.revokeObjectURL(svgUrl);
+        if (!fits) {
+          console.warn('[ImprovedSchematics] Discord export stayed above the size budget at the smallest step; downloading anyway.');
+        }
+        triggerDownload(new Blob([png], { type: fmt.mime }), fmt.ext, name);
+        return;
+      }
+      canvas.width = Math.max(1, Math.round(built.width * rasterScale));
+      canvas.height = Math.max(1, Math.round(built.height * rasterScale));
       if (fmt.id === 'jpeg') {
         ctx.fillStyle = mapDark ? '#18181b' : '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1240,7 +1267,7 @@ export function SchematicPanel() {
     };
     img.onerror = () => URL.revokeObjectURL(svgUrl);
     img.src = svgUrl;
-  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality, mode, modState]);
+  }, [buildExportSvg, exportFormat, triggerDownload, rasterScale, jpegQuality, mode, modState, mapDark]);
 
   // Save the generated map to a JSON file, so reloading the mod can restore it instantly
   // instead of re-running the octi pipeline. The file mirrors EVERYTHING the per-city
@@ -2739,17 +2766,17 @@ export function SchematicPanel() {
                   ))}
                 </select>
               </label>
-              {/* Resolution scales the rasterized PNG/JPEG; SVG is vector so it
-                  ignores both. JPEG quality only applies to JPEG. */}
+              {/* Resolution scales the rasterized PNG/JPEG; SVG is vector and
+                  Discord auto-sizes, so both ignore it. JPEG quality is JPEG only. */}
               <Slider
                 label="Export resolution"
                 value={rasterScale}
                 min={1}
                 max={4}
                 step={1}
-                display={`${rasterScale}×`}
+                display={exportFormat === 'discord' ? `${DISCORD_MAX_EDGE}px` : `${rasterScale}×`}
                 onChange={setRasterScale}
-                disabled={exportFormat === 'svg'}
+                disabled={exportFormat === 'svg' || exportFormat === 'discord'}
               />
               <Slider
                 label="JPEG quality"
@@ -2764,7 +2791,7 @@ export function SchematicPanel() {
               <button
                 onClick={downloadImage}
                 disabled={!svg || generating}
-                title={`Download map as ${exportFormat.toUpperCase()}`}
+                title={exportFormat === 'discord' ? 'Download a Discord-ready PNG (auto-sized to embed inline)' : `Download map as ${exportFormat.toUpperCase()}`}
                 style={{
                   fontSize: 13,
                   fontWeight: 600,
@@ -2777,7 +2804,7 @@ export function SchematicPanel() {
                   color: '#ffffff',
                 }}
               >
-                ↓ Download {exportFormat.toUpperCase()}
+                ↓ Download {exportFormat === 'discord' ? 'for Discord' : exportFormat.toUpperCase()}
               </button>
               {/* Map file: save the generated layout + settings, reload instantly. */}
               <div style={{ borderTop: '1px solid rgba(136,136,136,0.25)', marginTop: 4, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
