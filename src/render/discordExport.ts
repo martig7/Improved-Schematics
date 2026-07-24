@@ -10,6 +10,9 @@
  * to a safe, sharp size and encodes an indexed PNG, stepping the palette (then the
  * resolution) down only if a pathologically busy map would exceed the size budget.
  */
+// MUST precede the upng-js import: it publishes the deflate dependency upng-js
+// resolves from a global at evaluation time in a browser bundle.
+import { pakoAvailable } from './pakoGlobal';
 import UPNG from 'upng-js';
 
 /** Byte budget, held under Discord's 10 MB free-tier cap with margin. */
@@ -39,6 +42,12 @@ export function edgeScale(width: number, height: number, edge: number): number {
 /** Palette-quantize RGBA pixels into an indexed PNG of at most `cnum` colors.
  *  Returns the raw PNG bytes as an ArrayBuffer (a valid Blob part). */
 export function encodePalettePng(rgba: ArrayBuffer, width: number, height: number, cnum: number): ArrayBuffer {
+  if (!pakoAvailable()) {
+    // Named cause, so a broken bundle reports itself instead of surfacing as
+    // "Cannot read properties of undefined (reading 'deflate')" from inside the
+    // encoder.
+    throw new Error('PNG encoder unavailable: no deflate implementation (pako) reachable');
+  }
   return UPNG.encode([rgba], width, height, cnum);
 }
 

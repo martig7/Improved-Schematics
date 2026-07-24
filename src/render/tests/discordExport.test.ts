@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import UPNG from 'upng-js';
 import {
   edgeScale,
@@ -20,6 +21,20 @@ const flatFrame = (w: number, h: number): RasterFrame => {
   }
   return { rgba: rgba.buffer, width: w, height: h };
 };
+
+// upng-js resolves its deflate dependency once, at module-evaluation time, from
+// a global when the bundle has no `require` (the shipped browser build). The
+// pakoGlobal module publishes it, and because `import` declarations are hoisted
+// it only works if it is imported BEFORE upng-js. Node's own resolution hides a
+// regression here (its `require` branch succeeds), so guard the source order.
+test('discordExport imports pakoGlobal before upng-js', () => {
+  const src = readFileSync(new URL('../discordExport.ts', import.meta.url), 'utf8');
+  const pakoAt = src.indexOf("from './pakoGlobal'");
+  const upngAt = src.indexOf("from 'upng-js'");
+  assert.ok(pakoAt >= 0, 'pakoGlobal must be imported');
+  assert.ok(upngAt >= 0, 'upng-js must be imported');
+  assert.ok(pakoAt < upngAt, 'pakoGlobal must be imported before upng-js or the browser build cannot deflate');
+});
 
 test('edgeScale brings the longer side to the target edge', () => {
   assert.equal(edgeScale(2700, 2700, 3600), 3600 / 2700);
