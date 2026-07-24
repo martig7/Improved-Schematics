@@ -493,6 +493,13 @@ export function SchematicPanel() {
   // The hidden-route set (route ids removed from the layout). A staged/draft value like
   // the layout-baking sliders: it rides the same applied/dirty/Save flow, so a toggle
   // takes effect on Save (smoothed regenerates; geographic re-renders).
+  // How much land detail to harvest from the basemap tiles. Harvest-time (not
+  // draw-time): changing it makes the geography caches miss and re-harvest.
+  const [landDetail, setLandDetailState] = useState<LandDetail>(rset.landDetail ?? DEFAULT_LAND_DETAIL);
+  // The level the DISPLAYED layout was built against. Land detail changes the
+  // harvested geography, which bakes into the layout, so a mismatch means the map
+  // on screen is stale and Save must offer (and run) a regenerate.
+  const [appliedLandDetail, setAppliedLandDetail] = useState<LandDetail>(rset.landDetail ?? DEFAULT_LAND_DETAIL);
   const [disabledRoutes, setDisabledRoutes] = useState<string[]>(rapp?.disabledRoutes ?? []);
   const [simplifiedRoutes, setSimplifiedRoutes] = useState<SimplifiedRoutes>(rapp?.simplifiedRoutes ?? {});
   const [applied, setApplied] = useState(
@@ -527,6 +534,7 @@ export function SchematicPanel() {
   const layoutDirty =
     applied.lineWidth !== lineWidth ||
     applied.stationRadius !== stationRadius ||
+    appliedLandDetail !== landDetail ||
     applied.warpPos !== warpPos ||
     (applied.geoWarpOn ?? DEFAULT_GEOWARP_ON) !== geoWarpOn ||
     applied.linePos !== linePos ||
@@ -583,9 +591,6 @@ export function SchematicPanel() {
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
     (applied.disabledRoutes?.length ?? 0) === 0 &&
     Object.keys(applied.simplifiedRoutes ?? {}).length === 0;
-  // How much land detail to harvest from the basemap tiles. Harvest-time (not
-  // draw-time): changing it makes the geography caches miss and re-harvest.
-  const [landDetail, setLandDetailState] = useState<LandDetail>(rset.landDetail ?? DEFAULT_LAND_DETAIL);
   const [rasterScale, setRasterScale] = useState(rset.rasterScale ?? DEFAULT_RASTER_SCALE);
   const [jpegQuality, setJpegQuality] = useState(rset.jpegQuality ?? DEFAULT_JPEG_QUALITY);
   // Label size multiplier (live, display-time — see DEFAULT_LABEL_SCALE). Mirrored
@@ -738,6 +743,8 @@ export function SchematicPanel() {
   // True while the tile harvest is in flight, so the top bar can show the small
   // spinner — the geographic map's backdrop (water/parks) loads asynchronously.
   const [geoLoading, setGeoLoading] = useState(false);
+  // Level the last harvest pass ran for, so a change is logged once (not per poll).
+  const lastHarvestDetailRef = useRef<LandDetail>(landDetail);
   useEffect(() => {
     // Geography is harvested in the BACKGROUND (geography/warm.ts), kicked off at city
     // load — so it's independent of this panel's lifecycle. Previously the panel drove
@@ -769,6 +776,10 @@ export function SchematicPanel() {
     // Publish the level before polling: peekGeography/warmGeography read it, and a
     // changed level must miss the caches so the harvest re-runs at the new detail.
     setLandDetail(landDetail);
+    if (lastHarvestDetailRef.current !== landDetail) {
+      console.info(`[ImprovedSchematics] geography: land detail '${lastHarvestDetailRef.current}' -> '${landDetail}'; re-harvesting this city`);
+      lastHarvestDetailRef.current = landDetail;
+    }
     setGeoLoading(true);
     poll();
     return () => {
@@ -1442,7 +1453,7 @@ export function SchematicPanel() {
     if (s.mapTheme === 'light' || s.mapTheme === 'dark' || s.mapTheme === 'auto') setMapTheme(s.mapTheme);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
     if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
-    if (s.landDetail && LAND_DETAILS.some((d) => d.id === s.landDetail)) setLandDetailState(s.landDetail);
+    if (s.landDetail && LAND_DETAILS.some((d) => d.id === s.landDetail)) { setLandDetailState(s.landDetail); setAppliedLandDetail(s.landDetail); }
     if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
     if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
     if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
@@ -1890,6 +1901,7 @@ export function SchematicPanel() {
     setCropEditing(false);
     setCropBbox(bbox);
     setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setAppliedLandDetail(landDetail);
     if (changed && mode === 'smoothed' && smoothedReady) regenerate();
     else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
   };
@@ -1942,6 +1954,7 @@ export function SchematicPanel() {
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
     setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setAppliedLandDetail(landDetail);
     // Only a layout-baking change needs the octi re-run; a simplified-route change
     // alone repaints from the cached layout.
     if (mode === 'smoothed' && smoothedReady && layoutDirty) regenerate();
