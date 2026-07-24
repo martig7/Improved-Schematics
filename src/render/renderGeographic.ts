@@ -1629,6 +1629,43 @@ export function buildImportance(pre: SmoothedPrecomputed): (x: number, y: number
   }
   // The warp's demand boxes (padded): full importance inside.
   const PAD = 60 * scale;
+  // Drawn corridors. Water a line crosses is what makes a bridge or tunnel read;
+  // water nothing touches is decoration. Station cones alone cannot express this:
+  // a single station contributes at most a quarter, so a channel crossed mid-span
+  // between two stations gets almost no protection however important the crossing
+  // is. Stamped as a MAX (not accumulated) so one line already means "keep this",
+  // and at a tight radius so it protects what is UNDER the line rather than
+  // un-generalizing the surrounding coast.
+  const RL = 60 * scale;
+  const rl = Math.ceil(RL / cell);
+  for (const e of pre.layout.edges) {
+    const path = e.path;
+    for (let k = 1; k < path.length; k++) {
+      const ax = path[k - 1][0], ay = path[k - 1][1];
+      const bx = path[k][0], by = path[k][1];
+      const seg = Math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+      const steps = Math.max(1, Math.ceil(seg / (cell / 2)));
+      for (let t = 0; t <= steps; t++) {
+        const px = ax + ((bx - ax) * t) / steps;
+        const py = ay + ((by - ay) * t) / steps;
+        const cx = Math.floor(px / cell);
+        const cy = Math.floor(py / cell);
+        for (let y = cy - rl; y <= cy + rl; y++) {
+          if (y < 0 || y >= H) continue;
+          for (let x = cx - rl; x <= cx + rl; x++) {
+            if (x < 0 || x >= W) continue;
+            const dx = (x + 0.5) * cell - px;
+            const dy = (y + 0.5) * cell - py;
+            const dd = Math.sqrt(dx * dx + dy * dy);
+            if (dd >= RL) continue;
+            const v = 1 - dd / RL;
+            const i = y * W + x;
+            if (g[i] < v) g[i] = v;
+          }
+        }
+      }
+    }
+  }
   for (const b of pre.denseBoxesPx ?? []) {
     const x0 = Math.max(0, Math.floor((b.x0 - PAD) / cell));
     const x1 = Math.min(W - 1, Math.floor((b.x1 + PAD) / cell));
