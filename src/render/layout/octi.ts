@@ -1439,7 +1439,7 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     }
     debugDetourCuts(cuts, cutsSub, cutsShort, cutsFold);
     tracePaths(paths);
-    return pinStationTermini({ placement: joined.placement, paths, cellSize: joined.cellSize }, h);
+    return { placement: joined.placement, paths, cellSize: joined.cellSize };
   };
 
   for (let attempt = 0; ; attempt++) {
@@ -1469,32 +1469,6 @@ export function octi(h: SupportGraph, opts: OctiOptions): Image {
     }
     dg *= 0.9; // stalling rule: shrink and rebuild
   }
-}
-
-/** Pin degree-1 station nodes to their TRUE (warped geographic) position.
- *  A terminus drawn a grid-quantized cell away can land in water or visually
- *  swallow its last hop; the final stub segment bends slightly off-grid so
- *  that geographic truth at line ends beats strict octilinearity. */
-function pinStationTermini(img: Image, h: SupportGraph): Image {
-  const stationNodes = new Set<string>();
-  for (const st of h.stations.values()) stationNodes.add(st.nodeId);
-  const placement = new Map(img.placement);
-  const paths = new Map(img.paths);
-  for (const [nid, eids] of h.adj) {
-    if (eids.length !== 1 || !stationNodes.has(nid)) continue;
-    const truePos = h.nodes.get(nid)?.pos;
-    if (!truePos) continue;
-    placement.set(nid, truePos.slice() as Pixel);
-    const e = h.edges.get(eids[0]);
-    if (!e) continue;
-    const path = paths.get(e.id);
-    if (!path || path.length === 0) continue;
-    const p2 = path.map((p) => p.slice() as Pixel);
-    if (e.from === nid) p2[0] = truePos.slice() as Pixel;
-    if (e.to === nid) p2[p2.length - 1] = truePos.slice() as Pixel;
-    paths.set(e.id, p2);
-  }
-  return { placement, paths, cellSize: img.cellSize };
 }
 
 /** Give contracted-away nodes the position of their cluster representative,
