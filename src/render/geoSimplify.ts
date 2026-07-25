@@ -598,10 +598,15 @@ export function enforceMinWidth(r: GeoRaster, origGrid: Uint8Array, minWidthPx: 
   // which is why the channel survives at low simplification and shuts at high.
   // Sparse (every 3rd cell, as the corridor sampler does) so a large restored
   // area cannot flood the veto list, which is scanned per candidate removal.
+  // Subsample the HITS, not the grid: a restored channel is only a cell or two
+  // across, so stepping over grid positions skips straight past the very features
+  // this protects (it yielded zero points for an 8px channel).
   const pts: Pt[] = [];
-  for (let y = 0; y < H; y += 3) {
-    for (let x = 0; x < W; x += 3) {
-      if (removed[y * W + x]) pts.push([gx0 + (x + 0.5) * cell, gy0 + (y + 0.5) * cell]);
+  let hit = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!removed[y * W + x]) continue;
+      if (hit++ % 3 === 0) pts.push([gx0 + (x + 0.5) * cell, gy0 + (y + 0.5) * cell]);
     }
   }
   return pts;
