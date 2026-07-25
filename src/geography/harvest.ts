@@ -3,7 +3,7 @@ import type { Map as MlMap, StyleSpecification, SourceSpecification } from 'mapl
 import type { TaggedFeature } from './types';
 import type { BoundingBox } from '../types/core';
 import type { ProbeResult } from './schemaProbe';
-import { harvestContainerPx, tileEstimate, DEFAULT_LAND_DETAIL, type LandDetail } from './detail';
+import { harvestRegions, tileEstimate, DEFAULT_LAND_DETAIL, type LandDetail, type HarvestRegion } from './detail';
 
 // Total budget to wait for the offscreen source's tiles after fitBounds. On a fresh
 // game load the basemap is saturating the tile worker/network, so the harvest tiles
@@ -54,16 +54,36 @@ export async function harvestTaggedFeatures(
   probe: ProbeResult,
   bbox: BoundingBox,
   detail: LandDetail = DEFAULT_LAND_DETAIL,
+  networkBbox: BoundingBox | null = null,
 ): Promise<TaggedFeature[]> {
+  // Past maxzoom a vector source serves overzoomed parent tiles: four times the
+  // tiles per step for no new geometry. Every pass is clamped to it.
+  const maxzoom = (probe.source as { maxzoom?: number } | null)?.maxzoom;
+  const regions = harvestRegions(bbox, networkBbox, detail, maxzoom);
+  const out: TaggedFeature[] = [];
+  // Coarsest pass first, so a finer pass's geometry is added over it. Features
+  // repeat across passes (and across tiles within one pass); the classify/union
+  // stages downstream already dedupe by geometry, as they must for tile seams.
+  for (const region of regions) {
+    const part = await harvestRegion(gameMap, probe, region, detail, maxzoom, regions.length);
+    for (const f of part) out.push(f);
+  }
+  return out;
+}
+
+/** One offscreen pass over a single region. */
+async function harvestRegion(
+  gameMap: MlMap,
+  probe: ProbeResult,
+  region: HarvestRegion,
+  detail: LandDetail,
+  maxzoom: number | undefined,
+  passes: number,
+): Promise<TaggedFeature[]> {
+  const bbox = region.bbox;
   // Borrow the constructor from the live instance so we never import the runtime.
   const MapCtor = gameMap.constructor as typeof MlMap;
-
-  // The container spans the whole bbox, so its size sets the fitBounds zoom and
-  // therefore how detailed the tiles arrive. Clamped to the source's maxzoom:
-  // past it a vector source serves overzoomed parent tiles, which would cost four
-  // times the tiles per step and return no new geometry.
-  const maxzoom = (probe.source as { maxzoom?: number } | null)?.maxzoom;
-  const containerPx = harvestContainerPx(bbox, detail, maxzoom);
+  const containerPx = region.containerPx;
   const tiles = tileEstimate(containerPx);
   const tileBudgetMs = Math.min(TILE_WAIT_MAX_MS, TILE_WAIT_MS + Math.max(0, tiles - 4) * TILE_WAIT_PER_TILE_MS);
 
@@ -115,7 +135,7 @@ export async function harvestTaggedFeatures(
       [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
       { animate: false, padding: 0, duration: 0 },
     );
-    logHarvestFit(bbox, map.getZoom(), detail, containerPx, tiles, maxzoom);
+    logHarvestFit(bbox, map.getZoom(), passes > 1 ? `${detail} pass '${region.label}'` : detail, containerPx, tiles, maxzoom);
     await waitForTiles(map, tileBudgetMs);
 
     const out: TaggedFeature[] = [];

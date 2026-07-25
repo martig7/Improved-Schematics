@@ -42,6 +42,29 @@ export function computeHarvestBbox(): { bbox: BoundingBox; fromDemand: boolean }
   return { bbox: raw, fromDemand };
 }
 
+/**
+ * Extent of the BUILT network (stations), padded, or null when there are none.
+ *
+ * Distinct from the harvest extent, which follows demand and is much larger: the
+ * demand extent is what the map must SHOW, while this is where the detail is
+ * actually needed. Sampling the smaller extent at the same container lands at a
+ * higher zoom for the same tile cost, which is how a channel narrower than a
+ * pixel at the full extent becomes resolvable. Read from game state, so it is
+ * known before any harvest and never depends on harvested geography.
+ */
+export function computeNetworkBbox(): BoundingBox | null {
+  const api = typeof window !== 'undefined' ? window.SubwayBuilderAPI : undefined;
+  const stations = api?.gameState?.getStations?.() ?? [];
+  if (stations.length === 0) return null;
+  const b = computeBounds(stations.map((s) => ({ points: [s.coords] })));
+  if (!b) return null;
+  const raw = padBounds(b, 0.15);
+  // Same not-settled guard as the harvest extent: an uninitialised coord drags
+  // the bbox across the globe, which would make the extra pass meaningless.
+  if (raw[2] - raw[0] > 12 || raw[3] - raw[1] > 12) return null;
+  return raw;
+}
+
 /** True when two harvest extents are the same to within ~a meter (floats round-trip through
  *  JSON exactly, but use an epsilon for safety). A changed extent ⇒ re-harvest. */
 export function bboxApproxEqual(a: BoundingBox, b: BoundingBox): boolean {

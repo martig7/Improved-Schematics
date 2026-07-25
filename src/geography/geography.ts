@@ -8,7 +8,7 @@ import { cleanFeatures } from './clean';
 import { featuresBbox } from './bbox';
 import { combineClose } from './combine';
 import { readGeoCache, writeGeoCache } from './geoCache';
-import { computeHarvestBbox, bboxApproxEqual } from './harvestBbox';
+import { computeHarvestBbox, computeNetworkBbox, bboxApproxEqual } from './harvestBbox';
 import { getLandDetail, type LandDetail } from './detail';
 import { envNum as readEnvNum } from '../env';
 
@@ -29,7 +29,7 @@ function envNum(name: string, fallback: number): number {
 export interface GeographyDeps {
   getMap: () => MlMap | null;
   probe: (style: StyleLike) => ProbeResult | null;
-  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox, detail: LandDetail) => Promise<TaggedFeature[]>;
+  harvest: (map: MlMap, probe: ProbeResult, bbox: BoundingBox, detail: LandDetail, networkBbox: BoundingBox | null) => Promise<TaggedFeature[]>;
 }
 
 // window.SubwayBuilderAPI is accessed lazily (only when getMap is actually
@@ -74,7 +74,8 @@ export async function buildGeography(
       const unqueried = [...styled].filter((sl) => !probe.sourceLayers.includes(sl));
       console.warn(`${TAG} probe: schema=${probe.schema} source='${probe.sourceId}' querying [${probe.sourceLayers.join(', ')}]; other style layers [${unqueried.join(', ')}]`);
     }
-    const raw = await deps.harvest(map, probe, harvestBbox, detail);
+    // The built network's extent drives the finer second pass (see harvestRegions).
+    const raw = await deps.harvest(map, probe, harvestBbox, detail, computeNetworkBbox());
     {
       const perLayer = new Map<string, number>();
       for (const f of raw) perLayer.set(f.sourceLayer, (perLayer.get(f.sourceLayer) ?? 0) + 1);

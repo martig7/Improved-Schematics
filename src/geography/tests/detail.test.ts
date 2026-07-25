@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { BoundingBox } from '../../types/core';
 import {
+  harvestRegions,
   fitZoom,
   harvestContainerPx,
   tileEstimate,
@@ -67,4 +68,41 @@ test('tileEstimate is quadratic in the container size', () => {
   assert.equal(tileEstimate(512), 1);
   assert.equal(tileEstimate(2048), 16);
   assert.equal(tileEstimate(4096), 64);
+});
+
+// Multi-pass regions. A second pass is only worth its tiles when it covers
+// enough less ground to actually land at a higher zoom.
+const NETWORK: BoundingBox = [-122.45, 47.50, -122.20, 47.72]; // well inside BIG
+
+test('harvestRegions: full extent alone when there is no network extent', () => {
+  const r = harvestRegions(BIG, null, 'detailed');
+  assert.equal(r.length, 1);
+  assert.equal(r[0].label, 'full');
+});
+
+test('harvestRegions: a much smaller network adds a finer second pass', () => {
+  const r = harvestRegions(BIG, NETWORK, 'detailed');
+  assert.equal(r.length, 2);
+  assert.equal(r[1].label, 'network');
+  // Same tile cost, strictly more resolution, purely from covering less ground.
+  assert.equal(r[1].containerPx, r[0].containerPx);
+  assert.ok(fitZoom(r[1].bbox, r[1].containerPx) > fitZoom(r[0].bbox, r[0].containerPx));
+  // Coarsest first, so finer geometry unions over it.
+  assert.ok(fitZoom(r[0].bbox, r[0].containerPx) < fitZoom(r[1].bbox, r[1].containerPx));
+});
+
+test('harvestRegions: a network nearly as large as the map earns no second pass', () => {
+  const almost: BoundingBox = [BIG[0] + 0.01, BIG[1] + 0.01, BIG[2] - 0.01, BIG[3] - 0.01];
+  assert.equal(harvestRegions(BIG, almost, 'detailed').length, 1);
+});
+
+test('harvestRegions: maxzoom clamps every pass down to the one-tile floor', () => {
+  const capped = harvestRegions(BIG, NETWORK, 'ultra', 9);
+  for (const reg of capped) {
+    // Clamped under maxzoom, unless already at a single tile across the region,
+    // which is as coarse as a pass can get.
+    assert.ok(fitZoom(reg.bbox, reg.containerPx) <= 9 || reg.containerPx === 512,
+      `${reg.label}: z=${fitZoom(reg.bbox, reg.containerPx).toFixed(1)} px=${reg.containerPx}`);
+    assert.ok(reg.containerPx < DETAIL_CONTAINER_PX.ultra, `${reg.label} was reduced from ultra`);
+  }
 });
