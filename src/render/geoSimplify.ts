@@ -114,6 +114,14 @@ export interface LandmassStyle {
 const PROTECT = 3;
 const PROTECT_MAX_VW = 6;
 
+/** Raster cell, px. Constant by design (see the cell comment in the stylizer):
+ *  sampling resolution must not follow the simplification slider, or features
+ *  vanish before the vector stages can judge them. Finer costs quadratically, so
+ *  this is the floor the draw budget allows. The staircase invariant still holds:
+ *  stair triangles are cell^2/2 and the protected VW threshold is tol^2/6, so a
+ *  SMALLER cell only widens that margin. */
+const RASTER_CELL_PX = 3;
+
 /** Signed shoelace area (px²): >0 counter-clockwise in SVG's y-down space is
  *  negative. Callers only use |area|, winding is preserved untouched. */
 export function ringArea(ring: readonly Pt[]): number {
@@ -990,19 +998,19 @@ export function stylizeRingsPathD(
   // (protected regions) are resolvable. cell ≈ tol/5, floor 3, cap 8.
   // ...and fine enough to express the minimum-width floor, which is measured in
   // cells (a floor below one cell would silently vanish).
-  // ...and fine enough to RESOLVE the features the floor promises to keep. The
-  // cell must be sized against the channel as it really is, not against the floor
-  // we intend to widen it to: a cut is routinely thinner than the floor, and the
-  // rasterizer samples cell centres, so a band needs roughly three cells across it
-  // before a sample reliably lands inside. At minW/2 a channel just under the
-  // floor falls between samples and is lost HERE, before any simplification runs,
-  // which no later restore can undo. That also made the loss depend on the slider,
-  // since the cell grew with it: present at low simplification, gone at high.
+  // Raster resolution is a SAMPLING concern, not a simplification one.
+  // Generalization is the job of the vector stages (cull, VW, fillet), which weigh
+  // each feature and can be vetoed; a coarse raster instead drops features
+  // silently, before anything gets to decide. Tying the cell to the tolerance did
+  // exactly that: it grew with the slider, so a channel a few px wide was sampled
+  // at low settings and missed at high, and no later restore could undo a feature
+  // that was never sampled. So the cell is CONSTANT, at the finest resolution the
+  // work allows, and the slider only ever changes how much the vector stages
+  // remove. Water pins it further to a third of its floor width, since the
+  // rasterizer samples cell centres and a band needs ~3 cells across it before a
+  // sample reliably lands inside.
   const minW = style.minWidthPx ?? 0;
-  const cell = Math.min(
-    minW > 0 ? Math.max(1, minW / 3) : Infinity,
-    Math.min(8, Math.max(3, style.simplifyPx / 5)),
-  );
+  const cell = minW > 0 ? Math.max(1, Math.min(RASTER_CELL_PX, minW / 3)) : RASTER_CELL_PX;
   const raster = rasterizeRings(rings, extent, cell);
   if (!raster) return '';
   // Feature-scale generalization: opening with radius tol/2, scaled DOWN by
