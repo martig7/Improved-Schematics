@@ -990,9 +990,17 @@ export function stylizeRingsPathD(
   // (protected regions) are resolvable. cell ≈ tol/5, floor 3, cap 8.
   // ...and fine enough to express the minimum-width floor, which is measured in
   // cells (a floor below one cell would silently vanish).
+  // ...and fine enough to RESOLVE the features the floor promises to keep. The
+  // cell must be sized against the channel as it really is, not against the floor
+  // we intend to widen it to: a cut is routinely thinner than the floor, and the
+  // rasterizer samples cell centres, so a band needs roughly three cells across it
+  // before a sample reliably lands inside. At minW/2 a channel just under the
+  // floor falls between samples and is lost HERE, before any simplification runs,
+  // which no later restore can undo. That also made the loss depend on the slider,
+  // since the cell grew with it: present at low simplification, gone at high.
   const minW = style.minWidthPx ?? 0;
   const cell = Math.min(
-    minW > 0 ? Math.max(1, minW / 2) : Infinity,
+    minW > 0 ? Math.max(1, minW / 3) : Infinity,
     Math.min(8, Math.max(3, style.simplifyPx / 5)),
   );
   const raster = rasterizeRings(rings, extent, cell);
