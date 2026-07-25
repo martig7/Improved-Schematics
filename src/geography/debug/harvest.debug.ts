@@ -32,10 +32,24 @@ export function logHarvestCounts(
   tileErrors: number,
   outLength: number,
   tileWaitMs: number,
+  errKinds?: ReadonlyMap<string, number>,
 ): void {
   console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded}, tileErrors=${tileErrors})`);
+  if (errKinds && errKinds.size > 0) {
+    // Ranked, so the dominant failure is first. A tiled source 404s for tiles
+    // outside coverage as a matter of course, which is expected at the corners
+    // of a rectangular harvest bbox; anything else deserves attention.
+    const ranked = [...errKinds.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    console.info(`${TAG} tile error kinds: ` + ranked.map(([k, n]) => `${n}x ${k}`).join(' | '));
+  }
   if (outLength === 0 && tileErrors > 0) {
     console.warn(`${TAG} 0 features with ${tileErrors} tile error(s) — basemap not serving tiles yet; caller will retry`);
+  } else if (tileErrors > 0) {
+    // areTilesLoaded() reports true once every tile has SETTLED, and a tile that
+    // failed has settled, so a partial harvest otherwise passes silently: features
+    // arrive, nothing complains, and the gap only shows up later as missing
+    // geography. Say so, since the result is cached and reused as if complete.
+    console.warn(`${TAG} harvested ${outLength} features but ${tileErrors} tile request(s) errored — this harvest may be MISSING geography (it is still cached; see the tile error kinds above)`);
   } else if (!loaded) {
     console.warn(`${TAG} tiles still loading after ${tileWaitMs}ms — harvest may be partial; caller will retry`);
   }

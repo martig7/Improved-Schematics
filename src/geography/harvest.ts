@@ -89,12 +89,24 @@ export async function harvestTaggedFeatures(
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   let map: MlMap | null = null;
   let tileErrors = 0;
+  // Tally the error TEXT, not just a count. A bare count cannot distinguish a
+  // basemap that is failing to serve from the routine 404s a tiled source emits
+  // for tiles outside the city's data coverage, and the harvest bbox always has
+  // such corners. Without this the number is unactionable.
+  const errKinds = new Map<string, number>();
   try {
     map = new MapCtor({ container, style, interactive: false, attributionControl: false, fadeDuration: 0 });
     // Count tile/source load failures (e.g. the game's `map://` protocol returning 404 /
     // "Unusable" before its tile backend is ready). 0 features + tileErrors>0 ⇒ the basemap
     // isn't serving yet (the caller should retry); 0 features + no errors ⇒ genuinely empty.
-    map.on('error', () => { tileErrors++; });
+    map.on('error', (e: unknown) => {
+      tileErrors++;
+      const ev = e as { error?: { message?: string; status?: number }; sourceId?: string };
+      const status = ev?.error?.status;
+      const msg = (ev?.error?.message ?? 'unknown').slice(0, 120);
+      const key = status ? `HTTP ${status}: ${msg}` : msg;
+      errKinds.set(key, (errKinds.get(key) ?? 0) + 1);
+    });
     await Promise.race([
       new Promise<void>((resolve) => { map!.once('load', () => resolve()); }),
       new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`offscreen map 'load' timed out after ${LOAD_TIMEOUT_MS}ms`)), LOAD_TIMEOUT_MS)),
@@ -120,7 +132,7 @@ export async function harvestTaggedFeatures(
         });
       }
     }
-    logHarvestCounts(counts, loaded, tileErrors, out.length, tileBudgetMs);
+    logHarvestCounts(counts, loaded, tileErrors, out.length, tileBudgetMs, errKinds);
     return out;
   } catch (err) {
     logHarvestFailed(err);
