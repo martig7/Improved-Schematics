@@ -191,6 +191,12 @@ function Slider(props: {
   disabled?: boolean;
 }) {
   const { label, value, min, max, step, display, onChange, disabled } = props;
+  // While the box is being typed in it holds the raw text, so a partial entry
+  // ("-", "1.", "") stays as written instead of being rewritten under the cursor.
+  // Null means "not editing": the box mirrors the live value, which is what makes
+  // a slider drag replace whatever was typed.
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = (v: number): void => { setDraft(null); onChange(v); };
   return (
     <label
       style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, opacity: disabled ? 0.45 : 1 }}
@@ -199,18 +205,56 @@ function Slider(props: {
         <span>{label}</span>
         <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.7 }}>{display}</span>
       </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ width: '100%', cursor: disabled ? 'default' : 'pointer', accentColor: '#2563eb' }}
-      />
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => commit(parseFloat(e.target.value))}
+          style={{ flex: 1, minWidth: 0, cursor: disabled ? 'default' : 'pointer', accentColor: '#2563eb' }}
+        />
+        {/* Typed entry is deliberately UNCLAMPED: the slider covers the useful
+            range, the box is how you leave it. Anything that parses as a number
+            is accepted and persisted. */}
+        <input
+          type="text"
+          inputMode="decimal"
+          value={draft ?? sliderText(value)}
+          disabled={disabled}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            const v = parseFloat(e.target.value);
+            if (Number.isFinite(v)) onChange(v);
+          }}
+          onBlur={() => setDraft(null)}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          style={{
+            width: 48,
+            flex: '0 0 auto',
+            fontSize: 11,
+            fontVariantNumeric: 'tabular-nums',
+            textAlign: 'right',
+            padding: '2px 4px',
+            borderRadius: 4,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'rgba(0,0,0,0.28)',
+            color: 'inherit',
+            cursor: disabled ? 'default' : 'text',
+          }}
+        />
+      </span>
     </label>
   );
+}
+
+/** The value as the number box shows it: enough precision to round-trip a step,
+ *  without the float dust that makes 0.30000000000000004 out of three clicks. */
+function sliderText(v: number): string {
+  if (!Number.isFinite(v)) return '';
+  return String(Math.round(v * 1e4) / 1e4);
 }
 
 // Keep an absolutely-positioned popover (the top bar's Areas / Settings menus)
@@ -1412,8 +1456,13 @@ export function SchematicPanel() {
     // otherwise render a broken control and a distorted layout. A non-finite/absent
     // field (a legacy file missing the field, or a truncated hand-edit) falls back to its default
     // rather than clamping to NaN (clamp(undefined) → NaN → a broken controlled slider).
-    const num = (v: unknown, lo: number, hi: number, def: number) =>
-      Number.isFinite(v as number) ? clamp(v as number, lo, hi) : def;
+    // Range is NOT enforced: every one of these is slider-backed, and the number
+    // box next to each slider accepts values past its ends on purpose, so clamping
+    // here would silently undo them on the next load. Non-finite (a legacy file
+    // missing the field, or a truncated hand-edit) still falls back to the default
+    // rather than clamping to NaN.
+    const num = (v: unknown, _lo: number, _hi: number, def: number) =>
+      Number.isFinite(v as number) ? (v as number) : def;
     const clampedApplied = s.applied && {
       lineWidth: num(s.applied.lineWidth, 1, 8, DEFAULT_LINE_WIDTH),
       stationRadius: num(s.applied.stationRadius, 1, 6, DEFAULT_STATION_RADIUS),
@@ -1446,18 +1495,21 @@ export function SchematicPanel() {
     if (typeof s.showStations === 'boolean') setShowStations(s.showStations);
     if (typeof s.showLabels === 'boolean') setShowLabels(s.showLabels);
     if (typeof s.showNeighborhoods === 'boolean') setShowNeighborhoods(s.showNeighborhoods);
-    if (s.neighborhoodFont != null) setNeighborhoodFont(clamp(s.neighborhoodFont, NBHD_FONT_MIN, NBHD_FONT_MAX));
-    if (s.neighborhoodZoom != null) setNeighborhoodZoom(clamp(s.neighborhoodZoom, LABEL_ZOOM_MIN, LABEL_ZOOM_MAX));
-    if (s.neighborhoodPad != null) setNeighborhoodPad(clamp(s.neighborhoodPad, LABEL_PAD_MIN, LABEL_PAD_MAX));
+    // Slider-backed values restore VERBATIM: the number box beside each slider
+    // accepts entries past its ends on purpose, so clamping to the slider's range
+    // here would silently undo them when a saved map is loaded.
+    if (s.neighborhoodFont != null) setNeighborhoodFont(s.neighborhoodFont);
+    if (s.neighborhoodZoom != null) setNeighborhoodZoom(s.neighborhoodZoom);
+    if (s.neighborhoodPad != null) setNeighborhoodPad(s.neighborhoodPad);
     if (typeof s.stationDesign === 'string') setStationDesign(STATION_DESIGNS.some((d) => d.id === s.stationDesign) ? s.stationDesign : DEFAULT_STATION_DESIGN);
     if (s.mapTheme === 'light' || s.mapTheme === 'dark' || s.mapTheme === 'auto') setMapTheme(s.mapTheme);
     if (s.landmass === 'faithful' || s.landmass === 'rounded' || s.landmass === 'diagram') setLandmass(s.landmass);
-    if (s.landmassDetail != null) setLandmassDetail(clamp(s.landmassDetail, 0, 1));
+    if (s.landmassDetail != null) setLandmassDetail(s.landmassDetail);
     if (s.landDetail && LAND_DETAILS.some((d) => d.id === s.landDetail)) { setLandDetailState(s.landDetail); setAppliedLandDetail(s.landDetail); }
-    if (s.rasterScale != null) setRasterScale(clamp(s.rasterScale, 1, 4));
-    if (s.jpegQuality != null) setJpegQuality(clamp(s.jpegQuality, 0.5, 1));
+    if (s.rasterScale != null) setRasterScale(s.rasterScale);
+    if (s.jpegQuality != null) setJpegQuality(s.jpegQuality);
     if (s.exportFormat && FORMATS.some((f) => f.id === s.exportFormat)) setExportFormat(s.exportFormat);
-    if (s.labelScale != null) setLabelScale(clamp(s.labelScale, LABEL_SCALE_MIN, LABEL_SCALE_MAX));
+    if (s.labelScale != null) setLabelScale(s.labelScale);
     if (clampedApplied) {
       setLineWidth(clampedApplied.lineWidth);
       setStationRadius(clampedApplied.stationRadius);
