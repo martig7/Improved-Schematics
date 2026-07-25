@@ -35,6 +35,12 @@ export function logHarvestCounts(
   errKinds?: ReadonlyMap<string, number>,
 ): void {
   console.info(`${TAG} harvested per source-layer:`, counts, `(tilesLoaded=${loaded}, tileErrors=${tileErrors})`);
+  // The game's map:// protocol answers "Unusable" for tiles outside the city's
+  // data region, which a rectangular harvest bbox always straddles. Those are
+  // expected (their count tracks the PERIMETER of the request grid, not its
+  // area), so they must not raise a partial-harvest alarm on every harvest.
+  let unusable = 0;
+  for (const [k, n] of errKinds ?? []) if (/unusable/i.test(k)) unusable += n;
   if (errKinds && errKinds.size > 0) {
     // Ranked, so the dominant failure is first. A tiled source 404s for tiles
     // outside coverage as a matter of course, which is expected at the corners
@@ -44,7 +50,7 @@ export function logHarvestCounts(
   }
   if (outLength === 0 && tileErrors > 0) {
     console.warn(`${TAG} 0 features with ${tileErrors} tile error(s) — basemap not serving tiles yet; caller will retry`);
-  } else if (tileErrors > 0) {
+  } else if (tileErrors > unusable) {
     // areTilesLoaded() reports true once every tile has SETTLED, and a tile that
     // failed has settled, so a partial harvest otherwise passes silently: features
     // arrive, nothing complains, and the gap only shows up later as missing
