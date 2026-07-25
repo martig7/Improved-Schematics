@@ -25,9 +25,15 @@ interface Entry {
   text: string;
 }
 
-const entries: Entry[] = [];
-let installed = false;
-let startedAt = 0;
+// The buffer lives on the global, not in module scope: the loader re-executes the
+// bundle on every mod reload, which would otherwise discard everything captured so
+// far. One-time events (the geography harvest above all) happen early and would be
+// wiped by the next reload, exactly when they are being asked about.
+interface LogState { entries: Entry[]; startedAt: number; installed: boolean }
+const KEY = '__improvedSchematicsLog__';
+const gl = globalThis as unknown as Record<string, LogState | undefined>;
+const state: LogState = gl[KEY] ?? (gl[KEY] = { entries: [], startedAt: Date.now(), installed: false });
+const entries = state.entries;
 
 /** Format one console argument. Errors keep their stack; objects are JSON when
  *  serializable, and fall back to their tag rather than throwing. */
@@ -49,7 +55,7 @@ function fmt(v: unknown): string {
 function push(level: Level, args: unknown[]): void {
   let text = args.map(fmt).join(' ');
   if (text.length > MAX_ENTRY_CHARS) text = text.slice(0, MAX_ENTRY_CHARS) + ` …(+${text.length - MAX_ENTRY_CHARS} chars)`;
-  entries.push({ t: Date.now() - startedAt, level, text });
+  entries.push({ t: Date.now() - state.startedAt, level, text });
   if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES);
 }
 
@@ -57,9 +63,10 @@ function push(level: Level, args: unknown[]): void {
  *  mod hot-reload re-running the entry point) does nothing, so the console is
  *  never wrapped twice. */
 export function installLogCapture(): void {
-  if (installed || typeof console === 'undefined') return;
-  installed = true;
-  startedAt = Date.now();
+  // `installed` is on the shared state, so a reload does not wrap the console a
+  // second time (each wrap would duplicate every entry).
+  if (state.installed || typeof console === 'undefined') return;
+  state.installed = true;
   for (const level of ['log', 'info', 'warn', 'error'] as const) {
     const original = console[level]?.bind(console);
     if (!original) continue;
