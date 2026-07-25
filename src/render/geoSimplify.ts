@@ -566,12 +566,12 @@ function chamfer(src: Uint8Array, W: number, H: number, toFilled = false): Int32
  *        features were removed. Detection happens at THIS scale, not at the floor,
  *        or everything between the floor and the opening would still be lost.
  */
-export function enforceMinWidth(r: GeoRaster, origGrid: Uint8Array, minWidthPx: number, openRadiusPx: number): void {
-  const { grid, W, H, cell } = r;
+export function enforceMinWidth(r: GeoRaster, origGrid: Uint8Array, minWidthPx: number, openRadiusPx: number): Pt[] {
+  const { grid, W, H, cell, gx0, gy0 } = r;
   const N = W * H;
   const kMin = Math.round(minWidthPx / 2 / cell);
   const kOpen = Math.round(openRadiusPx / cell);
-  if (kMin < 1) return; // finer than the raster can express
+  if (kMin < 1) return []; // finer than the raster can express
   // Regions of the ORIGINAL not covered by any disk of radius k seated inside it,
   // i.e. everything narrower than 2k. A wide body's rim IS covered (by a disk
   // seated further in), so this never re-adds a generalized shoreline.
@@ -591,6 +591,20 @@ export function enforceMinWidth(r: GeoRaster, origGrid: Uint8Array, minWidthPx: 
   const subMin = narrowerThan(kMin);
   const dSub = chamfer(subMin, W, H, true); // dilation: distance TO the sub-floor regions
   for (let i = 0; i < N; i++) if (dSub[i] <= kMin) grid[i] = 1;
+  // Sample the restored structure for the VW veto. The raster restore alone is
+  // not enough: the vector pass that follows judges a vertex by its effective
+  // triangle area, and every vertex of a thin channel is tiny by that measure, so
+  // VW collapses the banks back together and re-closes what was just restored,
+  // which is why the channel survives at low simplification and shuts at high.
+  // Sparse (every 3rd cell, as the corridor sampler does) so a large restored
+  // area cannot flood the veto list, which is scanned per candidate removal.
+  const pts: Pt[] = [];
+  for (let y = 0; y < H; y += 3) {
+    for (let x = 0; x < W; x += 3) {
+      if (removed[y * W + x]) pts.push([gx0 + (x + 0.5) * cell, gy0 + (y + 0.5) * cell]);
+    }
+  }
+  return pts;
 }
 
 /** Boundary walk over a raster: for every unvisited boundary edge, follow the
@@ -1004,7 +1018,7 @@ export function stylizeRingsPathD(
   });
   // Narrow water survives the generalization at a floor width, so a channel is
   // never dissolved. Uses the pre-opening grid to decide what counts as narrow.
-  if (minW > 0 && origGrid) enforceMinWidth(raster, origGrid, minW, style.simplifyPx / 2);
+  const narrowPts = minW > 0 && origGrid ? enforceMinWidth(raster, origGrid, minW, style.simplifyPx / 2) : [];
   // No created lakes: reconnect severed channels (or swallow whole bodies).
   // Corridor midpoints join the VW veto so simplification can't pinch them.
   const corridorPts = origGrid ? enforceContinuity(raster, origGrid, pieceOk, imp) : [];
@@ -1073,8 +1087,9 @@ export function stylizeRingsPathD(
     const u = 1 - (best > 1 ? 1 : best < 0 ? 0 : best);
     return areaAbs >= Math.max(dust, style.minAreaPx2 * u * u);
   };
-  const avoid = corridorPts.length
-    ? [...(style.dryPoints ?? []), ...corridorPts]
+  // Restored channels join the veto, or the vector pass undoes the raster restore.
+  const avoid = corridorPts.length || narrowPts.length
+    ? [...(style.dryPoints ?? []), ...corridorPts, ...narrowPts]
     : style.dryPoints;
   const finals: Pt[][] = [];
   for (const ring of unified) {
