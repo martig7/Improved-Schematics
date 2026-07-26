@@ -41,13 +41,24 @@ test('a lone stop wears no stubs', () => {
   assert.equal(ticks(dc.paint(scene([ln(0, [10, 20])]), ctx)).length, 0);
 });
 
-test('a wide bundle keeps the centred dot and adds the stubs', () => {
+test('a two-lane bundle wears no stubs: the dot bridges both', () => {
+  const g = dc.paint(scene([ln(0, [0, 0]), ln(1, [0, 10])]), ctx);
+  assert.equal(ticks(g).length, 0);
+  assert.equal(circles(g).length, 2, 'just the bridging dot');
+});
+
+test('a three-lane bundle stubs the two lanes the dot misses', () => {
+  const g = dc.paint(scene([ln(0, [0, 0]), ln(1, [0, 10]), ln(2, [0, 20])]), ctx);
+  assert.equal(ticks(g).length, 2, 'the outer lanes only');
+});
+
+test('a wide bundle keeps the centred dot and stubs every other lane', () => {
   const lines = [ln(0, [0, 0]), ln(1, [0, 10]), ln(2, [0, 20]), ln(3, [0, 30]), ln(4, [0, 40])];
   const g = dc.paint(scene(lines), ctx);
   const c = circles(g);
   assert.equal(c.length, 2, 'still one dot, not one per lane');
   assert.deepEqual([c[0].cx, c[0].cy], [0, 20], 'seated on the centre lane');
-  assert.equal(ticks(g).length, 2, 'one stub per band edge');
+  assert.equal(ticks(g).length, 4, 'the four lanes the dot does not cover');
 });
 
 test('stubs strike perpendicular to the run', () => {
@@ -75,18 +86,16 @@ test('a splitting bundle counts as a transfer even on a shared axis', () => {
   assert.equal(circles(g).length, 4, 'double ring');
 });
 
-test('a stub straddles its band edge, showing outside the paint', () => {
-  // Lanes at y 0..30, so the band centre is 15 and the outermost lanes are +-15.
-  const wide = [ln(0, [0, 0]), ln(1, [0, 10]), ln(2, [0, 20]), ln(3, [0, 30])];
-  const ds = ticks(dc.paint(scene(wide), ctx)) as Array<{ y1: number; y2: number }>;
-  assert.equal(ds.length, 2, 'one per edge');
+test('a stub protrudes INWARD, toward the seated mark', () => {
+  // Lanes at y 0,10,20; the dot seats on y=10, so lanes 0 and 20 are stubbed.
+  const ds = ticks(dc.paint(scene([ln(0, [0, 0]), ln(1, [0, 10]), ln(2, [0, 20])]), ctx)) as Array<{ y1: number; y2: number }>;
+  assert.equal(ds.length, 2);
   for (const d of ds) {
-    const near = Math.min(Math.abs(d.y1 - 15), Math.abs(d.y2 - 15));
-    const far = Math.max(Math.abs(d.y1 - 15), Math.abs(d.y2 - 15));
-    assert.ok(far > 15, `stub shows outside the outermost lane (reaches ${far.toFixed(1)})`);
-    assert.ok(near < far, 'and starts inside it, so it straddles the edge');
+    const outer = Math.abs(d.y1 - 10) > Math.abs(d.y2 - 10) ? d.y1 : d.y2;
+    const inner = outer === d.y1 ? d.y2 : d.y1;
+    assert.ok(Math.abs(inner - 10) < Math.abs(outer - 10), 'the free end points at the mark');
+    // It protrudes PAST its own lane on the inward side.
+    const lane = outer < 10 ? 0 : 20;
+    assert.ok(Math.abs(inner - 10) < Math.abs(lane - 10), `protrudes inward past lane ${lane}`);
   }
-  // One each side of the band centre.
-  const sides = ds.map((d) => Math.sign((d.y1 + d.y2) / 2 - 15));
-  assert.notEqual(sides[0], sides[1], 'opposite edges');
 });

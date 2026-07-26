@@ -15,16 +15,14 @@ let STOP_RING = LINE_WIDTH * 0.2;
 // read at the same scale (the design calls for exactly that correspondence).
 let REACH = LINE_WIDTH * 0.95;
 let TICK_W = LINE_WIDTH * 0.22;
-// How far a stub reaches inside and outside the band edge it straddles.
-let STUB_IN = LINE_WIDTH * 0.45;
-let STUB_OUT = LINE_WIDTH * 0.5;
+// How far a stub protrudes past its own lane, on the inward side.
+let STUB_PROTRUDE = LINE_WIDTH * 0.5;
 onDrawScale(() => {
   STOP_OUTER = LINE_WIDTH / 2;
   STOP_RING = LINE_WIDTH * 0.2;
   REACH = LINE_WIDTH * 0.95;
   TICK_W = LINE_WIDTH * 0.22;
-  STUB_IN = LINE_WIDTH * 0.45;
-  STUB_OUT = LINE_WIDTH * 0.5;
+  STUB_PROTRUDE = LINE_WIDTH * 0.5;
 });
 
 /** A black-ringed white disc by overdraw (ink disc, then a smaller paper disc),
@@ -63,43 +61,47 @@ function oneBundle(lines: readonly StopLine[]): boolean {
   return true;
 }
 
-/** The single mark's seat on a bundle: the middle lane when the count is odd,
- *  the gap between the two middle lanes when it is even. */
-function seat(lines: readonly StopLine[]): Point {
-  const ordered = [...lines].sort((a, b) => a.chain - b.chain || (a.lineId < b.lineId ? -1 : 1));
-  const n = ordered.length;
+/** Lanes in band order. */
+function ordered(lines: readonly StopLine[]): StopLine[] {
+  return [...lines].sort((a, b) => a.chain - b.chain || (a.lineId < b.lineId ? -1 : 1));
+}
+
+/** The lanes the dot itself covers: the middle one when the count is odd, the two
+ *  middle ones when it is even (the dot seats in the gap and bridges both). These
+ *  are already marked by the dot, so they take no stub, which is why a two-lane
+ *  bundle wears none at all. */
+function bridged(n: number): [number, number] {
   const mid = n >> 1;
-  if (n % 2 === 1) return ordered[mid].pos;
-  const a = ordered[mid - 1].pos;
-  const b = ordered[mid].pos;
+  return n % 2 === 1 ? [mid, mid] : [mid - 1, mid];
+}
+
+/** The single mark's seat: on the middle lane, or in the gap between the two. */
+function seat(lines: readonly StopLine[]): Point {
+  const ord = ordered(lines);
+  const [i, j] = bridged(ord.length);
+  const a = ord[i].pos;
+  const b = ord[j].pos;
   return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
-/** The pair of stubs a bundle stop wears: one straddling each edge of the band,
- *  struck perpendicular to the run so a short length shows OUTSIDE the paint. The
- *  stub is what marks the station across a band too wide for its dot to span; it
- *  does not replace the dot. `half` is the band's half-width. */
-function stubs(c: Point, t: Point, half: number): Glyph[] {
+/** A stub for one lane: struck perpendicular to the run, crossing its own lane and
+ *  protruding on the INWARD side, toward the band's centreline. Every lane the dot
+ *  does not already cover gets one, so the whole interchange is marked. */
+function stub(p: Point, t: Point, inward: Point): Glyph {
   const nx = -t[1];
   const ny = t[0];
-  const seg = (side: number): Glyph => {
-    const a = half - STUB_IN;
-    const b = half + STUB_OUT;
-    return {
-      kind: 'line',
-      x1: +(c[0] + nx * a * side).toFixed(2), y1: +(c[1] + ny * a * side).toFixed(2),
-      x2: +(c[0] + nx * b * side).toFixed(2), y2: +(c[1] + ny * b * side).toFixed(2),
-      stroke: PAPER, strokeWidth: +TICK_W.toFixed(2),
-    };
+  // Sign the perpendicular so it points inward for THIS lane.
+  const sgn = nx * inward[0] + ny * inward[1] >= 0 ? 1 : -1;
+  const ox = -nx * sgn * STOP_OUTER;
+  const oy = -ny * sgn * STOP_OUTER;
+  const ix = nx * sgn * (STOP_OUTER + STUB_PROTRUDE);
+  const iy = ny * sgn * (STOP_OUTER + STUB_PROTRUDE);
+  return {
+    kind: 'line',
+    x1: +(p[0] + ox).toFixed(2), y1: +(p[1] + oy).toFixed(2),
+    x2: +(p[0] + ix).toFixed(2), y2: +(p[1] + iy).toFixed(2),
+    stroke: PAPER, strokeWidth: +TICK_W.toFixed(2),
   };
-  return [seg(1), seg(-1)];
-}
-
-/** Half-width of the band the lanes form, out to the outer edge of the paint. */
-function bandHalf(lines: readonly StopLine[]): number {
-  const a = lines[0].pos;
-  const b = lines[lines.length - 1].pos;
-  return Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) / 2 + STOP_OUTER;
 }
 
 /**
@@ -108,9 +110,10 @@ function bandHalf(lines: readonly StopLine[]): number {
  * An interchange is read from the geometry rather than the line count. While
  * every lane runs the same way the station is still ONE band of track, so it
  * takes a single mark: one circle seated mid-bundle (on the centre lane, or in
- * the gap between the two middle lanes), with a white stub straddling each edge
- * of the band so a short length shows outside the paint. The stubs are what carry
- * the mark across a band too wide for the circle to span, at any lane count.
+ * the gap between the two middle lanes), plus a white stub on every OTHER lane,
+ * struck perpendicular and protruding inward toward the band's centreline. The
+ * stubs carry the mark across a band too wide for the circle to span; the lanes
+ * the circle already covers take none, so a two-lane bundle wears no stubs.
  *
  * A station where the lanes point different ways, or where a bundle splits, is a
  * genuine transfer and takes the double ring: an inner circle the size of every
@@ -137,10 +140,25 @@ function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
     ];
   }
 
-  // One bundle: a single mark seated mid-bundle, with a stub straddling each
-  // edge of the band. Stubs are drawn FIRST so the dot sits over them.
-  const s = seat(lines);
-  return [...stubs(s, tangent(lines[0]), bandHalf(lines)), ...disc(s[0], s[1], STOP_OUTER, STOP_RING)];
+  // One bundle: a single mark seated mid-bundle, plus a stub on every lane the
+  // mark does not already cover. Stubs are drawn FIRST so the dot sits over them.
+  const ord = ordered(lines);
+  const s = seat(ord);
+  const t = tangent(ord[0]);
+  const [bi, bj] = bridged(ord.length);
+  const g: Glyph[] = [];
+  for (let i = 0; i < ord.length; i++) {
+    if (i === bi || i === bj) continue; // already marked by the dot
+    const p = ord[i].pos;
+    // Inward is simply the direction from this lane back to the seated mark.
+    const dx = s[0] - p[0];
+    const dy = s[1] - p[1];
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1e-6) continue;
+    g.push(stub(p, t, [dx / len, dy / len]));
+  }
+  g.push(...disc(s[0], s[1], STOP_OUTER, STOP_RING));
+  return g;
 }
 
 export const dc: StationDesign = {
