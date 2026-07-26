@@ -116,3 +116,17 @@ test('a stub protrudes INWARD, toward the seated mark', () => {
     assert.ok(Math.abs(inner - 10) < Math.abs(lane - 10), `protrudes inward past lane ${lane}`);
   }
 });
+
+test('a solved point crossing seats the ring exactly there', () => {
+  // Placement resolves a true crossing at compute time and hands it over as a
+  // ring carrying no lines; the mark must take that point verbatim.
+  const sc: StopScene = {
+    nodeId: 'n', lines: [], capsule: { kind: 'ring', cx: 42, cy: 17, r: 9 },
+    anchor: [999, 999], dotRadius: 3,
+  };
+  const c = circles(dc.paint(sc, ctx));
+  assert.equal(c.length, 4, 'outer ring plus the inner stop circle');
+  for (const x of c) {
+    assert.ok(Math.abs(x.cx - 42) < 1e-6 && Math.abs(x.cy - 17) < 1e-6, `seated at ${x.cx},${x.cy}`);
+  }
+});

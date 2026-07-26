@@ -84,6 +84,16 @@ function seat(lines: readonly StopLine[]): Point {
   return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
+/** The transfer motif: an inner circle the size of every other stop, inside an
+ *  outer ring. */
+function doubleRing(cx: number, cy: number): Glyph[] {
+  return [
+    circle(cx, cy, REACH, { fill: INK, stroke: 'none', strokeWidth: 0 }),
+    circle(cx, cy, REACH - STOP_RING, { fill: PAPER, stroke: 'none', strokeWidth: 0 }),
+    ...disc(cx, cy, STOP_OUTER, STOP_RING),
+  ];
+}
+
 /**
  * Where the crossing bundles actually meet.
  *
@@ -163,6 +173,14 @@ function stub(p: Point, t: Point, inward: Point): Glyph {
  */
 function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
   const lines = scene.lines;
+
+  // A node whose lines genuinely cross at a point is solved at compute time, and
+  // arrives as a ring carrying that crossing. Use it: deriving the junction from
+  // the seated dots instead lands the mark on whichever lane the marks average
+  // out to, which is not where the lines meet. This case carries no lines, so it
+  // is answered before anything reads them.
+  if (scene.capsule.kind === 'ring') return doubleRing(scene.capsule.cx, scene.capsule.cy);
+
   if (lines.length === 0) return [];
 
   if (lines.length === 1) {
@@ -171,14 +189,10 @@ function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
   }
 
   if (!oneBundle(lines)) {
-    // Transfer: double ring, seated where the bands actually cross so it reads as
-    // one junction rather than a mark sitting on whichever lane the anchor took.
+    // A transfer that did NOT resolve to a point crossing (a split, or bands that
+    // meet off-centre): fall back to intersecting the bands' own centrelines.
     const [cx, cy] = crossing(lines);
-    return [
-      circle(cx, cy, REACH, { fill: INK, stroke: 'none', strokeWidth: 0 }),
-      circle(cx, cy, REACH - STOP_RING, { fill: PAPER, stroke: 'none', strokeWidth: 0 }),
-      ...disc(cx, cy, STOP_OUTER, STOP_RING),
-    ];
+    return doubleRing(cx, cy);
   }
 
   // One bundle: a single mark seated mid-bundle, plus a stub on every lane the
@@ -206,8 +220,10 @@ export const dc: StationDesign = {
   id: 'dc',
   name: 'Washington',
   paint,
-  // Pill seating gives the lanes their chained order along the band, which is
-  // what `seat` reads; the design draws no capsule of its own.
-  capsule: 'pill',
+  // 'toronto' seating runs the compute-time crossing solve, so a node whose lines
+  // truly meet at a point arrives as a ring carrying that exact junction; every
+  // other multi-line node still falls through to a pill, whose chained order is
+  // what `seat` reads. The design draws no capsule of its own either way.
+  capsule: 'toronto',
   previewKind: 'interchange',
 };
