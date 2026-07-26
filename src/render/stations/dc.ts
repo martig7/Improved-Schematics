@@ -84,6 +84,46 @@ function seat(lines: readonly StopLine[]): Point {
   return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
+/**
+ * Where the crossing bundles actually meet.
+ *
+ * Each direction present is one band of track; its centreline runs through the
+ * mean of its lanes, so for a two-lane bundle that line passes BETWEEN the pair
+ * rather than along either rail. Intersecting the two centrelines puts the mark
+ * at the true crossing, centred in both bands. The station anchor will not do:
+ * it sits on a lane, so the ring lands on one line instead of at the junction.
+ *
+ * Falls back to the centroid of every lane when the bands are near-parallel (no
+ * usable intersection), which is still the middle of the cluster.
+ */
+function crossing(lines: readonly StopLine[]): Point {
+  const byAxis = new Map<number, StopLine[]>();
+  for (const ln of lines) {
+    const k = ln.axis ?? -1;
+    const arr = byAxis.get(k);
+    if (arr) arr.push(ln);
+    else byAxis.set(k, [ln]);
+  }
+  const mean = (ls: readonly StopLine[]): Point => {
+    let x = 0, y = 0;
+    for (const l of ls) { x += l.pos[0]; y += l.pos[1]; }
+    return [x / ls.length, y / ls.length];
+  };
+  const groups = [...byAxis.keys()].sort((a, b) => a - b).map((k) => byAxis.get(k)!);
+  if (groups.length >= 2) {
+    const p = mean(groups[0]);
+    const d = tangent(groups[0][0]);
+    const q = mean(groups[1]);
+    const e = tangent(groups[1][0]);
+    const den = d[0] * e[1] - d[1] * e[0];
+    if (Math.abs(den) > 1e-6) {
+      const t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den;
+      return [p[0] + d[0] * t, p[1] + d[1] * t];
+    }
+  }
+  return mean(lines);
+}
+
 /** A stub for one lane: struck perpendicular to the run, crossing its own lane and
  *  protruding on the INWARD side, toward the band's centreline. Every lane the dot
  *  does not already cover gets one, so the whole interchange is marked. */
@@ -117,8 +157,9 @@ function stub(p: Point, t: Point, inward: Point): Glyph {
  *
  * A station where the lanes point different ways, or where a bundle splits, is a
  * genuine transfer and takes the double ring: an inner circle the size of every
- * other stop, inside an outer ring at the same distance the ticks reach, so the
- * two interchange motifs share one scale.
+ * other stop, inside an outer ring. It seats where the crossing bands' centrelines
+ * meet, so it lands at the junction and centred in each band, rather than on
+ * whichever single lane the station anchor happens to sit on.
  */
 function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
   const lines = scene.lines;
@@ -130,9 +171,9 @@ function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
   }
 
   if (!oneBundle(lines)) {
-    // Transfer: double ring, seated on the marker anchor so it reads as one
-    // station rather than attaching to any single lane.
-    const [cx, cy] = scene.anchor;
+    // Transfer: double ring, seated where the bands actually cross so it reads as
+    // one junction rather than a mark sitting on whichever lane the anchor took.
+    const [cx, cy] = crossing(lines);
     return [
       circle(cx, cy, REACH, { fill: INK, stroke: 'none', strokeWidth: 0 }),
       circle(cx, cy, REACH - STOP_RING, { fill: PAPER, stroke: 'none', strokeWidth: 0 }),

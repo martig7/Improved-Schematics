@@ -71,12 +71,29 @@ test('stubs strike perpendicular to the run', () => {
 });
 
 test('lanes pointing different ways make it a transfer: a double ring', () => {
-  const lines = [ln(0, [0, 0], { axis: 0, dir: [1, 0] }), ln(1, [0, 10], { axis: 2, dir: [0, 1] })];
-  const g = dc.paint(scene(lines, [5, 5]), ctx);
+  // A horizontal lane at y=20 crossed by a vertical lane at x=10.
+  const lines = [ln(0, [0, 20], { axis: 0, dir: [1, 0] }), ln(1, [10, 0], { axis: 2, dir: [0, 1] })];
+  const g = dc.paint(scene(lines, [999, 999]), ctx);
   const c = circles(g);
   assert.equal(c.length, 4, 'outer ring (2) plus the inner stop circle (2)');
-  for (const x of c) assert.deepEqual([x.cx, x.cy], [5, 5], 'all seated on the anchor');
+  for (const x of c) {
+    // At the junction of the two centrelines, NOT at the (deliberately bogus) anchor.
+    assert.ok(Math.abs(x.cx - 10) < 1e-6 && Math.abs(x.cy - 20) < 1e-6, `seated at ${x.cx},${x.cy}`);
+  }
   assert.equal(ticks(g).length, 0);
+});
+
+test('a transfer seats centred between a two-lane bundle, not on a rail', () => {
+  // A two-lane horizontal band at y=0 and y=10, crossed by a vertical lane.
+  const lines = [
+    ln(0, [0, 0], { axis: 0, dir: [1, 0] }),
+    ln(1, [0, 10], { axis: 0, dir: [1, 0] }),
+    ln(2, [30, 0], { axis: 2, dir: [0, 1] }),
+  ];
+  const c = circles(dc.paint(scene(lines, [0, 0]), ctx));
+  // Centred BETWEEN the pair (y=5), and on the crossing lane (x=30).
+  assert.ok(Math.abs(c[0].cy - 5) < 1e-6, `expected the band centre, got y=${c[0].cy}`);
+  assert.ok(Math.abs(c[0].cx - 30) < 1e-6, `expected the crossing lane, got x=${c[0].cx}`);
 });
 
 test('a splitting bundle counts as a transfer even on a shared axis', () => {
