@@ -12,6 +12,7 @@
 
 import type { Scene, Prim, TextPrim, ClipBox } from './sceneIR';
 import { estimateTextWidth } from './labels';
+import { rotatedRectCorners } from './cropFrame';
 
 export interface SceneView {
   scale: number; // screen px per world unit
@@ -124,7 +125,9 @@ export interface DrawSceneOpts {
   /** Crop-edit overlay: the working crop box in world coords. Drawn LAST, under the
    *  camera (so it tracks pan/zoom with the map, no DOM rehome): a dim mask outside
    *  the box, a bright outline, and screen-sized corner handles. */
-  cropEdit?: { box: ClipBox };
+  /** The working crop box: its axis-aligned extent, how far it is turned about
+   *  its own centre (radians), and where the tilt grip sits (world coords). */
+  cropEdit?: { box: ClipBox; angle?: number; tilt?: [number, number] };
 }
 
 export function drawScene(
@@ -319,28 +322,82 @@ export function drawScene(
     const b = ce.box;
     camera();
     ctx.globalAlpha = 1;
+    // The box may be turned, previewing the frame the content will be righted
+    // into, so mask and outline both run off its four corners rather than off an
+    // axis-aligned rect.
+    const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    const corners = rotatedRectCorners(cx, cy, (b.x1 - b.x0) / 2, (b.y1 - b.y0) / 2, ce.angle ?? 0);
     const big = Math.max(prepared.scene.width, prepared.scene.height) * 100;
     const mask = new Path2D();
     mask.rect(-big, -big, big * 2, big * 2);
-    mask.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    mask.moveTo(corners[0][0], corners[0][1]);
+    for (let i = 1; i < corners.length; i++) mask.lineTo(corners[i][0], corners[i][1]);
+    mask.closePath();
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fill(mask, 'evenodd');
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2 / scale;
     ctx.setLineDash([]);
-    ctx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    ctx.beginPath();
+    ctx.moveTo(corners[0][0], corners[0][1]);
+    for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+    ctx.closePath();
+    ctx.stroke();
     const hh = 7 / scale; // handle half-size, constant on screen
     ctx.fillStyle = '#ffffff';
     ctx.lineWidth = 1.5 / scale;
-    for (const [cx, cy] of [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]] as [number, number][]) {
+    for (const [hx, hy] of corners) {
       ctx.beginPath();
-      ctx.rect(cx - hh, cy - hh, 2 * hh, 2 * hh);
+      ctx.rect(hx - hh, hy - hh, 2 * hh, 2 * hh);
       ctx.fill();
       ctx.stroke();
     }
+    if (ce.tilt) drawTiltHandle(ctx, ce.tilt[0], ce.tilt[1], ce.angle ?? 0, scale);
   }
 
   if (opts.clipToBounds) ctx.restore();
+}
+
+/** The tilt grip: a round pad carrying a double-headed arc, drawn at a constant
+ *  screen size and turned with the box so it reads as "turn this". */
+function drawTiltHandle(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, angle: number, scale: number,
+): void {
+  const R = 11 / scale;      // pad radius, constant on screen
+  const r = 6 / scale;       // arc radius
+  const tip = 3.2 / scale;   // arrowhead half-size
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.fillStyle = '#38bdf8';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 1 / scale;
+  ctx.stroke();
+  // A three-quarter arc with a head at each end.
+  ctx.strokeStyle = '#04283a';
+  ctx.lineWidth = 1.8 / scale;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, Math.PI * 0.35, Math.PI * 1.65);
+  ctx.stroke();
+  ctx.fillStyle = '#04283a';
+  for (const a of [Math.PI * 0.35, Math.PI * 1.65]) {
+    const ax = Math.cos(a) * r, ay = Math.sin(a) * r;
+    // Tangent at the arc's end, so each head points the way the arc runs.
+    const tx = -Math.sin(a), ty = Math.cos(a);
+    const s = a > Math.PI ? -1 : 1;
+    ctx.beginPath();
+    ctx.moveTo(ax + tx * tip * s * 1.6, ay + ty * tip * s * 1.6);
+    ctx.lineTo(ax - ty * tip, ay + tx * tip);
+    ctx.lineTo(ax + ty * tip, ay - tx * tip);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function roundRect(

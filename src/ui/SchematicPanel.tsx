@@ -44,7 +44,9 @@ import { LAND_DETAILS, DEFAULT_LAND_DETAIL, setLandDetail, type LandDetail } fro
 import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
-import { rotateSchematicInput } from '../render/rotateInput';
+import { rotateSchematicInput, rotationFrameOf, reframeCoord } from '../render/rotateInput';
+import { rotatedRectCorners, snapAngle, largestInscribedRect } from '../render/cropFrame';
+import type { Coordinate } from '../types/core';
 import { MOD_VERSION } from '../version';
 import { logText, logCount } from '../debugLog';
 
@@ -330,7 +332,7 @@ type RestoredSettings = {
   mapTheme?: 'auto' | 'light' | 'dark';
   landmass?: 'faithful' | 'rounded' | 'diagram';
   landmassDetail?: number;
-  applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; gridRef?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
+  applied?: { lineWidth: number; stationRadius: number; warpPos: number; geoWarpOn?: boolean; linePos: number; boxWarpPos: number; boxFrac?: number; gridRef?: number; lineScale?: number; declutterWarp?: number; aestheticWarp?: number; aestheticOn?: boolean; cropAspectW?: number; cropAspectH?: number; cropBbox?: [number, number, number, number] | null; cropAngle?: number; stationSplit?: boolean; disabledRoutes?: string[]; simplifiedRoutes?: SimplifiedRoutes };
   landDetail?: LandDetail;
   rasterScale?: number;
   jpegQuality?: number;
@@ -513,6 +515,11 @@ export function SchematicPanel() {
   const [cropAspectW, setCropAspectW] = useState(rapp?.cropAspectW ?? DEFAULT_CROP_ASPECT_W);
   const [cropAspectH, setCropAspectH] = useState(rapp?.cropAspectH ?? DEFAULT_CROP_ASPECT_H);
   const [cropBbox, setCropBbox] = useState<[number, number, number, number] | null>(rapp?.cropBbox ?? null);
+  // The map's orientation: the TOTAL rotation applied to the input at assembly,
+  // which replaces the city bearing. A city whose network runs diagonally can be
+  // framed along its own grain instead of upright. The bbox above is expressed in
+  // THIS frame, so the two always move together.
+  const [cropAngle, setCropAngle] = useState<number>(rapp?.cropAngle ?? mapBearing);
   const [cropEditing, setCropEditing] = useState(false);
   const cropEditingRef = useRef(cropEditing);
   cropEditingRef.current = cropEditing;
@@ -523,7 +530,13 @@ export function SchematicPanel() {
   // The working crop box (in the FULL map's content coords) while editing, drawn on
   // the canvas so it tracks pan/zoom with the map. Plus the drag state.
   const cropBoxRef = useRef<Box | null>(null);
-  const cropDragRef = useRef<{ h: 'move' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1'; box0: Box; sx: number; sy: number } | null>(null);
+  const cropDragRef = useRef<{ h: 'move' | 'tilt' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1'; box0: Box; sx: number; sy: number; tilt0?: number; a0?: number } | null>(null);
+  // How far the drawn box is turned from the orientation the map behind it was
+  // rendered at (radians). Re-rendering under the working angle would mean
+  // re-running the layout on every drag, so the tilt is previewed as a turned box
+  // over an upright map; Apply converts it into the new angle.
+  const cropTiltRef = useRef(0);
+  const [cropTiltDeg, setCropTiltDeg] = useState(0); // same value, for the toolbar readout
   // Cached UNCROPPED ("full map") scene + pre (for geo<->px) + frame + the fp it was
   // built for, so entering crop edit shows the full map INSTANTLY (no octi / spinner).
   const fullSceneRef = useRef<PreparedScene | null>(null);
@@ -549,7 +562,7 @@ export function SchematicPanel() {
   const [applied, setApplied] = useState(
     rapp
       ? // older files lack boxFrac/lineScale/declutter/aesthetic/stationSplit/disabledRoutes → default them
-        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: rapp.gridRef ?? DEFAULT_GRID_REF, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [], simplifiedRoutes: rapp.simplifiedRoutes ?? {} }
+        { ...rapp, geoWarpOn: rapp.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: rapp.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: rapp.gridRef ?? DEFAULT_GRID_REF, lineScale: rapp.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: rapp.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: rapp.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: rapp.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: rapp.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: rapp.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: rapp.cropBbox ?? null, cropAngle: rapp.cropAngle ?? mapBearing, stationSplit: rapp.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: rapp.disabledRoutes ?? [], simplifiedRoutes: rapp.simplifiedRoutes ?? {} }
       : {
           lineWidth: DEFAULT_LINE_WIDTH,
           stationRadius: DEFAULT_STATION_RADIUS,
@@ -566,6 +579,7 @@ export function SchematicPanel() {
           cropAspectW: DEFAULT_CROP_ASPECT_W,
           cropAspectH: DEFAULT_CROP_ASPECT_H,
           cropBbox: null as [number, number, number, number] | null,
+          cropAngle: mapBearing,
           stationSplit: DEFAULT_STATION_SPLIT,
           disabledRoutes: [],
           simplifiedRoutes: {} as SimplifiedRoutes,
@@ -592,6 +606,7 @@ export function SchematicPanel() {
     (applied.cropAspectW ?? DEFAULT_CROP_ASPECT_W) !== cropAspectW ||
     (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H) !== cropAspectH ||
     !sameBbox(applied.cropBbox ?? null, cropBbox) ||
+    (applied.cropAngle ?? mapBearing) !== cropAngle ||
     applied.stationSplit !== stationSplit ||
     !sameIdSet(applied.disabledRoutes ?? [], disabledRoutes);
   const appearanceDirty =
@@ -614,6 +629,7 @@ export function SchematicPanel() {
     cropAspectW === DEFAULT_CROP_ASPECT_W &&
     cropAspectH === DEFAULT_CROP_ASPECT_H &&
     cropBbox === null &&
+    cropAngle === mapBearing &&
     stationSplit === DEFAULT_STATION_SPLIT &&
     disabledRoutes.length === 0 &&
     Object.keys(simplifiedRoutes).length === 0 &&
@@ -632,6 +648,7 @@ export function SchematicPanel() {
     (applied.cropAspectW ?? DEFAULT_CROP_ASPECT_W) === DEFAULT_CROP_ASPECT_W &&
     (applied.cropAspectH ?? DEFAULT_CROP_ASPECT_H) === DEFAULT_CROP_ASPECT_H &&
     (applied.cropBbox ?? null) === null &&
+    (applied.cropAngle ?? mapBearing) === mapBearing &&
     applied.stationSplit === DEFAULT_STATION_SPLIT &&
     (applied.disabledRoutes?.length ?? 0) === 0 &&
     Object.keys(applied.simplifiedRoutes ?? {}).length === 0;
@@ -723,7 +740,7 @@ export function SchematicPanel() {
       boxWarpPos: DEFAULT_REALISM_POS,
     };
     // older entries lack boxFrac/lineScale/declutter/aesthetic/stationSplit
-    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: apRaw.gridRef ?? DEFAULT_GRID_REF, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [], simplifiedRoutes: apRaw.simplifiedRoutes ?? {} };
+    const ap = { ...apRaw, geoWarpOn: apRaw.geoWarpOn ?? DEFAULT_GEOWARP_ON, boxFrac: apRaw.boxFrac ?? DEFAULT_BOX_FRAC, gridRef: apRaw.gridRef ?? DEFAULT_GRID_REF, lineScale: apRaw.lineScale ?? DEFAULT_LINE_SCALE, declutterWarp: apRaw.declutterWarp ?? DEFAULT_DECLUTTER, aestheticWarp: apRaw.aestheticWarp ?? DEFAULT_AESTHETIC, aestheticOn: apRaw.aestheticOn ?? DEFAULT_AESTHETIC_ON, cropAspectW: apRaw.cropAspectW ?? DEFAULT_CROP_ASPECT_W, cropAspectH: apRaw.cropAspectH ?? DEFAULT_CROP_ASPECT_H, cropBbox: apRaw.cropBbox ?? null, cropAngle: apRaw.cropAngle ?? mapBearing, stationSplit: apRaw.stationSplit ?? DEFAULT_STATION_SPLIT, disabledRoutes: apRaw.disabledRoutes ?? [], simplifiedRoutes: apRaw.simplifiedRoutes ?? {} };
     setShowStations(v.showStations ?? true);
     setShowLabels(v.showLabels ?? false);
     setShowNeighborhoods(v.showNeighborhoods ?? false);
@@ -748,6 +765,7 @@ export function SchematicPanel() {
     setDeclutterWarp(ap.declutterWarp);
     setAestheticWarp(ap.aestheticWarp);
     setAestheticOn(ap.aestheticOn);
+    setCropAngle(ap.cropAngle ?? mapBearing);
     setCropAspectW(ap.cropAspectW);
     setCropAspectH(ap.cropAspectH);
     setCropBbox(ap.cropBbox);
@@ -927,7 +945,7 @@ export function SchematicPanel() {
         },
         placeColor: mapPalette.place,
       },
-    }, mapBearing);
+    }, applied.cropAngle ?? mapBearing);
   }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing, mapDark, mapPaletteKey]);
 
   // The CURRENT base input the whole UI operates on: the raw uncropped input, or
@@ -1476,6 +1494,7 @@ export function SchematicPanel() {
       declutterWarp: num(s.applied.declutterWarp, 0, 1, DEFAULT_DECLUTTER),
       aestheticWarp: num(s.applied.aestheticWarp, 0, 1, DEFAULT_AESTHETIC),
       aestheticOn: s.applied.aestheticOn === true,
+      cropAngle: num(s.applied.cropAngle, -360, 360, mapBearing),
       cropAspectW: num(s.applied.cropAspectW, 1, 100, DEFAULT_CROP_ASPECT_W),
       cropAspectH: num(s.applied.cropAspectH, 1, 100, DEFAULT_CROP_ASPECT_H),
       cropBbox: (Array.isArray(s.applied.cropBbox) && s.applied.cropBbox.length === 4 && s.applied.cropBbox.every((v) => Number.isFinite(v)))
@@ -1523,6 +1542,7 @@ export function SchematicPanel() {
       setDeclutterWarp(clampedApplied.declutterWarp);
       setAestheticWarp(clampedApplied.aestheticWarp);
       setAestheticOn(clampedApplied.aestheticOn);
+      setCropAngle(clampedApplied.cropAngle);
       setCropAspectW(clampedApplied.cropAspectW);
       setCropAspectH(clampedApplied.cropAspectH);
       setCropBbox(clampedApplied.cropBbox);
@@ -1565,19 +1585,23 @@ export function SchematicPanel() {
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
       aestheticOn: DEFAULT_AESTHETIC_ON,
+      cropAngle: mapBearing,
       cropAspectW: DEFAULT_CROP_ASPECT_W,
       cropAspectH: DEFAULT_CROP_ASPECT_H,
       cropBbox: null as [number, number, number, number] | null,
       stationSplit: DEFAULT_STATION_SPLIT,
     };
     const dark = api.ui.getResolvedTheme() === 'dark';
+    // Rotated exactly as buildInput rotates it: the fingerprint reads the ROTATED
+    // coordinates, so comparing against unrotated ones could never match for a map
+    // that is turned at all.
     const liveFp = fp
-      ? fingerprintInputs({
+      ? fingerprintInputs(rotateSchematicInput({
           routes: api.gameState.getRoutes(),
           tracks: api.gameState.getTracks(),
           stations: api.gameState.getStations(),
           stationGroups: resolveStationGroupsFromGameState(api.gameState),
-          geography: geographyRef.current,
+          geography: geographyRef.current ?? undefined,
           options: {
             padding: MAP_MARGIN,
             warpAlpha: (ap.geoWarpOn ?? DEFAULT_GEOWARP_ON) ? warpAlphaFromPos(ap.warpPos) : 0,
@@ -1593,7 +1617,7 @@ export function SchematicPanel() {
             dark,
             theme: { lineWidth: ap.lineWidth },
           },
-        } as never).fp
+        }, ap.cropAngle ?? mapBearing) as never).fp
       : null;
     // Adoption additionally requires the PRE'S OWN provenance stamp to match:
     // bundle.fp alone proved forgeable, since a save can pair a stale pre with a
@@ -1811,7 +1835,9 @@ export function SchematicPanel() {
       // the display to the scene bounds so they don't show (the SVG uses viewBox).
       // Not while editing — the full map is shown and must not be clipped.
       clipToBounds: !editing && pre != null && typeof pre !== 'string' && !!pre.detailCrop,
-      cropEdit: editing && cropBoxRef.current ? { box: cropBoxRef.current } : undefined,
+      cropEdit: editing && cropBoxRef.current
+        ? { box: cropBoxRef.current, angle: cropTiltRef.current, tilt: cropTiltAt(cropBoxRef.current, cropTiltRef.current, view.scale) }
+        : undefined,
     });
   }, []);
 
@@ -1896,6 +1922,15 @@ export function SchematicPanel() {
       : { x: 0, y: 0, w: scene.width || GEO_SIZE, h: scene.height || GEO_SIZE };
     fullSceneFpRef.current = fp;
   };
+  // The tilt grip: diagonally off the box's top-right corner, clear of the four
+  // resize handles, at a constant distance on screen.
+  const cropTiltAt = (b: Box, tilt: number, scale: number): [number, number] => {
+    const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    const off = 22 / Math.max(scale, 1e-6);
+    const lx = (b.x1 - b.x0) / 2 + off, ly = -((b.y1 - b.y0) / 2 + off);
+    const c = Math.cos(tilt), sn = Math.sin(tilt);
+    return [cx + lx * c - ly * sn, cy + lx * sn + ly * c];
+  };
   // Seed the working crop box (full-map content coords): from the stored geographic
   // bbox projected onto the full map, else a centered box at the chosen aspect.
   const initCropBox = () => {
@@ -1932,6 +1967,8 @@ export function SchematicPanel() {
     requestAnimationFrame(() => {
       ensureFullScene();
       initCropBox();
+      cropTiltRef.current = 0; // the box starts level with the map behind it
+      setCropTiltDeg(0);
       cropEditingRef.current = true;
       setCropEditing(true);
       if (fullFrameRef.current) fitBoxRef.current = { ...fullFrameRef.current };
@@ -1942,17 +1979,37 @@ export function SchematicPanel() {
     const pre = fullPreRef.current;
     const b = cropBoxRef.current;
     if (!pre?.unproject || !b) return;
-    const bl = pre.unproject([b.x0, b.y1]);
-    const tr = pre.unproject([b.x1, b.y0]);
-    const bbox: [number, number, number, number] = [bl[0], bl[1], tr[0], tr[1]];
-    const changed = !sameBbox(bbox, applied.cropBbox ?? null);
+    const unproject = pre.unproject;
+    // The map behind the box was rendered at the applied angle; the box may be
+    // turned over it. The frame the box is UPRIGHT in is that much further round,
+    // so committing a tilt means committing a new angle and re-expressing the box
+    // in its frame. Without a tilt this is the plain two-corner unproject.
+    const shown = applied.cropAngle ?? mapBearing;
+    const tilt = cropTiltRef.current;
+    const frame = tilt ? rotationFrameOf({ ...(geography ? { geography } : {}), stations: [] }) : null;
+    const angle = frame ? shown + (tilt * 180) / Math.PI : shown;
+    let bbox: [number, number, number, number];
+    if (frame) {
+      const pts = rotatedRectCorners((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.x1 - b.x0) / 2, (b.y1 - b.y0) / 2, tilt)
+        .map((p) => reframeCoord(unproject(p) as Coordinate, frame, shown, angle));
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    } else {
+      const bl = unproject([b.x0, b.y1]);
+      const tr = unproject([b.x1, b.y0]);
+      bbox = [bl[0], bl[1], tr[0], tr[1]];
+    }
+    const changed = !sameBbox(bbox, applied.cropBbox ?? null) || angle !== shown;
+    cropTiltRef.current = 0;
+    setCropTiltDeg(0);
+    setCropAngle(angle);
     // Persist the full map to its dedicated slot NOW (the crop is about to overwrite
     // the main slot), so editing this crop after a reload is instant.
     if (fullSceneFpRef.current && currentCityRef.current) writeFullPre(currentCityRef.current, fullSceneFpRef.current, pre);
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(bbox);
-    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox: bbox, cropAngle: angle, stationSplit, disabledRoutes, simplifiedRoutes });
     setAppliedLandDetail(landDetail);
     if (changed && mode === 'smoothed' && smoothedReady) regenerate();
     else { if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current }; fit(); }
@@ -1961,7 +2018,10 @@ export function SchematicPanel() {
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropFreehand(false);
+    cropTiltRef.current = 0;
+    setCropTiltDeg(0);
     setCropBbox(applied.cropBbox ?? null);
+    setCropAngle(applied.cropAngle ?? mapBearing);
     setMapPageOpen(true);
     setSettingsOpen(false);
     if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current };
@@ -1989,8 +2049,9 @@ export function SchematicPanel() {
     }
     setApplied((a) => ({ ...a, cropBbox: null })); // memo dep change → re-run
   };
-  // The crop bbox is stored in the rotated-geo frame, so a map-bearing change
-  // invalidates it; drop the crop (the empty-core guard also protects against a
+  // The crop bbox is stored in the rotated frame, so a change of CITY invalidates
+  // both it and the orientation it was drawn in; drop the crop and return to the
+  // new city's own bearing (the empty-core guard also protects against a
   // now-degenerate box). Skips the initial mount.
   const prevBearingRef = useRef(mapBearing);
   useEffect(() => {
@@ -1998,14 +2059,49 @@ export function SchematicPanel() {
     prevBearingRef.current = mapBearing;
     setCropEditing(false);
     setCropBbox(null);
-    setApplied((a) => (a.cropBbox != null ? { ...a, cropBbox: null } : a));
+    setCropAngle(mapBearing);
+    setApplied((a) => (a.cropBbox != null || a.cropAngle !== mapBearing ? { ...a, cropBbox: null, cropAngle: mapBearing } : a));
   }, [mapBearing]);
+
+  // The largest upright rectangle that fits inside the region once it is turned
+  // to `angleDeg`, in that frame's coordinates. The harvest rect lands as a
+  // diamond when the map is rotated, so this is the frame that holds no
+  // data-void corners.
+  const autoFrame = useCallback((angleDeg: number): [number, number, number, number] | null => {
+    const g = geography;
+    if (!g?.bbox) return null;
+    const frame = rotationFrameOf({ geography: g, stations: [] });
+    if (!frame) return null;
+    const [b0, b1, b2, b3] = g.bbox;
+    const hull = ([[b0, b1], [b2, b1], [b2, b3], [b0, b3]] as Coordinate[])
+      .map((c) => reframeCoord(c, frame, 0, angleDeg));
+    // Square, matching the uncropped canvas: trimming the void is the only thing
+    // this is meant to change. The aspect stays editable in the crop editor.
+    return largestInscribedRect(hull, 1, frame.k);
+  }, [geography]);
+
+  // A city with a bearing opens framed to its own grain: without this its map is
+  // fitted to the rotated diamond's extremes, which spends a large share of the
+  // canvas on the empty corners and squeezes the network into the middle. Runs
+  // once, and only when nothing was restored to override it.
+  const autoFramedRef = useRef(false);
+  useEffect(() => {
+    if (autoFramedRef.current || !mapBearing || !geography) return;
+    if (rapp?.cropBbox != null || applied.cropBbox != null) { autoFramedRef.current = true; return; }
+    const box = autoFrame(applied.cropAngle ?? mapBearing);
+    if (!box) return;
+    autoFramedRef.current = true;
+    setCropBbox(box);
+    setCropAspectW(1);
+    setCropAspectH(1);
+    setApplied((a) => ({ ...a, cropBbox: box, cropAspectW: 1, cropAspectH: 1 }));
+  }, [geography, mapBearing, autoFrame, applied.cropBbox, applied.cropAngle, rapp]);
 
   // Commit the staged appearance (including the hidden-route set) to `applied`, which
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
   // the Routes overlay so both surfaces fire the identical action.
   const saveAppearance = () => {
-    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, stationSplit, disabledRoutes, simplifiedRoutes });
+    setApplied({ lineWidth, stationRadius, warpPos, geoWarpOn, linePos, boxWarpPos, boxFrac, gridRef, lineScale, declutterWarp, aestheticWarp, aestheticOn, cropAspectW, cropAspectH, cropBbox, cropAngle, stationSplit, disabledRoutes, simplifiedRoutes });
     setAppliedLandDetail(landDetail);
     // Only a layout-baking change needs the octi re-run; a simplified-route change
     // alone repaints from the cached layout.
@@ -2032,6 +2128,7 @@ export function SchematicPanel() {
     setDeclutterWarp(DEFAULT_DECLUTTER);
     setAestheticWarp(DEFAULT_AESTHETIC);
     setAestheticOn(DEFAULT_AESTHETIC_ON);
+    setCropAngle(mapBearing);
     setCropAspectW(DEFAULT_CROP_ASPECT_W);
     setCropAspectH(DEFAULT_CROP_ASPECT_H);
     setCropBbox(null);
@@ -2054,6 +2151,7 @@ export function SchematicPanel() {
       declutterWarp: DEFAULT_DECLUTTER,
       aestheticWarp: DEFAULT_AESTHETIC,
       aestheticOn: DEFAULT_AESTHETIC_ON,
+      cropAngle: mapBearing,
       cropAspectW: DEFAULT_CROP_ASPECT_W,
       cropAspectH: DEFAULT_CROP_ASPECT_H,
       cropBbox: null,
@@ -2295,15 +2393,31 @@ export function SchematicPanel() {
       const view = viewRef.current;
       if (c && view) {
         const b = cropBoxRef.current;
+        const tilt = cropTiltRef.current;
         const tol = 12 / view.scale;
-        const near = (hx: number, hy: number) => Math.abs(c.x - hx) <= tol && Math.abs(c.y - hy) <= tol;
-        let h: 'move' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1' | null = null;
-        if (near(b.x0, b.y0)) h = 'x0y0';
+        // The grip is tested in world coords; the box's own handles are tested in
+        // its untilted frame, so a turned box grabs by its own corners.
+        const g = cropTiltAt(b, tilt, view.scale);
+        const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+        let lx = c.x, ly = c.y;
+        if (tilt) {
+          const ct = Math.cos(-tilt), st = Math.sin(-tilt);
+          const dx = c.x - cx, dy = c.y - cy;
+          lx = cx + dx * ct - dy * st;
+          ly = cy + dx * st + dy * ct;
+        }
+        const near = (hx: number, hy: number) => Math.abs(lx - hx) <= tol && Math.abs(ly - hy) <= tol;
+        let h: 'move' | 'tilt' | 'x0y0' | 'x1y0' | 'x0y1' | 'x1y1' | null = null;
+        if (Math.abs(c.x - g[0]) <= 14 / view.scale && Math.abs(c.y - g[1]) <= 14 / view.scale) h = 'tilt';
+        else if (near(b.x0, b.y0)) h = 'x0y0';
         else if (near(b.x1, b.y0)) h = 'x1y0';
         else if (near(b.x0, b.y1)) h = 'x0y1';
         else if (near(b.x1, b.y1)) h = 'x1y1';
-        else if (c.x >= b.x0 && c.x <= b.x1 && c.y >= b.y0 && c.y <= b.y1) h = 'move';
-        if (h) { cropDragRef.current = { h, box0: { ...b }, sx: c.x, sy: c.y }; return; }
+        else if (lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1) h = 'move';
+        if (h) {
+          cropDragRef.current = { h, box0: { ...b }, sx: c.x, sy: c.y, tilt0: tilt, a0: Math.atan2(c.y - cy, c.x - cx) };
+          return;
+        }
       }
       setDragging(true);
       return;
@@ -2324,14 +2438,46 @@ export function SchematicPanel() {
       if (!c) return;
       const d = cropDragRef.current;
       const fr = fullFrameRef.current ?? { x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE };
-      const FX0 = fr.x, FY0 = fr.y, FX1 = fr.x + fr.w, FY1 = fr.y + fr.h;
-      const dx = c.x - d.sx, dy = c.y - d.sy;
+      const tilt = cropTiltRef.current;
+      // A turned box legitimately reaches past the frame's own extent, so it is
+      // held by its centre instead of by its edges.
+      const loose = tilt !== 0;
+      const FX0 = loose ? -Infinity : fr.x, FY0 = loose ? -Infinity : fr.y;
+      const FX1 = loose ? Infinity : fr.x + fr.w, FY1 = loose ? Infinity : fr.y + fr.h;
+      // Resizing runs in the box's own frame, so a turned box grows along its own
+      // edges rather than along the screen axes.
+      let dx = c.x - d.sx, dy = c.y - d.sy;
+      if (tilt && d.h !== 'move' && d.h !== 'tilt') {
+        const ct = Math.cos(-tilt), st = Math.sin(-tilt);
+        const ux = dx * ct - dy * st, uy = dx * st + dy * ct;
+        dx = ux; dy = uy;
+      }
       const MIN = 40;
+      if (d.h === 'tilt') {
+        const cx = (d.box0.x0 + d.box0.x1) / 2, cy = (d.box0.y0 + d.box0.y1) / 2;
+        const a = Math.atan2(c.y - cy, c.x - cx);
+        const shown = applied.cropAngle ?? mapBearing;
+        // Snap the map's RESULTING orientation, so both true north and the city's
+        // own bearing are easy to land on exactly.
+        const raw = ((d.tilt0 ?? 0) + (a - (d.a0 ?? a))) * (180 / Math.PI);
+        const deg = snapAngle(shown + raw, [mapBearing]) - shown;
+        cropTiltRef.current = (deg * Math.PI) / 180;
+        setCropTiltDeg(deg);
+        scheduleDraw(false);
+        return;
+      }
       if (d.h === 'move') {
         const w = d.box0.x1 - d.box0.x0, h = d.box0.y1 - d.box0.y0;
-        let x0 = Math.max(FX0, Math.min(d.box0.x0 + dx, FX1 - w));
-        let y0 = Math.max(FY0, Math.min(d.box0.y0 + dy, FY1 - h));
-        cropBoxRef.current = { x0, y0, x1: x0 + w, y1: y0 + h };
+        if (loose) {
+          // Hold the CENTRE inside the frame; the corners may hang over.
+          const cx = Math.max(fr.x, Math.min((d.box0.x0 + d.box0.x1) / 2 + dx, fr.x + fr.w));
+          const cy = Math.max(fr.y, Math.min((d.box0.y0 + d.box0.y1) / 2 + dy, fr.y + fr.h));
+          cropBoxRef.current = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+        } else {
+          const x0 = Math.max(FX0, Math.min(d.box0.x0 + dx, FX1 - w));
+          const y0 = Math.max(FY0, Math.min(d.box0.y0 + dy, FY1 - h));
+          cropBoxRef.current = { x0, y0, x1: x0 + w, y1: y0 + h };
+        }
       } else {
         const xEdge = d.h.startsWith('x0') ? 'x0' : 'x1';
         const yEdge = d.h.endsWith('y0') ? 'y0' : 'y1';
@@ -2339,10 +2485,25 @@ export function SchematicPanel() {
         const anchorY = yEdge === 'y0' ? d.box0.y1 : d.box0.y0;
         const desX = (xEdge === 'x0' ? d.box0.x0 : d.box0.x1) + dx;
         const desY = (yEdge === 'y0' ? d.box0.y0 : d.box0.y1) + dy;
+        // A turned box spins about its own centre, so resizing it moves that
+        // centre and would drag the grabbed corner out from under the cursor.
+        // Slide the result back so the anchored corner holds still on screen.
+        const commit = (nb: Box) => {
+          if (!tilt) { cropBoxRef.current = nb; return; }
+          const ct = Math.cos(tilt), st = Math.sin(tilt);
+          const at = (bx: Box): [number, number] => {
+            const cx = (bx.x0 + bx.x1) / 2, cy = (bx.y0 + bx.y1) / 2;
+            const px = anchorX - cx, py = anchorY - cy;
+            return [cx + px * ct - py * st, cy + px * st + py * ct];
+          };
+          const bef = at(d.box0), aft = at(nb);
+          const sx = bef[0] - aft[0], sy = bef[1] - aft[1];
+          cropBoxRef.current = { x0: nb.x0 + sx, y0: nb.y0 + sy, x1: nb.x1 + sx, y1: nb.y1 + sy };
+        };
         if (cropFreehandRef.current) {
           const nx0 = Math.max(FX0, Math.min(anchorX, desX)), nx1 = Math.min(FX1, Math.max(anchorX, desX));
           const ny0 = Math.max(FY0, Math.min(anchorY, desY)), ny1 = Math.min(FY1, Math.max(anchorY, desY));
-          if (nx1 - nx0 >= MIN && ny1 - ny0 >= MIN) cropBoxRef.current = { x0: nx0, y0: ny0, x1: nx1, y1: ny1 };
+          if (nx1 - nx0 >= MIN && ny1 - ny0 >= MIN) commit({ x0: nx0, y0: ny0, x1: nx1, y1: ny1 });
         } else {
           const A = Math.max(1e-3, (cropAspectW || 1) / (cropAspectH || 1));
           const sgnX = xEdge === 'x0' ? -1 : 1, sgnY = yEdge === 'y0' ? -1 : 1;
@@ -2352,7 +2513,7 @@ export function SchematicPanel() {
           w = Math.max(MIN, Math.min(w, maxWx, maxWy));
           const hh = w / A;
           const cornerX = anchorX + sgnX * w, cornerY = anchorY + sgnY * hh;
-          cropBoxRef.current = { x0: Math.min(anchorX, cornerX), y0: Math.min(anchorY, cornerY), x1: Math.max(anchorX, cornerX), y1: Math.max(anchorY, cornerY) };
+          commit({ x0: Math.min(anchorX, cornerX), y0: Math.min(anchorY, cornerY), x1: Math.max(anchorX, cornerX), y1: Math.max(anchorY, cornerY) });
         }
       }
       scheduleDraw(false);
@@ -3072,6 +3233,12 @@ export function SchematicPanel() {
               <input type="checkbox" checked={cropFreehand} onChange={(e) => setCropFreehand(e.target.checked)} style={{ cursor: 'pointer' }} />
               Freehand
             </label>
+            <button
+              onClick={() => { cropTiltRef.current = 0; setCropTiltDeg(0); scheduleDraw(false); }}
+              disabled={cropTiltDeg === 0}
+              title="Level the crop box"
+              style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 6, cursor: cropTiltDeg === 0 ? 'default' : 'pointer', background: 'rgba(20,20,24,0.9)', color: cropTiltDeg === 0 ? 'rgba(255,255,255,0.45)' : '#fff', border: '1px solid rgba(255,255,255,0.3)', boxShadow: '0 1px 4px rgba(0,0,0,0.5)', minWidth: 62 }}
+            >{(Math.round(((applied.cropAngle ?? mapBearing) + cropTiltDeg) * 10) / 10)}°</button>
           </div>
         )}
         {mode === 'smoothed' && !smoothedReady && !generating && (
