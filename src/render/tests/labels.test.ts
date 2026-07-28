@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { boxesOverlap, boxGap, boxSegGap, bundleOrder, encroachment, estimateTextWidth, labelAnchor, overlapFraction, placeLabels, renderLabel, segmentIntersectsBox, wrapLabel, type Segment } from '../labels';
+import { LABEL_FONT_SIZE } from '../constants';
 import { lineGraph } from '../layout/tests/_fixtures';
 import type { Pixel, StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
@@ -111,6 +112,36 @@ test('placeLabels assigns a placement per station and avoids label overlap', () 
   const placements = placeLabels(graph, nodePx, stops, []);
   assert.equal(placements.size, 2);
   assert.ok(placements.has('n0') && placements.has('n1'));
+});
+
+test('a label steers clear of a design glyph, which no mark reveals', () => {
+  // A route glyph hangs off the end of a line, well away from the stop it belongs
+  // to, so nothing about the marks says it is there. Told about it, the packer must
+  // put the label somewhere else.
+  const graph = lineGraph([[0, 0], [200, 0]]);
+  const nodePx = new Map<string, Pixel>([['n0', [0, 0]], ['n1', [200, 0]]]);
+  const stops = new Map<string, StopMark[]>([
+    ['n0', [{ lineId: 'L1', color: '#f00', pos: [0, 0] }]],
+    ['n1', [{ lineId: 'L1', color: '#f00', pos: [200, 0] }]],
+  ]);
+  const free = placeLabels(graph, nodePx, stops, []).get('n0')!;
+  // A glyph sitting exactly where the label went when nothing was in the way.
+  const w = estimateTextWidth('n0');
+  const glyph = { x: free.x, y: free.y - LABEL_FONT_SIZE, w, h: LABEL_FONT_SIZE };
+  const moved = placeLabels(graph, nodePx, stops, [], [glyph]).get('n0')!;
+  assert.ok(moved.x !== free.x || moved.y !== free.y, 'the label stayed on top of the glyph');
+});
+
+test('no glyphs given leaves placement exactly as it was', () => {
+  const graph = lineGraph([[0, 0], [200, 0]]);
+  const nodePx = new Map<string, Pixel>([['n0', [0, 0]], ['n1', [200, 0]]]);
+  const stops = new Map<string, StopMark[]>([
+    ['n0', [{ lineId: 'L1', color: '#f00', pos: [0, 0] }]],
+    ['n1', [{ lineId: 'L1', color: '#f00', pos: [200, 0] }]],
+  ]);
+  const a = placeLabels(graph, nodePx, stops, []);
+  const b = placeLabels(graph, nodePx, stops, [], undefined);
+  for (const [id, p] of a) assert.deepEqual(b.get(id), p, id);
 });
 
 const ANGLES = new Set([0, 45, -45, -90]);

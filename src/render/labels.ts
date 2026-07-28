@@ -284,6 +284,10 @@ export function placeLabels(
   nodePx: Map<string, Pixel>,
   stopsByNode: Map<string, StopMark[]>,
   segments: Segment[],
+  /** Extra chrome a label must treat as it treats a station marker: ink the design
+   *  puts on the map beyond the marks themselves, such as the route glyph hung off
+   *  a line end. Design-dependent, so it is passed in rather than derived here. */
+  glyphs?: readonly Box[],
 ): Map<string, Placement> {
   const result = new Map<string, Placement>();
   const placed: Footprint[] = [];
@@ -340,6 +344,10 @@ export function placeLabels(
       });
     }
   }
+  // A design's own glyphs are station ink too, and a label must clear them the same
+  // way. They are not derivable from the marks: a route glyph hangs off the end of
+  // a line, well away from the stop it belongs to.
+  if (glyphs) for (const b of glyphs) stationBoxes.push(b);
 
   const nodesWithStops = [...graph.nodes.values()].filter((n) => stopsByNode.has(n.id));
   // Bundle-walk order so a station's on-bundle neighbour is placed first (the side
