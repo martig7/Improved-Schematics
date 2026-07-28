@@ -304,3 +304,37 @@ test('mapCache: on quota it evicts other cities and retries', () => {
   assert.equal(readCachedPre('new', 'g', capped), 'NEW');
   assert.equal(readCachedPre('old', 'f', capped), null, 'old city evicted');
 });
+
+// A cropped city holds TWO layouts: the map it shows and the upright one it is
+// edited on. The second write is the one that overflows, and losing it silently
+// means every crop edit rebuilds the whole layout from scratch.
+test('mapCache: the full-map slot evicts other cities rather than giving up', () => {
+  const m = new Map<string, string>();
+  const cap = 4;
+  const capped: KVStore = {
+    getItem: (k) => (m.has(k) ? m.get(k)! : null),
+    setItem: (k, v) => { if (!m.has(k) && m.size >= cap) throw new Error('quota'); m.set(k, v); },
+    removeItem: (k) => void m.delete(k),
+    key: (i) => [...m.keys()][i] ?? null,
+    get length() { return m.size; },
+  };
+  writeCachedPre('chi', 'f', 'C', capped);          // chi fp+pre = 2
+  writeCachedPre('nyc', 'g', 'N', capped);          // nyc fp+pre = 4 (cap)
+  assert.equal(writeFullPre('nyc', 'h', 'U', capped), true, 'makes room and lands');
+  assert.equal(readFullPre('nyc', 'h', capped), 'U');
+  assert.equal(readCachedPre('nyc', 'g', capped), 'N', "the city's own map survives");
+  assert.equal(readCachedPre('chi', 'f', capped), null, 'other city evicted');
+});
+
+test('mapCache: a full-map slot that cannot fit leaves nothing half-written', () => {
+  const m = new Map<string, string>();
+  const capped: KVStore = {
+    getItem: (k) => (m.has(k) ? m.get(k)! : null),
+    setItem: () => { throw new Error('quota'); },
+    removeItem: (k) => void m.delete(k),
+    key: (i) => [...m.keys()][i] ?? null,
+    get length() { return m.size; },
+  };
+  assert.equal(writeFullPre('nyc', 'h', 'U', capped), false);
+  assert.equal(readFullPre('nyc', 'h', capped), null, 'no partial entry readable');
+});

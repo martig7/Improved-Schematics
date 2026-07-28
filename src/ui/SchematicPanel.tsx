@@ -670,6 +670,8 @@ export function SchematicPanel() {
   // opens on the Generate Map button (nothing is auto-restored).
   const [smoothedReady, setSmoothedReady] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // Building the upright crop backdrop, which blocks like a Generate does.
+  const [cropPrep, setCropPrep] = useState(false);
   // Whether the pending generate will reuse the fingerprinted layout cache (vs run
   // octi) — peeked cheaply when Generate is clicked, shown under the spinner.
   const [cacheHit, setCacheHit] = useState(false);
@@ -1907,16 +1909,21 @@ export function SchematicPanel() {
   // turned over it, so this one layout serves every angle: turning the box cannot
   // invalidate the backdrop and so cannot trigger a re-run. A map with a bearing
   // therefore keeps two layouts, its own oriented one and this upright one.
-  const ensureFullScene = () => {
+  const ensureFullScene = (): boolean => {
     const input = buildInput(0);
     const fp = fingerprintInputs(input as never).fp;
-    if (fullSceneFpRef.current === fp && fullSceneRef.current && fullPreRef.current) return;
+    if (fullSceneFpRef.current === fp && fullSceneRef.current && fullPreRef.current) return true;
     const city = currentCityRef.current || '';
     // Prefer the dedicated full-map slot, then the main slot (if it currently holds
     // the uncropped map), and only compute on a true miss.
     const cached = city ? (readFullPre(city, fp) ?? readCachedPre(city, fp)) : null;
     const pre = cached ?? precomputeSmoothedSchematic(input);
-    if (typeof pre === 'string') return;
+    if (typeof pre === 'string') {
+      // The upright layout could not be built, so there is nothing to draw the box
+      // on. Say why rather than opening the editor over a stale map.
+      console.warn('[ImprovedSchematics] could not build the upright map for crop editing: ' + pre);
+      return false;
+    }
     // Persist the full map in its OWN slot so a later session that loads a crop of
     // this city can edit it instantly (the main slot holds the crop, not this).
     if (city) writeFullPre(city, fp, pre);
@@ -1929,6 +1936,19 @@ export function SchematicPanel() {
       ? { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: scene.frame.h }
       : { x: 0, y: 0, w: scene.width || GEO_SIZE, h: scene.height || GEO_SIZE };
     fullSceneFpRef.current = fp;
+    return true;
+  };
+  /** Whether the upright backdrop is already in hand, so entering the crop editor
+   *  is an instant swap rather than a full layout run. */
+  const fullSceneReady = (): boolean => {
+    try {
+      const fp = fingerprintInputs(buildInput(0) as never).fp;
+      if (fullSceneFpRef.current === fp && fullSceneRef.current && fullPreRef.current) return true;
+      const city = currentCityRef.current || '';
+      return !!city && (peekFullPre(city, fp) || peekCache(city, fp));
+    } catch {
+      return false;
+    }
   };
   // The tilt grip: diagonally off the box's top-right corner, clear of the four
   // resize handles, at a constant distance on screen.
@@ -1990,15 +2010,28 @@ export function SchematicPanel() {
     // over it).
     setMapPageOpen(false);
     setSettingsOpen(false);
-    requestAnimationFrame(() => {
-      ensureFullScene();
+    const enter = () => {
+      const ok = ensureFullScene();
+      setCropPrep(false);
+      if (!ok) {
+        // No backdrop: stay on the map and put the settings back, rather than
+        // opening an editor whose box would sit over the wrong picture.
+        setMapPageOpen(true);
+        return;
+      }
       initCropBox(); // also seeds the tilt from the applied angle
       cropDirtyRef.current = false;
       cropEditingRef.current = true;
       setCropEditing(true);
       if (fullFrameRef.current) fitBoxRef.current = { ...fullFrameRef.current };
       fit();
-    });
+    };
+    // A city that has not been cropped this session has no upright layout cached,
+    // and building one runs the whole pipeline synchronously. Paint the spinner
+    // and let it composite before the thread blocks, the same way Generate does.
+    if (fullSceneReady()) { requestAnimationFrame(enter); return; }
+    setCropPrep(true);
+    requestAnimationFrame(() => requestAnimationFrame(enter));
   };
   const applyCrop = () => {
     const pre = fullPreRef.current;
@@ -3334,7 +3367,7 @@ export function SchematicPanel() {
             </button>
           </div>
         )}
-        {mode === 'smoothed' && generating && (
+        {mode === 'smoothed' && (generating || cropPrep) && (
           <div
             style={{
               position: 'absolute',
@@ -3357,7 +3390,7 @@ export function SchematicPanel() {
                 willChange: 'transform',
               }}
             />
-            <span style={{ color: '#888', fontSize: 12 }}>{cacheHit ? 'Cache used' : 'This may take a while'}</span>
+            <span style={{ color: '#888', fontSize: 12 }}>{cropPrep ? 'Preparing crop view' : cacheHit ? 'Cache used' : 'This may take a while'}</span>
             <style>{`@keyframes imp-spin{to{transform:rotate(360deg)}}`}</style>
           </div>
         )}

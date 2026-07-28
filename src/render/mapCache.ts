@@ -224,14 +224,33 @@ export function readFullPre(city: string, fp: string, store: KVStore | null = de
 export function writeFullPre(city: string, fp: string, pre: SmoothedPrecomputed | string, store: KVStore | null = defaultStore()): boolean {
   if (!store || !city) return false;
   if (typeof pre !== 'string' && pre.builtFp !== fp) return false;
-  try {
-    store.setItem(fullPreKey(city), serializePre(pre));
+  const preStr = serializePre(pre);
+  const write = (): boolean => {
+    store.setItem(fullPreKey(city), preStr);
     store.setItem(fullFpKey(city), stamp(fp));
     return true;
+  };
+  try {
+    return write();
   } catch {
-    // Quota: drop the full-map slot rather than the main layout; the edit just re-computes.
-    try { store.removeItem(fullPreKey(city)); store.removeItem(fullFpKey(city)); } catch { /* ignore */ }
-    return false;
+    // Quota: a city holds TWO layouts once it is cropped (the map it shows and the
+    // upright one it is edited on), so this is the write that overflows first.
+    // Evict every OTHER city, keeping this one's main layout, and retry.
+    try {
+      const keep = new Set([fpKey(city), preKey(city), selKey(city), setKey(city), fullFpKey(city), fullPreKey(city)]);
+      for (let i = store.length - 1; i >= 0; i--) {
+        const k = store.key(i);
+        if (k && k.startsWith(KEY) && !keep.has(k)) store.removeItem(k);
+      }
+      return write();
+    } catch {
+      // Still no room. Drop a half-written entry so a partial pre can't be read
+      // back, and say so: silently losing this slot means every crop edit of this
+      // city rebuilds the whole layout, which is worth knowing about.
+      try { store.removeItem(fullPreKey(city)); store.removeItem(fullFpKey(city)); } catch { /* ignore */ }
+      console.warn('[ImprovedSchematics] no room to cache the upright map for "' + city + '" (' + Math.round(preStr.length / 1024) + ' kB); crop editing will rebuild it each time');
+      return false;
+    }
   }
 }
 
