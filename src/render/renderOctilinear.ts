@@ -392,6 +392,14 @@ export interface RenderRibbonsArgs {
   /** Station design id (marker style); resolved via getStationDesign, unknown →
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
+  /** Whether a station group may be broken into per-platform placement units.
+   *  Mirrors the "Split station groups" toggle. The seating ladder's last-resort
+   *  per-bundle split answers to it as well as the graph builder does, because a
+   *  unit cut loose from its group is seated on its own and can land on a
+   *  NEIGHBOURING station, which eats that station's marker and steals its
+   *  terminus. The relaxed final seat below the split still guarantees a seat.
+   *  Absent = allowed. */
+  stationSplit?: boolean;
   /** Per-route simplified display (route id -> style id). Resolved to per-LINE
    *  styles in paintRibbons. Draw-time only; never changes the layout. */
   simplifiedRoutes?: SimplifiedRoutes;
@@ -2597,7 +2605,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // (one small row-capsule per platform). Only reached AFTER every solve
           // attempt failed, so any station that seats today is untouched.
           const clusters = groups;
-          if (clusters.length >= 2) {
+          if (clusters.length >= 2 && args.stationSplit !== false) {
             const anchor = nodePx.get(s.nodeId) ?? s.marks[0].pos;
             let keep = 0;
             let keepD = Infinity;
