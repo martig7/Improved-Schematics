@@ -22,7 +22,7 @@ import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0, onDrawScale } from './cons
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
-import { assembleDByLine } from './assemblePath';
+import { assembleDByLine, laneExtent } from './assemblePath';
 import { computePaintGroups } from './paintLayers';
 import { findParallelPairs, applyJointSeating } from './layout/corridorSep';
 import { detectChains } from './chains';
@@ -88,6 +88,8 @@ export function buildDByLine(
 ): Map<string, string[]> {
   const dByLine = new Map<string, string[]>();
   const push = (lineId: string, poly: Pixel[]) => {
+    // A lane with no extent has no ink to draw; see assemblePath's emitPiece.
+    if (poly.length < 2 || laneExtent(poly) < 1e-6) return;
     let d = dByLine.get(lineId);
     if (!d) dByLine.set(lineId, (d = []));
     if (segmentsOut) for (let k = 1; k < poly.length; k++) segmentsOut.push({ p1: poly[k - 1], p2: poly[k] });
@@ -2286,6 +2288,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       }
       return best;
     };
+    /** Whether a lane is actually DRAWN at this key. A zero-extent entry paints
+     *  nothing, so counting it as an incident lane would let a through node read
+     *  as a line end and take a terminus mark it should not have. */
+    const drawnLaneAt = (key: string): boolean => {
+      const poly = segPath.get(key);
+      return !!poly && poly.length >= 2 && laneExtent(poly) >= 1e-6;
+    };
     /** Trim arc `d` off a lane's end at `nodeId` (terminating lines follow
      *  their slid marker instead of poking past it). */
     const trimLaneAt = (edgeId: string, lineId: string, nodeId: string, d: number) => {
@@ -3836,7 +3845,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         for (const e of layout.edges) {
           if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
           const k = e.id + '|' + mk.lineId;
-          if (segPath.has(k)) { nInc++; incEdge = e.id; }
+          if (drawnLaneAt(k)) { nInc++; incEdge = e.id; }
           // A jog-sliver-SUPPRESSED incident lane still carries the line
           // onward (the connector pass bridges across it), so the line does
           // NOT terminate here. Counting only drawn lanes would misread a
@@ -3949,7 +3958,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           for (const e of layout.edges) {
             if (e.from !== mk.flagNode && e.to !== mk.flagNode) continue;
             const k = e.id + '|' + mk.lineId;
-            if (segPath.has(k)) { nInc++; incEdge = e.id; }
+            if (drawnLaneAt(k)) { nInc++; incEdge = e.id; }
             else if (suppressed.has(k)) nInc++;
           }
           if (nInc !== 1 || !incEdge) continue; // only termini can be re-stubbed

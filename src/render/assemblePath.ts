@@ -55,6 +55,18 @@ interface Oriented {
  * traversals in sorted line-id order, leftover lanes and unconsumed curves
  * in their maps' insertion order.
  */
+/** Total drawn length of a lane polyline. A lane whose points all coincide has
+ *  no ink, however many vertices it carries. */
+export function laneExtent(pts: readonly Pixel[]): number {
+  let n = 0;
+  for (let k = 1; k < pts.length; k++) {
+    const dx = pts[k][0] - pts[k - 1][0];
+    const dy = pts[k][1] - pts[k - 1][1];
+    n += Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded (hypot is not)
+  }
+  return n;
+}
+
 export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
   const { segPath, joinCurves, filletR, edgeById, orderOf, suppressed, spacing, segmentsOut } = args;
   const dByLine = new Map<string, string[]>();
@@ -87,6 +99,11 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
    *  when the pen already sits on its first vertex; interior corners get
    *  the standard clamped quadratic fillet. */
   const emitPiece = (d: string[], pts: Pixel[], cur: Pixel | null): Pixel => {
+    // A lane with no extent has no ink to draw. Emitting it anyway leaves a
+    // zero-length subpath, which draws nothing but still reads downstream as a
+    // real drawn lane, and a stop counting its incident lanes can then mistake
+    // a through node for a line end.
+    if (pts.length < 2 || laneExtent(pts) < 1e-6) return cur ?? pts[pts.length - 1];
     if (segmentsOut) for (let k = 1; k < pts.length; k++) segmentsOut.push({ p1: pts[k - 1], p2: pts[k] });
     const attached = cur !== null && hyp(cur[0] - pts[0][0], cur[1] - pts[0][1]) < 0.5;
     if (!attached) d.push('M' + fmtPt(pts[0]));
