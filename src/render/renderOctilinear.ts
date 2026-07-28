@@ -1888,6 +1888,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
     const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
       routeEndNodes.get(lineId)?.has(flagNode) ?? false;
+    /** Does a SUPPRESSED incident lane carry this line onward across the node?
+     *  A jog-suppressed sliver is not drawn, but the node connectors bridge its
+     *  neighbours, so the course continues; a stop with one drawn lane and one
+     *  suppressed lane is mid-course, not a line end. Route truth alone cannot
+     *  catch this: a course that STARTS at a through stop (it passes the node
+     *  again later) lists that node as a route end, and with the sibling lane
+     *  suppressed the drawn-lane count reads 1, so a line-end symbol would hang
+     *  its tail on ink that visibly runs on. */
+    const laneCarriesOn = (lineId: string, nodeId: string): boolean => {
+      for (const e of layout.edges) {
+        if (e.from !== nodeId && e.to !== nodeId) continue;
+        if (suppressed.has(e.id + '|' + lineId)) return true;
+      }
+      return false;
+    };
     // Group-keyed markers: ONE bucket per station group at its node, marks
     // gathered from each line's own stop-flag node (per-line flags can sit
     // on diverged corridors — 307 Pl's cyan terminus vs its green column).
@@ -2469,13 +2484,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           mk.axis = (((Math.round((Math.round(Math.atan2(tg[1], tg[0]) * 1e6) / 1e6) / (Math.PI / 4)) % 4) + 4) % 4);
           mk.dir = unitTangent(tg);
           // Terminus: the ROUTE ends at this stop AND its single drawn lane ends
-          // here, so the cap has something to cap. Route truth is what makes it a
-          // line end; the lane count alone would also fire on a mid-route stop
-          // whose sibling lane was suppressed or trimmed (a false two-sided cap in
-          // the middle of a line). A loop has two lanes at every stop, so none of
-          // its stops are termini. Tick markers cap a terminus with a full
-          // (two-sided) tick.
-          mk.terminus = polys.length === 1 && isRouteTerminus(mk.lineId, mk.flagNode);
+          // here AND no suppressed sibling lane carries the line onward, so the
+          // cap has something to cap. Route truth alone is not enough: a course
+          // that starts at a through stop lists it as a route end, and the lane
+          // count alone would also fire on a mid-route stop whose sibling lane
+          // was suppressed or trimmed (a false two-sided cap in the middle of a
+          // line). A loop has two lanes at every stop, so none of its stops are
+          // termini. Tick markers cap a terminus with a full (two-sided) tick.
+          mk.terminus = polys.length === 1 && !laneCarriesOn(mk.lineId, mk.flagNode) && isRouteTerminus(mk.lineId, mk.flagNode);
           // Which side of its bundle the lane sits on, so the one-sided tick
           // prefers the bundle's outer edge instead of striking across co-runners.
           mk.outward = bundleOutward(mk.lineId, mk.flagNode);
@@ -2513,7 +2529,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         // octilinear run-axis per mark, a geometric fact for the rectangle
         // capsule seating; the exact tangent (dir) is kept for tick markers. The
         // guard keeps the first axis a re-queued unit saw.
-        s.marks.forEach((mk, i) => { if (mk.axis === undefined) { mk.axis = markAxis[i]; mk.dir = unitTangent(markTg[i]); mk.terminus = polysByMark[i].length === 1 && isRouteTerminus(mk.lineId, mk.flagNode); } });
+        s.marks.forEach((mk, i) => { if (mk.axis === undefined) { mk.axis = markAxis[i]; mk.dir = unitTangent(markTg[i]); mk.terminus = polysByMark[i].length === 1 && !laneCarriesOn(mk.lineId, mk.flagNode) && isRouteTerminus(mk.lineId, mk.flagNode); } });
         const parent = s.marks.map((_, i) => i);
         const find = (x: number): number =>
           parent[x] === x ? x : (parent[x] = find(parent[x]));
