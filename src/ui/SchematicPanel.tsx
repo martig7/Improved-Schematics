@@ -45,7 +45,7 @@ import { warmGeography } from '../geography/warm';
 import type { GeographyData } from '../geography/types';
 import { modState, PANEL_STORAGE_KEY } from '../state';
 import { rotateSchematicInput, rotationFrameOf, reframeCoord } from '../render/rotateInput';
-import { rotatedRectCorners, snapAngle, largestInscribedRect } from '../render/cropFrame';
+import { rotatedRectCorners, snapAngle } from '../render/cropFrame';
 import type { Coordinate } from '../types/core';
 import { MOD_VERSION } from '../version';
 import { logText, logCount } from '../debugLog';
@@ -2062,40 +2062,6 @@ export function SchematicPanel() {
     setCropAngle(mapBearing);
     setApplied((a) => (a.cropBbox != null || a.cropAngle !== mapBearing ? { ...a, cropBbox: null, cropAngle: mapBearing } : a));
   }, [mapBearing]);
-
-  // The largest upright rectangle that fits inside the region once it is turned
-  // to `angleDeg`, in that frame's coordinates. The harvest rect lands as a
-  // diamond when the map is rotated, so this is the frame that holds no
-  // data-void corners.
-  const autoFrame = useCallback((angleDeg: number): [number, number, number, number] | null => {
-    const g = geography;
-    if (!g?.bbox) return null;
-    const frame = rotationFrameOf({ geography: g, stations: [] });
-    if (!frame) return null;
-    const [b0, b1, b2, b3] = g.bbox;
-    const hull = ([[b0, b1], [b2, b1], [b2, b3], [b0, b3]] as Coordinate[])
-      .map((c) => reframeCoord(c, frame, 0, angleDeg));
-    // Square, matching the uncropped canvas: trimming the void is the only thing
-    // this is meant to change. The aspect stays editable in the crop editor.
-    return largestInscribedRect(hull, 1, frame.k);
-  }, [geography]);
-
-  // A city with a bearing opens framed to its own grain: without this its map is
-  // fitted to the rotated diamond's extremes, which spends a large share of the
-  // canvas on the empty corners and squeezes the network into the middle. Runs
-  // once, and only when nothing was restored to override it.
-  const autoFramedRef = useRef(false);
-  useEffect(() => {
-    if (autoFramedRef.current || !mapBearing || !geography) return;
-    if (rapp?.cropBbox != null || applied.cropBbox != null) { autoFramedRef.current = true; return; }
-    const box = autoFrame(applied.cropAngle ?? mapBearing);
-    if (!box) return;
-    autoFramedRef.current = true;
-    setCropBbox(box);
-    setCropAspectW(1);
-    setCropAspectH(1);
-    setApplied((a) => ({ ...a, cropBbox: box, cropAspectW: 1, cropAspectH: 1 }));
-  }, [geography, mapBearing, autoFrame, applied.cropBbox, applied.cropAngle, rapp]);
 
   // Commit the staged appearance (including the hidden-route set) to `applied`, which
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
