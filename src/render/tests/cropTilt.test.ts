@@ -104,3 +104,32 @@ test('the committed box is UPRIGHT in the angle it commits', () => {
   assert.ok(Math.abs(pts[0][0] - pts[3][0]) * frame.k * SCALE < 1e-6, 'left edge plumb');
   assert.ok(Math.abs(pts[1][0] - pts[2][0]) * frame.k * SCALE < 1e-6, 'right edge plumb');
 });
+
+// Entering the crop editor puts a box stored in ITS OWN angle's frame onto a
+// backdrop drawn at true north, where it reads as a turned rectangle. Applying it
+// untouched has to reproduce the stored box exactly: any drift would mark the
+// crop as changed and re-run the layout every time the editor is merely opened.
+for (const angle of [23, -23, 45, 7.5]) {
+  test(`open and apply at ${angle} deg round-trips the stored crop`, () => {
+    const stored: [number, number, number, number] = [-74.02, 40.66, -73.83, 40.84];
+
+    // initCropBox: carry the corners onto the upright backdrop and measure.
+    const pts = ([[stored[0], stored[1]], [stored[2], stored[1]], [stored[2], stored[3]], [stored[0], stored[3]]] as Coordinate[])
+      .map((c) => project(reframeCoord(c, frame, angle, 0), 0));
+    let cx = 0, cy = 0;
+    for (const p of pts) { cx += p[0] / 4; cy += p[1] / 4; }
+    const side = (a: [number, number], b: [number, number]) =>
+      Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+    const w = (side(pts[0], pts[1]) + side(pts[3], pts[2])) / 2;
+    const h = (side(pts[0], pts[3]) + side(pts[1], pts[2])) / 2;
+    const box = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+
+    // applyCrop, with the tilt the editor seeded and the user left alone.
+    const { angle: got, bbox } = commit(box, 0, (angle * Math.PI) / 180);
+    assert.ok(Math.abs(got - angle) < 1e-9, `angle ${got}`);
+    // Within a metre on the ground, across a box kilometres wide.
+    for (let i = 0; i < 4; i++) {
+      assert.ok(Math.abs(bbox[i] - stored[i]) < 1e-5, `corner ${i}: ${bbox[i]} vs ${stored[i]}`);
+    }
+  });
+}

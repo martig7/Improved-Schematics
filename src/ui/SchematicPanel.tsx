@@ -536,6 +536,9 @@ export function SchematicPanel() {
   // re-running the layout on every drag, so the tilt is previewed as a turned box
   // over an upright map; Apply converts it into the new angle.
   const cropTiltRef = useRef(0);
+  // Whether this edit session actually moved anything. Applying an untouched box
+  // must not perturb the stored crop, or opening the editor would re-run the layout.
+  const cropDirtyRef = useRef(false);
   const [cropTiltDeg, setCropTiltDeg] = useState(0); // same value, for the toolbar readout
   // Cached UNCROPPED ("full map") scene + pre (for geo<->px) + frame + the fp it was
   // built for, so entering crop edit shows the full map INSTANTLY (no octi / spinner).
@@ -901,7 +904,7 @@ export function SchematicPanel() {
   // used by the in-game SchematicMapMenu) via an undocumented method; falls back
   // to trackGroupId grouping if absent. Extracted to a callback so the magnifier
   // inset can build the SAME input to crop + re-simulate a sub-network.
-  const buildInput = useCallback(() => {
+  const buildInput = useCallback((angleDeg?: number) => {
     const dark = mapDark;
     // Drop hidden routes (and their now-orphaned stNodes/stations/tracks) before layout,
     // so the fingerprint and the render both reflect the reduced network.
@@ -945,7 +948,7 @@ export function SchematicPanel() {
         },
         placeColor: mapPalette.place,
       },
-    }, applied.cropAngle ?? mapBearing);
+    }, angleDeg ?? applied.cropAngle ?? mapBearing);
   }, [geography, mode, showStations, showLabels, showNeighborhoods, neighborhoodFont, neighborhoodZoom, neighborhoodPad, applied, mapBearing, mapDark, mapPaletteKey]);
 
   // The CURRENT base input the whole UI operates on: the raw uncropped input, or
@@ -1899,8 +1902,13 @@ export function SchematicPanel() {
   // Build (or reuse) the cached UNCROPPED full-map scene + pre so crop editing shows
   // it INSTANTLY. Prefers the layout cache (fast hit); computes synchronously only on
   // a rare miss (a cropped map opened without its uncropped layout ever cached).
+  //
+  // Always at TRUE NORTH, whatever the crop is angled to. The crop box is drawn
+  // turned over it, so this one layout serves every angle: turning the box cannot
+  // invalidate the backdrop and so cannot trigger a re-run. A map with a bearing
+  // therefore keeps two layouts, its own oriented one and this upright one.
   const ensureFullScene = () => {
-    const input = buildInput();
+    const input = buildInput(0);
     const fp = fingerprintInputs(input as never).fp;
     if (fullSceneFpRef.current === fp && fullSceneRef.current && fullPreRef.current) return;
     const city = currentCityRef.current || '';
@@ -1937,7 +1945,25 @@ export function SchematicPanel() {
     const pre = fullPreRef.current;
     const fr = fullFrameRef.current ?? { x: 0, y: 0, w: GEO_SIZE, h: GEO_SIZE };
     const bbox = applied.cropBbox;
-    if (bbox && pre?.project) {
+    // The backdrop is at true north but the box is upright in ITS OWN angle's
+    // frame, so on this map it reads as a turned rectangle. Carry the four
+    // corners over and measure the box off them, rather than projecting two.
+    const angle = applied.cropAngle ?? mapBearing;
+    cropTiltRef.current = (angle * Math.PI) / 180;
+    setCropTiltDeg(angle);
+    const frame = angle ? rotationFrameOf({ ...(geography ? { geography } : {}), stations: [] }) : null;
+    if (bbox && pre?.project && frame) {
+      const project = pre.project;
+      const pts = ([[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[2], bbox[3]], [bbox[0], bbox[3]]] as Coordinate[])
+        .map((c) => project(reframeCoord(c, frame, angle, 0)));
+      let cx = 0, cy = 0;
+      for (const p of pts) { cx += p[0] / 4; cy += p[1] / 4; }
+      const side = (a: [number, number], b: [number, number]): number =>
+        Math.sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]));
+      const w = (side(pts[0], pts[1]) + side(pts[3], pts[2])) / 2;
+      const h = (side(pts[0], pts[3]) + side(pts[1], pts[2])) / 2;
+      cropBoxRef.current = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+    } else if (bbox && pre?.project) {
       const p0 = pre.project([bbox[0], bbox[1]]);
       const p1 = pre.project([bbox[2], bbox[3]]);
       cropBoxRef.current = { x0: Math.min(p0[0], p1[0]), y0: Math.min(p0[1], p1[1]), x1: Math.max(p0[0], p1[0]), y1: Math.max(p0[1], p1[1]) };
@@ -1966,9 +1992,8 @@ export function SchematicPanel() {
     setSettingsOpen(false);
     requestAnimationFrame(() => {
       ensureFullScene();
-      initCropBox();
-      cropTiltRef.current = 0; // the box starts level with the map behind it
-      setCropTiltDeg(0);
+      initCropBox(); // also seeds the tilt from the applied angle
+      cropDirtyRef.current = false;
       cropEditingRef.current = true;
       setCropEditing(true);
       if (fullFrameRef.current) fitBoxRef.current = { ...fullFrameRef.current };
@@ -1980,11 +2005,26 @@ export function SchematicPanel() {
     const b = cropBoxRef.current;
     if (!pre?.unproject || !b) return;
     const unproject = pre.unproject;
-    // The map behind the box was rendered at the applied angle; the box may be
-    // turned over it. The frame the box is UPRIGHT in is that much further round,
-    // so committing a tilt means committing a new angle and re-expressing the box
-    // in its frame. Without a tilt this is the plain two-corner unproject.
-    const shown = applied.cropAngle ?? mapBearing;
+    // Persist the full map to its dedicated slot NOW (the crop is about to overwrite
+    // the main slot), so editing this crop after a reload is instant.
+    if (fullSceneFpRef.current && currentCityRef.current) writeFullPre(currentCityRef.current, fullSceneFpRef.current, pre);
+    // Untouched: keep the stored crop verbatim rather than re-deriving it. The box
+    // is carried onto an upright backdrop and back through an iterative unproject,
+    // so a round trip lands within a metre but not within the equality tolerance,
+    // and merely opening the editor would otherwise re-run the whole layout.
+    if (!cropDirtyRef.current) {
+      cropTiltRef.current = 0;
+      setCropTiltDeg(0);
+      cropEditingRef.current = false;
+      setCropEditing(false);
+      if (cropFrameRef.current) fitBoxRef.current = { ...cropFrameRef.current };
+      fit();
+      return;
+    }
+    // The map behind the box is always at true north, so the box's own tilt IS
+    // the orientation it is upright in: committing the box commits that angle and
+    // re-expresses the box in its frame. A level box needs no carry at all.
+    const shown = 0;
     const tilt = cropTiltRef.current;
     const frame = tilt ? rotationFrameOf({ ...(geography ? { geography } : {}), stations: [] }) : null;
     const angle = frame ? shown + (tilt * 180) / Math.PI : shown;
@@ -1999,13 +2039,10 @@ export function SchematicPanel() {
       const tr = unproject([b.x1, b.y0]);
       bbox = [bl[0], bl[1], tr[0], tr[1]];
     }
-    const changed = !sameBbox(bbox, applied.cropBbox ?? null) || angle !== shown;
+    const changed = !sameBbox(bbox, applied.cropBbox ?? null) || angle !== (applied.cropAngle ?? mapBearing);
     cropTiltRef.current = 0;
     setCropTiltDeg(0);
     setCropAngle(angle);
-    // Persist the full map to its dedicated slot NOW (the crop is about to overwrite
-    // the main slot), so editing this crop after a reload is instant.
-    if (fullSceneFpRef.current && currentCityRef.current) writeFullPre(currentCityRef.current, fullSceneFpRef.current, pre);
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(bbox);
@@ -2034,11 +2071,12 @@ export function SchematicPanel() {
     cropEditingRef.current = false;
     setCropEditing(false);
     setCropBbox(null);
+    setCropAngle(0); // no crop = the upright full map, the one already cached
     setMapPageOpen(false);
     setSettingsOpen(false);
     if (mode === 'smoothed' && smoothedReady) {
-      // buildInput is crop-free, so this is the uncropped fingerprint.
-      const uncroppedFp = fingerprintInputs(buildInput() as never).fp;
+      // buildInput is crop-free, and 0 is the angle the full map is cached at.
+      const uncroppedFp = fingerprintInputs(buildInput(0) as never).fp;
       const city = currentCityRef.current || '';
       const cached =
         (fullSceneFpRef.current === uncroppedFp && !!fullSceneRef.current) ||
@@ -2047,7 +2085,7 @@ export function SchematicPanel() {
       forceRegenRef.current = false;   // ALLOW the cache — no forced octi
       if (!cached) { setSmoothedReady(false); setGenerating(true); } // spinner only if it must recompute
     }
-    setApplied((a) => ({ ...a, cropBbox: null })); // memo dep change → re-run
+    setApplied((a) => ({ ...a, cropBbox: null, cropAngle: 0 })); // memo dep change → re-run
   };
   // The crop bbox is stored in the rotated frame, so a change of CITY invalidates
   // both it and the orientation it was drawn in; drop the crop and return to the
@@ -2062,6 +2100,55 @@ export function SchematicPanel() {
     setCropAngle(mapBearing);
     setApplied((a) => (a.cropBbox != null || a.cropAngle !== mapBearing ? { ...a, cropBbox: null, cropAngle: mapBearing } : a));
   }, [mapBearing]);
+
+  // The network's own extent in a given orientation, with a small margin. This is
+  // the largest frame that still holds only real content: past it there is no
+  // network to show.
+  const networkFrame = useCallback((angleDeg: number): [number, number, number, number] | null => {
+    const inp = buildInput(angleDeg) as unknown as {
+      stations?: { coords?: Coordinate }[];
+      tracks?: { coords?: Coordinate[] }[];
+    };
+    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+    const see = (c?: Coordinate): void => {
+      if (!c) return;
+      if (c[0] < mnX) mnX = c[0];
+      if (c[0] > mxX) mxX = c[0];
+      if (c[1] < mnY) mnY = c[1];
+      if (c[1] > mxY) mxY = c[1];
+    };
+    for (const s of inp.stations ?? []) see(s.coords);
+    for (const t of inp.tracks ?? []) for (const c of t.coords ?? []) see(c);
+    if (!(mnX < mxX && mnY < mxY)) return null;
+    const mx = (mxX - mnX) * 0.04, my = (mxY - mnY) * 0.04;
+    return [mnX - mx, mnY - my, mxX + mx, mxY + my];
+  }, [buildInput]);
+
+  // A city with a bearing opens already turned to its own grain AND framed to it.
+  // The canvas is fitted to the network, so without the frame the network's own
+  // proportions are letterboxed into a square and the map draws smaller than the
+  // canvas could carry. Runs once, and only when nothing was restored to override
+  // it. The crop is the network's full extent, so nothing meaningful is cut.
+  const autoFramedRef = useRef(false);
+  useEffect(() => {
+    if (autoFramedRef.current || !mapBearing || !geography) return;
+    if (rapp?.cropBbox != null || applied.cropBbox != null) { autoFramedRef.current = true; return; }
+    const angle = applied.cropAngle ?? mapBearing;
+    const box = networkFrame(angle);
+    if (!box) return;
+    autoFramedRef.current = true;
+    const frame = rotationFrameOf({ geography, stations: [] });
+    const r = ((box[2] - box[0]) * (frame?.k ?? 1)) / (box[3] - box[1]);
+    const aw = r >= 1 ? Math.round(r * 10) : 10;
+    const ah = r >= 1 ? 10 : Math.round(10 / r);
+    const g = gcd(aw, ah);
+    const w = Math.max(1, Math.min(100, Math.round(aw / g)));
+    const h = Math.max(1, Math.min(100, Math.round(ah / g)));
+    setCropBbox(box);
+    setCropAspectW(w);
+    setCropAspectH(h);
+    setApplied((a) => ({ ...a, cropBbox: box, cropAspectW: w, cropAspectH: h }));
+  }, [geography, mapBearing, networkFrame, applied.cropBbox, applied.cropAngle, rapp]);
 
   // Commit the staged appearance (including the hidden-route set) to `applied`, which
   // buildInput reads; smoothed rebuilds its layout. Shared by the Settings popover and
@@ -2419,14 +2506,14 @@ export function SchematicPanel() {
         dx = ux; dy = uy;
       }
       const MIN = 40;
+      cropDirtyRef.current = true;
       if (d.h === 'tilt') {
         const cx = (d.box0.x0 + d.box0.x1) / 2, cy = (d.box0.y0 + d.box0.y1) / 2;
         const a = Math.atan2(c.y - cy, c.x - cx);
-        const shown = applied.cropAngle ?? mapBearing;
-        // Snap the map's RESULTING orientation, so both true north and the city's
-        // own bearing are easy to land on exactly.
+        // The backdrop is upright, so the tilt IS the resulting orientation.
+        // Snap it, so both true north and the city's own bearing land exactly.
         const raw = ((d.tilt0 ?? 0) + (a - (d.a0 ?? a))) * (180 / Math.PI);
-        const deg = snapAngle(shown + raw, [mapBearing]) - shown;
+        const deg = snapAngle(raw, [mapBearing]);
         cropTiltRef.current = (deg * Math.PI) / 180;
         setCropTiltDeg(deg);
         scheduleDraw(false);
@@ -3204,7 +3291,7 @@ export function SchematicPanel() {
               disabled={cropTiltDeg === 0}
               title="Level the crop box"
               style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 6, cursor: cropTiltDeg === 0 ? 'default' : 'pointer', background: 'rgba(20,20,24,0.9)', color: cropTiltDeg === 0 ? 'rgba(255,255,255,0.45)' : '#fff', border: '1px solid rgba(255,255,255,0.3)', boxShadow: '0 1px 4px rgba(0,0,0,0.5)', minWidth: 62 }}
-            >{(Math.round(((applied.cropAngle ?? mapBearing) + cropTiltDeg) * 10) / 10)}°</button>
+            >{(Math.round(cropTiltDeg * 10) / 10)}°</button>
           </div>
         )}
         {mode === 'smoothed' && !smoothedReady && !generating && (

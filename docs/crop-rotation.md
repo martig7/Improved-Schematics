@@ -65,32 +65,53 @@ committed bbox select the same ground.
 
 ## Interaction
 
-The crop editor draws over the *cached full map*, which is rendered at the applied
-angle. Re-rendering under the working angle would mean re-running the layout on
-every drag, so instead the box is drawn rotated over an upright map: the tilt is
-previewed as the frame the content will be turned into.
+The crop editor draws over the cached full map, and that backdrop is **always at
+true north**, whatever the crop is angled to. That is what makes the editor free:
+the upright layout has one fingerprint regardless of the crop's angle, so turning
+the box can never invalidate it and can never trigger a re-run. A city with a
+bearing therefore keeps two layouts, its own oriented one (the map it shows) and
+this upright one (the map it is edited on). The upright one is built lazily, on
+first entry to the editor, so a user who never crops never pays for it.
+
+A box stored at angle A reads as a rectangle turned by A on that backdrop, so
+opening the editor on a turned map shows the frame sitting over the north-up
+city, and dragging the tilt to 0 rights it.
 
 - **Tilt handle.** A double-arrow control set diagonally outside the box's
   top-right corner, clear of the four resize handles. Dragging it turns the box
   about its centre; the centre and size are untouched, so tilting only re-orients.
-- **Snapping.** The *absolute* angle snaps within a few degrees to 45° multiples
-  and to the city's own bearing, so both true north and the city's grain are easy
-  to land on exactly.
+  Because the backdrop is upright, the box's tilt *is* the orientation it commits.
+- **Snapping.** The angle snaps within a few degrees to 45° multiples and to the
+  city's own bearing, so both true north and the city's grain land exactly.
 - **Resizing a turned box** runs in the box's own frame, so it grows along its own
   edges, and the result is slid back so the grabbed corner holds still on screen.
 - **Clamping.** An upright box is clamped to the map frame. A turned one clamps
   its centre only: the corners of a turned rectangle legitimately reach past the
   frame's AABB, and the dim mask already shows what falls outside.
+- **An untouched edit is a no-op.** Applying without having moved anything keeps
+  the stored crop verbatim rather than re-deriving it. Carrying the box onto the
+  upright backdrop and back runs it through an iterative unproject, which lands
+  within a metre but not within the equality tolerance, so re-deriving would mark
+  the crop changed and re-run the layout every time the editor was merely opened.
+- **Clearing the crop** also returns the angle to north, so "no crop" is exactly
+  the upright full map, which is the one already cached.
 
-## Not done: a default frame for rotated cities
+## Default framing for a city with a bearing
 
-An earlier pass seeded rotated cities with the largest square inscribed in the
-rotated harvest region, on the theory that rotation left data-void triangles in
-the corners. It was removed: the canvas is fitted to the network, not to the
-harvest region, so those corners are never on screen and the seeded crop would
-have zoomed *out* rather than in.
+Such a city opens already turned to its grain *and* framed to it: the crop seeds
+to the network's own extent in that orientation, with the crop aspect set to
+match, so the first Generate produces the intended map rather than a square one
+the user has to crop by hand.
 
-The measurement above suggests the honest version of that idea is about the crop
-**aspect** rather than rotation: a canvas shaped to the network's bbox would
-recover the letterboxed margin without turning anything. That is a separate
-feature and is not implemented here.
+The frame is the network's full extent plus a small margin, so nothing meaningful
+is cut. What it buys is the letterboxing: the canvas is fitted to the network, and
+NYC's network is 0.760 wide-to-tall at its bearing, so a square canvas leaves a
+quarter of itself empty. Shaping the canvas to 10:13 instead takes the fill from
+**76% to 99%**, which is the real form of the "diagonal city in a square area"
+problem.
+
+An earlier pass instead seeded the largest square inscribed in the rotated harvest
+region, on the theory that rotation left data-void corners on the canvas. That was
+removed: `computeBounds` fits the canvas to the route lines, not the geography, so
+the harvest region is clipped by the viewport and those corners never render. The
+seeded crop was larger than the network's own frame and would have zoomed out.
