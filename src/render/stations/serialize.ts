@@ -2,6 +2,7 @@ import type { Glyph, StationDesign, ExampleStation, StopScene } from './types';
 import type { Prim } from '../sceneIR';
 import { escapeXml } from '../escape';
 import { LINE_WIDTH, MARK_R0 } from '../constants';
+import { TAIL, BADGE_GAP, BADGE_R, STOP_OUTER } from '../layout/dcStations';
 
 const alignToAnchor = (a: 'start' | 'middle' | 'end'): string => a;
 const alignToCanvas = (a: 'start' | 'middle' | 'end'): CanvasTextAlign => (a === 'middle' ? 'center' : a === 'end' ? 'right' : 'left');
@@ -122,8 +123,41 @@ function onLinePreview(design: StationDesign, ex: ExampleStation, dark: boolean)
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0.toFixed(2)} ${top.toFixed(2)} ${side.toFixed(2)} ${side.toFixed(2)}" width="44" height="44">${routeLine}${marker}</svg>`;
 }
 
+/**
+ * The END of a route: the line arrives from the left, stops, and the design caps it
+ * however it caps a terminus. Drawn at true map scale and framed by a zoomed
+ * viewBox, as the on-line preview is, so the whole tail and whatever hangs off it
+ * read at tile size.
+ *
+ * The station geometry a terminus needs is solved over the finished map, which a
+ * preview has none of, so the scene carries a hand-built one: the stop's own mark,
+ * and one line end cut a tail's length along the run with its symbol past that.
+ */
+function lineEndPreview(design: StationDesign, ex: ExampleStation, dark: boolean): string {
+  const cut = TAIL;
+  const seat = cut + BADGE_GAP + BADGE_R;
+  const pad = BADGE_R * 0.5;
+  const x0 = -(seat + BADGE_R + pad) / 2;
+  const side = seat + BADGE_R + pad - x0;
+  const scene: StopScene = {
+    nodeId: 'preview',
+    lines: [{ lineId: 'L', color: ex.color, bullet: ex.bullet, textColor: ex.textColor, pos: [0, 0], chain: 0, seq: 1, dir: [1, 0], terminus: true, end: [1, 0] }],
+    capsule: {
+      kind: 'dcMarks',
+      marks: [{ at: [0, 0], r: STOP_OUTER, ring: false, lineId: 'L' }],
+      ends: [{ lineId: 'L', cut: [cut, 0], at: [seat, 0] }],
+    },
+    anchor: [0, 0],
+    dotRadius: MARK_R0,
+  };
+  const marker = glyphsToSvg(design.paint(scene, { dark, showBullets: true }));
+  const routeLine = `<line x1="${x0.toFixed(2)}" y1="0" x2="0" y2="0" stroke="${escapeXml(ex.color)}" stroke-width="${LINE_WIDTH}"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0.toFixed(2)} ${(-side / 2).toFixed(2)} ${side.toFixed(2)} ${side.toFixed(2)}" width="44" height="44">${routeLine}${marker}</svg>`;
+}
+
 /** Standalone, resizable preview SVG for a design + example route. */
 export function previewSvg(design: StationDesign, ex: ExampleStation, dark: boolean): string {
+  if (design.previewKind === 'lineEnd') return lineEndPreview(design, ex, dark);
   if (design.previewKind === 'onLine') return onLinePreview(design, ex, dark);
   const scene = design.previewKind === 'interchange' ? syntheticInterchange(ex) : syntheticSingle(ex);
   const glyphs = design.paint(scene, { dark, showBullets: true });

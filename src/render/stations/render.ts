@@ -2,6 +2,7 @@ import type { StopMark } from '../layout/types';
 import type { Prim } from '../sceneIR';
 import type { RectCapsule } from '../layout/rectSeat';
 import type { LondonCapsule } from '../layout/londonBubbles';
+import type { DcStation } from '../layout/dcStations';
 import type { StationDesign, StopScene } from './types';
 import { buildScene } from './placement';
 import { glyphsToSvg, glyphsToPrims, wrapMarker } from './serialize';
@@ -21,6 +22,11 @@ export interface RenderStationsCtx {
   /** Precomputed Toronto direct-intersection centers per node. Read only by the
    *  Toronto design. */
   torontoByNode?: Map<string, { cx: number; cy: number }>;
+  /** Precomputed DC Metro station geometry per node. Read only by that design. */
+  dcByNode?: Map<string, DcStation>;
+  /** The land colour the routes' casings use, so a design that continues a line
+   *  can case it identically. */
+  land?: string;
 }
 
 /** Draw every station's marker with the chosen design. Returns the per-marker
@@ -44,14 +50,14 @@ export function renderStations(
     if (marks.length === 0) continue;
     const scene = buildScene(nodeId, marks, {
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
-      bubbleByNode: ctx.bubbleByNode, torontoByNode: ctx.torontoByNode,
+      bubbleByNode: ctx.bubbleByNode, torontoByNode: ctx.torontoByNode, dcByNode: ctx.dcByNode,
     });
     built.push({ nodeId, marks, scene });
   }
 
   // Phase 2: paint each scene.
   for (const { nodeId, marks, scene } of built) {
-    const glyphs = design.paint(scene, { dark: ctx.dark, showBullets: ctx.showBullets });
+    const glyphs = design.paint(scene, { dark: ctx.dark, showBullets: ctx.showBullets, land: ctx.land });
     const lineIds = marks.map((m) => m.lineId);
     svg.push(wrapMarker(scene.anchor, nodeId, lineIds, glyphsToSvg(glyphs)));
     for (const p of glyphsToPrims(glyphs)) prims.push(p);

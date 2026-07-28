@@ -20,13 +20,19 @@ export interface StopLine {
   dir?: Point;        // exact unit tangent of the line at this stop (unquantized); tick markers strike strictly perpendicular to it
   terminus?: boolean; // the line ends at this stop (loops have no terminus); tick markers cap it with a full two-sided tick
   outward?: Point;    // unit vector from the bundle's drawn centerline toward this lane; a one-sided tick strikes toward it (away from co-running lanes). Absent for a centered/isolated lane
+  end?: Point;        // unit vector pointing OFF THE END of a terminus, away from the track it arrives on. Set only on termini; `dir` cannot serve, being a tangent defined only up to sign
 
 }
 
 /** Design-agnostic capsule (interchange) geometry, from placement. */
 export type Capsule =
   | { kind: 'none' }
-  | { kind: 'pill'; points: Point[]; smooth: boolean }
+  | { kind: 'pill'; points: Point[]; smooth: boolean;
+      /** Where the capsule's lanes were found to cross at a single point, from the
+       *  compute-time solve over the drawn ribbons. Set only under a crossing
+       *  regime; a design that marks a junction as a point reads it instead of
+       *  re-deriving one from the mark positions. */
+      cross?: Point }
   | { kind: 'ring'; cx: number; cy: number; r: number }
   | { kind: 'rectRows';
       box: number;                                   // box side length (world px)
@@ -39,6 +45,15 @@ export type Capsule =
   | { kind: 'londonBubbles';                         // one white bubble per pair of lines, chained by connector bars
       bubbles: Array<{ x: number; y: number; r: number }>;
       necks: Array<{ x0: number; y0: number; x1: number; y1: number; w: number }>;
+    }
+  | { kind: 'dcMarks';                               // marks + line-end symbols, solved over the whole map
+      /** Each mark: where it stands, how far its ink reaches, and whether it is the
+       *  interchange ring or the plain stop circle. */
+      marks: Array<{ at: Point; r: number; ring: boolean; lineId?: string }>;
+      /** Each terminating line: where its tail is cut, and where its symbol sits. */
+      ends: Array<{ lineId: string; cut: Point; at: Point }>;
+      /** The capsule spine, when the station is wide enough to need one drawn. */
+      spine?: Point[];
     };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots
@@ -55,6 +70,10 @@ export interface StopScene {
 export interface PaintCtx {
   dark: boolean;
   showBullets: boolean; // stations toggle; when false, omit bullet text glyphs
+  /** The land colour the routes' casings are drawn in. A design that continues a
+   *  line itself has to case it the same way, and the colour is not derivable from
+   *  the theme alone: a colorset supplies its own. Absent falls back to the theme. */
+  land?: string;
 }
 
 /** Design-level, backend-agnostic marker vocabulary. No layer/worldScale —
@@ -76,14 +95,17 @@ export interface StationDesign {
   blurb?: string;
   /** Interchange capsule regime the design wants placement to produce. Default
    *  'pill'. 'rectRows' triggers the upright-box rectangle seating;
-   *  'londonBubbles' the paired ticket-hall bubbles. */
-  capsule?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto';
+   *  'londonBubbles' the paired ticket-hall bubbles; 'toronto' and 'dc' both run
+   *  the point-crossing collapse but differ in what the scene carries (see
+   *  PlacementCtx.capsuleMode). */
+  capsule?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto' | 'dc';
   /** Paint one station into a draw list (capsule glyphs first, dots/bullets
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];
   /** What the preview tile depicts. 'single' (default) = one dot; 'interchange'
    *  = a two-line station so a capsule-distinct design shows its capsule;
    *  'onLine' = one stop drawn on a horizontal route line (for a tick marker
-   *  that only reads against the line it strikes). */
-  previewKind?: 'single' | 'interchange' | 'onLine';
+   *  that only reads against the line it strikes); 'lineEnd' = the end of a route,
+   *  for a design whose terminus is its most distinctive mark. */
+  previewKind?: 'single' | 'interchange' | 'onLine' | 'lineEnd';
 }

@@ -152,6 +152,12 @@ export interface StopMark {
    *  the co-running lanes). Absent for a lane centered on its bundle (no side)
    *  or one that runs alone. */
   outward?: Pixel;
+  /** Unit vector pointing OFF THE END of a terminus, away from the track the line
+   *  arrives on, read from the drawn lane. `dir` cannot serve: a tangent is only
+   *  defined up to sign, so it says which way the run lies but not which end this
+   *  is. Set only on terminus marks, and only where the drawn lane is long enough
+   *  to read a direction from. */
+  end?: Pixel;
 }
 
 // ---- LOOM topo: support graph -------------------------------------------

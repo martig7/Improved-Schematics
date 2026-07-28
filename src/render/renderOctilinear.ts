@@ -38,6 +38,7 @@ import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
 import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle, type SimplifiedScope, type SimplifiedRoutes } from './simplify';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
+import { computeDcByNode, BADGE_R as DC_BADGE_R, type DcStation } from './layout/dcStations';
 import { sampleQuadratic } from './layout/segGeom';
 import { cropLaneToShape, shapeMinExtent, insetShape, type Box, type CropShape } from './laneCrop';
 import { getStationDesign } from './stations';
@@ -534,6 +535,12 @@ export interface RibbonGeometry {
    *  for non-Toronto designs. OPTIONAL: absent in geometry serialized before it
    *  existed; the Toronto design then paints those crossings as pills. */
   torontoByNode?: Map<string, TorontoCross>;
+  /** Per-node DC Metro station geometry: its marks and its line-end symbols,
+   *  seated against every drawn line and every other station on the map, which no
+   *  single station's paint could see. Design-agnostic and inert for other designs.
+   *  OPTIONAL: absent in geometry serialized before it existed, and the design then
+   *  falls back to solving one station at a time. */
+  dcByNode?: Map<string, DcStation>;
 }
 
 // Repaint memo of label placements per geometry (see the paintRibbons label
@@ -545,8 +552,25 @@ const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
   layout: Layout;
   nodePx: Map<string, Pixel>;
   simpSig: string;
+  /** Which design's glyphs the placements were packed around. Placements depend on
+   *  the active design once its glyphs are obstacles, so a switch must not reuse
+   *  them. */
+  glyphSig: string;
   placements: ReturnType<typeof placeLabels>;
 }>();
+
+/** The route glyphs a design hangs off its line ends, as boxes a label must clear.
+ *  They are chrome sitting well away from the stop they belong to, so nothing in
+ *  the marks themselves reveals them. */
+function labelGlyphBoxes(dcByNode: Map<string, DcStation>): Array<{ x: number; y: number; w: number; h: number }> {
+  const out: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (const st of dcByNode.values()) {
+    for (const e of st.ends) {
+      out.push({ x: e.at[0] - DC_BADGE_R, y: e.at[1] - DC_BADGE_R, w: 2 * DC_BADGE_R, h: 2 * DC_BADGE_R });
+    }
+  }
+  return out;
+}
 
 /** Capsule geometry for ONE regime, re-derived when a simplified route has left
  *  some stations and the compute-time maps (solved over the full membership)
@@ -564,6 +588,7 @@ interface DerivedCapsules {
   tokyuStopPos?: Map<string, [number, number]>;
   bubbleByNode?: Map<string, LondonCapsule>;
   torontoByNode?: Map<string, TorontoCross>;
+  dcByNode?: Map<string, DcStation>;
 }
 const derivedCapsulesMemo = new WeakMap<RibbonGeometry, Map<string, DerivedCapsules | undefined>>();
 
@@ -607,6 +632,11 @@ function deriveCapsules(
     out = { bubbleByNode: mergeChanged(geom.bubbleByNode, computeLondonByNode(stopsByNode, LINE_WIDTH), changed) };
   } else if (regime === 'toronto') {
     out = { torontoByNode: mergeChanged(geom.torontoByNode, computeTorontoByNode(stopsByNode), changed) };
+  } else if (regime === 'dc') {
+    const cross = mergeChanged(geom.torontoByNode, computeTorontoByNode(stopsByNode), changed);
+    // The line-end symbols are seated against the whole map, so a changed station
+    // re-seats every symbol rather than merging one node's back in.
+    out = { torontoByNode: cross, dcByNode: computeDcByNode(stopsByNode, undefined, cross) };
   }
   byKey.set(key, out);
   return out;
@@ -858,6 +888,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // Toronto direct-intersection centers, from the final marks (design-agnostic);
   // consumed by the Toronto design to collapse a perfect crossing to one dot.
   let torontoByNode = new Map<string, TorontoCross>();
+  let dcByNode = new Map<string, DcStation>();
   // Per-capsule-regime lane crops: for each design regime that paints an opaque
   // interchange footprint (rectRows boxes, londonBubbles discs), the per-line 'd'
   // command arrays from a lane bundle cropped to that footprint, filled at emit
@@ -4100,6 +4131,32 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stations: args.stations, nodePx,
   });
 
+  // Which way lies OFF THE END of a terminus, read from the line's own drawn
+  // lane near the stop. The track all lies to one side, so the direction away
+  // from where that lane's ink sits is the way out. Falls back to the exact
+  // tangent's own sign when the lane is too short to tell, and to nothing when
+  // there is no lane at all, which a design must cope with.
+  const endDirection = (m: StopMark, near: Array<[Pixel, Pixel]>): Pixel | undefined => {
+    let sx = 0, sy = 0, n = 0;
+    for (const [a, b] of near) {
+      sx += a[0] + b[0] - 2 * m.pos[0];
+      sy += a[1] + b[1] - 2 * m.pos[1];
+      n += 2;
+    }
+    if (n === 0) return undefined;
+    // Away from the mean of the lane's own ink.
+    let ex = -sx / n, ey = -sy / n;
+    const len = Math.sqrt(ex * ex + ey * ey);
+    if (len < 1e-6) return m.dir ? [m.dir[0], m.dir[1]] : undefined;
+    ex /= len; ey /= len;
+    // Hold it to the run: the lane is straight at a stop, so the end direction is
+    // the tangent, signed to agree with the way out.
+    const t = m.dir;
+    if (!t) return [ex, ey];
+    const s = ex * t[0] + ey * t[1] >= 0 ? 1 : -1;
+    return [t[0] * s, t[1] * s];
+  };
+
   // Toronto crossings, from the FINAL drawn ribbons (dByLine is complete here:
   // fillets, joins and node connectors all applied). Each stop reads its own
   // line's drawn segments near its dot; the solver seats a crossing dot only
@@ -4114,9 +4171,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (!segs) continue;
         const near = segs.filter(([a, b]) => (a[0] - m.pos[0]) ** 2 + (a[1] - m.pos[1]) ** 2 <= win2 || (b[0] - m.pos[0]) ** 2 + (b[1] - m.pos[1]) ** 2 <= win2);
         laneByStop.set(nodeId + '|' + m.lineId, near);
+        if (m.terminus) m.end = endDirection(m, near);
       }
     }
     torontoByNode = computeTorontoByNode(stopsByNode, laneByStop);
+    dcByNode = computeDcByNode(stopsByNode, segsByLine, torontoByNode);
   }
 
   // Join each regime's cropped parts (lanes + mirrored connectors) into per-line
@@ -4166,7 +4225,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     dirtAt: seatInkOracle ? (p, lid) => seatInkOracle!.dirtAt(p, lid) : undefined,
   });
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, paintGroups };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, dcByNode, paintGroups };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -4303,7 +4362,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const rectByNode = isRect ? (derived?.rectByNode ?? geom.rectByNode) : undefined;
   const rectStopPos = isRect ? (derived?.tokyuStopPos ?? geom.tokyuStopPos) : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? (derived?.bubbleByNode ?? geom.bubbleByNode) : undefined;
-  const torontoByNode = activeCapsule === 'toronto' ? (derived?.torontoByNode ?? geom.torontoByNode) : undefined;
+  const torontoByNode = activeCapsule === 'toronto' || activeCapsule === 'dc' ? (derived?.torontoByNode ?? geom.torontoByNode) : undefined;
+  const dcByNode = activeCapsule === 'dc' ? (derived?.dcByNode ?? geom.dcByNode) : undefined;
   // Bundle-coherent layers (I8): each paint group draws its casings then its
   // strokes, so a later group's casing separates it cleanly from everything
   // it crosses below. Geometry without the field (older caches) falls back
@@ -4408,7 +4468,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode },
+    { dark, showBullets: args.showStations !== false, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode, dcByNode, land: bg },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;
@@ -4426,11 +4486,17 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // signature is part of the memo key: placements computed for a different
     // simplification must never be reused.
     const labelStops = marksUnder((s) => s.labels);
+    // Chrome the active design puts on the map beyond its marks, which a label has
+    // to clear as it clears a marker. Only the line-end symbols qualify today, and
+    // only one design draws them, so this is part of the memo key: placements
+    // computed with a different design's glyphs must never be reused.
+    const glyphs = dcByNode ? labelGlyphBoxes(dcByNode) : undefined;
+    const glyphSig = dcByNode ? 'dc' : '';
     const hit = labelPlacementsMemo.get(geom);
-    if (hit && hit.layout === layout && hit.nodePx === nodePx && hit.simpSig === simpSig) placements = hit.placements;
+    if (hit && hit.layout === layout && hit.nodePx === nodePx && hit.simpSig === simpSig && hit.glyphSig === glyphSig) placements = hit.placements;
     else {
-      placements = placeLabels(layout, nodePx, labelStops, segments);
-      labelPlacementsMemo.set(geom, { layout, nodePx, simpSig, placements });
+      placements = placeLabels(layout, nodePx, labelStops, segments, glyphs);
+      labelPlacementsMemo.set(geom, { layout, nodePx, simpSig, glyphSig, placements });
     }
   }
   const labelParts: string[] = [];

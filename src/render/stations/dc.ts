@@ -1,29 +1,14 @@
 import type { StationDesign, StopScene, StopLine, PaintCtx, Glyph, Point } from './types';
-import { circle } from './primitives';
-import { LINE_WIDTH, onDrawScale } from '../constants';
+import { circle, pillPath, bullet, contrastInk } from './primitives';
+import { LINE_WIDTH } from '../constants';
+import {
+  marksFor, STOP_OUTER, STOP_RING, REACH, CAPSULE_W, TAIL, BADGE_GAP, BADGE_R,
+  type DcMark, type DcEnd,
+} from '../layout/dcStations';
 
 // Ink on paper in both themes, like the printed WMATA diagram.
 const INK = '#111111';
 const PAPER = '#ffffff';
-
-// A plain stop is LINE-FIT: outer diameter equals the route line width, so the
-// black-ringed white circle sits inside the line, which runs on behind it.
-let STOP_OUTER = LINE_WIDTH / 2;
-let STOP_RING = LINE_WIDTH * 0.2;
-// How far a tick strikes from the lane centre. This one distance also sets the
-// transfer marker's outer ring, so a wide bundle's ticks and a transfer circle
-// read at the same scale (the design calls for exactly that correspondence).
-let REACH = LINE_WIDTH * 0.95;
-let TICK_W = LINE_WIDTH * 0.22;
-// How far a stub protrudes past its own lane, on the inward side.
-let STUB_PROTRUDE = LINE_WIDTH * 0.5;
-onDrawScale(() => {
-  STOP_OUTER = LINE_WIDTH / 2;
-  STOP_RING = LINE_WIDTH * 0.2;
-  REACH = LINE_WIDTH * 0.95;
-  TICK_W = LINE_WIDTH * 0.22;
-  STUB_PROTRUDE = LINE_WIDTH * 0.5;
-});
 
 /** A black-ringed white disc by overdraw (ink disc, then a smaller paper disc),
  *  so the ring needs no stroke alignment. */
@@ -32,56 +17,6 @@ function disc(cx: number, cy: number, outer: number, ring: number, lineId?: stri
     circle(cx, cy, outer, { fill: INK, stroke: 'none', strokeWidth: 0 }),
     circle(cx, cy, outer - ring, { fill: PAPER, stroke: 'none', strokeWidth: 0, ...(lineId ? { data: { 'data-line': lineId } } : {}) }),
   ];
-}
-
-/** Unit tangent for a stop, falling back to the octilinear axis when the exact
- *  one is absent, and to horizontal when even that is unknown. */
-function tangent(ln: StopLine): Point {
-  if (ln.dir) return ln.dir;
-  const a = ln.axis ?? 0;
-  // axis: 0 = -, 1 = /, 2 = |, 3 = \  (mod 180 degrees)
-  const k = Math.SQRT1_2;
-  return a === 0 ? [1, 0] : a === 1 ? [k, -k] : a === 2 ? [0, 1] : [k, k];
-}
-
-/** Do these stops run as ONE bundle? True when every lane shares a direction, so
- *  the station sits on a single band of parallel track. Tangents are compared by
- *  |dot| because a tangent is only defined up to sign (mod 180 degrees), and the
- *  octilinear axis alone is too coarse: two lanes can share an axis yet diverge
- *  where a bundle splits, which the design wants treated as a transfer. */
-function oneBundle(lines: readonly StopLine[]): boolean {
-  if (lines.length < 2) return true;
-  const t0 = tangent(lines[0]);
-  for (let i = 1; i < lines.length; i++) {
-    if ((lines[i].axis ?? -1) !== (lines[0].axis ?? -1)) return false;
-    const t = tangent(lines[i]);
-    // cos 15 degrees; anything blunter than this is a split, not a shared run.
-    if (Math.abs(t0[0] * t[0] + t0[1] * t[1]) < 0.966) return false;
-  }
-  return true;
-}
-
-/** Lanes in band order. */
-function ordered(lines: readonly StopLine[]): StopLine[] {
-  return [...lines].sort((a, b) => a.chain - b.chain || (a.lineId < b.lineId ? -1 : 1));
-}
-
-/** The lanes the dot itself covers: the middle one when the count is odd, the two
- *  middle ones when it is even (the dot seats in the gap and bridges both). These
- *  are already marked by the dot, so they take no stub, which is why a two-lane
- *  bundle wears none at all. */
-function bridged(n: number): [number, number] {
-  const mid = n >> 1;
-  return n % 2 === 1 ? [mid, mid] : [mid - 1, mid];
-}
-
-/** The single mark's seat: on the middle lane, or in the gap between the two. */
-function seat(lines: readonly StopLine[]): Point {
-  const ord = ordered(lines);
-  const [i, j] = bridged(ord.length);
-  const a = ord[i].pos;
-  const b = ord[j].pos;
-  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
 /** The transfer motif: an inner circle the size of every other stop, inside an
@@ -94,136 +29,123 @@ function doubleRing(cx: number, cy: number): Glyph[] {
   ];
 }
 
+// The routes are drawn on a casing this much wider than the stroke, so the halo
+// stands this far proud of the line on every side.
+const CASING_EXTRA = 3;
+
 /**
- * Where the crossing bundles actually meet.
+ * The tail: the route colour run from the stop out to the cut, over the ribbon's
+ * own rounded end, and cut square (a line glyph caps butt).
  *
- * Each direction present is one band of track; its centreline runs through the
- * mean of its lanes, so for a two-lane bundle that line passes BETWEEN the pair
- * rather than along either rail. Intersecting the two centrelines puts the mark
- * at the true crossing, centred in both bands. The station anchor will not do:
- * it sits on a lane, so the ring lands on one line instead of at the junction.
- *
- * Falls back to the centroid of every lane when the bands are near-parallel (no
- * usable intersection), which is still the middle of the cluster.
+ * It carries the route's casing with it. A tail is a piece of line like any other,
+ * and without the halo it would run out past where the ribbon's casing stops as a
+ * bare colour. The casing runs on half its own margin past the cut, so the halo
+ * wraps the end face too and the cut reads as an edge of the line rather than a
+ * place the colour simply stops.
  */
-function crossing(lines: readonly StopLine[]): Point {
-  const byAxis = new Map<number, StopLine[]>();
-  for (const ln of lines) {
-    const k = ln.axis ?? -1;
-    const arr = byAxis.get(k);
-    if (arr) arr.push(ln);
-    else byAxis.set(k, [ln]);
-  }
-  const mean = (ls: readonly StopLine[]): Point => {
-    let x = 0, y = 0;
-    for (const l of ls) { x += l.pos[0]; y += l.pos[1]; }
-    return [x / ls.length, y / ls.length];
-  };
-  const groups = [...byAxis.keys()].sort((a, b) => a - b).map((k) => byAxis.get(k)!);
-  if (groups.length >= 2) {
-    const p = mean(groups[0]);
-    const d = tangent(groups[0][0]);
-    const q = mean(groups[1]);
-    const e = tangent(groups[1][0]);
-    const den = d[0] * e[1] - d[1] * e[0];
-    if (Math.abs(den) > 1e-6) {
-      const t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den;
-      return [p[0] + d[0] * t, p[1] + d[1] * t];
-    }
-  }
-  return mean(lines);
+function tailGlyphs(ln: StopLine, ep: DcEnd, land: string): Glyph[] {
+  const dx = ep.cut[0] - ln.pos[0];
+  const dy = ep.cut[1] - ln.pos[1];
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const over = len > 1e-6 ? CASING_EXTRA / 2 / len : 0;
+  return [
+    {
+      kind: 'line',
+      x1: +ln.pos[0].toFixed(2), y1: +ln.pos[1].toFixed(2),
+      x2: +(ep.cut[0] + dx * over).toFixed(2), y2: +(ep.cut[1] + dy * over).toFixed(2),
+      stroke: land, strokeWidth: +(LINE_WIDTH + CASING_EXTRA).toFixed(2),
+    },
+    {
+      kind: 'line',
+      x1: +ln.pos[0].toFixed(2), y1: +ln.pos[1].toFixed(2),
+      x2: +ep.cut[0].toFixed(2), y2: +ep.cut[1].toFixed(2),
+      stroke: ln.color, strokeWidth: +LINE_WIDTH.toFixed(2),
+    },
+  ];
 }
 
-/** A stub for one lane: struck perpendicular to the run, crossing its own lane and
- *  protruding on the INWARD side, toward the band's centreline. Every lane the dot
- *  does not already cover gets one, so the whole interchange is marked. */
-function stub(p: Point, t: Point, inward: Point): Glyph {
-  const nx = -t[1];
-  const ny = t[0];
-  // Sign the perpendicular so it points inward for THIS lane.
-  const sgn = nx * inward[0] + ny * inward[1] >= 0 ? 1 : -1;
-  const ox = -nx * sgn * STOP_OUTER;
-  const oy = -ny * sgn * STOP_OUTER;
-  const ix = nx * sgn * (STOP_OUTER + STUB_PROTRUDE);
-  const iy = ny * sgn * (STOP_OUTER + STUB_PROTRUDE);
-  return {
-    kind: 'line',
-    x1: +(p[0] + ox).toFixed(2), y1: +(p[1] + oy).toFixed(2),
-    x2: +(p[0] + ix).toFixed(2), y2: +(p[1] + iy).toFixed(2),
-    stroke: PAPER, strokeWidth: +TICK_W.toFixed(2),
-  };
+/** The line's own symbol, hanging off the cut: a filled route-colour disc holding
+ *  the route bullet, or plain when the route has none. */
+function badge(at: Point, ln: StopLine, showBullet: boolean): Glyph[] {
+  const g: Glyph[] = [circle(at[0], at[1], BADGE_R, { fill: ln.color, stroke: 'none', strokeWidth: 0, data: { 'data-line': ln.lineId } })];
+  if (showBullet && ln.bullet) g.push(bullet(at[0], at[1], ln.bullet, BADGE_R, ln.textColor || contrastInk(ln.color)));
+  return g;
+}
+
+/** The station's own geometry when the solved version is absent, as it is for
+ *  geometry cached before the solve existed. Marks only: the line-end symbols need
+ *  the whole map to seat against, so they are left to the solve. */
+function fallbackMarks(scene: StopScene): DcMark[] {
+  const cap = scene.capsule;
+  if (cap.kind === 'ring') return [{ at: [cap.cx, cap.cy], r: REACH, ring: true }];
+  return marksFor(scene.lines, cap.kind === 'pill' ? cap.cross : undefined);
 }
 
 /**
- * DC: a plain stop is a black-ringed white circle fitted inside the line.
+ * DC Metro: a plain stop is a black-ringed white circle fitted inside the line.
  *
- * An interchange is read from the geometry rather than the line count. While
- * every lane runs the same way the station is still ONE band of track, so it
- * takes a single mark: one circle seated mid-bundle (on the centre lane, or in
- * the gap between the two middle lanes), plus a white stub on every OTHER lane,
- * struck perpendicular and protruding inward toward the band's centreline. The
- * stubs carry the mark across a band too wide for the circle to span; the lanes
- * the circle already covers take none, so a two-lane bundle wears no stubs.
+ * Every other station is marked in pairs of track. Where one mark can stand on
+ * every lane the station is a point transfer and takes that mark alone: the double
+ * ring, an inner circle the size of every other stop inside an outer ring, seated
+ * where the bands meet. Anything wider is drawn as the capsule it is, its spine
+ * stroked as one continuous white line with each bundle marked along it, lanes
+ * pairing off two at a time under a double ring and a single-ringed stop circle for
+ * a lane left over.
  *
- * A station where the lanes point different ways, or where a bundle splits, is a
- * genuine transfer and takes the double ring: an inner circle the size of every
- * other stop, inside an outer ring. It seats where the crossing bands' centrelines
- * meet, so it lands at the junction and centred in each band, rather than on
- * whichever single lane the station anchor happens to sit on.
+ * A terminating line runs on past its stop, is cut square, and hangs its own symbol
+ * off the end.
+ *
+ * The geometry is solved over the whole map rather than here, because a line-end
+ * symbol has to keep clear of lines and stations one station's paint cannot see.
+ * This only draws it.
  */
-function paint(scene: StopScene, _ctx: PaintCtx): Glyph[] {
-  const lines = scene.lines;
+function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
+  const cap = scene.capsule;
+  const solved = cap.kind === 'dcMarks' ? cap : undefined;
+  const marks = solved ? solved.marks : fallbackMarks(scene);
+  const ends = solved ? solved.ends : [];
+  const spine = solved?.spine ?? (cap.kind === 'pill' ? cap.points : undefined);
+  const byLine = new Map(scene.lines.map((l) => [l.lineId, l]));
 
-  // A node whose lines genuinely cross at a point is solved at compute time, and
-  // arrives as a ring carrying that crossing. Use it: deriving the junction from
-  // the seated dots instead lands the mark on whichever lane the marks average
-  // out to, which is not where the lines meet. This case carries no lines, so it
-  // is answered before anything reads them.
-  if (scene.capsule.kind === 'ring') return doubleRing(scene.capsule.cx, scene.capsule.cy);
-
-  if (lines.length === 0) return [];
-
-  if (lines.length === 1) {
-    const ln = lines[0];
-    return disc(ln.pos[0], ln.pos[1], STOP_OUTER, STOP_RING, ln.lineId);
-  }
-
-  if (!oneBundle(lines)) {
-    // A transfer that did NOT resolve to a point crossing (a split, or bands that
-    // meet off-centre): fall back to intersecting the bands' own centrelines.
-    const [cx, cy] = crossing(lines);
-    return doubleRing(cx, cy);
-  }
-
-  // One bundle: a single mark seated mid-bundle, plus a stub on every lane the
-  // mark does not already cover. Stubs are drawn FIRST so the dot sits over them.
-  const ord = ordered(lines);
-  const s = seat(ord);
-  const t = tangent(ord[0]);
-  const [bi, bj] = bridged(ord.length);
+  const land = ctx.land ?? (ctx.dark ? '#18181b' : '#ffffff');
   const g: Glyph[] = [];
-  for (let i = 0; i < ord.length; i++) {
-    if (i === bi || i === bj) continue; // already marked by the dot
-    const p = ord[i].pos;
-    // Inward is simply the direction from this lane back to the seated mark.
-    const dx = s[0] - p[0];
-    const dy = s[1] - p[1];
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 1e-6) continue;
-    g.push(stub(p, t, [dx / len, dy / len]));
+  // Tails first, so the station's own marks sit over them. Every casing before
+  // every core, as the routes themselves are drawn, so one tail's halo cannot
+  // strike through its neighbour.
+  const tails = ends.map((ep) => ({ ep, ln: byLine.get(ep.lineId) }))
+    .filter((t): t is { ep: DcEnd; ln: StopLine } => !!t.ln)
+    .map((t) => tailGlyphs(t.ln, t.ep, land));
+  for (const t of tails) g.push(t[0]);
+  for (const t of tails) g.push(t[1]);
+  // The capsule ties a station's marks together, so it is drawn only when there is
+  // more than one to tie.
+  if (marks.length > 1 && spine && spine.length >= 2) {
+    g.push({
+      kind: 'path', d: pillPath(spine.map((p): Point => [p[0], p[1]]), false), fill: 'none',
+      stroke: PAPER, strokeWidth: +CAPSULE_W.toFixed(2), lineCap: 'round', lineJoin: 'round',
+    });
   }
-  g.push(...disc(s[0], s[1], STOP_OUTER, STOP_RING));
+  for (const m of marks) {
+    g.push(...(m.ring ? doubleRing(m.at[0], m.at[1]) : disc(m.at[0], m.at[1], STOP_OUTER, STOP_RING, m.lineId)));
+  }
+  // Symbols last, over everything this station draws.
+  for (const ep of ends) {
+    const ln = byLine.get(ep.lineId);
+    if (ln) g.push(...badge([ep.at[0], ep.at[1]], ln, ctx.showBullets));
+  }
   return g;
 }
 
 export const dc: StationDesign = {
   id: 'dc',
-  name: 'Washington',
+  name: 'DC Metro',
   paint,
-  // 'toronto' seating runs the compute-time crossing solve, so a node whose lines
-  // truly meet at a point arrives as a ring carrying that exact junction; every
-  // other multi-line node still falls through to a pill, whose chained order is
-  // what `seat` reads. The design draws no capsule of its own either way.
-  capsule: 'toronto',
-  previewKind: 'interchange',
+  // Its own regime. The crossing solve gives it the exact junction where lines meet
+  // at a point, and the station solve gives it every mark and line-end symbol,
+  // seated against the whole map. It draws no capsule of its own and crops no
+  // lanes: the lines run behind these marks by design.
+  capsule: 'dc',
+  // The end of a line is this design's most distinctive mark: the cut, and the
+  // route's own symbol hanging off it.
+  previewKind: 'lineEnd',
 };
