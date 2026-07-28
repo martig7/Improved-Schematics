@@ -578,10 +578,6 @@ export interface SmoothedPrecomputed {
    *  boxes are magnified — and absent (undefined) only for pre-existing cached layouts
    *  computed before this field existed. */
   denseBoxesPx?: DenseBox[];
-  /** Whether this layout was built with station-group splitting allowed. The
-   *  seating ladder's last-resort per-platform split reads it too. Absent on
-   *  layouts cached before the field existed. */
-  stationSplit?: boolean;
   /** The layout fingerprint this precompute was BUILT under — stamped HERE, at
    *  compute time, never at save/load time. Provenance: the cache write/read
    *  paths and the file-load adoption verify a layout against it, so a stale
@@ -1551,7 +1547,7 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   // Frame (computed above) hugs the same backdrop extent geographic does, so
   // smoothed fit/export match. When undefined (no geography), renderRibbons
   // frames on the rendered network instead.
-  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, project, geoBboxFrame, detailCrop: !!opts.detailCrop, denseBoxesPx, stationSplit: perStationNodes, builtFp };
+  return { layout, nodePx, stationPx, stations, gridOverlay: gridSvg, geoRingsPx, geoHullPx, ...(placesPx.length > 0 ? { placesPx } : {}), width: outW, height: outH, dark, frame, unproject, project, geoBboxFrame, detailCrop: !!opts.detailCrop, denseBoxesPx, builtFp };
 }
 
 /** Per-pre memo of the last-built backdrop (keyed by the landmass style), so
@@ -1767,9 +1763,6 @@ export function drawSmoothed(
     gridOverlay: pre.gridOverlay,
     stations: pre.stations,
     frame: pre.frame,
-    // Older cached layouts predate the field; absent leaves the split allowed,
-    // as it was when they were built.
-    stationSplit: pre.stationSplit,
   };
   // The expensive marker-placement geometry is toggle-independent: compute it once
   // and memoize on `pre`, so label/station toggles (and cache reads that restore a

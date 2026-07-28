@@ -951,6 +951,20 @@ export function reportContiguity(d: {
   console.error(`[contig] ${breaks} non-contiguities across ${brokenLines} broken routes (${exempt} crop windows exempt, ${tjoins} T-joins, seam eps ${EPS})`);
 }
 
+/** OCTI_DEBUG: a stop flag whose node has no drawn lane for its line was
+ *  re-anchored to the nearest drawn endpoint on the line's own course. */
+export function reportReanchoredFlag(d: {
+  layout: Layout;
+  lineLabel: string;
+  fromNode: string;
+  toNode: string;
+  pos: Pixel;
+}): void {
+  if (!envStr('OCTI_DEBUG')) return;
+  const label = d.layout.nodes.get(d.fromNode)?.label ?? '';
+  console.error(`[stops] re-anchored ${d.lineLabel} flag ${d.fromNode} "${label}" -> ${d.toNode} at (${d.pos[0].toFixed(1)},${d.pos[1].toFixed(1)})`);
+}
+
 /** OCTI_DEBUG: per-station VANISHED-marker diagnostic (a station whose marks
  *  all fail to resolve renders nothing while its edges still draw). */
 export function reportVanishedStations(d: {

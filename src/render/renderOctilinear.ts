@@ -10,7 +10,7 @@ import {
   reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
   reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
-  reportSlidStations, reportEvictedStations,
+  reportSlidStations, reportEvictedStations, reportReanchoredFlag,
   reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { reportChainSeats } from './debug/chainSeats.debug';
@@ -392,14 +392,6 @@ export interface RenderRibbonsArgs {
   /** Station design id (marker style); resolved via getStationDesign, unknown →
    *  Classic. Draw-time only, consumed in paintRibbons. */
   stationDesign?: string;
-  /** Whether a station group may be broken into per-platform placement units.
-   *  Mirrors the "Split station groups" toggle. The seating ladder's last-resort
-   *  per-bundle split answers to it as well as the graph builder does, because a
-   *  unit cut loose from its group is seated on its own and can land on a
-   *  NEIGHBOURING station, which eats that station's marker and steals its
-   *  terminus. The relaxed final seat below the split still guarantees a seat.
-   *  Absent = allowed. */
-  stationSplit?: boolean;
   /** Per-route simplified display (route id -> style id). Resolved to per-LINE
    *  styles in paintRibbons. Draw-time only; never changes the layout. */
   simplifiedRoutes?: SimplifiedRoutes;
@@ -1913,9 +1905,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     ];
     // incident lane polylines of a line at a node, oriented AWAY from it;
     // a lane end trimmed for a join curve is extended with its half of the
-    // sampled curve, so both halves meet at the curve midpoint Q(0.5)
-    const lanePolysAt = (lineId: string, nodeId: string): Pixel[][] => {
-      const out: Pixel[][] = [];
+    // sampled curve, so both halves meet at the curve midpoint Q(0.5).
+    // Each polyline carries the graph node at its FAR end plus the arc length
+    // of the prepended join half, so the placement clamp below can tell which
+    // sides run into a neighbouring stop and halve the PURE lane arc (halving
+    // the bridged arc would let the two ends' halves overlap in the middle by
+    // half the bridge length each, a zone where marks could still cross).
+    const lanePolysAtEx = (lineId: string, nodeId: string): Array<{ poly: Pixel[]; farNode: string; bridgeArc: number }> => {
+      const out: Array<{ poly: Pixel[]; farNode: string; bridgeArc: number }> = [];
       const joins = joinsAt.get(nodeId + '|' + lineId);
       for (const edge of layout.edges) {
         if (edge.from !== nodeId && edge.to !== nodeId) continue;
@@ -1923,6 +1920,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (!poly || poly.length < 2) continue;
         const pts = edge.from === nodeId ? poly : [...poly].reverse();
         let bridged = pts;
+        let bridgeArc = 0;
         if (joins) {
           for (const jc of joins) {
             const da = hyp(pts[0][0] - jc.a[0], pts[0][1] - jc.a[1]);
@@ -1936,13 +1934,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               half.push(qPoint(jc, u));
             }
             bridged = [...half, ...pts];
+            for (let k2 = 1; k2 <= half.length; k2++) {
+              bridgeArc += hyp(bridged[k2][0] - bridged[k2 - 1][0], bridged[k2][1] - bridged[k2 - 1][1]);
+            }
             break;
           }
         }
-        out.push(bridged);
+        out.push({ poly: bridged, farNode: edge.from === nodeId ? edge.to : edge.from, bridgeArc });
       }
       return out;
     };
+    const lanePolysAt = (lineId: string, nodeId: string): Pixel[][] =>
+      lanePolysAtEx(lineId, nodeId).map((e) => e.poly);
     interface StMarks {
       nodeId: string;
       members: number;
@@ -1975,16 +1978,76 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         let anchorNode = flagNode;
         if (!p) {
           // The flag node has no drawn lane for this line: its lane there was a
-          // terminus-retrace sliver that suppression correctly removed (the
-          // line only doubles back into a foreign corridor it doesn't really
-          // travel — Court's grays touch the cyan me75 but actually run on
-          // me575). Anchor the dot to the line's NEAREST genuine drawn lane
-          // endpoint instead, and move the lane node with it so the rigid
-          // solver builds the curve from that real lane. This keeps the dot on
-          // the line's true corridor (the grays bundle ~minGap apart on me575,
-          // not 6 lanes apart across the cyan bundle) — a compact capsule.
+          // suppressed sliver (a terminus retrace, or a squeezed micro-edge in
+          // a dense pile). Anchor the dot to the nearest drawn lane endpoint
+          // ON THE LINE'S OWN COURSE, walking the traversal outward from the
+          // flag node and preferring the INBOUND side (toward the previous
+          // stop): the approach ink always ends before the next stop's node,
+          // so the re-homed mark cannot start level with that stop's own
+          // marker. A plain nearest-endpoint pick over all of the line's
+          // lanes can land on the outbound port of the NEXT stop's node,
+          // where the drawn stop order then flips on placement noise.
           const ref = nodePx.get(flagNode);
-          if (ref) {
+          const trav = layout.lineTraversals.get(lineId) ?? [];
+          if (ref && trav.length > 0) {
+            const endOf = (j: number, atEntry: boolean): { pt: Pixel; nd: string } | null => {
+              const e = edgeById.get(trav[j].edgeId);
+              const poly = segPath.get(trav[j].edgeId + '|' + lineId);
+              if (!e || !poly || poly.length === 0) return null;
+              const entry = trav[j].reversed ? e.to : e.from;
+              const exitN = trav[j].reversed ? e.from : e.to;
+              const nd = atEntry ? entry : exitN;
+              return { pt: nd === e.from ? poly[0] : poly[poly.length - 1], nd };
+            };
+            let best: { pt: Pixel; nd: string; side: number; hops: number; d: number } | null = null;
+            const consider = (c: { pt: Pixel; nd: string } | null, side: number, hops: number) => {
+              if (!c) return;
+              const d = hyp(c.pt[0] - ref[0], c.pt[1] - ref[1]);
+              if (
+                !best ||
+                side < best.side ||
+                (side === best.side && (hops < best.hops || (hops === best.hops && d < best.d)))
+              ) best = { ...c, side, hops, d };
+            };
+            // Only the FIRST visit's approach and departure count. An
+            // out-and-back course passes the node again on the way back, and
+            // the return pass's "approach" is the far side of the stop, which
+            // would put the anchor level with the NEXT stop's marker.
+            let jArr = -1;
+            let jDep = -1;
+            for (let j = 0; j < trav.length && (jArr < 0 || jDep < 0); j++) {
+              const e = edgeById.get(trav[j].edgeId);
+              if (!e) continue;
+              if (jArr < 0 && (trav[j].reversed ? e.from : e.to) === flagNode) jArr = j;
+              if (jDep < 0 && (trav[j].reversed ? e.to : e.from) === flagNode) jDep = j;
+            }
+            // arrival: walk BACKWARD along the course to the nearest drawn
+            // lane and take its course-exit end (the end facing the stop)
+            if (jArr >= 0) {
+              for (let k = jArr; k >= 0; k--) {
+                if (!segPath.has(trav[k].edgeId + '|' + lineId)) continue;
+                consider(endOf(k, false), 0, jArr - k);
+                break;
+              }
+            }
+            // departure: walk FORWARD to the nearest drawn lane and take its
+            // course-entry end
+            if (jDep >= 0) {
+              for (let k = jDep; k < trav.length; k++) {
+                if (!segPath.has(trav[k].edgeId + '|' + lineId)) continue;
+                consider(endOf(k, true), 1, k - jDep);
+                break;
+              }
+            }
+            if (best) {
+              const b = best as { pt: Pixel; nd: string };
+              p = b.pt;
+              anchorNode = b.nd;
+            }
+          }
+          // Fallback (course walk found nothing): nearest drawn endpoint over
+          // the line's lanes, as before.
+          if (!p && ref) {
             let bestD = Infinity;
             for (const e of layout.edges) {
               const poly = segPath.get(e.id + '|' + lineId);
@@ -1997,6 +2060,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
           }
           if (!p) continue;
+          reportReanchoredFlag({ layout, lineLabel: line.label ?? lineId, fromNode: flagNode, toNode: anchorNode, pos: p });
         }
         marks.push({ lineId, color: line.color, flagNode: anchorNode, pos: [p[0], p[1]] });
       }
@@ -2038,6 +2102,108 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       return Number.isFinite(env) && env >= 0 ? env : 0;
     })();
     const intraGap = Math.max(2, 2 * r * MARKER_SCALE - minGapSlack);
+    // ---- stop-order clamp -------------------------------------------------
+    // Every mark movement rides a carrier: the line's incident lane polylines
+    // at the mark's flag node. A carrier side always ends at the ADJACENT
+    // graph node, so the only way a mark can trade places with the line's
+    // neighbouring stop is to slide into the far end of a side whose far node
+    // is a stop of the SAME line (a runaway then covers the neighbour's
+    // marker, drags a terminus mark to the wrong stop, and inverts the drawn
+    // stop order). Pull those far ends back to the side's MIDPOINT before any
+    // movement geometry is built from them: each stop owns half of every
+    // stop-adjacent edge, so two neighbouring stops' marks partition the span
+    // and can never trade places, and the slide domain always keeps the
+    // anchor. A fixed node margin is not enough: two marks each displaced
+    // legally past a small margin still cross in the middle of a short edge.
+    // The placement ladder (primary, far-attach and its polish, best-effort,
+    // relaxed final seat), the rigid-row collision slide, and the per-dot
+    // along-lane slide all inherit the bound, so the drawn stop order along
+    // each carrier stays monotonic in seq.
+    const stopNodesByLine = new Map<string, Set<string>>();
+    for (const s of gathered) {
+      for (const m of s.marks) {
+        let set = stopNodesByLine.get(m.lineId);
+        if (!set) { set = new Set(); stopNodesByLine.set(m.lineId, set); }
+        set.add(m.flagNode);
+      }
+    }
+    /** Arc to cut off a stop-adjacent carrier side whose pure lane arc
+     *  (bridge excluded) is L, in px: half plus a strict-order epsilon, so the
+     *  two ends' slide domains partition the edge at its physical midpoint and
+     *  can never meet (two adjacent stops' marks can neither trade places nor
+     *  tie at the shared midpoint). The epsilon shrinks on sub-pixel lanes so
+     *  a side's domain never collapses to nothing. */
+    const seqTrimFor = (L: number): number => L / 2 + Math.min(0.25, L / 4);
+    const isStopOf = (lineId: string, nodeId: string): boolean =>
+      stopNodesByLine.get(lineId)?.has(nodeId) ?? false;
+    const seqClampCache = new Map<string, Pixel[][]>();
+    // per side of each carrier: the cut arc on the FULL (bridged) polyline, or
+    // Infinity for an unclamped side; parallel to lanePolysAtEx output order
+    const seqClampCutCache = new Map<string, number[]>();
+    /** lanePolysAt with every stop-adjacent side's far end pulled back. */
+    const seqClampedPolysAt = (lineId: string, nodeId: string): Pixel[][] => {
+      const key = lineId + '|' + nodeId;
+      const hit = seqClampCache.get(key);
+      if (hit) return hit;
+      const cuts: number[] = [];
+      const out = lanePolysAtEx(lineId, nodeId).map(({ poly, farNode, bridgeArc }) => {
+        cuts.push(Infinity);
+        if (farNode === nodeId || !isStopOf(lineId, farNode)) return poly;
+        const cum = [0];
+        for (let i = 1; i < poly.length; i++) {
+          cum.push(cum[i - 1] + hyp(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]));
+        }
+        const L = cum[cum.length - 1];
+        const laneArc = L - bridgeArc;
+        if (!(laneArc > 1e-6)) return poly;
+        const cut = L - seqTrimFor(laneArc);
+        cuts[cuts.length - 1] = cut;
+        const kept: Pixel[] = [];
+        let i = 0;
+        for (; i < poly.length && cum[i] < cut; i++) kept.push(poly[i]);
+        const seg = cum[i] - cum[i - 1];
+        const u = seg > 1e-9 ? (cut - cum[i - 1]) / seg : 0;
+        kept.push([
+          poly[i - 1][0] + (poly[i][0] - poly[i - 1][0]) * u,
+          poly[i - 1][1] + (poly[i][1] - poly[i - 1][1]) * u,
+        ]);
+        return kept;
+      });
+      seqClampCache.set(key, out);
+      seqClampCutCache.set(key, cuts);
+      return out;
+    };
+    /** How far past the stop-order cut a point projects, in arc px, on the
+     *  side of the (lineId, nodeId) carrier it is nearest to. 0 when the
+     *  nearest side is unclamped or the projection is inside the cut. Arc
+     *  based, so lateral seating jitter cannot mask an along-edge overshoot. */
+    const seqArcBeyond = (lineId: string, nodeId: string, p: Pixel): number => {
+      seqClampedPolysAt(lineId, nodeId); // fill the cut cache
+      const cuts = seqClampCutCache.get(lineId + '|' + nodeId)!;
+      const sides = lanePolysAtEx(lineId, nodeId);
+      let bestD = Infinity;
+      let beyond = 0;
+      for (let s = 0; s < sides.length; s++) {
+        const poly = sides[s].poly;
+        let acc = 0;
+        for (let i = 1; i < poly.length; i++) {
+          const a = poly[i - 1], b = poly[i];
+          const vx = b[0] - a[0], vy = b[1] - a[1];
+          const l2 = vx * vx + vy * vy;
+          const seg = Math.sqrt(l2);
+          let t = l2 > 1e-12 ? ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2 : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const dx = p[0] - (a[0] + vx * t), dy = p[1] - (a[1] + vy * t);
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < bestD) {
+            bestD = d;
+            beyond = Math.max(0, acc + seg * t - cuts[s]);
+          }
+          acc += seg;
+        }
+      }
+      return beyond;
+    };
     // Soft sub-floor band width (px) fed to solveRows.softBand — see the ladder
     // comment at the placement loop. OCTI_BOX_RESCUE keeps its historic name;
     // 0 = hard floor.
@@ -2095,12 +2261,21 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         const poly = segPath.get(edge.id + '|' + lineId);
         if (!poly || poly.length < 2) continue;
         const pts = edge.from === nodeId ? poly : [...poly].reverse();
+        // stop-order clamp: a walk toward a neighbouring stop of the same line
+        // saturates short of its seat zone instead of landing on its node
+        const farNode = edge.from === nodeId ? edge.to : edge.from;
+        let dEff = d;
+        if (farNode !== nodeId && isStopOf(lineId, farNode)) {
+          let L = 0;
+          for (let i = 1; i < pts.length; i++) L += hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+          dEff = Math.min(d, L - seqTrimFor(L));
+        }
         let acc = 0;
         let p: Pixel = pts[pts.length - 1];
         for (let i = 1; i < pts.length; i++) {
           const seg = hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-          if (acc + seg >= d) {
-            const t = seg > 1e-9 ? (d - acc) / seg : 0;
+          if (acc + seg >= dEff) {
+            const t = seg > 1e-9 ? (dEff - acc) / seg : 0;
             p = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
             break;
           }
@@ -2461,15 +2636,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             return pen;
           },
         };
-        // PRIMARY: one wide-window fine-grid solve
+        // PRIMARY: one wide-window fine-grid solve (stop-order-clamped curves)
         const solveCurves = s.marks.map((mk) =>
-          buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
+          buildLaneCurve(seqClampedPolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC),
         );
         let sol = solveRows(solveCurves, groups, ropts);
         // FAR-ATTACH: corridor-bounded align + join (one coarse + one polish)
         if (!sol && farSlideOn && groups.length >= 2 && spread > WIDE_ARC) {
           const farCurves = s.marks.map((mk) =>
-            buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, FAR_CAP),
+            buildLaneCurve(seqClampedPolysAt(mk.lineId, mk.flagNode), mk.pos, FAR_CAP),
           );
           // each bundle may slide to the MIDPOINT of its incident corridor on
           // either side (half the windowed carrier extent, floored at the
@@ -2500,7 +2675,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             // slide, so the ±2·FAR_STEP window brackets exact alignment).
             const coarse = sol;
             const fineCurves = s.marks.map((mk, i) =>
-              buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), coarse.pos[i], 2 * FAR_STEP),
+              buildLaneCurve(seqClampedPolysAt(mk.lineId, mk.flagNode), coarse.pos[i], 2 * FAR_STEP),
             );
             const { slideRange: _sr, latTol: _lt, ...fineBase } = farOpts;
             sol = solveRows(fineCurves, groups, {
@@ -2605,7 +2780,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           // (one small row-capsule per platform). Only reached AFTER every solve
           // attempt failed, so any station that seats today is untouched.
           const clusters = groups;
-          if (clusters.length >= 2 && args.stationSplit !== false) {
+          if (clusters.length >= 2) {
             const anchor = nodePx.get(s.nodeId) ?? s.marks[0].pos;
             let keep = 0;
             let keepD = Infinity;
@@ -2967,10 +3142,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const A: Pixel = [a0[0] + vx, a0[1] + vy];
             for (const i of idx) {
               const mk = st.marks[i];
-              let p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT), A, u, mk.pos);
+              let p = lineCrossNearest(buildLaneCurve(seqClampedPolysAt(mk.lineId, mk.flagNode), mk.pos, CHAIN_ARC_LIMIT), A, u, mk.pos);
               if (!p) {
                 // wide-window retry (mirrors placement escalation at solveRows)
-                p = lineCrossNearest(buildLaneCurve(lanePolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC), A, u, mk.pos);
+                p = lineCrossNearest(buildLaneCurve(seqClampedPolysAt(mk.lineId, mk.flagNode), mk.pos, WIDE_ARC), A, u, mk.pos);
               }
               if (!p) { ok = false; break; }
               const ea = laneEdgeArc(mk, p);
@@ -3312,13 +3487,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           return null;
         };
-        // Distance from a mark, optionally displaced by (dx,dy), to the nearest
-        // point on its OWN line's drawn lane. Infinity when the line has no drawn
-        // lane at that node, which no guard should read as a fault.
-        const inkDist = (mk: StMarks['marks'][number], dx: number, dy: number): number => {
-          const polys = lanePolysAt(mk.lineId, mk.flagNode);
-          if (!polys.length) return Infinity;
-          const px = mk.pos[0] + dx, py = mk.pos[1] + dy;
+        // Distance from a point to the nearest point on a set of lane polylines.
+        const distToLane = (polys: Pixel[][], px: number, py: number): number => {
           let best = Infinity;
           for (const poly of polys) {
             for (let i = 1; i < poly.length; i++) {
@@ -3334,6 +3504,18 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           return best;
         };
+        // Distance from a mark, optionally displaced by (dx,dy), to the nearest
+        // point on its OWN line's drawn lane. Infinity when the line has no drawn
+        // lane at that node, which no guard should read as a fault.
+        const inkDist = (mk: StMarks['marks'][number], dx: number, dy: number): number => {
+          const polys = lanePolysAt(mk.lineId, mk.flagNode);
+          if (!polys.length) return Infinity;
+          return distToLane(polys, mk.pos[0] + dx, mk.pos[1] + dy);
+        };
+        // Arc overshoot past the stop-order clamp for a displaced mark (see
+        // seqArcBeyond): positive = past the neighbouring stop's midpoint.
+        const clampOvershoot = (mk: StMarks['marks'][number], dx: number, dy: number): number =>
+          seqArcBeyond(mk.lineId, mk.flagNode, [mk.pos[0] + dx, mk.pos[1] + dy]);
         // A rigid shift moves every mark by the SAME vector, but each mark sits on
         // its OWN line's lane. Marks whose lane runs along the shift keep their
         // ink; one whose lane leaves at an angle is carried clear of it, and a stop
@@ -3561,6 +3743,14 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const dx = gx + axis[0] * off - c[0], dy = gy + axis[1] * off - c[1];
             const pts = st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel);
             if (minToOutside(pts, chainSet) < outsideFloor) { ok = false; failNid = `${smalls[i].nodeId}/outside`; break; }
+            // stop-order clamp: a slot that carries a mark past the midpoint of
+            // a stop-adjacent edge trades separation for an order inversion
+            // with the neighbouring stop; abandon the chain instead.
+            let ordered = true;
+            for (const mk of st.marks) {
+              if (clampOvershoot(mk, dx, dy) > Math.max(0.1, clampOvershoot(mk, 0, 0))) { ordered = false; break; }
+            }
+            if (!ordered) { ok = false; failNid = `${smalls[i].nodeId}/order`; break; }
             // octilinearity dry-run (rigidShift's guard, without mutating)
             const clone = st.marks.map((m) => ({ ...m, pos: [m.pos[0] + dx, m.pos[1] + dy] as Pixel, cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined }));
             if (!spineOctilinear(clone)) { ok = false; failNid = `${smalls[i].nodeId}/octi`; break; }
@@ -3790,7 +3980,44 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           mk.pos = placed;
           mk.cornerAfter = undefined;
           mk.chain = 0;
-          const rebuilt: Pixel[] = [placed, anchor];
+          // Shared-lane guard (the segPath.set below is a REPLACE, so it needs
+          // the same protection trimLaneAt's cut has): another station's mark
+          // of the same line can ride this very lane nearer its anchor end.
+          // Swapping the whole course for the straight stub would strand that
+          // mark off the ink, so keep the ridden tail of the original course
+          // and bridge the stub from the nearest ridden point instead.
+          const cumV = [0];
+          for (let i = 1; i < pts.length; i++) {
+            cumV.push(cumV[i - 1] + hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+          }
+          let keepFrom = Infinity; // arc from the dot end of the first ridden point
+          let keepPt: Pixel | null = null;
+          for (const st2 of gathered) {
+            for (const om of st2.marks) {
+              if (om === mk || om.lineId !== mk.lineId) continue;
+              let near = Infinity;
+              let arc = 0;
+              let pnp: Pixel = pts[0];
+              for (let i = 1; i < pts.length; i++) {
+                const ax = pts[i - 1][0], ay = pts[i - 1][1];
+                const vx = pts[i][0] - ax, vy = pts[i][1] - ay;
+                const l2 = vx * vx + vy * vy;
+                let t = l2 > 0 ? ((om.pos[0] - ax) * vx + (om.pos[1] - ay) * vy) / l2 : 0;
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                const qx = om.pos[0] - (ax + t * vx), qy = om.pos[1] - (ay + t * vy);
+                const dd = Math.sqrt(qx * qx + qy * qy); // sqrt is correctly-rounded
+                if (dd < near) { near = dd; arc = cumV[i - 1] + Math.sqrt(l2) * t; pnp = [ax + t * vx, ay + t * vy]; }
+              }
+              if (near <= r && arc < keepFrom) { keepFrom = arc; keepPt = pnp; }
+            }
+          }
+          let rebuilt: Pixel[];
+          if (keepPt) {
+            rebuilt = [placed, keepPt];
+            for (let i = 0; i < pts.length; i++) if (cumV[i] > keepFrom + 1e-9) rebuilt.push(pts[i]);
+          } else {
+            rebuilt = [placed, anchor];
+          }
           segPath.set(incEdge + '|' + mk.lineId, edge.from === mk.flagNode ? rebuilt : [...rebuilt].reverse());
           evicted.push({ node: s.nodeId, to: placed });
         }
