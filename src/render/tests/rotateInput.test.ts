@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rotateSchematicInput } from '../rotateInput';
+import { rotateSchematicInput, rotateCoord, unrotateCoord, reframeCoord, rotationCenterOf, rotationFrameOf } from '../rotateInput';
 import type { Coordinate } from '../../types/core';
 
 const GEO = {
@@ -113,4 +113,62 @@ test('rotateSchematicInput: stamps the data-region hull, crops nothing', () => {
 
 test('rotateSchematicInput: deterministic', () => {
   assert.equal(JSON.stringify(rotateSchematicInput(input(), 29)), JSON.stringify(rotateSchematicInput(input(), 29)));
+});
+
+// The crop box outlives the angle it was drawn at, so a point has to survive a
+// round trip through the frame and a carry between two angles.
+test('rotateCoord: agrees with the whole-input rotation', () => {
+  const i = input();
+  const frame = rotationFrameOf(i)!;
+  const out = rotateSchematicInput(i, 29);
+  const got = (out.stations as { coords: Coordinate }[])[0].coords;
+  const want = rotateCoord((i.stations as { coords: Coordinate }[])[0].coords, frame, 29);
+  assert.deepEqual(got, want);
+});
+
+test('unrotateCoord: inverts', () => {
+  const frame = rotationFrameOf(input())!;
+  const p: Coordinate = [-73.9, 40.75];
+  const back = unrotateCoord(rotateCoord(p, frame, 23), frame, 23);
+  assert.ok(Math.abs(back[0] - p[0]) < 1e-9 && Math.abs(back[1] - p[1]) < 1e-9, JSON.stringify(back));
+});
+
+test('reframeCoord: carries a point between two angles', () => {
+  const frame = rotationFrameOf(input())!;
+  const p: Coordinate = [-73.9, 40.75];
+  const at23 = rotateCoord(p, frame, 23);
+  const at45 = rotateCoord(p, frame, 45);
+  const carried = reframeCoord(at23, frame, 23, 45);
+  assert.ok(Math.abs(carried[0] - at45[0]) < 1e-9 && Math.abs(carried[1] - at45[1]) < 1e-9, JSON.stringify([carried, at45]));
+});
+
+test('reframeCoord: a rectangle turned by the angle delta lands axis-aligned', () => {
+  // What the crop editor commits: over a map drawn at `from`, the box that
+  // becomes upright in the frame at `to` is the one turned by (from - to). This
+  // sign is what the tilt handle draws with.
+  const frame = rotationFrameOf(input())!;
+  const from = 23, to = 45;
+  const rad = ((from - to) * Math.PI) / 180, c = Math.cos(rad), s = Math.sin(rad);
+  const [cx, cy] = rotateCoord([-73.9, 40.75], frame, from);
+  const hw = 0.05, hh = 0.03;
+  // Corners turned in METRIC space (the frame is pseudo-lng/lat).
+  const corners = ([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]] as Array<[number, number]>)
+    .map(([x, y]) => [cx + (x * c - y * s) / frame.k, cy + (x * s + y * c)] as Coordinate)
+    .map((p) => reframeCoord(p, frame, from, to));
+  const xs = corners.map((p) => (p[0] - corners[0][0]) * frame.k);
+  const ys = corners.map((p) => p[1] - corners[0][1]);
+  // Upright in the new frame: two distinct x values and two distinct y values.
+  assert.ok(Math.abs(xs[0] - xs[3]) < 1e-9 && Math.abs(xs[1] - xs[2]) < 1e-9, JSON.stringify(xs));
+  assert.ok(Math.abs(ys[0] - ys[1]) < 1e-9 && Math.abs(ys[2] - ys[3]) < 1e-9, JSON.stringify(ys));
+  assert.ok(Math.abs(Math.abs(xs[1] - xs[0]) - 2 * hw) < 1e-6, 'width kept');
+  assert.ok(Math.abs(Math.abs(ys[3] - ys[0]) - 2 * hh) < 1e-6, 'height kept');
+});
+
+test('rotationCenterOf: geography bbox midpoint, else the station extent', () => {
+  const i = input();
+  const gbb = i.geography!.bbox as number[];
+  assert.deepEqual(rotationCenterOf(i), [(gbb[0] + gbb[2]) / 2, (gbb[1] + gbb[3]) / 2]);
+  const noGeo = { stations: [{ coords: [0, 0] }, { coords: [10, 20] }] };
+  assert.deepEqual(rotationCenterOf(noGeo), [5, 10]);
+  assert.equal(rotationCenterOf({ stations: [] }), null);
 });

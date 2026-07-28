@@ -22,25 +22,28 @@
 import type { Coordinate } from '../types/core';
 import type { GeographyData, GeoPolyFeature } from '../geography/types';
 
-interface RotFrame {
+/** The rotation centre and its metric east scale. Fixed by the UNROTATED input,
+ *  so every angle shares one frame and a point can be carried between angles. */
+export interface RotCenter {
   cx: number;
   cy: number;
   k: number; // cos(center lat): metric east scale
+}
+
+interface RotFrame extends RotCenter {
   cosB: number;
   sinB: number;
 }
 
 const q9 = (v: number): number => Math.round(v * 1e9) / 1e9;
 
+function centerFor(center: Coordinate): RotCenter {
+  return { cx: center[0], cy: center[1], k: q9(Math.cos((center[1] * Math.PI) / 180)) };
+}
+
 function frameFor(center: Coordinate, bearingDeg: number): RotFrame {
   const rad = (bearingDeg * Math.PI) / 180;
-  return {
-    cx: center[0],
-    cy: center[1],
-    k: q9(Math.cos((center[1] * Math.PI) / 180)),
-    cosB: q9(Math.cos(rad)),
-    sinB: q9(Math.sin(rad)),
-  };
+  return { ...centerFor(center), cosB: q9(Math.cos(rad)), sinB: q9(Math.sin(rad)) };
 }
 
 function rot(c: Coordinate, f: RotFrame): Coordinate {
@@ -50,6 +53,56 @@ function rot(c: Coordinate, f: RotFrame): Coordinate {
   const e2 = e * f.cosB - n * f.sinB;
   const n2 = e * f.sinB + n * f.cosB;
   return [f.cx + e2 / f.k, f.cy + n2];
+}
+
+/** Forward rotation of one coordinate, matching what rotateSchematicInput applies
+ *  to the whole input at the same angle. */
+export function rotateCoord(c: Coordinate, center: RotCenter, deg: number): Coordinate {
+  const rad = (deg * Math.PI) / 180;
+  return rot(c, { ...center, cosB: q9(Math.cos(rad)), sinB: q9(Math.sin(rad)) });
+}
+
+/** Inverse of rotateCoord: a coordinate in the frame rotated by `deg`, back to
+ *  true geographic space. */
+export function unrotateCoord(c: Coordinate, center: RotCenter, deg: number): Coordinate {
+  return rotateCoord(c, center, -deg);
+}
+
+/** Carry a coordinate from the frame rotated by `from` into the one rotated by
+ *  `to`. A crop box outlives the angle it was drawn at, so it is re-expressed
+ *  rather than discarded whenever the angle moves. */
+export function reframeCoord(c: Coordinate, center: RotCenter, from: number, to: number): Coordinate {
+  return rotateCoord(unrotateCoord(c, center, from), center, to);
+}
+
+/** The input's stable rotation centre: the geography bbox midpoint when present
+ *  (stamped, deterministic), else the station coordinate bbox midpoint. Read from
+ *  the UNROTATED input, so it is the same whatever angle is applied. */
+export function rotationCenterOf(input: {
+  stations?: unknown[];
+  geography?: { bbox?: readonly number[] };
+}): Coordinate | null {
+  const gbb = input.geography?.bbox;
+  if (gbb) return [(gbb[0] + gbb[2]) / 2, (gbb[1] + gbb[3]) / 2];
+  let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+  for (const s of (input.stations ?? []) as { coords?: Coordinate }[]) {
+    const c = s.coords;
+    if (!c) continue;
+    if (c[0] < mnX) mnX = c[0];
+    if (c[0] > mxX) mxX = c[0];
+    if (c[1] < mnY) mnY = c[1];
+    if (c[1] > mxY) mxY = c[1];
+  }
+  return mnX <= mxX ? [(mnX + mxX) / 2, (mnY + mxY) / 2] : null;
+}
+
+/** The rotation frame for an input: its centre plus the metric east scale. */
+export function rotationFrameOf(input: {
+  stations?: unknown[];
+  geography?: { bbox?: readonly number[] };
+}): RotCenter | null {
+  const c = rotationCenterOf(input);
+  return c ? centerFor(c) : null;
 }
 
 /** Structural (shape-preserving) deep rotation of every coordinate the render
@@ -62,23 +115,7 @@ export function rotateSchematicInput<T extends {
   geography?: GeographyData;
 }>(input: T, bearingDeg: number): T {
   if (!bearingDeg || !Number.isFinite(bearingDeg)) return input;
-  // Stable rotation centre: the geography bbox midpoint when present (stamped,
-  // deterministic), else the station coordinate bbox midpoint.
-  let center: Coordinate | null = null;
-  const gbb = input.geography?.bbox;
-  if (gbb) center = [(gbb[0] + gbb[2]) / 2, (gbb[1] + gbb[3]) / 2];
-  else {
-    let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
-    for (const s of (input.stations ?? []) as { coords?: Coordinate }[]) {
-      const c = s.coords;
-      if (!c) continue;
-      if (c[0] < mnX) mnX = c[0];
-      if (c[0] > mxX) mxX = c[0];
-      if (c[1] < mnY) mnY = c[1];
-      if (c[1] > mxY) mxY = c[1];
-    }
-    if (mnX <= mxX) center = [(mnX + mxX) / 2, (mnY + mxY) / 2];
-  }
+  const center = rotationCenterOf(input);
   if (!center) return input;
   const f = frameFor(center, bearingDeg);
 
