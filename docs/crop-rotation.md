@@ -81,8 +81,10 @@ city, and dragging the tilt to 0 rights it.
   top-right corner, clear of the four resize handles. Dragging it turns the box
   about its centre; the centre and size are untouched, so tilting only re-orients.
   Because the backdrop is upright, the box's tilt *is* the orientation it commits.
-- **Snapping.** The angle snaps within a few degrees to 45° multiples and to the
-  city's own bearing, so both true north and the city's grain land exactly.
+- **Snapping.** Two octilinear families, each within a few degrees: the plain 45°
+  multiples off true north, and the 45° multiples measured off the city's own
+  bearing. A city's grain is as good a reference as north, so the map can be
+  turned square to it, or a quarter or half turn off it, and land exactly.
 - **Resizing a turned box** runs in the box's own frame, so it grows along its own
   edges, and the result is slid back so the grabbed corner holds still on screen.
 - **Clamping.** An upright box is clamped to the map frame. A turned one clamps

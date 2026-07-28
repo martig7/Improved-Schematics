@@ -29,15 +29,23 @@ export function rotatedRectCorners(
 
 /**
  * Snap an angle to the nearest preferred orientation within a tolerance.
+ *
+ * Every origin carries a full octilinear family: true north gives the plain 45
+ * degree multiples, and each extra origin gives the 45 degree multiples measured
+ * from ITSELF. A city's own grain is as good a reference as north, so a map can
+ * be turned square to it, or a half or quarter turn off it, and land exactly.
+ *
  * @param deg      candidate angle, degrees
- * @param extra    additional targets beyond the 45 degree multiples
+ * @param extra    additional origins, each seeding its own 45 degree family
  * @param tolDeg   how near a target has to be to snap onto it
  */
 export function snapAngle(deg: number, extra: readonly number[] = [], tolDeg = 4): number {
   const norm = (a: number): number => ((a % 360) + 360) % 360;
   const targets: number[] = [];
-  for (let k = 0; k < 8; k++) targets.push(k * 45);
-  for (const e of extra) if (Number.isFinite(e)) targets.push(norm(e));
+  for (const origin of [0, ...extra]) {
+    if (!Number.isFinite(origin)) continue;
+    for (let k = 0; k < 8; k++) targets.push(norm(origin + k * 45));
+  }
   const d = norm(deg);
   let best = deg, bestGap = tolDeg;
   for (const t of targets) {
