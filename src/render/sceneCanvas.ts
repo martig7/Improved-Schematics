@@ -364,9 +364,9 @@ function drawTiltHandle(
   ctx: CanvasRenderingContext2D,
   x: number, y: number, angle: number, scale: number,
 ): void {
-  const R = 11 / scale;      // pad radius, constant on screen
-  const r = 6 / scale;       // arc radius
-  const tip = 3.2 / scale;   // arrowhead half-size
+  const R = 12 / scale;      // pad radius, constant on screen
+  const r = 6.4 / scale;     // arc radius
+  const tip = 3.4 / scale;   // arrowhead half-size
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
@@ -389,7 +389,8 @@ function drawTiltHandle(
     const ax = Math.cos(a) * r, ay = Math.sin(a) * r;
     // Tangent at the arc's end, so each head points the way the arc runs.
     const tx = -Math.sin(a), ty = Math.cos(a);
-    const s = a > Math.PI ? -1 : 1;
+    // Each head points AWAY from the arc's body, so the two read as opposed.
+    const s = a > Math.PI ? 1 : -1;
     ctx.beginPath();
     ctx.moveTo(ax + tx * tip * s * 1.6, ay + ty * tip * s * 1.6);
     ctx.lineTo(ax - ty * tip, ay + tx * tip);
