@@ -214,6 +214,11 @@ export function drawScene(
         ctx.lineTo(p.x2, p.y2);
         ctx.strokeStyle = p.stroke;
         ctx.lineWidth = p.worldScale ? p.strokeWidth : p.strokeWidth / scale;
+        // A line prim caps BUTT, as the SVG it mirrors does: <line> carries no
+        // stroke-linecap. Without setting it the canvas keeps whatever the last
+        // stroke left behind, which is the routes' round cap, and every tick and
+        // cut line then reaches half a stroke width past its own end.
+        ctx.lineCap = 'butt';
         ctx.stroke();
         break;
       }
