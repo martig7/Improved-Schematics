@@ -13,6 +13,33 @@ test('bulletFontSize shrinks for multi-char names', () => {
   assert.ok(bulletFontSize(10, 'ABC') < 17);
 });
 
+test('a bullet fits inside its dot, letters as well as digits', () => {
+  // Capitals in the bold stack run wider than digits, and the width a circle offers
+  // at the text's own height is the chord there, not the diameter. Both together
+  // used to push longer bullets out past the dot.
+  const r = 10;
+  const CAP = 0.72;
+  const adv = (ch: string): number => (ch >= '0' && ch <= '9' ? 0.60 : 0.72);
+  for (const name of ['A', '1', '4A', 'ABC', 'NCL', 'BLVE', 'WWWW', '12345']) {
+    const fs = bulletFontSize(r, name);
+    let w = 0;
+    for (const ch of name) w += adv(ch);
+    const halfW = w * fs / 2;
+    const halfH = CAP * fs / 2;
+    assert.ok(Math.sqrt(halfW * halfW + halfH * halfH) <= r + 1e-9, `${name} overflows its dot at ${fs.toFixed(2)}px`);
+  }
+});
+
+test('a one-character bullet keeps the full prescribed size', () => {
+  // The shrink must only ever bite on bullets that would not otherwise fit.
+  for (const name of ['A', '1', 'M', 'W']) assert.equal(bulletFontSize(10, name), 17, name);
+});
+
+test('a longer bullet shrinks monotonically', () => {
+  const sizes = ['A', 'AB', 'ABC', 'ABCD', 'ABCDE'].map((n) => bulletFontSize(10, n));
+  for (let i = 1; i < sizes.length; i++) assert.ok(sizes[i] < sizes[i - 1], `${i} chars did not shrink`);
+});
+
 test('circle carries optional data attrs', () => {
   const g = circle(1, 2, 3, { fill: '#fff', stroke: '#000', strokeWidth: 1.5, data: { 'data-line': 'L1' } });
   assert.equal(g.kind, 'circle');

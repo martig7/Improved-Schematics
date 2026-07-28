@@ -15,10 +15,27 @@ export function contrastInk(hex: string): string {
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#111111' : '#ffffff';
 }
 
-/** Bullet font size for a dot of radius r and label name (matches the classic
- *  marker's sizing: full at 1 char, shrinking for longer bullets). */
+// Cap height in ems: what a bullet's text actually occupies vertically.
+const CAP_EM = 0.72;
+// Fraction of the dot the text may fill, so it clears the rim rather than kissing
+// it: a glyph's ink runs to the edge of its advance at the extremes.
+const BULLET_FILL = 0.92;
+
+/** Bullet font size for a dot of radius r and label name: full at 1 char, shrinking
+ *  for longer bullets.
+ *
+ *  A bullet has to fit the DOT, not merely span it. Sizing the text to the dot's
+ *  full diameter puts its corners outside the circle, since the width available at
+ *  the text's own height is the chord there, not the diameter. Fitting the text's
+ *  box inside the circle is the same as holding its DIAGONAL to the diameter, which
+ *  is what this does. Widths come from the same per-character advances the label
+ *  fitter uses, where capitals are wider than digits. */
 export function bulletFontSize(r: number, name: string): number {
-  return name.length <= 1 ? r * 1.7 : Math.min(r * 1.7, (2 * r * 0.92) / (0.6 * name.length));
+  let em = 0;
+  for (const ch of name) em += charAdvance(ch);
+  if (em <= 0) return r * 1.7;
+  // sqrt, not hypot: the render must agree bit-for-bit across V8 builds.
+  return Math.min(r * 1.7, (2 * r * BULLET_FILL) / Math.sqrt(em * em + CAP_EM * CAP_EM));
 }
 
 /** Ring/outline stroke width for a dot, proportional to its radius. The
