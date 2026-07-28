@@ -2112,6 +2112,38 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       if (!poly || !edge || poly.length < 2) return;
       const atStart = edge.from === nodeId;
       const pts = atStart ? poly : [...poly].reverse();
+      // Never cut back past a marker seated on this lane. The trim runs from the
+      // `nodeId` end inward, so a mark nearer that end than the cut would be left
+      // beyond the ink, drawing as a detached dot with no track reaching it. The
+      // shared-anchor guard at the call sites only knows about marks flagged at
+      // the SAME node, so it cannot see a stop at the FAR end of this edge, which
+      // is exactly who a deep trim strands on a short edge.
+      let cut = d;
+      for (const st of gathered) {
+        for (const mk of st.marks) {
+          if (mk.lineId !== lineId) continue;
+          if (mk.flagNode !== edge.from && mk.flagNode !== edge.to) continue;
+          let acc2 = 0;
+          let near = Infinity;
+          let arc = Infinity;
+          for (let i = 1; i < pts.length; i++) {
+            const ax = pts[i - 1][0], ay = pts[i - 1][1];
+            const vx = pts[i][0] - ax, vy = pts[i][1] - ay;
+            const L = vx * vx + vy * vy;
+            let t = L > 0 ? ((mk.pos[0] - ax) * vx + (mk.pos[1] - ay) * vy) / L : 0;
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            const qx = mk.pos[0] - (ax + t * vx), qy = mk.pos[1] - (ay + t * vy);
+            const dd = Math.sqrt(qx * qx + qy * qy); // sqrt is correctly-rounded
+            if (dd < near) { near = dd; arc = acc2 + Math.sqrt(L) * t; }
+            acc2 += Math.sqrt(L);
+          }
+          // Only a mark actually ON this lane constrains it; one seated elsewhere
+          // has no claim on where this lane ends.
+          if (near <= r && arc < cut) cut = arc;
+        }
+      }
+      if (!(cut > 0)) return; // a mark sits at the very tip: nothing to trim
+      d = cut;
       let acc = 0;
       let out: Pixel[] | null = null;
       for (let i = 1; i < pts.length; i++) {
@@ -3272,6 +3304,44 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           return null;
         };
+        // Distance from a mark, optionally displaced by (dx,dy), to the nearest
+        // point on its OWN line's drawn lane. Infinity when the line has no drawn
+        // lane at that node, which no guard should read as a fault.
+        const inkDist = (mk: StMarks['marks'][number], dx: number, dy: number): number => {
+          const polys = lanePolysAt(mk.lineId, mk.flagNode);
+          if (!polys.length) return Infinity;
+          const px = mk.pos[0] + dx, py = mk.pos[1] + dy;
+          let best = Infinity;
+          for (const poly of polys) {
+            for (let i = 1; i < poly.length; i++) {
+              const a = poly[i - 1], b = poly[i];
+              const vx = b[0] - a[0], vy = b[1] - a[1];
+              const L = vx * vx + vy * vy;
+              let t = L > 0 ? ((px - a[0]) * vx + (py - a[1]) * vy) / L : 0;
+              t = t < 0 ? 0 : t > 1 ? 1 : t;
+              const qx = px - (a[0] + t * vx), qy = py - (a[1] + t * vy);
+              const d = Math.sqrt(qx * qx + qy * qy); // sqrt is correctly-rounded
+              if (d < best) best = d;
+            }
+          }
+          return best;
+        };
+        // A rigid shift moves every mark by the SAME vector, but each mark sits on
+        // its OWN line's lane. Marks whose lane runs along the shift keep their
+        // ink; one whose lane leaves at an angle is carried clear of it, and a stop
+        // drawn off its own line reads as a detached dot with no track reaching it.
+        // Declining costs at most an un-spread pair of markers, which is a smaller
+        // fault than a marker separated from its line. Phrased as a monotonicity
+        // check, so a mark already off its ink can still be shifted, just never
+        // further off.
+        const takesMarkOffInk = (st: StMarks, dx: number, dy: number): boolean => {
+          for (const mk of st.marks) {
+            const after = inkDist(mk, dx, dy);
+            if (!Number.isFinite(after) || after <= r) continue;
+            if (after > inkDist(mk, 0, 0) + 1e-6) return true;
+          }
+          return false;
+        };
         // Translate a whole station's capsule rigidly by (dx,dy), re-deriving its
         // corners on a clone first; commit only if the clone stays octilinear (a
         // single-mark capsule trivially passes — no spine). Returns committed.
@@ -3290,6 +3360,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const shiftedHull = capsHullOf(clone);
             if (capsHullSelfCrosses(shiftedHull) || capsHullClash(st, shiftedHull)) return false;
           }
+          if (takesMarkOffInk(st, dx, dy)) return false;
           for (const mk of st.marks) {
             mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
             if (mk.cornerAfter) mk.cornerAfter = [mk.cornerAfter[0] + dx, mk.cornerAfter[1] + dy];
