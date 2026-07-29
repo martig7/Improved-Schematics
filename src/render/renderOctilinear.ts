@@ -11,6 +11,7 @@ import {
   reportCorridorAbandon, reportCorridorPlacement, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations, reportReanchoredFlag,
+  seqAuditDebug, reportSeqClampViolations, reportSeqClampSides,
   reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { reportChainSeats } from './debug/chainSeats.debug';
@@ -3876,6 +3877,22 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
       reportEgregiousOverlaps({ layout, r, smalls, gathered });
+      const seqAudit = seqAuditDebug();
+      if (seqAudit) {
+        reportSeqClampViolations(gathered.flatMap((s) => s.marks.map((mk) => ({
+          nodeId: s.nodeId,
+          label: layout.nodes.get(s.nodeId.split('::')[0])?.label ?? '',
+          bullet: mk.lineId.slice(0, 8),
+          beyond: seqArcBeyond(mk.lineId, mk.flagNode, mk.pos),
+        }))));
+        reportSeqClampSides(seqAudit, gathered, {
+          warmCuts: (l, nd) => void seqClampedPolysAt(l, nd),
+          cutsOf: (l, nd) => seqClampCutCache.get(l + '|' + nd) ?? [],
+          sidesOf: lanePolysAtEx,
+          isStop: isStopOf,
+          beyond: seqArcBeyond,
+        });
+      }
     }
     reportSlidStations({ layout, slid });
 

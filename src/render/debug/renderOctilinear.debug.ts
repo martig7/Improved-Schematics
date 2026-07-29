@@ -1128,6 +1128,67 @@ export function reportSlideClashDeclined(capPlaceDebug: boolean, nodeId: string,
   if (capPlaceDebug) console.error(`[capsovl] slide declined (would cross ${clash}) ${nodeId}`);
 }
 
+/** OCTI_SEQAUDIT flag (raw envStr value — truthy enables the audit). */
+export function seqAuditDebug(): string | undefined {
+  return envStr('OCTI_SEQAUDIT');
+}
+
+/** OCTI_SEQAUDIT: marks seated beyond the half-span their stop owns on a
+ *  stop-adjacent carrier side. Every placement and slide is supposed to inherit
+ *  that bound, so a positive reading names a pass that moved a mark outside it,
+ *  and two neighbouring stops can then trade places along their carrier. */
+export function reportSeqClampViolations(
+  rows: Array<{ nodeId: string; label: string; bullet: string; beyond: number }>,
+): void {
+  const bad = rows.filter((rw) => rw.beyond > 0.5).sort((a, b) => b.beyond - a.beyond);
+  console.error(`[seqaudit] ${bad.length} of ${rows.length} marks past the half-span they own`);
+  for (const rw of bad.slice(0, 24)) {
+    console.error(`[seqaudit]   ${rw.nodeId} "${rw.label}" ${rw.bullet} beyond=${rw.beyond.toFixed(2)}px`);
+  }
+}
+
+/** OCTI_SEQAUDIT=<nodeId>: the clamp state of one station's marks, per incident
+ *  carrier side. A side is only pulled back when its far node is a stop of the
+ *  SAME line, so an unclamped side (cut Infinity) is one along which nothing
+ *  bounds how far the mark may travel. Accessors are the caller's own private
+ *  helpers. */
+export function reportSeqClampSides<S extends { nodeId: string; marks: Array<{ lineId: string; flagNode: string; pos: Pixel }> }>(
+  target: string,
+  gathered: readonly S[],
+  fns: {
+    warmCuts: (lineId: string, nodeId: string) => void;
+    cutsOf: (lineId: string, nodeId: string) => number[];
+    sidesOf: (lineId: string, nodeId: string) => Array<{ farNode: string; bridgeArc: number; poly: Pixel[] }>;
+    isStop: (lineId: string, nodeId: string) => boolean;
+    beyond: (lineId: string, nodeId: string, p: Pixel) => number;
+  },
+): void {
+  for (const s of gathered) {
+    if (s.nodeId.split('::')[0] !== target) continue;
+    for (const mk of s.marks) {
+      fns.warmCuts(mk.lineId, mk.flagNode);
+      const cuts = fns.cutsOf(mk.lineId, mk.flagNode);
+      const sides = fns.sidesOf(mk.lineId, mk.flagNode);
+      console.error(
+        `[seqaudit] ${s.nodeId} flag=${mk.flagNode} line=${mk.lineId.slice(0, 8)} ` +
+        `mark=${mk.pos[0].toFixed(1)},${mk.pos[1].toFixed(1)} beyond=${fns.beyond(mk.lineId, mk.flagNode, mk.pos).toFixed(2)}`,
+      );
+      sides.forEach((side, i) => {
+        let len = 0;
+        for (let k = 1; k < side.poly.length; k++) {
+          const dx = side.poly[k][0] - side.poly[k - 1][0], dy = side.poly[k][1] - side.poly[k - 1][1];
+          len += Math.sqrt(dx * dx + dy * dy);
+        }
+        const cut = cuts[i];
+        console.error(
+          `[seqaudit]    side${i} far=${side.farNode} farIsStopOfLine=${fns.isStop(mk.lineId, side.farNode)} ` +
+          `len=${len.toFixed(1)} bridge=${side.bridgeArc.toFixed(1)} cut=${Number.isFinite(cut) ? cut.toFixed(1) : 'UNCLAMPED'}`,
+        );
+      });
+    }
+  }
+}
+
 /** CSPREAD_DEBUG target flag (raw envStr value — truthy enables the trace). */
 export function corridorSpreadDebug(): string | undefined {
   return envStr('CSPREAD_DEBUG');
