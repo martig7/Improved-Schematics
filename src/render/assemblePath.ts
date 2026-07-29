@@ -98,12 +98,17 @@ export function assembleDByLine(args: AssembleArgs): Map<string, string[]> {
   /** Emit one lane piece: M when the pen is detached, plain continuation
    *  when the pen already sits on its first vertex; interior corners get
    *  the standard clamped quadratic fillet. */
-  const emitPiece = (d: string[], pts: Pixel[], cur: Pixel | null): Pixel => {
+  const emitPiece = (d: string[], pts: Pixel[], cur: Pixel | null): Pixel | null => {
     // A lane with no extent has no ink to draw. Emitting it anyway leaves a
     // zero-length subpath, which draws nothing but still reads downstream as a
     // real drawn lane, and a stop counting its incident lanes can then mistake
     // a through node for a line end.
-    if (pts.length < 2 || laneExtent(pts) < 1e-6) return cur ?? pts[pts.length - 1];
+    // Skipping it must leave the pen exactly where it was: reporting the dropped
+    // lane's endpoint would place a pen that was never put down, and the next
+    // piece, finding itself already attached there, would open the stream with a
+    // draw command instead of a moveto. A path whose data does not begin with a
+    // moveto is in error and paints nothing at all, line and casing both.
+    if (pts.length < 2 || laneExtent(pts) < 1e-6) return cur;
     if (segmentsOut) for (let k = 1; k < pts.length; k++) segmentsOut.push({ p1: pts[k - 1], p2: pts[k] });
     const attached = cur !== null && hyp(cur[0] - pts[0][0], cur[1] - pts[0][1]) < 0.5;
     if (!attached) d.push('M' + fmtPt(pts[0]));

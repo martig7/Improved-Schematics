@@ -76,6 +76,32 @@ test('assembler: a corner course is one continuous subpath with its curve splice
   assert.equal(countCmd(d, 'Q'), 1, 'corner curve in-path');
 });
 
+test('assembler: skipping a zero-extent first lane still opens the path with a moveto', () => {
+  const f: Fixture = {
+    edges: [
+      { id: 'e1', from: 'A', to: 'N' },
+      { id: 'e2', from: 'N', to: 'B' },
+    ],
+    bases: new Map([
+      ['e1', [[0, 100], [100, 100]] as Pixel[]],
+      ['e2', [[100, 100], [200, 100]] as Pixel[]],
+    ]),
+    orders: new Map([['e1', ['l1']], ['e2', ['l1']]]),
+    traversals: new Map([['l1', [fwd('e1'), fwd('e2')]]]),
+  };
+  const { args, segPath } = build(f);
+  // The course's FIRST lane collapses onto the second's start, so it carries no
+  // ink and is not drawn. The pen is therefore still unplaced when the second
+  // lane emits, and that lane must open the stream itself: path data that
+  // begins with anything but a moveto is in error and paints nothing at all.
+  const start = segPath.get('e2|l1')![0];
+  segPath.set('e1|l1', [[start[0], start[1]], [start[0], start[1]]]);
+  const d = assembleDByLine(args).get('l1')!;
+  assert.ok(d.length > 0, 'the line still draws');
+  assert.ok(d[0].startsWith('M'), 'begins with a moveto: ' + d.join(' '));
+  assert.equal(countCmd(d, 'M'), 1, 'one subpath: ' + d.join(' '));
+});
+
 test('assembler: a lateral jog is a constructed in-path transition, not a separate chord', () => {
   const f: Fixture = {
     edges: [
