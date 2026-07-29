@@ -8,7 +8,7 @@ import {
   reportCapsOvlStats, reportCapsAudit,
   reportRigidSlideDeclined, reportSlideStackDeclined,
   reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
-  reportCorridorAbandon, reportCorridorOrderPlan, reportCorridorSpread, reportCorridorSpreadSummary,
+  reportCorridorAbandon, reportCorridorPlacement, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations, reportReanchoredFlag,
   reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
@@ -28,6 +28,7 @@ import { findParallelPairs, applyJointSeating } from './layout/corridorSep';
 import { detectChains } from './chains';
 import { computeChainSeats } from './chainSeats';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
+import { solveCorridorSpread } from './layout/corridorSpread';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { buildSeatInkOracle, type SeatInkOracle } from './layout/seatInk';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -3747,75 +3748,95 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             }
           }
           if (!axis) continue; // no derivable direction → leave for the box pass
-          // signed position of each member along the axis (projection of centre),
-          // then ORDER by it (tie-break nodeId) and re-space at `touch` intervals
-          // recentred on the chain centroid. Straight-line, so no extrapolation
-          // edge cases; a chain whose lane is sub-pixel still separates cleanly.
+          // Signed position of each member along the axis (projection of centre),
+          // then ORDER by it (tie-break nodeId). Members travel ALONG the axis
+          // only: the corridor lane runs that way, so an along-axis slide keeps
+          // each mark on its own ink, where snapping the whole chain onto one
+          // line through its centroid would carry the laterally-seated ones off.
           const cen = (i: number) => centre(smalls[i]);
           let gx = 0, gy = 0;
           for (const i of order) { const c = cen(i); gx += c[0]; gy += c[1]; }
           gx /= order.length; gy /= order.length;
           const proj = (i: number) => { const c = cen(i); return (c[0] - gx) * axis![0] + (c[1] - gy) * axis![1]; };
           const seq2 = [...order].sort((a, b) => (proj(a) - proj(b)) || (smalls[a].nodeId < smalls[b].nodeId ? -1 : 1));
-          const step = touch;
-          const mid = (seq2.length - 1) / 2;
-          // ATOMIC commit: compute every member's slot translation, and verify
-          // ALL of them stay octilinear AND keep every marker ≥ `outsideFloor`
-          // from any NON-chain station. `outsideFloor` is the DRAWN ring-touch
-          // distance (scaled marker fill 2·r·MARKER_SCALE ≈ the diag's "severe"
-          // floor) — a spread member may GRAZE a crossing corridor's stop (the
-          // Hyde cable line is crossed by Lombard etc. in a dense district) but
-          // never MERGE drawn fills. If ANY member fails, the WHOLE chain is
-          // abandoned (no partial spread — a partial leaves the failing member
-          // boxed AND nudges its neighbours into NEW boxes) and ALL its corridor
-          // pairs are dropped so the last-resort box reproduces the un-spread
-          // baseline for that cluster.
-          const outsideFloor = Math.min(boxFloor, 2 * r * MARKER_SCALE);
-          const plan: Array<{ i: number; dx: number; dy: number; pts: Pixel[] }> = [];
-          let ok = true;
-          let failNid = '';
-          for (let k = 0; k < seq2.length && ok; k++) {
-            const i = seq2[k];
+          const n = seq2.length;
+          // Clearance a re-spaced member keeps from any NON-chain station: the
+          // DRAWN fill-touch distance, where two bullet fills merge. A member may
+          // GRAZE a crossing corridor's stop but never merge with one. This is a
+          // property of the marker size and nothing else; tying it to the
+          // last-resort box threshold (which defaults to 0, boxing disabled) left
+          // it at zero and the check unable to refuse anything. Phrased as a
+          // monotonicity test, so a member already crowded against an outsider
+          // can still be spread, just never pushed closer to it.
+          const fillTouch = 2 * r * MARKER_SCALE;
+          const outsideFloor = fillTouch;
+          const homeClear = new Map<number, number>();
+          const clearAtHome = (i: number): number => {
+            let v = homeClear.get(i);
+            if (v === undefined) homeClear.set(i, (v = minToOutside(smalls[i].marks.map((m) => m.pos), chainSet)));
+            return v;
+          };
+          // Every constraint on a member is a function of ITS OWN travel along
+          // the axis: the stop-order clamp, the shift vetoes, and the clearance
+          // to non-chain stations. Measuring each member's reachable interval
+          // once turns placement into a bounded 1-D problem, where stop order
+          // holds by construction (each stop keeps to its own interval) rather
+          // than being tested after a fixed-pitch guess and the whole chain
+          // abandoned when one member's guess lands outside.
+          const feasibleAt = (i: number, off: number): boolean => {
             const st = smalls[i];
-            const off = (k - mid) * step;
-            const c = cen(i);
-            const dx = gx + axis[0] * off - c[0], dy = gy + axis[1] * off - c[1];
-            const pts = st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel);
-            if (minToOutside(pts, chainSet) < outsideFloor) { ok = false; failNid = `${smalls[i].nodeId}/outside`; break; }
-            // stop-order clamp: a slot that carries a mark past the midpoint of
-            // a stop-adjacent edge trades separation for an order inversion
-            // with the neighbouring stop; abandon the chain instead.
-            let ordered = true;
+            const dx = axis![0] * off, dy = axis![1] * off;
             for (const mk of st.marks) {
-              if (clampOvershoot(mk, dx, dy) > Math.max(0.1, clampOvershoot(mk, 0, 0))) { ordered = false; break; }
+              if (clampOvershoot(mk, dx, dy) > Math.max(0.1, clampOvershoot(mk, 0, 0))) return false;
             }
-            if (!ordered) { ok = false; failNid = `${smalls[i].nodeId}/order`; break; }
-            // the WHOLE shift veto set, so nothing can refuse this member later
-            if (!rigidShiftAllowed(st, dx, dy)) { ok = false; failNid = `${smalls[i].nodeId}/shift`; break; }
-            plan.push({ i, dx, dy, pts });
+            if (!rigidShiftAllowed(st, dx, dy)) return false;
+            const pts = st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel);
+            const clear = minToOutside(pts, chainSet);
+            return clear >= outsideFloor || clear >= clearAtHome(i) - 1e-6;
+          };
+          // Reach is the feasible run CONTAINING the member's present position,
+          // so a member is never planned across a gap it cannot travel through.
+          const REACH = 2 * touch;
+          const PROBE = touch / 16;
+          const reachOf = (i: number): { lo: number; hi: number } => {
+            let lo = 0, hi = 0;
+            for (let k = 1; k * PROBE <= REACH; k++) { const o = k * PROBE; if (!feasibleAt(i, o)) break; hi = o; }
+            for (let k = 1; k * PROBE <= REACH; k++) { const o = -k * PROBE; if (!feasibleAt(i, o)) break; lo = o; }
+            return { lo, hi };
+          };
+          const home = seq2.map((i) => proj(i));
+          const reach = seq2.map((i) => reachOf(i));
+          const lo = home.map((h, k) => h + reach[k].lo);
+          const hi = home.map((h, k) => h + reach[k].hi);
+          // Below the drawn fill-touch a spread buys nothing: the bullets merge
+          // at that spacing however they are arranged.
+          const solved = solveCorridorSpread(home, lo, hi, touch, fillTouch);
+          let ok = solved !== null;
+          let failNid = ok ? '' : 'room';
+          const gap = solved?.gap ?? 0;
+          const plan: Array<{ i: number; off: number; dx: number; dy: number; pts: Pixel[] }> = [];
+          if (solved) {
+            for (let k = 0; k < n; k++) {
+              const i = seq2[k];
+              const st = smalls[i];
+              const off = solved.at[k] - home[k];
+              const dx = axis[0] * off, dy = axis[1] * off;
+              plan.push({ i, off, dx, dy, pts: st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel) });
+            }
           }
-          // intra-chain marker floor: planned markers (in slot order) must stay
-          // ≥ touch from EVERY other planned member, not just the slot neighbour.
-          // For a curved corridor or a multi-mark member the centroid spacing can
-          // still leave two nearest markers tight. Abandon the chain if so.
+          // The bounds are per-member; a curved corridor or a multi-mark member
+          // can still leave two planned markers nearer than the gap. Verify the
+          // assembled plan before it commits, and re-verify every member's own
+          // vetoes at its FINAL offset so the commit cannot be refused.
+          for (let k = 0; ok && k < plan.length; k++) {
+            if (!feasibleAt(plan[k].i, plan[k].off)) { ok = false; failNid = `${smalls[plan[k].i].nodeId}/shift`; }
+          }
           for (let x = 0; ok && x < plan.length; x++) for (let y = x + 1; y < plan.length; y++) {
             let md = Infinity;
             for (const p of plan[x].pts) for (const q of plan[y].pts) { const dd = hyp(p[0] - q[0], p[1] - q[1]); if (dd < md) md = dd; }
-            if (md < touch - 1e-6) { ok = false; failNid = `${smalls[plan[x].i].nodeId}~${smalls[plan[y].i].nodeId}/intra`; }
+            if (md < gap - 1e-6) { ok = false; failNid = `${smalls[plan[x].i].nodeId}~${smalls[plan[y].i].nodeId}/intra`; }
           }
-          reportCorridorOrderPlan(SPREAD_DBG, seq2.map((i) => smalls[i].nodeId), step, (k, spacing) => {
-            const st = smalls[seq2[k]];
-            const c = cen(seq2[k]);
-            const off = (k - mid) * spacing;
-            const dx = gx + axis![0] * off - c[0], dy = gy + axis![1] * off - c[1];
-            let base = 0, planned = 0;
-            for (const mk of st.marks) {
-              const b = clampOvershoot(mk, 0, 0), p = clampOvershoot(mk, dx, dy);
-              if (b > base) base = b;
-              if (p > planned) planned = p;
-            }
-            return { move: Math.sqrt(dx * dx + dy * dy), base, planned };
-          });
+          reportCorridorPlacement(SPREAD_DBG, seq2.map((i) => smalls[i].nodeId), gap, touch, home, lo, hi, plan.map((p) => hyp(p.dx, p.dy)));
           if (!ok) {
             for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) corridorPairs.delete(pairKey(members[x], members[y]));
             reportCorridorAbandon(SPREAD_DBG, failNid, seq2.map((i) => smalls[i].nodeId));

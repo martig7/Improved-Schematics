@@ -1139,35 +1139,29 @@ export function reportCorridorAbandon(dbg: string | undefined, failNid: string, 
   if (dbg) console.error(`[CSPREAD] chain ABANDON fail=${failNid} order=[${orderNodeIds.join(',')}]`);
 }
 
-/** CSPREAD_DEBUG: the stop-order budget of a planned chain, per slot, plus a
- *  sweep of smaller spacings. `base` and `planned` are arc px past the
- *  neighbouring stop's midpoint before and after the planned move; the plan
- *  refuses a member whose `planned` exceeds its `base`. The sweep reports the
- *  widest spacing every member would accept, which distinguishes a chain with
- *  no room from one refused only at full spacing.
- *  `probe(slot, spacing)` is the caller's own plan arithmetic. */
-export function reportCorridorOrderPlan(
+/** CSPREAD_DEBUG: a chain's placement problem and its solution. Per member:
+ *  the reachable interval along the axis (axis coordinates, relative to the
+ *  chain centroid) around its present position, and how far it was actually
+ *  moved. `gap` is the widest spacing those intervals admit, against the `want`
+ *  the pass would take if the corridor were free. */
+export function reportCorridorPlacement(
   dbg: string | undefined,
   nodeIds: string[],
-  step: number,
-  probe: (slot: number, spacing: number) => { move: number; base: number; planned: number },
+  gap: number,
+  want: number,
+  home: number[],
+  lo: number[],
+  hi: number[],
+  moved: number[],
 ): void {
   if (!dbg) return;
-  const refused = (r: { base: number; planned: number }): boolean => r.planned > Math.max(0.1, r.base);
-  console.error(`[CSPREAD] order budget at step=${step.toFixed(2)}px (arc px past the neighbour midpoint)`);
+  console.error(`[CSPREAD] placement gap=${gap.toFixed(2)} of want=${want.toFixed(2)}px, ${nodeIds.length} members`);
   for (let k = 0; k < nodeIds.length; k++) {
-    const r = probe(k, step);
+    const move = k < moved.length ? `${moved[k].toFixed(2)}px` : 'abandoned';
     console.error(
-      `[CSPREAD]   slot${k} ${nodeIds[k]} move=${r.move.toFixed(2)} ` +
-      `base=${r.base.toFixed(2)} planned=${r.planned.toFixed(2)}${refused(r) ? '  REFUSES' : ''}`,
+      `[CSPREAD]   ${nodeIds[k]} at=${home[k].toFixed(2)} ` +
+      `reach=[${lo[k].toFixed(2)},${hi[k].toFixed(2)}] moved=${move}`,
     );
-  }
-  for (const pct of [90, 80, 70, 60, 50, 40, 30, 20, 10]) {
-    const s = (step * pct) / 100;
-    let ok = true;
-    for (let k = 0; k < nodeIds.length && ok; k++) if (refused(probe(k, s))) ok = false;
-    console.error(`[CSPREAD]   step=${s.toFixed(2)} (${pct}%) -> ${ok ? 'ORDER OK' : 'refused'}`);
-    if (ok) break;
   }
 }
 
