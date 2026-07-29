@@ -1139,6 +1139,38 @@ export function reportCorridorAbandon(dbg: string | undefined, failNid: string, 
   if (dbg) console.error(`[CSPREAD] chain ABANDON fail=${failNid} order=[${orderNodeIds.join(',')}]`);
 }
 
+/** CSPREAD_DEBUG: the stop-order budget of a planned chain, per slot, plus a
+ *  sweep of smaller spacings. `base` and `planned` are arc px past the
+ *  neighbouring stop's midpoint before and after the planned move; the plan
+ *  refuses a member whose `planned` exceeds its `base`. The sweep reports the
+ *  widest spacing every member would accept, which distinguishes a chain with
+ *  no room from one refused only at full spacing.
+ *  `probe(slot, spacing)` is the caller's own plan arithmetic. */
+export function reportCorridorOrderPlan(
+  dbg: string | undefined,
+  nodeIds: string[],
+  step: number,
+  probe: (slot: number, spacing: number) => { move: number; base: number; planned: number },
+): void {
+  if (!dbg) return;
+  const refused = (r: { base: number; planned: number }): boolean => r.planned > Math.max(0.1, r.base);
+  console.error(`[CSPREAD] order budget at step=${step.toFixed(2)}px (arc px past the neighbour midpoint)`);
+  for (let k = 0; k < nodeIds.length; k++) {
+    const r = probe(k, step);
+    console.error(
+      `[CSPREAD]   slot${k} ${nodeIds[k]} move=${r.move.toFixed(2)} ` +
+      `base=${r.base.toFixed(2)} planned=${r.planned.toFixed(2)}${refused(r) ? '  REFUSES' : ''}`,
+    );
+  }
+  for (const pct of [90, 80, 70, 60, 50, 40, 30, 20, 10]) {
+    const s = (step * pct) / 100;
+    let ok = true;
+    for (let k = 0; k < nodeIds.length && ok; k++) if (refused(probe(k, s))) ok = false;
+    console.error(`[CSPREAD]   step=${s.toFixed(2)} (${pct}%) -> ${ok ? 'ORDER OK' : 'refused'}`);
+    if (ok) break;
+  }
+}
+
 /** CSPREAD_DEBUG: a corridor-spread chain was spread. */
 export function reportCorridorSpread(dbg: string | undefined, n: number, axis: Pixel, orderNodeIds: string[]): void {
   if (dbg) console.error(`[CSPREAD] chain SPREAD n=${n} axis=[${axis[0].toFixed(2)},${axis[1].toFixed(2)}] order=[${orderNodeIds.join(',')}]`);

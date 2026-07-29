@@ -8,7 +8,7 @@ import {
   reportCapsOvlStats, reportCapsAudit,
   reportRigidSlideDeclined, reportSlideStackDeclined,
   reportSlideSelfCross, reportSlideClashDeclined, corridorSpreadDebug,
-  reportCorridorAbandon, reportCorridorSpread, reportCorridorSpreadSummary,
+  reportCorridorAbandon, reportCorridorOrderPlan, reportCorridorSpread, reportCorridorSpreadSummary,
   reportNoOverlapFloorResidual, reportEgregiousOverlaps,
   reportSlidStations, reportEvictedStations, reportReanchoredFlag,
   reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
@@ -3557,29 +3557,43 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           }
           return false;
         };
-        // Translate a whole station's capsule rigidly by (dx,dy), re-deriving its
-        // corners on a clone first; commit only if the clone stays octilinear (a
-        // single-mark capsule trivially passes — no spine). Returns committed.
-        const rigidShift = (st: StMarks, dx: number, dy: number): boolean => {
+        // EVERY veto a rigid translation must clear, as one predicate. A planner
+        // that dry-runs a subset can pass a plan the commit then refuses, and a
+        // refusal partway through a chain spreads it PARTIALLY: the members that
+        // moved leave the one that did not sitting alone in the gap they opened.
+        // Deciding and applying are therefore separate, and both go through here.
+        const rigidShiftAllowed = (st: StMarks, dx: number, dy: number): boolean => {
           if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return true;
           const clone = st.marks.map((m) => ({
             ...m,
             pos: [m.pos[0] + dx, m.pos[1] + dy] as Pixel,
             cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined,
           }));
+          // a single-mark capsule trivially stays octilinear: it has no spine
           if (!spineOctilinear(clone)) return false;
-          // Hull guard (OCTI_CAPSULE_GUARD=0 disables): a corridor-spread shift
-          // must not drag this capsule across another drawn capsule's hull —
-          // or fold it across itself (same vetoes as applySlide's).
+          // Hull guard (OCTI_CAPSULE_GUARD=0 disables): a shift must not drag
+          // this capsule across another drawn capsule's hull, or fold it across
+          // itself (same vetoes as applySlide's).
           if (capGuardOn && st.marks.length >= 2) {
             const shiftedHull = capsHullOf(clone);
             if (capsHullSelfCrosses(shiftedHull) || capsHullClash(st, shiftedHull)) return false;
           }
           if (takesMarkOffInk(st, dx, dy)) return false;
+          return true;
+        };
+        /** Translate a station's capsule rigidly, no questions asked. Only for a
+         *  shift already cleared by rigidShiftAllowed. */
+        const applyShift = (st: StMarks, dx: number, dy: number): void => {
+          if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;
           for (const mk of st.marks) {
             mk.pos = [mk.pos[0] + dx, mk.pos[1] + dy];
             if (mk.cornerAfter) mk.cornerAfter = [mk.cornerAfter[0] + dx, mk.cornerAfter[1] + dy];
           }
+        };
+        /** Decide then apply, for the single-station callers. Returns committed. */
+        const rigidShift = (st: StMarks, dx: number, dy: number): boolean => {
+          if (!rigidShiftAllowed(st, dx, dy)) return false;
+          applyShift(st, dx, dy);
           return true;
         };
         // Build the coincident-corridor graph over non-boxed stations, union into
@@ -3776,9 +3790,8 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               if (clampOvershoot(mk, dx, dy) > Math.max(0.1, clampOvershoot(mk, 0, 0))) { ordered = false; break; }
             }
             if (!ordered) { ok = false; failNid = `${smalls[i].nodeId}/order`; break; }
-            // octilinearity dry-run (rigidShift's guard, without mutating)
-            const clone = st.marks.map((m) => ({ ...m, pos: [m.pos[0] + dx, m.pos[1] + dy] as Pixel, cornerAfter: m.cornerAfter ? ([m.cornerAfter[0] + dx, m.cornerAfter[1] + dy] as Pixel) : undefined }));
-            if (!spineOctilinear(clone)) { ok = false; failNid = `${smalls[i].nodeId}/octi`; break; }
+            // the WHOLE shift veto set, so nothing can refuse this member later
+            if (!rigidShiftAllowed(st, dx, dy)) { ok = false; failNid = `${smalls[i].nodeId}/shift`; break; }
             plan.push({ i, dx, dy, pts });
           }
           // intra-chain marker floor: planned markers (in slot order) must stay
@@ -3790,12 +3803,27 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             for (const p of plan[x].pts) for (const q of plan[y].pts) { const dd = hyp(p[0] - q[0], p[1] - q[1]); if (dd < md) md = dd; }
             if (md < touch - 1e-6) { ok = false; failNid = `${smalls[plan[x].i].nodeId}~${smalls[plan[y].i].nodeId}/intra`; }
           }
+          reportCorridorOrderPlan(SPREAD_DBG, seq2.map((i) => smalls[i].nodeId), step, (k, spacing) => {
+            const st = smalls[seq2[k]];
+            const c = cen(seq2[k]);
+            const off = (k - mid) * spacing;
+            const dx = gx + axis![0] * off - c[0], dy = gy + axis![1] * off - c[1];
+            let base = 0, planned = 0;
+            for (const mk of st.marks) {
+              const b = clampOvershoot(mk, 0, 0), p = clampOvershoot(mk, dx, dy);
+              if (b > base) base = b;
+              if (p > planned) planned = p;
+            }
+            return { move: Math.sqrt(dx * dx + dy * dy), base, planned };
+          });
           if (!ok) {
             for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) corridorPairs.delete(pairKey(members[x], members[y]));
             reportCorridorAbandon(SPREAD_DBG, failNid, seq2.map((i) => smalls[i].nodeId));
             continue;
           }
-          for (const p of plan) if (rigidShift(smalls[p.i], p.dx, p.dy)) spreadMembers++;
+          // every member was cleared above, so the chain commits whole
+          for (const p of plan) applyShift(smalls[p.i], p.dx, p.dy);
+          spreadMembers += plan.length;
           spreadChains++;
           reportCorridorSpread(SPREAD_DBG, seq2.length, axis, seq2.map((i) => smalls[i].nodeId));
         }
