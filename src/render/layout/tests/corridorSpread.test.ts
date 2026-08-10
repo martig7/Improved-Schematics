@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { solveCorridorSpread } from '../corridorSpread';
+import { corridorSpreadReachLimit, solveCorridorSpread } from '../corridorSpread';
 
 const WANT = 8.85; // full separation
 const MIN = 4.78;  // drawn fill-touch
@@ -62,4 +62,19 @@ test('corridorSpread: placement never leaves a stop outside its reach', () => {
     assert.ok(r.at[k] - r.at[k - 1] >= r.gap - 1e-9, 'spacing held');
     assert.ok(r.at[k] > r.at[k - 1], 'order held');
   }
+});
+
+test('corridorSpread: reach for a long free chain admits the requested spacing', () => {
+  const n = 6;
+  const reach = corridorSpreadReachLimit(n, WANT);
+  const home = new Array<number>(n).fill(0);
+  const r = solveCorridorSpread(
+    home,
+    new Array<number>(n).fill(-reach),
+    new Array<number>(n).fill(reach),
+    WANT,
+    MIN,
+  )!;
+  assert.equal(reach, (n - 1) * WANT);
+  assert.equal(r.gap, WANT);
 });

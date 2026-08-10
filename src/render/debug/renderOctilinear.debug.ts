@@ -1128,7 +1128,7 @@ export function reportSlideClashDeclined(capPlaceDebug: boolean, nodeId: string,
   if (capPlaceDebug) console.error(`[capsovl] slide declined (would cross ${clash}) ${nodeId}`);
 }
 
-/** OCTI_SEQAUDIT flag (raw envStr value — truthy enables the audit). */
+/** OCTI_SEQAUDIT flag. A truthy raw envStr value enables the audit. */
 export function seqAuditDebug(): string | undefined {
   return envStr('OCTI_SEQAUDIT');
 }
@@ -1139,9 +1139,12 @@ export function seqAuditDebug(): string | undefined {
  *  and two neighbouring stops can then trade places along their carrier. */
 export function reportSeqClampViolations(
   rows: Array<{ nodeId: string; label: string; bullet: string; beyond: number }>,
+  tolerance: number,
+  tag = '',
 ): void {
-  const bad = rows.filter((rw) => rw.beyond > 0.5).sort((a, b) => b.beyond - a.beyond);
-  console.error(`[seqaudit] ${bad.length} of ${rows.length} marks past the half-span they own`);
+  if (!envStr('OCTI_SEQAUDIT')) return;
+  const bad = rows.filter((rw) => rw.beyond > tolerance).sort((a, b) => b.beyond - a.beyond);
+  console.error(`[seqaudit]${tag} ${bad.length} of ${rows.length} marks past the half-span they own`);
   for (const rw of bad.slice(0, 24)) {
     console.error(`[seqaudit]   ${rw.nodeId} "${rw.label}" ${rw.bullet} beyond=${rw.beyond.toFixed(2)}px`);
   }
@@ -1153,7 +1156,6 @@ export function reportSeqClampViolations(
  *  bounds how far the mark may travel. Accessors are the caller's own private
  *  helpers. */
 export function reportSeqClampSides<S extends { nodeId: string; marks: Array<{ lineId: string; flagNode: string; pos: Pixel }> }>(
-  target: string,
   gathered: readonly S[],
   fns: {
     warmCuts: (lineId: string, nodeId: string) => void;
@@ -1163,6 +1165,8 @@ export function reportSeqClampSides<S extends { nodeId: string; marks: Array<{ l
     beyond: (lineId: string, nodeId: string, p: Pixel) => number;
   },
 ): void {
+  const target = envStr('OCTI_SEQAUDIT');
+  if (!target) return;
   for (const s of gathered) {
     if (s.nodeId.split('::')[0] !== target) continue;
     for (const mk of s.marks) {
@@ -1206,22 +1210,17 @@ export function reportCorridorAbandon(dbg: string | undefined, failNid: string, 
  *  moved. `gap` is the widest spacing those intervals admit, against the `want`
  *  the pass would take if the corridor were free. */
 export function reportCorridorPlacement(
-  dbg: string | undefined,
-  nodeIds: string[],
   gap: number,
   want: number,
-  home: number[],
-  lo: number[],
-  hi: number[],
-  moved: number[],
+  members: Array<{ nodeId: string; home: number; lo: number; hi: number; moved?: number }>,
 ): void {
-  if (!dbg) return;
-  console.error(`[CSPREAD] placement gap=${gap.toFixed(2)} of want=${want.toFixed(2)}px, ${nodeIds.length} members`);
-  for (let k = 0; k < nodeIds.length; k++) {
-    const move = k < moved.length ? `${moved[k].toFixed(2)}px` : 'abandoned';
+  if (!envStr('CSPREAD_DEBUG')) return;
+  console.error(`[CSPREAD] placement gap=${gap.toFixed(2)} of want=${want.toFixed(2)}px, ${members.length} members`);
+  for (const member of members) {
+    const move = member.moved === undefined ? 'abandoned' : `${member.moved.toFixed(2)}px`;
     console.error(
-      `[CSPREAD]   ${nodeIds[k]} at=${home[k].toFixed(2)} ` +
-      `reach=[${lo[k].toFixed(2)},${hi[k].toFixed(2)}] moved=${move}`,
+      `[CSPREAD]   ${member.nodeId} at=${member.home.toFixed(2)} ` +
+      `reach=[${member.lo.toFixed(2)},${member.hi.toFixed(2)}] moved=${move}`,
     );
   }
 }

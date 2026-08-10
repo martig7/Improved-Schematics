@@ -17,6 +17,12 @@ export interface SpreadPlacement {
   at: number[];
 }
 
+/** Maximum travel needed to give every member the requested spacing when all
+ *  members start at one coordinate and one end must remain fixed. */
+export function corridorSpreadReachLimit(memberCount: number, want: number): number {
+  return Math.max(0, memberCount - 1) * want;
+}
+
 /**
  * @param home present axis coordinate per stop, in non-decreasing order
  * @param lo   lowest axis coordinate each stop can reach (`lo[k] <= home[k]`)

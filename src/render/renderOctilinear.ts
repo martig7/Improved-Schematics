@@ -23,13 +23,13 @@ import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0, onDrawScale } from './cons
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
-import { assembleDByLine, laneExtent } from './assemblePath';
+import { assembleDByLine, laneHasExtent } from './assemblePath';
 import { computePaintGroups } from './paintLayers';
 import { findParallelPairs, applyJointSeating } from './layout/corridorSep';
 import { detectChains } from './chains';
 import { computeChainSeats } from './chainSeats';
 import { buildLaneCurve, curveTangent } from './layout/chainPlace';
-import { solveCorridorSpread } from './layout/corridorSpread';
+import { corridorSpreadReachLimit, solveCorridorSpread } from './layout/corridorSpread';
 import { solveRows, lineCrossNearest } from './layout/rowPlace';
 import { buildSeatInkOracle, type SeatInkOracle } from './layout/seatInk';
 import { chooseMutualSlide, penBetween, segSegDist, type Hull } from './layout/capsuleSlide';
@@ -91,7 +91,7 @@ export function buildDByLine(
   const dByLine = new Map<string, string[]>();
   const push = (lineId: string, poly: Pixel[]) => {
     // A lane with no extent has no ink to draw; see assemblePath's emitPiece.
-    if (poly.length < 2 || laneExtent(poly) < 1e-6) return;
+    if (!laneHasExtent(poly)) return;
     let d = dByLine.get(lineId);
     if (!d) dByLine.set(lineId, (d = []));
     if (segmentsOut) for (let k = 1; k < poly.length; k++) segmentsOut.push({ p1: poly[k - 1], p2: poly[k] });
@@ -1936,7 +1936,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       for (const edge of layout.edges) {
         if (edge.from !== nodeId && edge.to !== nodeId) continue;
         const poly = segPath.get(edge.id + '|' + lineId);
-        if (!poly || poly.length < 2) continue;
+        if (!poly || !laneHasExtent(poly)) continue;
         const pts = edge.from === nodeId ? poly : [...poly].reverse();
         let bridged = pts;
         let bridgeArc = 0;
@@ -2152,7 +2152,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
      *  can never meet (two adjacent stops' marks can neither trade places nor
      *  tie at the shared midpoint). The epsilon shrinks on sub-pixel lanes so
      *  a side's domain never collapses to nothing. */
-    const seqTrimFor = (L: number): number => L / 2 + Math.min(0.25, L / 4);
+    // Reserve a midpoint gap derived from the drawn lane gap. Acceptance
+    // tolerances use only half this per-side epsilon, so neighbouring domains
+    // remain strictly disjoint even after numerical slack is applied.
+    const seqOrderEpsilon = LINE_GAP / 8;
+    const seqClampTolerance = seqOrderEpsilon / 2;
+    const seqTrimFor = (L: number): number => L / 2 + Math.min(seqOrderEpsilon, L / 4);
     const isStopOf = (lineId: string, nodeId: string): boolean =>
       stopNodesByLine.get(lineId)?.has(nodeId) ?? false;
     const seqClampCache = new Map<string, Pixel[][]>();
@@ -2310,7 +2315,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
      *  as a line end and take a terminus mark it should not have. */
     const drawnLaneAt = (key: string): boolean => {
       const poly = segPath.get(key);
-      return !!poly && poly.length >= 2 && laneExtent(poly) >= 1e-6;
+      return !!poly && laneHasExtent(poly);
     };
     /** Trim arc `d` off a lane's end at `nodeId` (terminating lines follow
      *  their slid marker instead of poking past it). */
@@ -3788,7 +3793,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             const st = smalls[i];
             const dx = axis![0] * off, dy = axis![1] * off;
             for (const mk of st.marks) {
-              if (clampOvershoot(mk, dx, dy) > Math.max(0.1, clampOvershoot(mk, 0, 0))) return false;
+              if (clampOvershoot(mk, dx, dy) > Math.max(seqClampTolerance, clampOvershoot(mk, 0, 0))) return false;
             }
             if (!rigidShiftAllowed(st, dx, dy)) return false;
             const pts = st.marks.map((m) => [m.pos[0] + dx, m.pos[1] + dy] as Pixel);
@@ -3797,12 +3802,12 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
           };
           // Reach is the feasible run CONTAINING the member's present position,
           // so a member is never planned across a gap it cannot travel through.
-          const REACH = 2 * touch;
+          const reachLimit = corridorSpreadReachLimit(n, touch);
           const PROBE = touch / 16;
           const reachOf = (i: number): { lo: number; hi: number } => {
             let lo = 0, hi = 0;
-            for (let k = 1; k * PROBE <= REACH; k++) { const o = k * PROBE; if (!feasibleAt(i, o)) break; hi = o; }
-            for (let k = 1; k * PROBE <= REACH; k++) { const o = -k * PROBE; if (!feasibleAt(i, o)) break; lo = o; }
+            for (let k = 1; k * PROBE <= reachLimit; k++) { const o = k * PROBE; if (!feasibleAt(i, o)) break; hi = o; }
+            for (let k = 1; k * PROBE <= reachLimit; k++) { const o = -k * PROBE; if (!feasibleAt(i, o)) break; lo = o; }
             return { lo, hi };
           };
           const home = seq2.map((i) => proj(i));
@@ -3837,7 +3842,13 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             for (const p of plan[x].pts) for (const q of plan[y].pts) { const dd = hyp(p[0] - q[0], p[1] - q[1]); if (dd < md) md = dd; }
             if (md < gap - 1e-6) { ok = false; failNid = `${smalls[plan[x].i].nodeId}~${smalls[plan[y].i].nodeId}/intra`; }
           }
-          reportCorridorPlacement(SPREAD_DBG, seq2.map((i) => smalls[i].nodeId), gap, touch, home, lo, hi, plan.map((p) => hyp(p.dx, p.dy)));
+          reportCorridorPlacement(gap, touch, seq2.map((i, k) => ({
+            nodeId: smalls[i].nodeId,
+            home: home[k],
+            lo: lo[k],
+            hi: hi[k],
+            moved: plan[k] ? hyp(plan[k].dx, plan[k].dy) : undefined,
+          })));
           if (!ok) {
             for (let x = 0; x < members.length; x++) for (let y = x + 1; y < members.length; y++) corridorPairs.delete(pairKey(members[x], members[y]));
             reportCorridorAbandon(SPREAD_DBG, failNid, seq2.map((i) => smalls[i].nodeId));
@@ -3877,23 +3888,26 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       // Normal adjacent row bullets (≈minGap apart) are excluded. Reports coords
       // and node ids so the spot can be located.
       reportEgregiousOverlaps({ layout, r, smalls, gathered });
-      const seqAudit = seqAuditDebug();
-      if (seqAudit) {
-        reportSeqClampViolations(gathered.flatMap((s) => s.marks.map((mk) => ({
-          nodeId: s.nodeId,
-          label: layout.nodes.get(s.nodeId.split('::')[0])?.label ?? '',
-          bullet: mk.lineId.slice(0, 8),
-          beyond: seqArcBeyond(mk.lineId, mk.flagNode, mk.pos),
-        }))));
-        reportSeqClampSides(seqAudit, gathered, {
-          warmCuts: (l, nd) => void seqClampedPolysAt(l, nd),
-          cutsOf: (l, nd) => seqClampCutCache.get(l + '|' + nd) ?? [],
-          sidesOf: lanePolysAtEx,
-          isStop: isStopOf,
-          beyond: seqArcBeyond,
-        });
-      }
     }
+    // Re-runnable under OCTI_SEQAUDIT so the same check can watch both sides
+    // of the eviction pass (the only later mover).
+    const seqAudit = seqAuditDebug();
+    const runSeqAudit = (tag: string): void => {
+      reportSeqClampViolations(gathered.flatMap((s) => s.marks.map((mk) => ({
+        nodeId: s.nodeId,
+        label: layout.nodes.get(s.nodeId.split('::')[0])?.label ?? '',
+        bullet: mk.lineId.slice(0, 8),
+        beyond: seqArcBeyond(mk.lineId, mk.flagNode, mk.pos),
+      }))), seqClampTolerance, tag);
+      reportSeqClampSides(gathered, {
+        warmCuts: (l, nd) => void seqClampedPolysAt(l, nd),
+        cutsOf: (l, nd) => seqClampCutCache.get(l + '|' + nd) ?? [],
+        sidesOf: lanePolysAtEx,
+        isStop: isStopOf,
+        beyond: seqArcBeyond,
+      });
+    };
+    if (seqAudit) runSeqAudit('');
     reportSlidStations({ layout, slid });
 
     // Terminus trim: a line that ENDS at this station has exactly one drawn
@@ -3964,13 +3978,37 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // single straight octilinear segment leaving the shared capsule-side
     // anchor in the octilinear direction closest to the original, far enough
     // to carry the dot clear of every foreign capsule (octilinearity holds
-    // by construction, one axis-aligned leg).
+    // by construction, one axis-aligned leg). The stop-order clamp below is
+    // measured on the pre-rewrite carrier, so the partition cache must be
+    // rebuilt for the current (post-trim) polylines, not the audit's.
     {
+      seqClampCache.clear();
+      seqClampCutCache.clear();
       const ptSegD = (px: number, py: number, a: Pixel, b: Pixel): number => {
         const vx = b[0] - a[0], vy = b[1] - a[1];
         const l2 = vx * vx + vy * vy;
         const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (py - a[1]) * vy) / l2)) : 0;
         return hyp(px - (a[0] + vx * t), py - (a[1] + vy * t));
+      };
+      // Arc of the nearest projection of p onto poly, NEGATIVE when the
+      // projector lands past the poly start (unclamped t) so a point behind
+      // its own lane end reads as a signed overhang, not as the start point.
+      const signedArcAlong = (poly: Pixel[], p: Pixel): number => {
+        let best = Infinity;
+        let arc = 0;
+        let acc = 0;
+        for (let i = 1; i < poly.length; i++) {
+          const ax = poly[i - 1][0], ay = poly[i - 1][1];
+          const vx = poly[i][0] - ax, vy = poly[i][1] - ay;
+          const l2 = vx * vx + vy * vy;
+          const seg = Math.sqrt(l2);
+          const t = l2 > 1e-9 ? ((p[0] - ax) * vx + (p[1] - ay) * vy) / l2 : 0;
+          const dx = p[0] - (ax + vx * t), dy = p[1] - (ay + vy * t);
+          const d = hyp(dx, dy);
+          if (d < best) { best = d; arc = acc + seg * t; }
+          acc += seg;
+        }
+        return arc;
       };
       const spineSegsOf = (st: StMarks): Array<[Pixel, Pixel]> => {
         const ord = [...st.marks].sort((m1, m2) => (m1.chain ?? 0) - (m2.chain ?? 0));
@@ -4060,23 +4098,15 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
             (d1, d2) => (d2[0] * odir[0] + d2[1] * odir[1]) - (d1[0] * odir[0] + d1[1] * odir[1]),
           );
           let placed: Pixel | null = null;
-          for (const dir of ranked) {
-            for (let L = need; L <= need + 24; L += 1) {
-              const cand: Pixel = [anchor[0] + dir[0] * L, anchor[1] + dir[1] * L];
-              if (dotClear(cand, s.nodeId) && stubClear(anchor, dir, L, s.nodeId)) { placed = cand; break; }
-            }
-            if (placed) break;
-          }
-          if (!placed) continue; // no clean octilinear escape, leave it
-          mk.pos = placed;
-          mk.cornerAfter = undefined;
-          mk.chain = 0;
-          // Shared-lane guard (the segPath.set below is a REPLACE, so it needs
-          // the same protection trimLaneAt's cut has): another station's mark
-          // of the same line can ride this very lane nearer its anchor end.
-          // Swapping the whole course for the straight stub would strand that
-          // mark off the ink, so keep the ridden tail of the original course
-          // and bridge the stub from the nearest ridden point instead.
+          // The dot must stay within its own half of the carrier it rides,
+          // like every other mover: not past the mid-span cut toward a
+          // same-line neighbouring stop (the seq clamp), and not behind its
+          // own node (the ink tip stays
+          // under the bullet, matching the trim pass's flush-to-stop rule).
+          // The stub the rewrite will install is [placed, keepPt, ...tail] (or
+          // [placed, anchor]); its geometry depends only on the ORIGINAL
+          // course and the other marks, so compute the ridden-tail bridge once
+          // here and let the candidate loop assemble the trial polyline.
           const cumV = [0];
           for (let i = 1; i < pts.length; i++) {
             cumV.push(cumV[i - 1] + hyp(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
@@ -4102,21 +4132,74 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
               if (near <= r && arc < keepFrom) { keepFrom = arc; keepPt = pnp; }
             }
           }
-          let rebuilt: Pixel[];
-          if (keepPt) {
-            rebuilt = [placed, keepPt];
-            for (let i = 0; i < pts.length; i++) if (cumV[i] > keepFrom + 1e-9) rebuilt.push(pts[i]);
-          } else {
-            rebuilt = [placed, anchor];
+          // Same-line marks that ride this edge from either end. The rewrite
+          // REPLACES the whole polyline, and the half-span cut is recomputed
+          // on the replacement, so a mark that never moves can still end up
+          // past its half (the audit's post-eviction reading). Every candidate
+          // must keep every such co-rider inside its own half, not just the
+          // evicted dot.
+          const coRiders: Array<{ lineId: string; flagNode: string; pos: Pixel }> = [];
+          for (const st2 of gathered) {
+            for (const om of st2.marks) {
+              if (om === mk || om.lineId !== mk.lineId) continue;
+              if (om.flagNode === edge.from || om.flagNode === edge.to) coRiders.push(om);
+            }
           }
-          segPath.set(incEdge + '|' + mk.lineId, edge.from === mk.flagNode ? rebuilt : [...rebuilt].reverse());
+          const trialOf = (cand: Pixel): Pixel[] => {
+            if (keepPt) {
+              const t: Pixel[] = [cand, keepPt];
+              for (let i = 0; i < pts.length; i++) if (cumV[i] > keepFrom + 1e-9) t.push(pts[i]);
+              return t;
+            }
+            return [cand, anchor];
+          };
+          const carrierKey = incEdge + '|' + mk.lineId;
+          const origPoly = segPath.get(carrierKey);
+          for (const dir of ranked) {
+            for (let L = need; L <= need + 24; L += 1) {
+              const cand: Pixel = [anchor[0] + dir[0] * L, anchor[1] + dir[1] * L];
+              if (!dotClear(cand, s.nodeId) || !stubClear(anchor, dir, L, s.nodeId)) continue;
+              if (signedArcAlong(pts, cand) < 0) continue;
+              if (seqArcBeyond(mk.lineId, mk.flagNode, cand) > seqClampTolerance) continue;
+              // Validate the replacement against the co-riders before
+              // committing: install it, re-warm the clamp partition for the
+              // new carrier, and reject the candidate if any co-rider is
+              // pushed past its half. Restore the original carrier and cache
+              // afterwards so later candidates measure the same baseline.
+              const trial = trialOf(cand);
+              segPath.set(carrierKey, edge.from === mk.flagNode ? trial : [...trial].reverse());
+              seqClampCache.clear();
+              seqClampCutCache.clear();
+              let coOk = true;
+              for (const om of coRiders) {
+                if (seqArcBeyond(om.lineId, om.flagNode, om.pos) > seqClampTolerance) { coOk = false; break; }
+              }
+              segPath.set(carrierKey, origPoly!);
+              seqClampCache.clear();
+              seqClampCutCache.clear();
+              if (!coOk) continue;
+              placed = cand; break;
+            }
+            if (placed) break;
+          }
+          if (!placed) continue; // no clean octilinear escape, leave it
+          mk.pos = placed;
+          mk.cornerAfter = undefined;
+          mk.chain = 0;
+          segPath.set(carrierKey, edge.from === mk.flagNode ? trialOf(placed) : [...trialOf(placed)].reverse());
           evicted.push({ node: s.nodeId, to: placed });
         }
       }
       reportEvictedStations({ layout, evicted });
     }
     // Eviction is the last pass that moves a marker; nothing may audit-drift
-    // after it unobserved.
+    // after it unobserved. The clamp partition cache predates the rewrites, so
+    // drop it and re-run the audit against the final carriers.
+    if (seqAudit) {
+      seqClampCache.clear();
+      seqClampCutCache.clear();
+      runSeqAudit(' post-eviction');
+    }
     capsAudit('post-eviction');
 
     for (const s of gathered) {

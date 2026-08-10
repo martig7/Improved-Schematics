@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { assembleDByLine, type AssembleArgs } from '../assemblePath';
+import { assembleDByLine, laneHasExtent, type AssembleArgs } from '../assemblePath';
 import { buildFanJoins, type FanEdgeRef } from '../fanJoin';
 import type { Pixel, TraversalStep } from '../layout/types';
 
@@ -56,6 +56,11 @@ function build(f: Fixture): { args: AssembleArgs; segPath: Map<string, Pixel[]> 
 }
 
 const countCmd = (d: string[], c: string): number => d.filter((s) => s.startsWith(c)).length;
+
+test('laneHasExtent rejects coincident vertices and accepts drawn ink', () => {
+  assert.equal(laneHasExtent([[4, 7], [4, 7], [4, 7]] as Pixel[]), false);
+  assert.equal(laneHasExtent([[4, 7], [4.001, 7]] as Pixel[]), true);
+});
 
 test('assembler: a corner course is one continuous subpath with its curve spliced in', () => {
   const f: Fixture = {
