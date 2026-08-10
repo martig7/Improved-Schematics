@@ -11,6 +11,7 @@ import { serializePre, deserializePre } from '../persist';
 import type { SmoothedPrecomputed } from '../schematic';
 import type { SceneOut } from '../renderOctilinear';
 import type { GeographyData } from '../../geography/types';
+import { BADGE_R as DC_BADGE_R } from '../layout/dcStations';
 
 const STATIONS = [
   { id: 's1', name: 'Alpha', coords: [-122.0, 47.0], trackIds: ['t1'], trackGroupId: 'g1', buildType: 'constructed', stNodeIds: ['n1'], routeIds: ['r1'], createdAt: 0, nearbyStations: [] },
@@ -81,6 +82,80 @@ test('memoized geometry is reused across toggle changes (same object, not recomp
   assert.ok(g);
   drawSmoothed(pre, { showLabels: true, showStations: true });
   assert.equal(pre.geometry, g, 'toggles reuse the same geometry object');
+});
+
+test('simplified lines paint below every regular line in SVG and Scene IR', () => {
+  const pre = fresh();
+  drawSmoothed(pre, opts);
+
+  const geometry = pre.geometry!;
+  geometry.paintGroups = [['r2'], ['r1']];
+
+  const out: SceneOut = { scene: null };
+  const svg = drawSmoothed(pre, { ...opts, simplifiedRoutes: { r1: 'default' } }, out);
+  const lineIds = [...svg.matchAll(/data-line-id="([^"]+)"/g)].map((match) => match[1]);
+  const simplifiedSvgIndex = lineIds.indexOf('r1');
+  const regularSvgIndex = lineIds.indexOf('r2');
+  assert.ok(simplifiedSvgIndex >= 0 && regularSvgIndex >= 0, 'fixture paints both SVG lines');
+  assert.ok(simplifiedSvgIndex < regularSvgIndex, 'simplified SVG line paints first');
+
+  assert.ok(out.scene, 'draw produces Scene IR');
+  const edgePrims = out.scene.prims.filter((prim) => prim.layer === 'edges');
+  const simplifiedSceneIndex = edgePrims.findIndex(
+    (prim) => prim.kind === 'path' && prim.stroke === '#cc0000',
+  );
+  const regularSceneIndex = edgePrims.findIndex(
+    (prim) => prim.kind === 'path' && prim.stroke === '#0000cc',
+  );
+  assert.ok(simplifiedSceneIndex >= 0 && regularSceneIndex >= 0, 'fixture paints both Scene IR lines');
+  assert.ok(simplifiedSceneIndex < regularSceneIndex, 'simplified Scene IR line paints first');
+});
+
+test('DC Metro omits tails and route badges for simplified lines', () => {
+  const pre = fresh();
+  const redBadge = new RegExp(`<circle[^>]*r="${DC_BADGE_R.toFixed(1)}"[^>]*fill="#cc0000"`);
+  const blueBadge = new RegExp(`<circle[^>]*r="${DC_BADGE_R.toFixed(1)}"[^>]*fill="#0000cc"`);
+  const baselineSvg = drawSmoothed(pre, { ...opts, stationDesign: 'dc' });
+  assert.match(baselineSvg, /<line[^>]*stroke="#cc0000"/, 'fixture gives the simplified route a DC tail');
+  assert.match(baselineSvg, redBadge, 'fixture gives the simplified route a DC badge');
+
+  const out: SceneOut = { scene: null };
+  const svg = drawSmoothed(
+    pre,
+    { ...opts, stationDesign: 'dc', simplifiedRoutes: { r1: 'default' } },
+    out,
+  );
+
+  assert.doesNotMatch(svg, /<line[^>]*stroke="#cc0000"/, 'simplified route has no SVG tail');
+  assert.doesNotMatch(
+    svg,
+    redBadge,
+    'simplified route has no SVG badge',
+  );
+  assert.match(svg, /data-line="r1"/, 'simplified route keeps its terminus station marker');
+  assert.match(svg, /<line[^>]*stroke="#0000cc"/, 'regular route keeps its SVG tail');
+  assert.match(svg, blueBadge, 'regular route keeps its SVG badge');
+
+  assert.ok(out.scene, 'draw produces Scene IR');
+  const stopPrims = out.scene.prims.filter((prim) => prim.layer === 'stops');
+  assert.equal(
+    stopPrims.some((prim) => prim.kind === 'line' && prim.stroke === '#cc0000'),
+    false,
+    'simplified route has no Scene IR tail',
+  );
+  assert.equal(
+    stopPrims.some((prim) => prim.kind === 'circle' && prim.r === +DC_BADGE_R.toFixed(1) && prim.fill === '#cc0000'),
+    false,
+    'simplified route has no Scene IR badge',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'line' && prim.stroke === '#0000cc'),
+    'regular route keeps its Scene IR tail',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'circle' && prim.r === +DC_BADGE_R.toFixed(1) && prim.fill === '#0000cc'),
+    'regular route keeps its Scene IR badge',
+  );
 });
 
 // The three rectangle-capsule geometry fields (seated capsules, rescued single

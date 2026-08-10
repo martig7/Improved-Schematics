@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SIMPLIFIED_STYLES, DEFAULT_SIMPLIFIED_STYLE, getSimplifiedStyle,
-  resolveSimplifiedLines, simplifiedSignature, paramsFor, sameSimplified, settingsOf, LINE_WIDTH_SETTING, GRAY_SETTING, GRAY_ENABLE_SETTING, shadeHex,
+  resolveSimplifiedLines, simplifiedSignature, simplifiedUnderlayGroups, paramsFor, sameSimplified, settingsOf, LINE_WIDTH_SETTING, GRAY_SETTING, GRAY_ENABLE_SETTING, shadeHex,
 } from '../index';
 
 test('registry: ids are unique and the default id resolves', () => {
@@ -57,6 +57,22 @@ test('resolve: a merged line needs EVERY one of its routes simplified', () => {
   const both = resolveSimplifiedLines({ r1: 'default', r2: 'default' }, canon, ['r1', 'r2']);
   assert.equal(both.size, 1);
   assert.equal(both.get('r1')?.style.id, 'default');
+});
+
+test('simplifiedUnderlayGroups: every simplified line paints below every regular line', () => {
+  const groups = [
+    ['regular-a', 'simplified-b', 'regular-c'],
+    ['simplified-a', 'regular-d'],
+  ];
+  assert.deepEqual(
+    simplifiedUnderlayGroups(groups, new Set(['simplified-a', 'simplified-b'])),
+    [
+      ['simplified-b'],
+      ['simplified-a'],
+      ['regular-a', 'regular-c'],
+      ['regular-d'],
+    ],
+  );
 });
 
 test('resolve: mixed styles on one drawn line are rejected', () => {

@@ -37,7 +37,7 @@ import { planSplitConnectors } from './layout/splitConnect';
 import { rectSeat, rectSeatToCapsule, type RectMember, type RectCapsule } from './layout/rectSeat';
 import { laneSeatAll, type LaneItem, type LaneStation, type LaneObstacle } from './layout/laneSeat';
 import { rescueRectAndSingles, type SingleStop } from './layout/rectRescue';
-import { resolveSimplifiedLines, simplifiedSignature, type SimplifiedStyle, type SimplifiedScope, type SimplifiedRoutes } from './simplify';
+import { resolveSimplifiedLines, simplifiedSignature, simplifiedUnderlayGroups, type SimplifiedStyle, type SimplifiedScope, type SimplifiedRoutes } from './simplify';
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { computeDcByNode, BADGE_R as DC_BADGE_R, type DcStation } from './layout/dcStations';
@@ -574,6 +574,23 @@ function labelGlyphBoxes(dcByNode: Map<string, DcStation>): Array<{ x: number; y
     }
   }
   return out;
+}
+
+/** Remove DC's route-end tails and badges for selected lines without mutating
+ *  the cached station solve. The station marks themselves remain unchanged. */
+function withoutDcEnds(
+  dcByNode: Map<string, DcStation> | undefined,
+  hiddenLineIds: ReadonlySet<string>,
+): Map<string, DcStation> | undefined {
+  if (!dcByNode || hiddenLineIds.size === 0) return dcByNode;
+  let out: Map<string, DcStation> | undefined;
+  for (const [nodeId, station] of dcByNode) {
+    const ends = station.ends.filter((end) => !hiddenLineIds.has(end.lineId));
+    if (ends.length === station.ends.length) continue;
+    if (!out) out = new Map(dcByNode);
+    out.set(nodeId, { ...station, ends });
+  }
+  return out ?? dcByNode;
 }
 
 /** Capsule geometry for ONE regime, re-derived when a simplified route has left
@@ -4843,7 +4860,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const rectStopPos = isRect ? (derived?.tokyuStopPos ?? geom.tokyuStopPos) : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? (derived?.bubbleByNode ?? geom.bubbleByNode) : undefined;
   const torontoByNode = activeCapsule === 'toronto' || activeCapsule === 'dc' ? (derived?.torontoByNode ?? geom.torontoByNode) : undefined;
-  const dcByNode = activeCapsule === 'dc' ? (derived?.dcByNode ?? geom.dcByNode) : undefined;
+  const dcByNode = activeCapsule === 'dc'
+    ? withoutDcEnds(derived?.dcByNode ?? geom.dcByNode, new Set(simplified.keys()))
+    : undefined;
   // Bundle-coherent layers (I8): each paint group draws its casings then its
   // strokes, so a later group's casing separates it cleanly from everything
   // it crosses below. Geometry without the field (older caches) falls back
@@ -4851,13 +4870,17 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // all-strokes order exactly. Lines missing from the groups (defensive)
   // paint last.
   const grouped = new Set<string>();
-  const paintGroups: string[][] = [];
+  const basePaintGroups: string[][] = [];
   for (const g of geom.paintGroups ?? [[...lineById.keys()]]) {
-    paintGroups.push(g);
+    basePaintGroups.push(g);
     for (const id of g) grouped.add(id);
   }
   const tail = [...lineById.keys()].filter((id) => !grouped.has(id));
-  if (tail.length > 0) paintGroups.push(tail);
+  if (tail.length > 0) basePaintGroups.push(tail);
+  // Simplified lines are an underlay regardless of their geometry paint group.
+  // Splitting mixed groups keeps each side bundle-coherent while guaranteeing
+  // that every regular casing and stroke is emitted after every simplified one.
+  const paintGroups = simplifiedUnderlayGroups(basePaintGroups, new Set(simplified.keys()));
   const edgeParts: string[] = [];
   for (const group of paintGroups) {
     const gCasings: string[] = [];

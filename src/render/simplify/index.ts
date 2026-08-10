@@ -170,6 +170,28 @@ export function resolveSimplifiedLines(
   return out;
 }
 
+/** Stable paint-group partition that puts every simplified line below every
+ *  regular line. A mixed geometry group is split in two, while group order and
+ *  line order within each side remain unchanged. */
+export function simplifiedUnderlayGroups(
+  groups: string[][],
+  simplifiedLineIds: ReadonlySet<string>,
+): string[][] {
+  if (simplifiedLineIds.size === 0) return groups;
+  const underlay: string[][] = [];
+  const regular: string[][] = [];
+  for (const group of groups) {
+    const low: string[] = [];
+    const high: string[] = [];
+    for (const lineId of group) {
+      (simplifiedLineIds.has(lineId) ? low : high).push(lineId);
+    }
+    if (low.length > 0) underlay.push(low);
+    if (high.length > 0) regular.push(high);
+  }
+  return [...underlay, ...regular];
+}
+
 /** Signature of the resolved map for memo keys. Encodes only what the memoized
  *  work depends on, namely the per-stop SCOPES: a dash-length tweak must not
  *  invalidate label placements or capsule geometry. Order-independent. */
