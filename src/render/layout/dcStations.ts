@@ -13,34 +13,34 @@
  * left over. A terminating line runs on past its stop, is cut square, and hangs its
  * own symbol off the end.
  */
-import { LINE_WIDTH, LINE_GAP, onDrawScale } from '../constants';
+import { LINE_WIDTH, LINE_GAP, STATION_WIDTH, onRenderScale } from '../constants';
 import type { Pixel } from './types';
 
-// A plain stop is LINE-FIT: outer diameter equals the route line width, so the
-// black-ringed white circle sits inside the line, which runs on behind it.
-export let STOP_OUTER = LINE_WIDTH / 2;
-export let STOP_RING = LINE_WIDTH * 0.2;
+// A plain stop uses the station-width unit and may be sized independently from
+// the route line running behind it.
+export let STOP_OUTER = STATION_WIDTH / 2;
+export let STOP_RING = STATION_WIDTH * 0.2;
 // The transfer marker's outer ring, and so also how far a mark reaches.
-export let REACH = LINE_WIDTH * 0.95;
+export let REACH = STATION_WIDTH * 0.95;
 // The white capsule line along a wide station's spine.
-export let CAPSULE_W = LINE_WIDTH * 0.3;
+export let CAPSULE_W = STATION_WIDTH * 0.3;
 // How far a terminating line runs on past its stop before it is cut: clear of the
 // widest mark a station wears, plus half a line width so the cut does not crowd it.
 export let TAIL = REACH + LINE_WIDTH * 0.5;
 // Paper between the cut and the line's own symbol, and the symbol's size.
-export let BADGE_GAP = LINE_WIDTH * 0.45;
-export let BADGE_R = LINE_WIDTH * 0.85;
+export let BADGE_GAP = STATION_WIDTH * 0.45;
+export let BADGE_R = STATION_WIDTH * 0.85;
 // How far a mark may sit from a stop it speaks for. Matches the tolerance the
 // crossing solve allows a crossing dot to slide from its stops.
 let MAX_SLIDE = (LINE_WIDTH + LINE_GAP) * 3.5;
-onDrawScale(() => {
-  STOP_OUTER = LINE_WIDTH / 2;
-  STOP_RING = LINE_WIDTH * 0.2;
-  REACH = LINE_WIDTH * 0.95;
-  CAPSULE_W = LINE_WIDTH * 0.3;
+onRenderScale(() => {
+  STOP_OUTER = STATION_WIDTH / 2;
+  STOP_RING = STATION_WIDTH * 0.2;
+  REACH = STATION_WIDTH * 0.95;
+  CAPSULE_W = STATION_WIDTH * 0.3;
   TAIL = REACH + LINE_WIDTH * 0.5;
-  BADGE_GAP = LINE_WIDTH * 0.45;
-  BADGE_R = LINE_WIDTH * 0.85;
+  BADGE_GAP = STATION_WIDTH * 0.45;
+  BADGE_R = STATION_WIDTH * 0.85;
   MAX_SLIDE = (LINE_WIDTH + LINE_GAP) * 3.5;
 });
 
@@ -298,6 +298,7 @@ export function computeDcByNode(
   stops: Map<string, DcLane[]>,
   segsByLine?: Map<string, Array<[Pixel, Pixel]>>,
   crossByNode?: Map<string, { cx: number; cy: number }>,
+  extraObstacles: ReadonlyArray<{ at: Pixel; r: number }> = [],
 ): Map<string, DcStation> {
   const out = new Map<string, DcStation>();
   const nodes = [...stops.keys()].sort();
@@ -316,7 +317,10 @@ export function computeDcByNode(
     : undefined;
 
   // Every mark on the map, and every tail, as obstacles.
-  const taken: Array<{ at: Pixel; r: number }> = [];
+  const taken: Array<{ at: Pixel; r: number }> = extraObstacles.map((obstacle) => ({
+    at: [obstacle.at[0], obstacle.at[1]],
+    r: obstacle.r,
+  }));
   const tails: Array<{ key: string; a: Pixel; b: Pixel }> = [];
   for (const nodeId of nodes) {
     const lines = stops.get(nodeId)!;

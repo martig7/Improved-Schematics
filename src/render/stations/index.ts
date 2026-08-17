@@ -8,11 +8,12 @@ import { tokyoMetro } from './tokyoMetro';
 import { london } from './london';
 import { toronto } from './toronto';
 import { dc } from './dc';
+import { paris } from './paris';
 import { previewSvg } from './serialize';
 
 export type { StationDesign, ExampleStation, StopScene, PaintCtx, Glyph, Capsule, StopLine } from './types';
 
-export const STATION_DESIGNS: StationDesign[] = [classic, nycSolid, nycMap, tokyu, tokyo, tokyoMetro, london, toronto, dc];
+export const STATION_DESIGNS: StationDesign[] = [classic, nycSolid, nycMap, tokyu, tokyo, tokyoMetro, london, toronto, dc, paris];
 export const DEFAULT_STATION_DESIGN = 'classic';
 export const EXAMPLE_STATION_DEFAULT: ExampleStation = { bullet: 'A', color: '#dc2626', textColor: '#ffffff' };
 

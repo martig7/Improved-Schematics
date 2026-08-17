@@ -5,15 +5,16 @@
  */
 
 import type { Pixel, StopMark } from '../layout/types';
-import { MARKER_SCALE, MARK_R0, DRAW_SCALE, onDrawScale } from '../constants';
+import { MARKER_SCALE, MARK_R0, STATION_SCALE, onRenderScale } from '../constants';
 import { type RectCapsule } from '../layout/rectSeat';
 import { type LondonCapsule } from '../layout/londonBubbles';
 import { type DcStation } from '../layout/dcStations';
+import { type ParisStation } from '../layout/parisCapsules';
 import type { StopScene, StopLine, Capsule, Point } from './types';
 
 let R0 = MARK_R0;
 let RCAP = R0 * MARKER_SCALE;
-onDrawScale(() => { R0 = MARK_R0; RCAP = R0 * MARKER_SCALE; });
+onRenderScale(() => { R0 = MARK_R0; RCAP = R0 * MARKER_SCALE; });
 
 export interface PlacementCtx {
   /** Interchange capsule regime the active design wants. 'rectRows' triggers the
@@ -21,7 +22,7 @@ export interface PlacementCtx {
    *  'londonBubbles' the paired ticket-hall bubbles; 'toronto' and 'dc' the
    *  crossing collapse (perfect intersections become one ring, else a pill). The
    *  two crossing regimes differ in what the ring scene carries: see the branch. */
-  capsuleMode?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto' | 'dc';
+  capsuleMode?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto' | 'dc' | 'paris';
   /** Precomputed rectangle-capsule geometry per node (seated + cross-station
    *  deconflicted at compute time). Read only in the 'rectRows' branch; when a
    *  node has an entry the scene is built from it with no draw-time seating. */
@@ -38,6 +39,8 @@ export interface PlacementCtx {
   /** Precomputed DC Metro station geometry per node: its marks and its line-end
    *  symbols, seated against the whole map. Read only in the 'dc' branch. */
   dcByNode?: Map<string, DcStation>;
+  /** Precomputed four-axis capsule and endpoint geometry. */
+  parisByNode?: Map<string, ParisStation>;
 }
 
 const toLine = (mk: StopMark): StopLine => ({
@@ -72,6 +75,43 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const isCapsule = marks.length > 1;
   const dotRadius = isCapsule ? RCAP : R0;
   const lines = marks.map(toLine);
+
+  const paris = ctx.capsuleMode === 'paris' ? ctx.parisByNode?.get(nodeId) : undefined;
+  if (paris) {
+    const atByLine = new Map<string, Point>();
+    for (const cell of paris.cells) for (const lineId of cell.lineIds) atByLine.set(lineId, [cell.at[0], cell.at[1]]);
+    const seatedLines = lines.map((line) => ({ ...line, pos: atByLine.get(line.lineId) ?? line.pos }));
+    return {
+      nodeId,
+      lines: seatedLines,
+      capsule: {
+        kind: 'paris',
+        interchange: paris.interchange,
+        radius: paris.radius,
+        cells: paris.cells.map((cell) => ({
+          at: [cell.at[0], cell.at[1]],
+          lineIds: [...cell.lineIds],
+          endpointLineIds: [...cell.endpointLineIds],
+          shape: cell.shape,
+        })),
+        groups: paris.groups.map((group) => ({
+          axis: group.axis,
+          cellIndexes: [...group.cellIndexes],
+          points: group.points.map((point): Point => [point[0], point[1]]),
+        })),
+        connectors: paris.connectors.map((connector) => ({
+          points: connector.points.map((point): Point => [point[0], point[1]]),
+        })),
+        ends: paris.ends.map((end) => ({
+          lineId: end.lineId,
+          cut: [end.cut[0], end.cut[1]],
+          at: [end.at[0], end.at[1]],
+        })),
+      },
+      anchor: [paris.anchor[0], paris.anchor[1]],
+      dotRadius,
+    };
+  }
 
   // Rectangle ("Tokyu") seating: a multi-line station uses its compute-time
   // seated, cross-station-deconflicted rect capsule when one is cached, mega
@@ -123,7 +163,7 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   const isCross = ctx.capsuleMode === 'toronto' || ctx.capsuleMode === 'dc';
   const cross = isCross && isCapsule ? ctx.torontoByNode?.get(nodeId) : undefined;
   if (cross && ctx.capsuleMode === 'toronto') {
-    return { nodeId, lines: [], capsule: { kind: 'ring', cx: cross.cx, cy: cross.cy, r: R0 + 3 * DRAW_SCALE }, anchor: [cross.cx, cross.cy], dotRadius };
+    return { nodeId, lines: [], capsule: { kind: 'ring', cx: cross.cx, cy: cross.cy, r: R0 + 3 * STATION_SCALE }, anchor: [cross.cx, cross.cy], dotRadius };
   }
 
   // DC Metro: marks and line-end symbols are solved over the whole map, since a
@@ -180,7 +220,7 @@ export function buildScene(nodeId: string, marks: StopMark[], ctx: PlacementCtx)
   }
 
   if (best < 1e-3) {
-    return { nodeId, lines, capsule: { kind: 'ring', cx: a[0], cy: a[1], r: R0 + 3 * DRAW_SCALE }, anchor: [a[0], a[1]], dotRadius };
+    return { nodeId, lines, capsule: { kind: 'ring', cx: a[0], cy: a[1], r: R0 + 3 * STATION_SCALE }, anchor: [a[0], a[1]], dotRadius };
   }
 
   if (!gm.pill) {

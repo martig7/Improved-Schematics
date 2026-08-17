@@ -13,4 +13,4 @@ function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
   return g;
 }
 
-export const nycSolid: StationDesign = { id: 'nyc-solid', name: 'NYC-Solid', paint };
+export const nycSolid: StationDesign = { id: 'nyc-solid', name: 'NYC-Solid', paint, capsule: 'pill' };

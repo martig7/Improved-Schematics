@@ -113,6 +113,9 @@ export interface Visit {
 export interface StopMark {
   lineId: string;
   color: string;
+  /** Support node where this line's stop is flagged. It can differ from the
+   *  station group's marker node after platform splitting or rehoming. */
+  flagNode?: string;
   /** Route text color (hex) for the bullet, when the game provides one. Used by
    *  the 'solid' dot style; falls back to auto-contrast ink when absent. */
   textColor?: string;

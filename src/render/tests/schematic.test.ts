@@ -9,6 +9,7 @@ import type { RenderMode } from '../types';
 import type { GeographyData } from '../../geography/types';
 import { geographyFrame } from '../renderGeographic';
 import { createProjection } from '../projection';
+import type { SceneOut } from '../renderOctilinear';
 
 const SAMPLE = {
   stations: [
@@ -192,6 +193,52 @@ test('two-phase smoothed render matches the single-phase output', () => {
   assert.notEqual(typeof pre, 'string', 'small network should precompute a layout, not fall back');
   const twoPhase = typeof pre === 'string' ? pre : drawSmoothedSchematic(pre, options);
   assert.equal(twoPhase, oneShot, 'precompute+draw must equal generateSchematicSVG');
+});
+
+test('smoothed line and station settings scale independent scene geometry', () => {
+  const render = (lineScale: number, stationScale: number) => {
+    const pre = precomputeSmoothedSchematic({
+      routes: SAMPLE.routes as never,
+      tracks: SAMPLE.tracks as never,
+      stations: SAMPLE.stations as never,
+      options: { mode: 'smoothed', width: 600, height: 600, lineScale, stationScale },
+    });
+    assert.notEqual(typeof pre, 'string');
+    if (typeof pre === 'string') throw new Error('fixture must precompute');
+    assert.equal(pre.lineScale, lineScale);
+    assert.equal(pre.stationScale, stationScale);
+    const out: SceneOut = { scene: null };
+    drawSmoothedSchematic(pre, { stationDesign: 'classic' }, out);
+    assert.ok(out.scene);
+    const edge = out.scene.prims.find((prim) => prim.layer === 'edges' && prim.kind === 'path' && prim.stroke === '#cc0000');
+    const stop = out.scene.prims.find((prim) => prim.layer === 'stops' && prim.kind === 'circle' && prim.stroke === '#cc0000');
+    assert.ok(edge?.kind === 'path' && stop?.kind === 'circle');
+    return { lineWidth: edge.strokeWidth, stationRadius: stop.r };
+  };
+
+  const thin = render(0.6, 1.2);
+  const thick = render(1.4, 1.2);
+  assert.notEqual(thin.lineWidth, thick.lineWidth, 'line setting changes route width');
+  assert.equal(thin.stationRadius, thick.stationRadius, 'line setting leaves stations unchanged');
+
+  const smallStations = render(1.4, 0.7);
+  assert.equal(thick.lineWidth, smallStations.lineWidth, 'station setting leaves routes unchanged');
+  assert.notEqual(thick.stationRadius, smallStations.stationRadius, 'station setting changes marker radius');
+});
+
+test('a legacy pre without stationScale inherits its coupled lineScale', () => {
+  const pre = precomputeSmoothedSchematic({
+    routes: SAMPLE.routes as never,
+    tracks: SAMPLE.tracks as never,
+    stations: SAMPLE.stations as never,
+    options: { mode: 'smoothed', width: 600, height: 600, lineScale: 0.7, stationScale: 0.7 },
+  });
+  assert.notEqual(typeof pre, 'string');
+  if (typeof pre === 'string') throw new Error('fixture must precompute');
+  const expected = drawSmoothedSchematic(pre, { stationDesign: 'classic' });
+  delete pre.stationScale;
+  const legacy = drawSmoothedSchematic(pre, { stationDesign: 'classic' });
+  assert.equal(legacy, expected);
 });
 
 test('redrawing a cached layout is stable (no mutation across toggles)', () => {

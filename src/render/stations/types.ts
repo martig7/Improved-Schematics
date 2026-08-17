@@ -5,6 +5,8 @@
  * geometry) produces StopScene; designs only decide appearance.
  */
 
+import type { ParisCell, ParisConnector, ParisGroup } from '../layout/parisCapsules';
+
 export type Point = [number, number];
 
 /** One stopping line at a station. */
@@ -54,6 +56,14 @@ export type Capsule =
       ends: Array<{ lineId: string; cut: Point; at: Point }>;
       /** The capsule spine, when the station is wide enough to need one drawn. */
       spine?: Point[];
+    }
+  | { kind: 'paris';
+      interchange: boolean;
+      radius: number;
+      cells: ParisCell[];
+      groups: ParisGroup[];
+      connectors: ParisConnector[];
+      ends: Array<{ lineId: string; cut: Point; at: Point }>;
     };
 
 /** Everything a design needs to paint one station. `lines` is the set of dots
@@ -98,7 +108,7 @@ export interface StationDesign {
    *  'londonBubbles' the paired ticket-hall bubbles; 'toronto' and 'dc' both run
    *  the point-crossing collapse but differ in what the scene carries (see
    *  PlacementCtx.capsuleMode). */
-  capsule?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto' | 'dc';
+  capsule?: 'pill' | 'rectRows' | 'londonBubbles' | 'toronto' | 'dc' | 'paris';
   /** Paint one station into a draw list (capsule glyphs first, dots/bullets
    *  after, so dots render on top). Pure. */
   paint: (scene: StopScene, ctx: PaintCtx) => Glyph[];

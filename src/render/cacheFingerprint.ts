@@ -55,6 +55,7 @@ export interface FingerprintInput {
     cropBbox?: [number, number, number, number];
     stationSplit?: boolean;
     lineScale?: number;
+    stationScale?: number;
     dark?: boolean;
     theme?: { lineWidth?: number };
   };
@@ -140,6 +141,7 @@ export function fingerprintInputs(input: FingerprintInput): Fingerprint {
     o.cropBbox ? o.cropBbox.map(r5).join(',') : '',
     o.stationSplit ? 's' : '',
     o.lineScale ?? '',
+    o.stationScale ?? '',
     // dark is NOT here: theme is applied at draw time (only the geography ring
     // fills depend on it, and those are recoloured on the fly), so a light/dark
     // switch reuses the same cached layout and merely repaints.

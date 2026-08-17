@@ -42,6 +42,13 @@ test('cropLaneToShape disc: a lane short of the disc extends to it within maxExt
   assert.ok(onCircle(out[0], 0, 0, 10));
 });
 
+test('cropLaneToShape disc: duplicate node vertices do not block extension', () => {
+  const disc: CropShape = { kind: 'disc', cx: 0, cy: 0, r: 10 };
+  const poly: P[] = [[-20, 0], [-20, 0], [-30, 0]];
+  const out = cropLaneToShape(poly, disc, 20);
+  assert.deepEqual(out[0], [-10, 0]);
+});
+
 test('cropLaneToShape disc: no extension past the cap leaves the lane unchanged', () => {
   const disc: CropShape = { kind: 'disc', cx: 0, cy: 0, r: 10 };
   const poly: P[] = [[-100, 0], [-140, 0]];

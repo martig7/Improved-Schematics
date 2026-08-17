@@ -45,6 +45,24 @@ test('a lane stopping short of its terminus box is extended straight to the wall
   assert.deepEqual(firstM(d), [-10, 0]);
 });
 
+test('duplicate node vertices do not block extension to a terminus box', () => {
+  const segPath = new Map<string, P[]>([['e|L1', [[-30, 0], [-30, 0], [-40, 0]]]]);
+  const targets: LaneCropTarget[] = [
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'rect', x0: -10, y0: -10, x1: 10, y1: 10 }, shared: false },
+  ];
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET);
+  assert.deepEqual(firstM(out.get('L1')!.join(' ')), [-10, 0]);
+});
+
+test('stroke inset does not shrink the extension safety cap', () => {
+  const segPath = new Map<string, P[]>([['e|L1', [[-12.38, 0], [-18.38, 0]]]]);
+  const targets: LaneCropTarget[] = [
+    { lineId: 'L1', flagNode: 'A', shape: { kind: 'disc', cx: 0, cy: 0, r: 2.25 }, shared: false },
+  ];
+  const out = computeLaneCrops(targets, segPath, edges, joinCurves, FILLET, 0.875);
+  assert.deepEqual(firstM(out.get('L1')!.join(' ')), [-1.4, 0]);
+});
+
 test('a lane far beyond the extension cap is left unchanged', () => {
   // The gap (170px) exceeds the cap (min(4*20, 48) = 48), so nothing is drawn.
   const segPath = new Map<string, P[]>([['e|L1', [[-180, 0], [-200, 0]]]]);

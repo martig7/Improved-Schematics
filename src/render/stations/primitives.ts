@@ -1,8 +1,8 @@
-import { MARKER_SCALE, MARK_R0, DRAW_SCALE, onDrawScale } from '../constants';
+import { MARKER_SCALE, MARK_R0, STATION_SCALE, onRenderScale } from '../constants';
 import type { Glyph, Capsule, Point } from './types';
 
 let R0 = MARK_R0; // base dot radius (matches the solver)
-onDrawScale(() => { R0 = MARK_R0; });
+onRenderScale(() => { R0 = MARK_R0; });
 
 /** Readable bullet ink (near-black or white) for text on a solid fill. */
 export function contrastInk(hex: string): string {
@@ -40,16 +40,22 @@ export function bulletFontSize(r: number, name: string): number {
 
 /** Ring/outline stroke width for a dot, proportional to its radius. The
  *  dotRadius/R0 ratio is the capsule-shrink fraction (scale-invariant), so the
- *  base 1.5 is multiplied by DRAW_SCALE to thin with the Line-size control. */
+ *  base 1.5 is multiplied by the station scale. */
 export function dotStrokeWidth(dotRadius: number): number {
-  return 1.5 * DRAW_SCALE * (dotRadius / R0);
+  return 1.5 * STATION_SCALE * (dotRadius / R0);
 }
 
 /** Border/fill stroke widths for a pill capsule so it hugs its dots. The
  *  2*dotRadius term already scales (dotRadius is scaled); the fixed rim padding
- *  scales with DRAW_SCALE so the pill stays proportional as the dots shrink. */
+ *  scales with the station scale so the pill stays proportional as the dots shrink. */
 export function capsuleStrokeWidths(dotRadius: number): { border: number; fill: number } {
-  return { border: 2 * dotRadius + 6 * MARKER_SCALE * DRAW_SCALE, fill: 2 * dotRadius + 3 * MARKER_SCALE * DRAW_SCALE };
+  return capsuleStrokeWidthsFor(dotRadius, STATION_SCALE);
+}
+
+/** Scale-explicit capsule widths for compute-time geometry that is passed its
+ *  own line width. */
+export function capsuleStrokeWidthsFor(dotRadius: number, drawScale: number): { border: number; fill: number } {
+  return { border: 2 * dotRadius + 6 * MARKER_SCALE * drawScale, fill: 2 * dotRadius + 3 * MARKER_SCALE * drawScale };
 }
 
 export function circle(cx: number, cy: number, r: number, o: { fill: string; stroke: string; strokeWidth: number; data?: Record<string, string> }): Glyph {
@@ -119,7 +125,7 @@ export function pillPath(points: Point[], smooth: boolean): string {
  *  then narrow fill). */
 export function capsuleGlyphs(capsule: Capsule, colors: { border: string; fill: string }, dotRadius: number): Glyph[] {
   if (capsule.kind === 'none') return [];
-  if (capsule.kind === 'ring') return [circle(capsule.cx, capsule.cy, capsule.r, { fill: colors.fill, stroke: colors.border, strokeWidth: 1.5 * DRAW_SCALE })];
+  if (capsule.kind === 'ring') return [circle(capsule.cx, capsule.cy, capsule.r, { fill: colors.fill, stroke: colors.border, strokeWidth: 1.5 * STATION_SCALE })];
   if (capsule.kind === 'rectRows') return []; // painted by the rect design, not here
   const w = capsuleStrokeWidths(dotRadius);
   const d = pillPath(capsule.points, capsule.smooth);

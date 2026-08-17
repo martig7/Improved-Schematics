@@ -4,12 +4,13 @@ import { STATION_DESIGNS, getStationDesign, DEFAULT_STATION_DESIGN, EXAMPLE_STAT
 import { renderStations } from '../render';
 import type { StopMark, Pixel } from '../../layout/types';
 
-test('registry has classic, nyc-solid, nyc-map; default classic; fallback', () => {
-  for (const id of ['classic', 'nyc-solid', 'nyc-map', 'tokyu']) assert.ok(STATION_DESIGNS.some((d) => d.id === id));
+test('registry has classic, nyc-solid, nyc-map, and Paris; default classic; fallback', () => {
+  for (const id of ['classic', 'nyc-solid', 'nyc-map', 'tokyu', 'paris']) assert.ok(STATION_DESIGNS.some((d) => d.id === id));
   assert.equal(DEFAULT_STATION_DESIGN, 'classic');
   assert.equal(getStationDesign('classic').id, 'classic');
   assert.equal(getStationDesign('nope').id, 'classic');
   assert.equal(getStationDesign(undefined).id, 'classic');
+  for (const id of ['classic', 'nyc-solid', 'nyc-map']) assert.equal(getStationDesign(id).capsule, 'pill');
 });
 
 test('pickExampleRoute: first bulleted non-temp route, else A/red default', () => {

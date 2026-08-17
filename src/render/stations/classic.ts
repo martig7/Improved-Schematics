@@ -14,4 +14,4 @@ function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
   return g;
 }
 
-export const classic: StationDesign = { id: 'classic', name: 'Classic', paint };
+export const classic: StationDesign = { id: 'classic', name: 'Classic', paint, capsule: 'pill' };

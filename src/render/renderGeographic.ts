@@ -29,7 +29,7 @@ import { buildOctiGrid, type OctiGrid } from './layout/octiGrid';
 import { buildSupportGraph, weldSubCellNodes, type TopoParams } from './layout/topo';
 import { buildDensityWarp, type WarpFn } from './layout/densityWarp';
 import { buildDemandBoxWarp, buildSepDemandBoxWarp, medianEdgeLenPx, type BoxGraph, type DenseBox } from './layout/densityBoxWarp';
-import { LINE_WIDTH, LINE_GAP, DRAW_SCALE, regimeDivisor, scaleAwareDivisor, SCALE_GRID_REF_M, SCALE_GRID_DMAX } from './constants';
+import { LINE_WIDTH, LINE_GAP, STATION_SCALE, regimeDivisor, scaleAwareDivisor, SCALE_GRID_REF_M, SCALE_GRID_DMAX } from './constants';
 import { mergeCoincidentPaths, separateFusedStations, collapseFoldStubs, spliceStopFolds } from './layout/imageMerge';
 import { placeLabels, renderLabel, labelAnchor, type Segment } from './labels';
 import { renderRibbons, computeRibbonGeometry, paintRibbons, type RibbonGeometry, type SceneOut } from './renderOctilinear';
@@ -516,9 +516,10 @@ function renderGeographicTopo(input: GeoInput, opts: SchematicOptions): string {
 export interface SmoothedPrecomputed {
   layout: Layout;
   nodePx: Map<string, Pixel>;
-  /** Chrome scale the layout was baked with (Line-size option). The draw
-   *  re-asserts it so strokes/markers match the seated geometry. Default 1. */
+  /** Ribbon scale the layout was baked with. Default 1. */
   lineScale?: number;
+  /** Station scale the marker geometry was baked with. Legacy pres inherit lineScale. */
+  stationScale?: number;
   /** input station id -> render position (px), for the magnifier's box hit-test. */
   stationPx: Map<string, Pixel>;
   stations: Array<{ nodeId: string; members: number; stopNodes: Map<string, string> }>;
@@ -863,12 +864,12 @@ export function precomputeSmoothed(input: GeoInput): SmoothedPrecomputed | strin
   const warpBox = { minX: 0, minY: 0, maxX: width, maxY: height };
   // Capsule-demand oracle (spec 2026-07-02): marker geometry constants +
   // per-node line counts. The per-capsule slack and inter-capsule clearance
-  // defaults scale with the Line-size control so the spreading demand stays
+  // defaults scale with the Station-size control so the spreading demand stays
   // proportional to the drawn capsule size (bigger markers need more room, and
   // thinned ones need less). OCTI_CAPS_MARGIN / OCTI_CAPS_CASING override the
   // (absolute) values for dev sweeps.
-  const capsMargin = Number.isFinite(envNum('OCTI_CAPS_MARGIN')) && envNum('OCTI_CAPS_MARGIN') >= 0 ? envNum('OCTI_CAPS_MARGIN') : 4 * DRAW_SCALE;
-  const capsCasing = Number.isFinite(envNum('OCTI_CAPS_CASING')) && envNum('OCTI_CAPS_CASING') >= 0 ? envNum('OCTI_CAPS_CASING') : 8 * DRAW_SCALE;
+  const capsMargin = Number.isFinite(envNum('OCTI_CAPS_MARGIN')) && envNum('OCTI_CAPS_MARGIN') >= 0 ? envNum('OCTI_CAPS_MARGIN') : 4 * STATION_SCALE;
+  const capsCasing = Number.isFinite(envNum('OCTI_CAPS_CASING')) && envNum('OCTI_CAPS_CASING') >= 0 ? envNum('OCTI_CAPS_CASING') : 8 * STATION_SCALE;
   // Corridor-clearance oracle margin (px beyond the two painted half widths).
   // EXPERIMENTAL, default OFF: on a map whose demand warp already saturates
   // the growth cap, corridor demand is zero-sum (it redistributes throttled

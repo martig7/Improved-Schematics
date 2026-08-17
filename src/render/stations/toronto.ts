@@ -1,16 +1,15 @@
 import type { StationDesign, StopScene, PaintCtx, Glyph } from './types';
 import { circle, capsuleGlyphs, capsuleStrokeWidths, pillPath } from './primitives';
-import { LINE_WIDTH, MARK_R0, MARKER_SCALE, onDrawScale } from '../constants';
+import { STATION_WIDTH, MARK_R0, MARKER_SCALE, onRenderScale } from '../constants';
 
 // Fixed paper-map palette: black ink on white paper in both themes.
 const INK = '#111111';
 const PAPER = '#ffffff';
 
-// A plain stop is LINE-FIT: its outer diameter is the route line width, so the
-// black-ringed white circle sits within the line, which runs continuously
-// behind it.
-let STOP_OUTER = LINE_WIDTH / 2;
-let STOP_RING = LINE_WIDTH * 0.2;
+// A plain stop uses the station-width unit independently from the route line
+// running continuously behind it.
+let STOP_OUTER = STATION_WIDTH / 2;
+let STOP_RING = STATION_WIDTH * 0.2;
 
 // A crossing dot is INTERCHANGE-SIZED: the same cross-section as a capsule end
 // (its outer/inner radii are the capsule's border/fill half-widths), so a
@@ -22,16 +21,16 @@ let MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
 // The interchange motif is a solid black dot: a bundle chains one per station
 // inside a white capsule joined by a thin black spine along the capsule's own
 // centerline; a perfect crossing collapses to a single dot in a white circle.
-let DOT_R = LINE_WIDTH * 0.42;
-let CONNECTOR_W = LINE_WIDTH * 0.5;
-onDrawScale(() => {
-  STOP_OUTER = LINE_WIDTH / 2;
-  STOP_RING = LINE_WIDTH * 0.2;
+let DOT_R = STATION_WIDTH * 0.42;
+let CONNECTOR_W = STATION_WIDTH * 0.5;
+onRenderScale(() => {
+  STOP_OUTER = STATION_WIDTH / 2;
+  STOP_RING = STATION_WIDTH * 0.2;
   CAP_W = capsuleStrokeWidths(MARK_R0 * MARKER_SCALE);
   MARK_OUTER = CAP_W.border / 2;
   MARK_RING = (CAP_W.border - CAP_W.fill) / 2;
-  DOT_R = LINE_WIDTH * 0.42;
-  CONNECTOR_W = LINE_WIDTH * 0.5;
+  DOT_R = STATION_WIDTH * 0.42;
+  CONNECTOR_W = STATION_WIDTH * 0.5;
 });
 
 /** A black-ringed white disc via expand-and-overdraw (an ink disc, then a

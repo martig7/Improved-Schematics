@@ -40,6 +40,8 @@ test('fingerprint changes on each layout-affecting input', () => {
   assert.notEqual(fp((i) => (i.options!.warpAlpha = 0.2)), ref, 'warp option');
   assert.notEqual(fp((i) => (i.options!.boxFrac = 0.6)), ref, 'boxFrac (box density cutoff)');
   assert.notEqual(fp((i) => (i.options!.stationSplit = true)), ref, 'stationSplit (beta complex split)');
+  assert.notEqual(fp((i) => (i.options!.lineScale = 0.8)), ref, 'line scale');
+  assert.notEqual(fp((i) => (i.options!.stationScale = 1.2)), ref, 'station scale');
   assert.notEqual(fp((i) => (i.options!.theme!.lineWidth = 8)), ref, 'lineWidth (feeds dHat)');
   assert.notEqual(fp((i) => (i.geography = undefined)), ref, 'geography presence (bug-1 token)');
   assert.notEqual(fp((i) => (i.options!.cropBbox = [-122.1, 47.0, -122.0, 47.05])), ref, 'crop bbox');

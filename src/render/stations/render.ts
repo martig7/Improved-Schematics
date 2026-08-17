@@ -3,6 +3,7 @@ import type { Prim } from '../sceneIR';
 import type { RectCapsule } from '../layout/rectSeat';
 import type { LondonCapsule } from '../layout/londonBubbles';
 import type { DcStation } from '../layout/dcStations';
+import type { ParisStation } from '../layout/parisCapsules';
 import type { StationDesign, StopScene } from './types';
 import { buildScene } from './placement';
 import { glyphsToSvg, glyphsToPrims, wrapMarker } from './serialize';
@@ -24,6 +25,8 @@ export interface RenderStationsCtx {
   torontoByNode?: Map<string, { cx: number; cy: number }>;
   /** Precomputed DC Metro station geometry per node. Read only by that design. */
   dcByNode?: Map<string, DcStation>;
+  /** Precomputed four-axis capsule and endpoint geometry. */
+  parisByNode?: Map<string, ParisStation>;
   /** The land colour the routes' casings use, so a design that continues a line
    *  can case it identically. */
   land?: string;
@@ -51,6 +54,7 @@ export function renderStations(
     const scene = buildScene(nodeId, marks, {
       capsuleMode: design.capsule, rectByNode: ctx.rectByNode, tokyuStopPos: ctx.tokyuStopPos,
       bubbleByNode: ctx.bubbleByNode, torontoByNode: ctx.torontoByNode, dcByNode: ctx.dcByNode,
+      parisByNode: ctx.parisByNode,
     });
     built.push({ nodeId, marks, scene });
   }

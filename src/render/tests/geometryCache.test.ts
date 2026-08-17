@@ -56,6 +56,9 @@ test('precompute is geometry-free; first draw memoizes it on pre', () => {
   assert.equal(pre.geometry, undefined, 'precompute does not eagerly build geometry');
   drawSmoothed(pre, opts);
   assert.ok(pre.geometry, 'first draw memoizes geometry on pre');
+  for (const marks of pre.geometry.stopsByNode.values()) {
+    for (const mark of marks) assert.ok(mark.flagNode, `stop ${mark.lineId} retains its route flag node`);
+  }
 });
 
 test('serialized geometry round-trips; restored draw is byte-identical (svg + scene)', () => {
@@ -155,6 +158,78 @@ test('DC Metro omits tails and route badges for simplified lines', () => {
   assert.ok(
     stopPrims.some((prim) => prim.kind === 'circle' && prim.r === +DC_BADGE_R.toFixed(1) && prim.fill === '#0000cc'),
     'regular route keeps its Scene IR badge',
+  );
+});
+
+test('Paris design paints computed bubbles, endpoint fills, and route-end glyphs', () => {
+  const pre = fresh();
+  const out: SceneOut = { scene: null };
+  const svg = drawSmoothed(pre, { ...opts, stationDesign: 'paris' }, out);
+  assert.ok(pre.geometry?.parisByNode && pre.geometry.parisByNode.size > 0, 'Paris geometry is memoized');
+  assert.match(svg, /<circle[^>]*fill="#ffffff"/, 'white interchange or endpoint bubble');
+  assert.match(svg, /<line[^>]*stroke="#cc0000"/, 'route-end tail');
+  assert.ok(out.scene, 'draw produces Scene IR');
+  const stopPrims = out.scene.prims.filter((prim) => prim.layer === 'stops');
+  assert.ok(stopPrims.some((prim) => prim.kind === 'circle' && prim.fill === '#ffffff'), 'Scene IR white bubble');
+  assert.ok(stopPrims.some((prim) => prim.kind === 'line' && prim.stroke === '#cc0000'), 'Scene IR route-end tail');
+  assert.ok(stopPrims.some((prim) => prim.kind === 'text' && prim.text === '1'), 'Scene IR route-end badge');
+});
+
+test('Paris omits tails and route badges for simplified lines', () => {
+  const pre = fresh();
+  const redBadge = new RegExp(`<circle[^>]*r="${DC_BADGE_R.toFixed(1)}"[^>]*fill="#cc0000"`);
+  const blueBadge = new RegExp(`<circle[^>]*r="${DC_BADGE_R.toFixed(1)}"[^>]*fill="#0000cc"`);
+  const baselineSvg = drawSmoothed(pre, { ...opts, stationDesign: 'paris' });
+  assert.match(baselineSvg, /<line[^>]*stroke="#cc0000"/, 'fixture gives the simplified route a Paris tail');
+  assert.match(baselineSvg, redBadge, 'fixture gives the simplified route a Paris badge');
+
+  const out: SceneOut = { scene: null };
+  const svg = drawSmoothed(
+    pre,
+    { ...opts, stationDesign: 'paris', simplifiedRoutes: { r1: 'default' } },
+    out,
+  );
+
+  assert.doesNotMatch(svg, /<line[^>]*stroke="#cc0000"/, 'simplified route has no SVG tail');
+  assert.doesNotMatch(svg, redBadge, 'simplified route has no SVG badge');
+  assert.doesNotMatch(svg, />1<\/text>/, 'simplified route has no SVG route glyph');
+  assert.match(svg, /<circle[^>]*fill="#cc0000"/, 'simplified route keeps its Paris station fill');
+  assert.match(svg, /<line[^>]*stroke="#0000cc"/, 'regular route keeps its SVG tail');
+  assert.match(svg, blueBadge, 'regular route keeps its SVG badge');
+  assert.match(svg, />2<\/text>/, 'regular route keeps its SVG route glyph');
+
+  assert.ok(out.scene, 'draw produces Scene IR');
+  const stopPrims = out.scene.prims.filter((prim) => prim.layer === 'stops');
+  assert.equal(
+    stopPrims.some((prim) => prim.kind === 'line' && prim.stroke === '#cc0000'),
+    false,
+    'simplified route has no Scene IR tail',
+  );
+  assert.equal(
+    stopPrims.some((prim) => prim.kind === 'circle' && prim.r === +DC_BADGE_R.toFixed(1) && prim.fill === '#cc0000'),
+    false,
+    'simplified route has no Scene IR badge',
+  );
+  assert.equal(
+    stopPrims.some((prim) => prim.kind === 'text' && prim.text === '1'),
+    false,
+    'simplified route has no Scene IR route glyph',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'circle' && prim.fill === '#cc0000'),
+    'simplified route keeps its Scene IR Paris station fill',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'line' && prim.stroke === '#0000cc'),
+    'regular route keeps its Scene IR tail',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'circle' && prim.r === +DC_BADGE_R.toFixed(1) && prim.fill === '#0000cc'),
+    'regular route keeps its Scene IR badge',
+  );
+  assert.ok(
+    stopPrims.some((prim) => prim.kind === 'text' && prim.text === '2'),
+    'regular route keeps its Scene IR route glyph',
   );
 });
 

@@ -1,9 +1,9 @@
 import type { StationDesign, StopScene, StopLine, Glyph, Point } from './types';
 import { line, circle } from './primitives';
-import { MARK_R0, LINE_WIDTH, onDrawScale } from '../constants';
+import { MARK_R0, LINE_WIDTH, STATION_WIDTH, onRenderScale } from '../constants';
 
 let R0 = MARK_R0;
-onDrawScale(() => { R0 = MARK_R0; });
+onRenderScale(() => { R0 = MARK_R0; });
 const INK = '#111111';
 const PAPER = '#ffffff';
 
@@ -70,7 +70,7 @@ function paint(scene: StopScene): Glyph[] {
   const cap = scene.capsule;
 
   if (cap.kind === 'londonBubbles') {
-    const bw = LINE_WIDTH * 0.85; // outline rim half-width (a thick Underground ring)
+    const bw = STATION_WIDTH * 0.85; // outline rim half-width (a thick Underground ring)
     const g: Glyph[] = [];
     // A connector's butt ends tuck inside the two bubbles it joins, so only its
     // sides show as the waist between beads.

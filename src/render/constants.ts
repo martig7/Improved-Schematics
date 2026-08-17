@@ -24,49 +24,42 @@ const BASE_LINE_WIDTH =
   LINE_WIDTH_DEFAULT;
 const BASE_LINE_GAP = 2;
 
-/** Drawn line/marker chrome sizes. These are LIVE bindings (`let`, not `const`)
- *  so the per-render Line-size control can scale every stroke, marker and
- *  derived spacing together via setDrawScale below. ES module live bindings
- *  mean importers that READ these at call time see the current value; a few
- *  modules that aliased them at import were changed to read live too. */
+/** Drawn line and station chrome sizes. These are live bindings so each render
+ *  can set ribbon and marker scales independently. */
 export let LINE_WIDTH = BASE_LINE_WIDTH;
 export let LINE_GAP = BASE_LINE_GAP;
+export let STATION_WIDTH = BASE_LINE_WIDTH;
 
 /** Base station-marker (dot) radius, shared by the octilinear renderer, the
  *  station placement/primitive geometry, and label collision boxes so every
- *  site sizes the marker identically. Derived from the line width. */
-export let MARK_R0 = LINE_WIDTH * 0.7;
+ *  site sizes the marker identically. Derived from the station width. */
+export let MARK_R0 = STATION_WIDTH * 0.7;
 
-/** The current draw scale k (1 = base). A live binding for the few chrome
- *  dimensions that are FIXED-px offsets — capsule border padding, ring-capsule
- *  radius margin and outline, dot-marker outline — rather than multiples of
- *  LINE_WIDTH / MARK_R0. Multiplying those offsets by this makes them thin and
- *  thicken with the Line-size control too, so a capsule stays proportional
- *  instead of keeping a fixed rim as its dots shrink. */
-export let DRAW_SCALE = 1;
+/** Current independent ribbon and station scales (1 = base). */
+export let LINE_SCALE = 1;
+export let STATION_SCALE = 1;
 
-/** Scale the drawn line/marker chrome by `s` (1 = base size, the shipped
- *  values). Set at the start of a render from the Line-size option, so both the
- *  precompute (seating/capsule geometry) and the draw (strokes/markers) size
- *  themselves identically. Deterministic: callers pass the option value, never
- *  wall-clock. `s <= 0` or non-finite is treated as 1. */
-const _drawScaleCbs: Array<() => void> = [];
-/** Register a callback that recomputes a module's LINE_WIDTH/MARK_R0-derived
- *  values. Modules that alias these at import (so their value would otherwise be
- *  frozen at the base scale) call this with a recompute closure; it also runs
- *  the closure once immediately to initialize. Fired on every setDrawScale so
- *  cascading derivations stay in sync with the current chrome scale. */
-export function onDrawScale(cb: () => void): void {
-  _drawScaleCbs.push(cb);
+const _renderScaleCbs: Array<() => void> = [];
+/** Register a callback that recomputes values derived from live render scales. */
+export function onRenderScale(cb: () => void): void {
+  _renderScaleCbs.push(cb);
   cb();
 }
-export function setDrawScale(s: number): void {
-  const k = Number.isFinite(s) && s > 0 ? s : 1;
-  DRAW_SCALE = k;
-  LINE_WIDTH = BASE_LINE_WIDTH * k;
-  LINE_GAP = BASE_LINE_GAP * k;
-  MARK_R0 = LINE_WIDTH * 0.7;
-  for (const cb of _drawScaleCbs) cb();
+
+export interface RenderScales {
+  line: number;
+  station: number;
+}
+
+/** Set the two layout-baked chrome scales through one render-metrics seam. */
+export function setRenderScales(scales: RenderScales): void {
+  LINE_SCALE = Number.isFinite(scales.line) && scales.line > 0 ? scales.line : 1;
+  STATION_SCALE = Number.isFinite(scales.station) && scales.station > 0 ? scales.station : 1;
+  LINE_WIDTH = BASE_LINE_WIDTH * LINE_SCALE;
+  LINE_GAP = BASE_LINE_GAP * LINE_SCALE;
+  STATION_WIDTH = BASE_LINE_WIDTH * STATION_SCALE;
+  MARK_R0 = STATION_WIDTH * 0.7;
+  for (const cb of _renderScaleCbs) cb();
 }
 
 /** Octilinear grid divisor selected by graph regime. Metro-scale graphs

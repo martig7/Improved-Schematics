@@ -15,11 +15,12 @@ import {
   reportConnTrace, reportRibbonSummary, reportZigzags, reportSpikes, reportStairs, reportContiguity, reportLaneSeats, reportFanZones, reportStopSeating, reportZoneCrossings, reportChains,
 } from './debug/renderOctilinear.debug';
 import { reportChainSeats } from './debug/chainSeats.debug';
+import { reportStationGeometryCensus } from './layout/debug/stationGeometryCensus.debug';
 import { envStr, envNum } from '../env';
 import type { Layout, Cell, Pixel, StopMark } from './layout/types';
 import { connectorControls } from './layout/connectorClamp';
 import type { WaterCollection } from './types';
-import { LINE_WIDTH, LINE_GAP, MARKER_SCALE, MARK_R0, onDrawScale } from './constants';
+import { LINE_WIDTH, LINE_GAP, STATION_WIDTH, MARKER_SCALE, MARK_R0, onRenderScale } from './constants';
 import { DARK_THEME, DEFAULT_THEME } from './types';
 import { offsetPolyline, curveLaneJoin, taperLaneEnd } from './layout/offsets';
 import { buildFanJoins } from './fanJoin';
@@ -41,6 +42,8 @@ import { resolveSimplifiedLines, simplifiedSignature, simplifiedUnderlayGroups, 
 import { computeLondonByNode, type LondonCapsule } from './layout/londonBubbles';
 import { computeTorontoByNode, type TorontoCross } from './layout/torontoCross';
 import { computeDcByNode, BADGE_R as DC_BADGE_R, type DcStation } from './layout/dcStations';
+import { computeParisByNode, type ParisStation } from './layout/parisCapsules';
+import { directBubbleCropTargets } from './layout/directBubbleCrops';
 import { sampleQuadratic } from './layout/segGeom';
 import { cropLaneToShape, shapeMinExtent, insetShape, type Box, type CropShape } from './laneCrop';
 import { getStationDesign } from './stations';
@@ -293,8 +296,8 @@ export function computeLaneCrops(
     // through even at a wide row capsule.
     // Crop to the shape pulled in by the inset, so the stroke's round cap ends
     // under the marker rather than poking past its edge.
+    const maxExt = Math.min(4 * shapeMinExtent(t.shape), 48);
     const shape = inset > 0 ? insetShape(t.shape, inset) : t.shape;
-    const maxExt = Math.min(4 * shapeMinExtent(shape), 48);
     for (const e of inc) {
       const key = e.id + '|' + t.lineId;
       const poly = cropSeg.get(key);
@@ -545,6 +548,8 @@ export interface RibbonGeometry {
    *  OPTIONAL: absent in geometry serialized before it existed, and the design then
    *  falls back to solving one station at a time. */
   dcByNode?: Map<string, DcStation>;
+  /** Per-node four-axis capsule, cell, connector, and endpoint geometry. */
+  parisByNode?: Map<string, ParisStation>;
 }
 
 // Repaint memo of label placements per geometry (see the paintRibbons label
@@ -566,9 +571,9 @@ const labelPlacementsMemo = new WeakMap<RibbonGeometry, {
 /** The route glyphs a design hangs off its line ends, as boxes a label must clear.
  *  They are chrome sitting well away from the stop they belong to, so nothing in
  *  the marks themselves reveals them. */
-function labelGlyphBoxes(dcByNode: Map<string, DcStation>): Array<{ x: number; y: number; w: number; h: number }> {
+function lineEndGlyphBoxes(stations: Iterable<{ ends: Array<{ at: Pixel }> }>): Array<{ x: number; y: number; w: number; h: number }> {
   const out: Array<{ x: number; y: number; w: number; h: number }> = [];
-  for (const st of dcByNode.values()) {
+  for (const st of stations) {
     for (const e of st.ends) {
       out.push({ x: e.at[0] - DC_BADGE_R, y: e.at[1] - DC_BADGE_R, w: 2 * DC_BADGE_R, h: 2 * DC_BADGE_R });
     }
@@ -576,21 +581,21 @@ function labelGlyphBoxes(dcByNode: Map<string, DcStation>): Array<{ x: number; y
   return out;
 }
 
-/** Remove DC's route-end tails and badges for selected lines without mutating
- *  the cached station solve. The station marks themselves remain unchanged. */
-function withoutDcEnds(
-  dcByNode: Map<string, DcStation> | undefined,
+/** Remove route-end tails and badges for selected lines without mutating the
+ *  cached station solve. The station marks themselves remain unchanged. */
+function withoutLineEnds<T extends DcStation | ParisStation>(
+  stationsByNode: Map<string, T> | undefined,
   hiddenLineIds: ReadonlySet<string>,
-): Map<string, DcStation> | undefined {
-  if (!dcByNode || hiddenLineIds.size === 0) return dcByNode;
-  let out: Map<string, DcStation> | undefined;
-  for (const [nodeId, station] of dcByNode) {
+): Map<string, T> | undefined {
+  if (!stationsByNode || hiddenLineIds.size === 0) return stationsByNode;
+  let out: Map<string, T> | undefined;
+  for (const [nodeId, station] of stationsByNode) {
     const ends = station.ends.filter((end) => !hiddenLineIds.has(end.lineId));
     if (ends.length === station.ends.length) continue;
-    if (!out) out = new Map(dcByNode);
+    if (!out) out = new Map(stationsByNode);
     out.set(nodeId, { ...station, ends });
   }
-  return out ?? dcByNode;
+  return out ?? stationsByNode;
 }
 
 /** Capsule geometry for ONE regime, re-derived when a simplified route has left
@@ -610,6 +615,7 @@ interface DerivedCapsules {
   bubbleByNode?: Map<string, LondonCapsule>;
   torontoByNode?: Map<string, TorontoCross>;
   dcByNode?: Map<string, DcStation>;
+  parisByNode?: Map<string, ParisStation>;
 }
 const derivedCapsulesMemo = new WeakMap<RibbonGeometry, Map<string, DerivedCapsules | undefined>>();
 
@@ -650,7 +656,7 @@ function deriveCapsules(
       tokyuStopPos: mergeChanged(geom.tokyuStopPos, re.tokyuStopPos, changed),
     };
   } else if (regime === 'londonBubbles') {
-    out = { bubbleByNode: mergeChanged(geom.bubbleByNode, computeLondonByNode(stopsByNode, LINE_WIDTH), changed) };
+    out = { bubbleByNode: mergeChanged(geom.bubbleByNode, computeLondonByNode(stopsByNode, STATION_WIDTH, LINE_WIDTH), changed) };
   } else if (regime === 'toronto') {
     out = { torontoByNode: mergeChanged(geom.torontoByNode, computeTorontoByNode(stopsByNode), changed) };
   } else if (regime === 'dc') {
@@ -658,6 +664,13 @@ function deriveCapsules(
     // The line-end symbols are seated against the whole map, so a changed station
     // re-seats every symbol rather than merging one node's back in.
     out = { torontoByNode: cross, dcByNode: computeDcByNode(stopsByNode, undefined, cross) };
+  } else if (regime === 'paris') {
+    out = { parisByNode: computeParisByNode(stopsByNode, LINE_WIDTH) };
+  } else if (regime === 'pill') {
+    // Pill placement is already rebuilt from the active marks at paint time.
+    // A present empty result still invalidates the crop cached for the old
+    // membership, since its direct-intersection footprint may have vanished.
+    out = {};
   }
   byKey.set(key, out);
   return out;
@@ -686,7 +699,7 @@ function mergeChanged<V>(
 let RECT_R0 = MARK_R0;
 let RECT_RCAP = RECT_R0 * MARKER_SCALE;
 let RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE;
-onDrawScale(() => { RECT_R0 = MARK_R0; RECT_RCAP = RECT_R0 * MARKER_SCALE; RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE; });
+onRenderScale(() => { RECT_R0 = MARK_R0; RECT_RCAP = RECT_R0 * MARKER_SCALE; RECT_BOX = 3 * RECT_RCAP / MARKER_SCALE; });
 // Above this member count a hub is seated by the LANE-AWARE path (matching
 // rectSeat's ENUM_MAX): each box slides along its own drawn lane instead of being
 // packed into an abstract row.
@@ -910,6 +923,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // consumed by the Toronto design to collapse a perfect crossing to one dot.
   let torontoByNode = new Map<string, TorontoCross>();
   let dcByNode = new Map<string, DcStation>();
+  let parisByNode = new Map<string, ParisStation>();
   // Per-capsule-regime lane crops: for each design regime that paints an opaque
   // interchange footprint (rectRows boxes, londonBubbles discs), the per-line 'd'
   // command arrays from a lane bundle cropped to that footprint, filled at emit
@@ -917,6 +931,10 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
   // they are joined into croppedLaneByLine strings at the end. A design whose
   // regime is absent here reads dByLine, so it stays identical.
   const cropDPartsByRegime = new Map<string, Map<string, string[]>>();
+  // Legacy node connectors are emitted after the first crop pass. Retain their
+  // commands so a crop regime discovered from final intersection geometry can
+  // receive the same connectors when it is built later.
+  const connectorPartsByLine = new Map<string, string[]>();
   // The lane-crop targets per regime, gathered inside the station block (where the
   // marks and the shared-anchor guard live) and consumed after the draw-fillet
   // finalizes segPath. Empty for non-station renders.
@@ -1863,6 +1881,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     lineId: string,
     color: string,
     nodeId: string,
+    flagNode: string,
     pos: Pixel,
     chain?: number,
     cornerAfter?: Pixel,
@@ -1878,10 +1897,31 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     stopSeen.add(key);
     if (!stopsByNode.has(nodeId)) stopsByNode.set(nodeId, []);
     stopsByNode.get(nodeId)!.push({
-      lineId, color, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, home, axis, dir, terminus, outward, seatDirt,
+      lineId, color, flagNode, pos, name: lineById.get(lineId)?.label, textColor: lineById.get(lineId)?.textColor, seq: layout.nodeSeq?.get(lineId + '|' + nodeId) ?? layout.nodeSeq?.get(lineId + '|' + nodeId.split('::')[0]), chain, cornerAfter, home, axis, dir, terminus, outward, seatDirt,
     });
   };
   const membersByNode = args.stations ? new Map<string, number>() : undefined;
+  const anchorStations = new Map<string, Set<string>>();
+  // Route-truth line ends are used while gathering marks and again after final
+  // intersection geometry exists, when direct-bubble crop targets are built.
+  const routeEndNodes = new Map<string, Set<string>>();
+  for (const [lid, trav] of layout.lineTraversals) {
+    if (trav.length === 0) continue;
+    const ends = new Set<string>();
+    const eF = edgeById.get(trav[0].edgeId);
+    const eL = edgeById.get(trav[trav.length - 1].edgeId);
+    if (eF) ends.add(trav[0].reversed ? eF.to : eF.from);
+    if (eL) ends.add(trav[trav.length - 1].reversed ? eL.from : eL.to);
+    for (let i = 1; i < trav.length; i++) {
+      if (trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed) {
+        const e = edgeById.get(trav[i].edgeId);
+        if (e) ends.add(trav[i].reversed ? e.to : e.from);
+      }
+    }
+    routeEndNodes.set(lid, ends);
+  }
+  const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
+    routeEndNodes.get(lineId)?.has(flagNode) ?? false;
   if (args.stations) {
     // ROUTE-TRUTH line ends: the first node of a route's first traversal edge,
     // the last node of its last, plus any node where the route reverses onto the
@@ -1889,24 +1929,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // the lane-crop targets read this. Drawn-lane COUNT is not the truth: a
     // mid-route stop whose sibling lane was suppressed or trimmed also has a
     // single incident lane, which would read as a false line end.
-    const routeEndNodes = new Map<string, Set<string>>();
-    for (const [lid, trav] of layout.lineTraversals) {
-      if (trav.length === 0) continue;
-      const ends = new Set<string>();
-      const eF = edgeById.get(trav[0].edgeId);
-      const eL = edgeById.get(trav[trav.length - 1].edgeId);
-      if (eF) ends.add(trav[0].reversed ? eF.to : eF.from);
-      if (eL) ends.add(trav[trav.length - 1].reversed ? eL.from : eL.to);
-      for (let i = 1; i < trav.length; i++) {
-        if (trav[i].edgeId === trav[i - 1].edgeId && trav[i].reversed !== trav[i - 1].reversed) {
-          const e = edgeById.get(trav[i].edgeId);
-          if (e) ends.add(trav[i].reversed ? e.to : e.from);
-        }
-      }
-      routeEndNodes.set(lid, ends);
-    }
-    const isRouteTerminus = (lineId: string, flagNode: string): boolean =>
-      routeEndNodes.get(lineId)?.has(flagNode) ?? false;
     /** Does a SUPPRESSED incident lane carry this line onward across the node?
      *  A jog-suppressed sliver is not drawn, but the node connectors bridge its
      *  neighbours, so the course continues; a stop with one drawn lane and one
@@ -2917,7 +2939,6 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     // whose marks anchor there; a slid mark whose lane end is ALSO anchored by a
     // foreign station's mark skips the trim (leave the lane drawn to its tip —
     // the short overhang hides under the markers).
-    const anchorStations = new Map<string, Set<string>>();
     for (const s of gathered) {
       for (const m of s.marks) {
         const k = m.lineId + '|' + m.flagNode;
@@ -4220,7 +4241,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     capsAudit('post-eviction');
 
     for (const s of gathered) {
-      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.pos, m.chain, m.cornerAfter, m.home, m.axis, m.dir, m.terminus, m.outward, m.seatDirt);
+      for (const m of s.marks) addStop(m.lineId, m.color, s.nodeId, m.flagNode, m.pos, m.chain, m.cornerAfter, m.home, m.axis, m.dir, m.terminus, m.outward, m.seatDirt);
     }
 
     for (const s of gathered) {
@@ -4250,7 +4271,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     ({ rectByNode, tokyuStopPos } = computeRectByNode(gathered, RECT_BOX, laneItemFor));
     // London bubbles, from the final marks; used just below for the London lane
     // crop footprint and returned for the London design to paint from.
-    bubbleByNode = computeLondonByNode(stopsByNode, LINE_WIDTH);
+    bubbleByNode = computeLondonByNode(stopsByNode, STATION_WIDTH, LINE_WIDTH);
     // torontoByNode is computed later, from the FINAL dByLine (below), so the
     // crossing solve sees every join/connector that bridges a node gap.
 
@@ -4346,11 +4367,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         if (!line) continue;
         if (stop.atFrom) {
           const p = drawnEndAt.get(edge.from + '|' + lineId);
-          if (p) addStop(lineId, line.color, edge.from, p);
+          if (p) addStop(lineId, line.color, edge.from, edge.from, p);
         }
         if (stop.atTo) {
           const p = drawnEndAt.get(edge.to + '|' + lineId);
-          if (p) addStop(lineId, line.color, edge.to, p);
+          if (p) addStop(lineId, line.color, edge.to, edge.to, p);
         }
       }
     }
@@ -4570,6 +4591,9 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
         );
       }
       for (const cmd of conn) d.push(cmd);
+      let savedConn = connectorPartsByLine.get(lineId);
+      if (!savedConn) connectorPartsByLine.set(lineId, (savedConn = []));
+      for (const cmd of conn) savedConn.push(cmd);
       // Mirror the cross-node jog onto every regime's cropped lane too.
       for (const dParts of cropDPartsByRegime.values()) {
         let td = dParts.get(lineId);
@@ -4673,6 +4697,32 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     }
     torontoByNode = computeTorontoByNode(stopsByNode, laneByStop);
     dcByNode = computeDcByNode(stopsByNode, segsByLine, torontoByNode);
+    parisByNode = computeParisByNode(stopsByNode, LINE_WIDTH, segsByLine);
+
+    // A perfect intersection is known only after the final ribbons have been
+    // assembled. Build its endpoint footprints now, then crop a fresh clone of
+    // the final lane polylines. Under the legacy emitter, add the node connector
+    // commands retained above, matching the earlier crop regimes.
+    const directTargets = directBubbleCropTargets({
+      stopsByNode, torontoByNode, dcByNode, parisByNode, isRouteTerminus,
+      isShared: (lineId, flagNode, nodeId) => {
+        const anchoredBy = anchorStations.get(lineId + '|' + flagNode);
+        return !!anchoredBy && (anchoredBy.size > 1 || !anchoredBy.has(nodeId));
+      },
+    });
+    for (const [regime, targets] of directTargets) {
+      cropTargetsByRegime.set(regime, targets);
+      const cropped = computeLaneCrops(
+        targets, segPath, layout.edges, joinCurves, FILLET_R, LINE_WIDTH / 2,
+        useAssembler ? (seg) => assembleOver(seg) : undefined,
+      );
+      if (!useAssembler) for (const [lineId, commands] of connectorPartsByLine) {
+        let parts = cropped.get(lineId);
+        if (!parts) cropped.set(lineId, (parts = []));
+        for (const command of commands) parts.push(command);
+      }
+      cropDPartsByRegime.set(regime, cropped);
+    }
   }
 
   // Join each regime's cropped parts (lanes + mirrored connectors) into per-line
@@ -4687,6 +4737,11 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
       croppedLaneByLine.set(regime, m);
     }
   }
+  reportStationGeometryCensus({
+    stopsByNode, parisByNode, cropTargetsByRegime,
+    croppedLaneByLine: croppedLaneByLine ?? new Map(),
+    lineWidth: LINE_WIDTH, lineGap: LINE_GAP,
+  });
 
   // The fallback content frame is pure in the drawn nodes/edges, so scan them
   // once here instead of on every repaint that lacks a geography frame.
@@ -4722,7 +4777,7 @@ export function computeRibbonGeometry(args: RenderRibbonsArgs): RibbonGeometry {
     dirtAt: seatInkOracle ? (p, lid) => seatInkOracle!.dirtAt(p, lid) : undefined,
   });
 
-  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, dcByNode, paintGroups };
+  return { stopsByNode, membersByNode, dByLine, segments, lineById, orderOf, splitGroups, rectByNode, tokyuStopPos, croppedLaneByLine, contentFrame: frameRect, bubbleByNode, torontoByNode, dcByNode, parisByNode, paintGroups };
 }
 
 // The cheap, toggle-DEPENDENT half: assemble the SVG string + Scene IR from the
@@ -4844,8 +4899,8 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   // simplified route has left a station, that geometry would paint a bead or a
   // seat with no dot behind it, so re-derive the ACTIVE regime from the filtered
   // marks. Untouched membership keeps the precomputed maps, so the normal path is
-  // byte-identical and pays nothing. The pill/ring regimes need no entry here:
-  // buildScene already derives them live from the marks it is handed.
+  // byte-identical and pays nothing. Pill placement itself is derived live from
+  // the marks; its empty derived result only invalidates a stale lane crop.
   const derived = marksFiltered ? deriveCapsules(stopsByNode, activeCapsule, geom, simpSig) : undefined;
   const cachedCropped = activeCapsule ? geom.croppedLaneByLine?.get(activeCapsule) : undefined;
   // A re-derived capsule no longer sits where the cached lanes were cut to, so the
@@ -4860,8 +4915,12 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const rectStopPos = isRect ? (derived?.tokyuStopPos ?? geom.tokyuStopPos) : undefined;
   const bubbleByNode = activeCapsule === 'londonBubbles' ? (derived?.bubbleByNode ?? geom.bubbleByNode) : undefined;
   const torontoByNode = activeCapsule === 'toronto' || activeCapsule === 'dc' ? (derived?.torontoByNode ?? geom.torontoByNode) : undefined;
+  const simplifiedLineIds = new Set(simplified.keys());
   const dcByNode = activeCapsule === 'dc'
-    ? withoutDcEnds(derived?.dcByNode ?? geom.dcByNode, new Set(simplified.keys()))
+    ? withoutLineEnds(derived?.dcByNode ?? geom.dcByNode, simplifiedLineIds)
+    : undefined;
+  const parisByNode = activeCapsule === 'paris'
+    ? withoutLineEnds(derived?.parisByNode ?? geom.parisByNode, simplifiedLineIds)
     : undefined;
   // Bundle-coherent layers (I8): each paint group draws its casings then its
   // strokes, so a later group's casing separates it cleanly from everything
@@ -4919,7 +4978,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
   const connectorParts: string[] = [];
   if (args.showStations !== false) {
     const connStroke = dark ? '#e4e4e7' : '#111111'; // capsule border colors (stops.ts)
-    const connW = +(LINE_WIDTH * 0.45).toFixed(1); // hairline bar
+    const connW = +(STATION_WIDTH * 0.45).toFixed(1); // hairline bar
     const f = (n: number) => n.toFixed(1);
     // The rect design re-seats marks into capsules whose boxes can sit away
     // from the classic mark positions; anchor the bars (and the elbow
@@ -4971,7 +5030,7 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
 
   const stationOut = renderStations(
     stopsByNode,
-    { dark, showBullets: args.showStations !== false, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode, dcByNode, land: bg },
+    { dark, showBullets: args.showStations !== false, rectByNode, tokyuStopPos: rectStopPos, bubbleByNode, torontoByNode, dcByNode, parisByNode, land: bg },
     getStationDesign(args.stationDesign),
   );
   const stopParts = stationOut.svg;
@@ -4993,8 +5052,9 @@ export function paintRibbons(args: RenderRibbonsArgs, geom: RibbonGeometry, scen
     // to clear as it clears a marker. Only the line-end symbols qualify today, and
     // only one design draws them, so this is part of the memo key: placements
     // computed with a different design's glyphs must never be reused.
-    const glyphs = dcByNode ? labelGlyphBoxes(dcByNode) : undefined;
-    const glyphSig = dcByNode ? 'dc' : '';
+    const endStations = dcByNode?.values() ?? parisByNode?.values();
+    const glyphs = endStations ? lineEndGlyphBoxes(endStations) : undefined;
+    const glyphSig = dcByNode ? 'dc' : parisByNode ? 'paris' : '';
     const hit = labelPlacementsMemo.get(geom);
     if (hit && hit.layout === layout && hit.nodePx === nodePx && hit.simpSig === simpSig && hit.glyphSig === glyphSig) placements = hit.placements;
     else {

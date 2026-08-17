@@ -53,6 +53,15 @@ export function insetShape(s: CropShape, d: number): CropShape {
 
 const EPS = 1e-9;
 
+const firstDistinctFromStart = (poly: Vec2[]): Vec2 | undefined => {
+  const start = poly[0];
+  for (let i = 1; i < poly.length; i++) {
+    const dx = start[0] - poly[i][0], dy = start[1] - poly[i][1];
+    if (dx * dx + dy * dy > EPS * EPS) return poly[i];
+  }
+  return undefined;
+};
+
 const isInside = (p: Vec2, b: Box): boolean =>
   p[0] >= b.x0 - EPS && p[0] <= b.x1 + EPS && p[1] >= b.y0 - EPS && p[1] <= b.y1 + EPS;
 
@@ -161,8 +170,9 @@ export function cropLaneToRect(poly: Vec2[], box: Box, maxExt = 0): Vec2[] {
   // scan order is fixed (left, right, top, bottom) and the direction is the
   // lane's own, so nothing bends and nothing reaches far geometry.
   if (maxExt > 0) {
-    const ux = poly[0][0] - poly[1][0];
-    const uy = poly[0][1] - poly[1][1];
+    const next = firstDistinctFromStart(poly);
+    const ux = next ? poly[0][0] - next[0] : 0;
+    const uy = next ? poly[0][1] - next[1] : 0;
     const ulen = Math.sqrt(ux * ux + uy * uy);
     if (ulen > EPS) {
       let bestT = Infinity;
@@ -245,7 +255,8 @@ function cropLaneToDisc(poly: Vec2[], cx: number, cy: number, r: number, maxExt:
   }
 
   if (maxExt > 0) {
-    const ux = poly[0][0] - poly[1][0], uy = poly[0][1] - poly[1][1];
+    const next = firstDistinctFromStart(poly);
+    const ux = next ? poly[0][0] - next[0] : 0, uy = next ? poly[0][1] - next[1] : 0;
     const ulen = Math.sqrt(ux * ux + uy * uy);
     if (ulen > EPS) {
       const A = ux * ux + uy * uy;

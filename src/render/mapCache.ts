@@ -14,7 +14,7 @@ import type { SmoothedPrecomputed } from './schematic';
 import { serializePre, deserializePre } from './persist';
 
 const KEY = 'improvedschematics:mapcache';
-const VERSION = 32; // bump to invalidate every cached entry on a format change
+const VERSION = 36; // bump to invalidate every cached entry on a format change
 // v3: pre now carries `geometry` (memoized marker placement) so a cache read skips
 // most of the draw cost. Bumped so pre-geometry entries refresh on next Generate.
 // v4: pres carry a `builtFp` provenance stamp and the read/write paths verify it.
@@ -86,6 +86,15 @@ const VERSION = 32; // bump to invalidate every cached entry on a format change
 // micro-corridors seat from shared ladders (cohabitant and obstacle
 // gates, band-skipping pack, seated-band fixpoint) instead of per-edge
 // slot+bias. Purge so cached geometry redraws chain interiors.
+// v33: geometry carries four-axis capsule and endpoint placement for the new
+// station design. Purge so every cached layout can paint it.
+// v34: opaque direct-intersection bubbles crop terminating lanes to their final
+// footprint across the capsule designs. Purge so cached geometry gains the new
+// per-regime lane paths.
+// v35: ribbon and station chrome scales are independent layout inputs, and the
+// precompute records both. Purge coupled-scale geometry.
+// v36: endpoint crops skip duplicate leading vertices and size their extension
+// cap from the painted footprint. Purge geometry carrying shortened lanes.
 
 /** Minimal synchronous key/value store (localStorage shape). Injectable for tests. */
 export interface KVStore {

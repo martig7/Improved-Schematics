@@ -317,10 +317,11 @@ function connect(bubbles: LondonBubble[], axisOf: number[], r: number): LondonCa
  */
 export function computeLondonByNode(
   stops: Map<string, BubbleMark[]>,
-  lineWidth: number,
+  stationWidth: number,
+  lineWidth: number = stationWidth,
 ): Map<string, LondonCapsule> {
   const out = new Map<string, LondonCapsule>();
-  const r = lineWidth * R_FACTOR;
+  const r = stationWidth * R_FACTOR;
   const cover = r - (lineWidth / 2) * COVER_MARGIN;
   const reach = r * 4;
   const minSep = 2 * r + NECK_GAP + TOUCH_TOL;

@@ -19,4 +19,4 @@ function paint(scene: StopScene, ctx: PaintCtx): Glyph[] {
 
 // Preview is a single dot (the black "A" circle); the paper capsule still shows
 // on the map for real interchanges.
-export const nycMap: StationDesign = { id: 'nyc-map', name: 'NYC-Map', paint };
+export const nycMap: StationDesign = { id: 'nyc-map', name: 'NYC-Map', paint, capsule: 'pill' };

@@ -58,6 +58,26 @@ test('a crossing regime with no solved entry falls through to a plain pill', () 
   }
 });
 
+test('paris placement carries the four-axis solve and seats each line on its cell', () => {
+  const marks = [mk('A', 0, 0), mk('B', 20, 0)];
+  const parisByNode = new Map([['n1', {
+    interchange: true,
+    radius: 6,
+    cells: [
+      { at: [4, 4] as Pixel, lineIds: ['A'], endpointLineIds: [], shape: 'round' as const },
+      { at: [12, 12] as Pixel, lineIds: ['B'], endpointLineIds: ['B'], shape: 'round' as const },
+    ],
+    groups: [{ axis: 1, cellIndexes: [0, 1], points: [[4, 4], [12, 12]] as Pixel[] }],
+    connectors: [],
+    ends: [],
+    anchor: [8, 8] as Pixel,
+  }]]);
+  const scene = buildScene('n1', marks, { capsuleMode: 'paris', parisByNode });
+  assert.equal(scene.capsule.kind, 'paris');
+  assert.deepEqual(scene.lines.map((line) => line.pos), [[4, 4], [12, 12]]);
+  assert.deepEqual(scene.anchor, [8, 8]);
+});
+
 test('StopLine carries color/bullet/textColor from the mark', () => {
   const s = buildScene('n1', [mk('A', 5, 5, { textColor: '#00ff00' })], ctx);
   assert.equal(s.lines[0].color, '#dc2626');
